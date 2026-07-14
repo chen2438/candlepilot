@@ -50,7 +50,7 @@ class TradingEngine:
         self.market = market
         self.scanner = scanner or MarketScanner()
         self.risk = risk or AggressiveRiskPolicy()
-        self.paper_executor = paper_executor or PaperExecutor()
+        self.paper_executor = paper_executor or PaperExecutor(state_store=audit)
         self.testnet_broker = testnet_broker
         self.selected_provider: str | None = None
         self.running = False
@@ -107,6 +107,7 @@ class TradingEngine:
 
     async def restore_runtime_state(self, *, now: datetime | None = None) -> None:
         now = now or datetime.now(UTC)
+        await self.paper_executor.restore()
         stored = await self.audit.get_runtime_state("emergency_locked_until")
         if stored is None:
             self.emergency_locked = False

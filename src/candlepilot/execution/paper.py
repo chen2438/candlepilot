@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any, Protocol
 from uuid import uuid4
 
 from candlepilot.domain.models import (
@@ -24,6 +25,12 @@ class PaperPosition:
     take_profit: Decimal | None
 
 
+class PaperStateStore(Protocol):
+    async def save_paper_state(self, state: dict[str, Any]) -> None: ...
+
+    async def load_paper_state(self) -> dict[str, Any] | None: ...
+
+
 class PaperExecutor:
     """Deterministic fill simulator for the production-data paper mode."""
 
@@ -33,11 +40,13 @@ class PaperExecutor:
         initial_equity: Decimal = Decimal("10000"),
         slippage_fraction: Decimal = Decimal("0.0005"),
         fee_rate: Decimal = Decimal("0.0005"),
+        state_store: PaperStateStore | None = None,
     ) -> None:
         self.initial_equity = initial_equity
         self.cash = initial_equity
         self.slippage_fraction = slippage_fraction
         self.fee_rate = fee_rate
+        self.state_store = state_store
         self._orders: dict[str, ExecutionReport] = {}
         self._pending_orders: dict[str, tuple[OrderPlan, int]] = {}
         self._positions: dict[str, PaperPosition] = {}
@@ -72,6 +81,7 @@ class PaperExecutor:
                 self._apply_fill(order, fill_price, leverage)
             else:
                 self._pending_orders[order.client_order_id] = (order, leverage)
+            await self._persist()
             return report
 
     async def mark_to_market(self, snapshot: MarketSnapshot) -> tuple[ExecutionReport, ...]:
@@ -120,6 +130,8 @@ class PaperExecutor:
                     self._orders[order.client_order_id] = report
                     self._apply_fill(order, fill_price, position.leverage)
                     completed.append(report)
+            if completed:
+                await self._persist()
             return tuple(completed)
 
     def _market_fill(self, side: str, snapshot: MarketSnapshot) -> Decimal:
@@ -196,6 +208,72 @@ class PaperExecutor:
                 self.cash += position.quantity * (mark - position.average_price) * direction
                 self.cash -= position.quantity * mark * self.fee_rate
             self._positions.clear()
+            await self._persist()
+
+    async def restore(self) -> bool:
+        if self.state_store is None:
+            return False
+        state = await self.state_store.load_paper_state()
+        if state is None:
+            return False
+        async with self._lock:
+            self.cash = Decimal(str(state["cash"]))
+            self._orders = {
+                item["client_order_id"]: ExecutionReport.model_validate(item)
+                for item in state.get("orders", [])
+            }
+            self._pending_orders = {
+                item["order"]["client_order_id"]: (
+                    OrderPlan.model_validate(item["order"]),
+                    int(item["leverage"]),
+                )
+                for item in state.get("pending_orders", [])
+            }
+            self._positions = {
+                symbol: PaperPosition(
+                    side=item["side"],
+                    quantity=Decimal(str(item["quantity"])),
+                    average_price=Decimal(str(item["average_price"])),
+                    leverage=int(item["leverage"]),
+                    stop_loss=Decimal(str(item["stop_loss"]))
+                    if item.get("stop_loss") is not None
+                    else None,
+                    take_profit=Decimal(str(item["take_profit"]))
+                    if item.get("take_profit") is not None
+                    else None,
+                )
+                for symbol, item in state.get("positions", {}).items()
+            }
+        return True
+
+    async def _persist(self) -> None:
+        if self.state_store is None:
+            return
+        state = {
+            "version": 1,
+            "cash": str(self.cash),
+            "orders": [report.model_dump(mode="json") for report in self._orders.values()],
+            "pending_orders": [
+                {"order": order.model_dump(mode="json"), "leverage": leverage}
+                for order, leverage in self._pending_orders.values()
+            ],
+            "positions": {
+                symbol: {
+                    "side": position.side,
+                    "quantity": str(position.quantity),
+                    "average_price": str(position.average_price),
+                    "leverage": position.leverage,
+                    "stop_loss": str(position.stop_loss)
+                    if position.stop_loss is not None
+                    else None,
+                    "take_profit": str(position.take_profit)
+                    if position.take_profit is not None
+                    else None,
+                }
+                for symbol, position in self._positions.items()
+            },
+        }
+        await self.state_store.save_paper_state(state)
 
     def portfolio_state(self) -> PortfolioState:
         unrealized = Decimal("0")

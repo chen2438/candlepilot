@@ -168,6 +168,15 @@ class AuditRepository:
             if row is not None:
                 await session.delete(row)
 
+    async def save_paper_state(self, state: dict[str, Any]) -> None:
+        await self.set_runtime_state(
+            "paper_account", json.dumps(state, separators=(",", ":"))
+        )
+
+    async def load_paper_state(self) -> dict[str, Any] | None:
+        value = await self.get_runtime_state("paper_account")
+        return json.loads(value) if value is not None else None
+
     async def recent_intents(self, limit: int = 100) -> list[dict[str, Any]]:
         async with self.sessions() as session:
             rows = (
