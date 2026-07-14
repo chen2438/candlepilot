@@ -55,6 +55,23 @@ class ApiMarket:
         return []
 
 
+class LLMReplayMarket(ApiMarket):
+    async def historical_klines(self, symbol, interval, start, end, *, max_candles=10_000):
+        step = {"1m": 60_000, "5m": 300_000, "15m": 900_000}[interval]
+        start_ms = int(start.timestamp() * 1000)
+        return [
+            [
+                start_ms + index * step,
+                str(100 + index),
+                str(102 + index),
+                str(99 + index),
+                str(101 + index),
+                "10",
+            ]
+            for index in range(21)
+        ]
+
+
 def test_control_api_lifecycle(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'api.db'}")
     market = ApiMarket()
@@ -203,4 +220,41 @@ def test_cached_replay_rejects_range_without_decisions(tmp_path: Path) -> None:
         )
         assert response.status_code == 409, response.text
         assert "no cached LLM decisions" in response.json()["detail"]
+    asyncio.run(database.close())
+
+
+def test_fresh_llm_backtest_calls_provider_and_audits_decisions(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'fresh-replay.db'}")
+    market = LLMReplayMarket()
+    engine = TradingEngine(
+        mode=TradingMode.PAPER,
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(
+        settings=Settings(data_dir=tmp_path),
+        database=database,
+        market=market,  # type: ignore[arg-type]
+        engine=engine,
+    )
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/backtests/llm",
+            json={
+                "symbol": "BTCUSDT",
+                "cadence": "5m",
+                "provider": "api-fixture",
+                "start": start.isoformat(),
+                "end": (start + timedelta(hours=2)).isoformat(),
+                "max_calls": 2,
+            },
+        )
+        assert response.status_code == 201, response.text
+        replay = response.json()["result"]["replay"]
+        assert replay["source"] == "fresh_llm_calls"
+        assert replay["decision_count"] == 2
+        assert len(client.get("/api/signals").json()) == 2
     asyncio.run(database.close())

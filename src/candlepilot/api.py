@@ -18,7 +18,7 @@ from candlepilot.application.paper_feed import PaperMarketFeed
 from candlepilot.application.scheduler import TradingScheduler
 from candlepilot.application.testnet_feed import TestnetUserFeed
 from candlepilot.backtest.engine import BacktestConfig, BacktestEngine, Candle, ReplayIntent
-from candlepilot.backtest.replay import align_cached_intents
+from candlepilot.backtest.replay import align_cached_intents, generate_fresh_intents
 from candlepilot.broker.binance_testnet import BinanceTestnetBroker, BinanceTestnetCredentials
 from candlepilot.broker.user_stream import BinanceTestnetUserStream
 from candlepilot.config import Settings
@@ -89,6 +89,11 @@ class BacktestReplayRequest(ApiModel):
     end: datetime
     limit: int = Field(default=10_000, ge=1, le=100_000)
     config: BacktestConfigInput = Field(default_factory=BacktestConfigInput)
+
+
+class BacktestLLMRequest(BacktestReplayRequest):
+    provider: str
+    max_calls: int = Field(default=100, ge=1, le=500)
 
 
 def _json_value(value: Any) -> Any:
@@ -521,6 +526,58 @@ def create_app(
         serialized["replay"] = {
             "source": "cached_llm_decisions",
             "decision_count": len(decisions),
+            "start": request.start.isoformat(),
+            "end": request.end.isoformat(),
+        }
+        return await engine.audit.record_backtest(symbol, request.cadence, serialized)
+
+    @app.post("/api/backtests/llm", status_code=201)
+    async def run_fresh_llm_backtest(request: BacktestLLMRequest) -> dict[str, Any]:
+        symbol = request.symbol.upper()
+        try:
+            provider = engine.providers.get(request.provider)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        health = await provider.health_check()
+        if not health.available or not health.authenticated:
+            raise HTTPException(status_code=409, detail=f"provider is unavailable: {health.detail}")
+        config = BacktestConfig(**request.config.model_dump())
+        try:
+            candle_payloads = await load_backtest_candles(
+                symbol, request.cadence, request.start, request.end, request.limit
+            )
+            candles = [_candle_from_payload(payload) for payload in candle_payloads]
+            decisions, provider_results = await generate_fresh_intents(
+                provider,
+                candles,
+                symbol=symbol,
+                cadence=request.cadence,
+                config=config,
+                max_calls=request.max_calls,
+            )
+            if not decisions:
+                raise HTTPException(
+                    status_code=409,
+                    detail="fresh LLM replay requires at least 20 historical candles",
+                )
+            inference_ids = [
+                await engine.audit.record_inference(result) for result in provider_results
+            ]
+            result = BacktestEngine(config).run(candles, decisions)
+        except HTTPException:
+            raise
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"fresh LLM replay failed: {exc}") from exc
+        serialized = _json_value(asdict(result))
+        serialized["replay"] = {
+            "source": "fresh_llm_calls",
+            "provider": request.provider,
+            "models": sorted({item.model for item in provider_results if item.model}),
+            "decision_count": len(decisions),
+            "inference_ids": inference_ids,
+            "portfolio_context": "fixed_initial_equity",
             "start": request.start.isoformat(),
             "end": request.end.isoformat(),
         }
