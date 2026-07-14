@@ -18,13 +18,18 @@ class TradingScheduler:
         market: BinancePublicClient,
         *,
         candidates_per_cycle: int = 5,
+        universe_refresh_seconds: float = 60,
     ) -> None:
+        if universe_refresh_seconds <= 0:
+            raise ValueError("universe_refresh_seconds must be positive")
         self.engine = engine
         self.market = market
         self.candidates_per_cycle = candidates_per_cycle
+        self.universe_refresh_seconds = universe_refresh_seconds
         self._tasks: list[asyncio.Task[None]] = []
         self._stop = asyncio.Event()
         self.last_error: str | None = None
+        self.universe_last_error: str | None = None
 
     def start(self) -> None:
         if self._tasks:
@@ -34,6 +39,9 @@ class TradingScheduler:
             asyncio.create_task(self._run_cadence(cadence), name=f"candlepilot-{cadence}")
             for cadence in CADENCE_SECONDS
         ]
+        self._tasks.append(
+            asyncio.create_task(self._run_universe(), name="candlepilot-universe")
+        )
 
     async def stop(self) -> None:
         self._stop.set()
@@ -60,6 +68,22 @@ class TradingScheduler:
                 self.last_error = None
             except Exception as exc:
                 self.last_error = f"{cadence}: {exc}"
+
+    async def _run_universe(self) -> None:
+        while not self._stop.is_set():
+            if self.engine.running:
+                try:
+                    await self.engine.refresh_universe()
+                    self.universe_last_error = None
+                except Exception as exc:
+                    self.universe_last_error = str(exc)
+            try:
+                await asyncio.wait_for(
+                    self._stop.wait(), timeout=self.universe_refresh_seconds
+                )
+                return
+            except TimeoutError:
+                pass
 
     async def run_cycle(self, cadence: str) -> list[DecisionOutcome]:
         if cadence not in CADENCE_SECONDS:
@@ -108,4 +132,3 @@ class TradingScheduler:
                 symbol: abs(float(item["positionAmt"])) for symbol, item in positions.items()
             },
         )
-

@@ -26,7 +26,11 @@ class HoldProvider(LLMProvider):
 
 
 class SchedulerMarket:
+    def __init__(self):
+        self.candidate_calls = 0
+
     async def candidate_inputs(self):
+        self.candidate_calls += 1
         return [
             MarketCandidateInput(
                 "BTCUSDT",
@@ -108,3 +112,33 @@ def test_paper_account_tracks_open_position() -> None:
     assert portfolio.open_positions == 1
     assert portfolio.symbol_sides["BTCUSDT"] == "LONG"
     assert portfolio.margin_used > 0
+
+
+def test_scheduler_refreshes_universe_periodically(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'universe-scheduler.db'}")
+        await database.initialize()
+        market = SchedulerMarket()
+        engine = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([HoldProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider("hold")
+        await engine.start()
+        scheduler = TradingScheduler(
+            engine,
+            market,  # type: ignore[arg-type]
+            universe_refresh_seconds=0.01,
+        )
+        scheduler.start()
+        await asyncio.sleep(0.035)
+        await scheduler.stop()
+        await database.close()
+        return market.candidate_calls, scheduler
+
+    calls, scheduler = asyncio.run(scenario())
+    assert calls >= 2
+    assert scheduler.universe_last_error is None
+    assert scheduler._tasks == []
