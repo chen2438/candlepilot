@@ -73,3 +73,68 @@ class OperationalMetrics:
             "status_counts": {str(code): count for code, count in sorted(self.status_counts.items())},
             "latency_sample_count": len(durations),
         }
+
+
+def evaluate_alerts(
+    runtime: dict[str, Any],
+    provider_metrics: list[dict[str, Any]],
+    *,
+    emergency_locked: bool = False,
+    testnet_unprotected: tuple[str, ...] = (),
+    user_stream_error: str | None = None,
+    testnet_broker_missing: bool = False,
+) -> list[dict[str, str]]:
+    alerts: list[dict[str, str]] = []
+
+    def add(identifier: str, severity: str, source: str, title: str, detail: str) -> None:
+        alerts.append(
+            {
+                "id": identifier,
+                "severity": severity,
+                "source": source,
+                "title": title,
+                "detail": detail,
+            }
+        )
+
+    if emergency_locked:
+        add("engine-emergency-lock", "critical", "engine", "交易引擎处于紧急锁定", "需要人工核查账户与触发原因")
+    if testnet_broker_missing:
+        add("testnet-broker-missing", "critical", "testnet", "测试网 Broker 未配置", "测试网模式无法安全启动")
+    if testnet_unprotected:
+        add(
+            "testnet-unprotected-position",
+            "critical",
+            "testnet",
+            "测试网存在无保护仓位",
+            ", ".join(testnet_unprotected),
+        )
+    if user_stream_error:
+        add("user-stream-error", "warning", "testnet", "测试网用户流异常", user_stream_error)
+    if runtime["requests_total"] >= 20 and runtime["error_rate"] >= 0.05:
+        add(
+            "runtime-error-rate",
+            "critical" if runtime["error_rate"] >= 0.20 else "warning",
+            "api",
+            "API 错误率偏高",
+            f"当前错误率 {runtime['error_rate']:.1%}，共 {runtime['requests_total']} 次请求",
+        )
+    for metric in provider_metrics:
+        provider = str(metric["provider"])
+        if metric["call_count"] >= 5 and metric["error_rate"] >= 0.10:
+            add(
+                f"provider-error-rate-{provider}",
+                "critical" if metric["error_rate"] >= 0.30 else "warning",
+                provider,
+                "模型调用错误率偏高",
+                f"24 小时错误率 {metric['error_rate']:.1%}，共 {metric['call_count']} 次调用",
+            )
+        if metric["call_count"] >= 5 and metric["p95_duration_ms"] >= 30_000:
+            add(
+                f"provider-latency-{provider}",
+                "warning",
+                provider,
+                "模型 P95 延迟偏高",
+                f"24 小时 P95 延迟 {metric['p95_duration_ms'] / 1_000:.1f} 秒",
+            )
+    return alerts

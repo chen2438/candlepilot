@@ -31,7 +31,7 @@ from candlepilot.domain.models import MarketSnapshot, PortfolioState, TradeInten
 from candlepilot.market.binance import BinancePublicClient
 from candlepilot.market.cache import HistoricalMarketCache
 from candlepilot.market.history import build_backtest_candles
-from candlepilot.observability import OperationalMetrics
+from candlepilot.observability import OperationalMetrics, evaluate_alerts
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.provenance import BACKTEST_DATA_SCHEMA_VERSION, content_fingerprint
 from candlepilot.risk.engine import SymbolRules
@@ -428,6 +428,28 @@ def create_app(
     @app.get("/api/metrics/runtime")
     async def get_runtime_metrics() -> dict[str, Any]:
         return operational_metrics.snapshot()
+
+    @app.get("/api/alerts")
+    async def get_alerts() -> dict[str, Any]:
+        status = _status(engine, scheduler)
+        reconciliation = engine.testnet_reconciliation
+        alerts = evaluate_alerts(
+            operational_metrics.snapshot(),
+            await engine.audit.provider_metrics(24),
+            emergency_locked=engine.emergency_locked,
+            testnet_unprotected=reconciliation.unprotected_symbols
+            if reconciliation is not None
+            else (),
+            user_stream_error=status["user_stream"]["last_error"],
+            testnet_broker_missing=(
+                engine.mode == TradingMode.TESTNET and engine.testnet_broker is None
+            ),
+        )
+        return {
+            "active_count": len(alerts),
+            "alerts": alerts,
+            "evaluated_at": datetime.now(UTC),
+        }
 
     @app.post("/api/providers/select")
     async def select_provider(selection: ProviderSelection) -> dict[str, Any]:
