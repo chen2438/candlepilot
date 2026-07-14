@@ -1,0 +1,193 @@
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from decimal import Decimal
+from typing import Annotated, Any
+
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, ConfigDict, Field
+
+from candlepilot.application.engine import TradingEngine
+from candlepilot.config import Settings
+from candlepilot.domain.models import MarketSnapshot, PortfolioState
+from candlepilot.market.binance import BinancePublicClient
+from candlepilot.providers.registry import ProviderRegistry
+from candlepilot.risk.engine import SymbolRules
+from candlepilot.storage.database import AuditRepository, Database
+
+
+class ApiModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ProviderSelection(ApiModel):
+    name: str
+
+
+class SymbolRulesInput(ApiModel):
+    quantity_step: Annotated[Decimal, Field(gt=0)]
+    min_quantity: Annotated[Decimal, Field(gt=0)]
+    min_notional: Annotated[Decimal, Field(gt=0)]
+
+
+class DecisionRequest(ApiModel):
+    snapshot: MarketSnapshot
+    portfolio: PortfolioState
+    rules: SymbolRulesInput
+
+
+def _status(engine: TradingEngine) -> dict[str, Any]:
+    return {
+        "mode": engine.mode.value,
+        "running": engine.running,
+        "emergency_locked": engine.emergency_locked,
+        "selected_provider": engine.selected_provider,
+        "candidate_count": len(engine.candidates),
+        "universe_refreshed_at": engine.universe_refreshed_at,
+    }
+
+
+def create_app(
+    *,
+    settings: Settings | None = None,
+    database: Database | None = None,
+    market: BinancePublicClient | None = None,
+    engine: TradingEngine | None = None,
+) -> FastAPI:
+    settings = settings or Settings.from_env()
+    owns_database = database is None
+    owns_market = market is None
+    database = database or Database(settings.database_url)
+    market = market or BinancePublicClient()
+    engine = engine or TradingEngine(
+        mode=settings.mode,
+        providers=ProviderRegistry(),
+        audit=AuditRepository(database.sessions),
+        market=market,
+    )
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        await database.initialize()
+        yield
+        if owns_market:
+            await market.close()
+        if owns_database:
+            await database.close()
+
+    app = FastAPI(
+        title="CandlePilot API",
+        version="0.1.0",
+        description="Local-only API for paper and Binance testnet trading",
+        lifespan=lifespan,
+    )
+    app.state.engine = engine
+    app.state.database = database
+
+    @app.get("/api/status")
+    async def get_status() -> dict[str, Any]:
+        return _status(engine)
+
+    @app.get("/api/providers")
+    async def get_providers() -> list[dict[str, Any]]:
+        return [item.model_dump(mode="json") for item in await engine.provider_health()]
+
+    @app.post("/api/providers/select")
+    async def select_provider(selection: ProviderSelection) -> dict[str, Any]:
+        try:
+            engine.select_provider(selection.name)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return _status(engine)
+
+    @app.post("/api/engine/start")
+    async def start_engine() -> dict[str, Any]:
+        try:
+            await engine.start()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _status(engine)
+
+    @app.post("/api/engine/stop")
+    async def stop_engine() -> dict[str, Any]:
+        engine.stop()
+        return _status(engine)
+
+    @app.post("/api/engine/emergency-stop")
+    async def emergency_stop() -> dict[str, Any]:
+        await engine.emergency_stop()
+        return _status(engine)
+
+    @app.post("/api/engine/clear-emergency-lock")
+    async def clear_emergency_lock() -> dict[str, Any]:
+        try:
+            engine.clear_emergency_lock()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _status(engine)
+
+    @app.get("/api/universe")
+    async def get_universe() -> list[dict[str, Any]]:
+        return [
+            {
+                "symbol": item.symbol,
+                "score": str(item.score),
+                "volume_rank": item.volume_rank,
+                "spread_bps": str(item.spread_bps),
+                "volatility": str(item.volatility),
+                "trend_strength": str(item.trend_strength),
+            }
+            for item in engine.candidates
+        ]
+
+    @app.post("/api/universe/refresh")
+    async def refresh_universe() -> list[dict[str, Any]]:
+        try:
+            await engine.refresh_universe()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"market refresh failed: {exc}") from exc
+        return await get_universe()
+
+    @app.get("/api/signals")
+    async def get_signals(limit: int = 100) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 500:
+            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+        return await engine.audit.recent_intents(limit)
+
+    @app.post("/api/decisions/evaluate")
+    async def evaluate_decision(request: DecisionRequest) -> dict[str, Any]:
+        rules = SymbolRules(
+            request.rules.quantity_step,
+            request.rules.min_quantity,
+            request.rules.min_notional,
+        )
+        try:
+            outcome = await engine.evaluate(request.snapshot, request.portfolio, rules)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "provider": outcome.provider,
+            "intent": outcome.intent.model_dump(mode="json"),
+            "risk": outcome.risk.model_dump(mode="json"),
+            "execution": outcome.execution.model_dump(mode="json")
+            if outcome.execution
+            else None,
+        }
+
+    @app.websocket("/ws/events")
+    async def event_stream(websocket: WebSocket) -> None:
+        await websocket.accept()
+        try:
+            while True:
+                await websocket.send_json({"type": "status", "data": _status(engine)})
+                await asyncio.sleep(2)
+        except (WebSocketDisconnect, RuntimeError):
+            return
+
+    return app
+
+
+app = create_app()
+
