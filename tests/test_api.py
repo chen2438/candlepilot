@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from candlepilot.api import create_app
 from candlepilot.application.engine import TradingEngine
+from candlepilot.broker.binance_testnet import ReconciliationReport
 from candlepilot.config import Settings
 from candlepilot.domain.models import (
     MarketSnapshot,
@@ -77,6 +78,30 @@ class LLMReplayMarket(ApiMarket):
         ]
 
 
+class ApiTestnetBroker:
+    async def account(self):
+        return {
+            "canTrade": True,
+            "totalWalletBalance": "10000.5",
+            "totalMarginBalance": "10025.5",
+            "availableBalance": "9000",
+            "totalUnrealizedProfit": "25",
+            "totalInitialMargin": "1000",
+            "positions": [
+                {
+                    "symbol": "BTCUSDT",
+                    "positionAmt": "0.25",
+                    "entryPrice": "60000",
+                    "markPrice": "60100",
+                    "unrealizedProfit": "25",
+                    "leverage": "3",
+                    "isolated": True,
+                },
+                {"symbol": "ETHUSDT", "positionAmt": "0"},
+            ],
+        }
+
+
 def test_control_api_lifecycle(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'api.db'}")
     market = ApiMarket()
@@ -97,6 +122,7 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         assert client.get("/api/status").json()["market_stream"]["enabled"] is False
         assert client.get("/api/status").json()["user_stream"]["enabled"] is False
         assert client.get("/api/testnet/events").json() == []
+        assert client.get("/api/testnet/account-status").json()["enabled"] is False
         assert client.get("/api/metrics/providers").json() == {
             "window_hours": 24,
             "providers": [],
@@ -118,6 +144,59 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         stopped = client.post("/api/engine/emergency-stop").json()
         assert stopped["running"] is False
         assert stopped["emergency_locked"] is True
+    asyncio.run(database.close())
+
+
+def test_testnet_account_status_is_sanitized_and_includes_reconciliation(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'testnet-account-api.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.TESTNET,
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+        testnet_broker=ApiTestnetBroker(),  # type: ignore[arg-type]
+    )
+    engine.testnet_reconciliation = ReconciliationReport(
+        position_symbols=("BTCUSDT",),
+        open_order_count=1,
+        unprotected_symbols=(),
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        response = client.get("/api/testnet/account-status")
+        assert response.status_code == 200
+        status = response.json()
+        assert status["enabled"] is True and status["active"] is True
+        assert status["account"]["total_wallet_balance"] == "10000.5"
+        assert status["account"]["can_trade"] is True
+        assert set(status["account"]) == {
+            "can_trade",
+            "total_wallet_balance",
+            "total_margin_balance",
+            "available_balance",
+            "total_unrealized_profit",
+            "total_initial_margin",
+        }
+        assert status["positions"] == [
+            {
+                "symbol": "BTCUSDT",
+                "position_amount": "0.25",
+                "entry_price": "60000",
+                "mark_price": "60100",
+                "unrealized_profit": "25",
+                "leverage": 3,
+                "isolated": True,
+            }
+        ]
+        assert status["reconciliation"] == {
+            "position_symbols": ["BTCUSDT"],
+            "open_order_count": 1,
+            "unprotected_symbols": [],
+        }
     asyncio.run(database.close())
 
 

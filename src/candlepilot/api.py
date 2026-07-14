@@ -483,6 +483,63 @@ def create_app(
             raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
         return await engine.audit.recent_user_events(limit)
 
+    @app.get("/api/testnet/account-status")
+    async def get_testnet_account_status() -> dict[str, Any]:
+        broker = engine.testnet_broker
+        stream_status = _status(engine, scheduler)["user_stream"]
+        reconciliation = (
+            _json_value(asdict(engine.testnet_reconciliation))
+            if engine.testnet_reconciliation is not None
+            else None
+        )
+        if broker is None:
+            return {
+                "enabled": False,
+                "active": False,
+                "mode": engine.mode.value,
+                "account": None,
+                "positions": [],
+                "reconciliation": reconciliation,
+                "user_stream": stream_status,
+                "fetched_at": None,
+            }
+        try:
+            account = await broker.account()
+            positions = [
+                {
+                    "symbol": item.get("symbol"),
+                    "position_amount": str(item.get("positionAmt", "0")),
+                    "entry_price": str(item.get("entryPrice", "0")),
+                    "mark_price": str(item.get("markPrice", "0")),
+                    "unrealized_profit": str(item.get("unrealizedProfit", "0")),
+                    "leverage": int(item.get("leverage", 0)),
+                    "isolated": item.get("isolated") in {True, "true", "TRUE"},
+                }
+                for item in account.get("positions", [])
+                if Decimal(str(item.get("positionAmt", "0"))) != 0
+            ]
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502, detail=f"testnet account query failed: {exc}"
+            ) from exc
+        return {
+            "enabled": True,
+            "active": engine.mode == TradingMode.TESTNET,
+            "mode": engine.mode.value,
+            "account": {
+                "can_trade": bool(account.get("canTrade", False)),
+                "total_wallet_balance": str(account.get("totalWalletBalance", "0")),
+                "total_margin_balance": str(account.get("totalMarginBalance", "0")),
+                "available_balance": str(account.get("availableBalance", "0")),
+                "total_unrealized_profit": str(account.get("totalUnrealizedProfit", "0")),
+                "total_initial_margin": str(account.get("totalInitialMargin", "0")),
+            },
+            "positions": positions,
+            "reconciliation": reconciliation,
+            "user_stream": stream_status,
+            "fetched_at": datetime.now(UTC),
+        }
+
     @app.get("/api/account/portfolio")
     async def get_account_portfolio() -> dict[str, Any]:
         executor = engine.paper_executor
