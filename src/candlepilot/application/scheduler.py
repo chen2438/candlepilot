@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from candlepilot.application.engine import DecisionOutcome, TradingEngine
 from candlepilot.application.paper_feed import PaperMarketFeed
+from candlepilot.application.testnet_feed import TestnetUserFeed
 from candlepilot.domain.models import PortfolioState, TradingMode
 from candlepilot.market.binance import BinancePublicClient
 
@@ -21,6 +22,7 @@ class TradingScheduler:
         candidates_per_cycle: int = 5,
         universe_refresh_seconds: float = 60,
         paper_feed: PaperMarketFeed | None = None,
+        testnet_feed: TestnetUserFeed | None = None,
     ) -> None:
         if universe_refresh_seconds <= 0:
             raise ValueError("universe_refresh_seconds must be positive")
@@ -29,6 +31,7 @@ class TradingScheduler:
         self.candidates_per_cycle = candidates_per_cycle
         self.universe_refresh_seconds = universe_refresh_seconds
         self.paper_feed = paper_feed
+        self.testnet_feed = testnet_feed
         self._tasks: list[asyncio.Task[None]] = []
         self._stop = asyncio.Event()
         self.last_error: str | None = None
@@ -38,6 +41,8 @@ class TradingScheduler:
         if self._tasks:
             return
         self._stop.clear()
+        if self.testnet_feed is not None:
+            self.testnet_feed.start()
         self._tasks = [
             asyncio.create_task(self._run_cadence(cadence), name=f"candlepilot-{cadence}")
             for cadence in CADENCE_SECONDS
@@ -50,6 +55,8 @@ class TradingScheduler:
         self._stop.set()
         if self.paper_feed is not None:
             await self.paper_feed.stop()
+        if self.testnet_feed is not None:
+            await self.testnet_feed.stop()
         for task in self._tasks:
             task.cancel()
         if self._tasks:

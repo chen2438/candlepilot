@@ -16,9 +16,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from candlepilot.application.engine import TradingEngine
 from candlepilot.application.paper_feed import PaperMarketFeed
 from candlepilot.application.scheduler import TradingScheduler
+from candlepilot.application.testnet_feed import TestnetUserFeed
 from candlepilot.backtest.engine import BacktestConfig, BacktestEngine, Candle, ReplayIntent
 from candlepilot.backtest.replay import align_cached_intents
 from candlepilot.broker.binance_testnet import BinanceTestnetBroker, BinanceTestnetCredentials
+from candlepilot.broker.user_stream import BinanceTestnetUserStream
 from candlepilot.config import Settings
 from candlepilot.domain.models import MarketSnapshot, PortfolioState, TradeIntent, TradingMode
 from candlepilot.market.binance import BinancePublicClient
@@ -117,6 +119,7 @@ def _status(
     engine: TradingEngine, scheduler: TradingScheduler | None = None
 ) -> dict[str, Any]:
     paper_feed = scheduler.paper_feed if scheduler is not None else None
+    testnet_feed = scheduler.testnet_feed if scheduler is not None else None
     return {
         "mode": engine.mode.value,
         "running": engine.running,
@@ -140,6 +143,25 @@ def _status(
             else None,
             "last_error": paper_feed.last_error if paper_feed is not None else None,
         },
+        "user_stream": {
+            "enabled": testnet_feed is not None,
+            "running": testnet_feed.running if testnet_feed is not None else False,
+            "event_count": testnet_feed.event_count if testnet_feed is not None else 0,
+            "last_event_at": testnet_feed.last_event_at.isoformat()
+            if testnet_feed is not None and testnet_feed.last_event_at
+            else None,
+            "reconnect_count": testnet_feed.stream.reconnect_count
+            if testnet_feed is not None
+            else 0,
+            "dropped_event_count": testnet_feed.stream.dropped_event_count
+            if testnet_feed is not None
+            else 0,
+            "last_error": (
+                testnet_feed.last_error or testnet_feed.stream.last_error
+                if testnet_feed is not None
+                else None
+            ),
+        },
     }
 
 
@@ -156,13 +178,15 @@ def create_app(
     database = database or Database(settings.database_url)
     market = market or BinancePublicClient()
     testnet_broker = None
+    testnet_stream = None
     if settings.binance_testnet_api_key and settings.binance_testnet_api_secret:
-        testnet_broker = BinanceTestnetBroker(
-            BinanceTestnetCredentials(
-                settings.binance_testnet_api_key,
-                settings.binance_testnet_api_secret,
-            )
+        credentials = BinanceTestnetCredentials(
+            settings.binance_testnet_api_key,
+            settings.binance_testnet_api_secret,
         )
+        testnet_broker = BinanceTestnetBroker(credentials)
+        if settings.mode == TradingMode.TESTNET:
+            testnet_stream = BinanceTestnetUserStream(credentials)
     engine = engine or TradingEngine(
         mode=settings.mode,
         providers=ProviderRegistry(),
@@ -187,7 +211,15 @@ def create_app(
         if engine.mode == TradingMode.PAPER and owns_market
         else None
     )
-    scheduler = TradingScheduler(engine, market, paper_feed=paper_feed)
+    testnet_feed = (
+        TestnetUserFeed(testnet_stream, engine.audit) if testnet_stream is not None else None
+    )
+    scheduler = TradingScheduler(
+        engine,
+        market,
+        paper_feed=paper_feed,
+        testnet_feed=testnet_feed,
+    )
     history_cache = HistoricalMarketCache(settings.data_dir / "market")
 
     @asynccontextmanager
@@ -200,6 +232,8 @@ def create_app(
             await market.close()
         if testnet_broker is not None:
             await testnet_broker.close()
+        if testnet_feed is not None:
+            await testnet_feed.close()
         if owns_database:
             await database.close()
 
@@ -214,6 +248,7 @@ def create_app(
     app.state.scheduler = scheduler
     app.state.history_cache = history_cache
     app.state.paper_feed = paper_feed
+    app.state.testnet_feed = testnet_feed
 
     async def load_backtest_candles(
         symbol: str,
@@ -385,6 +420,12 @@ def create_app(
         if not 1 <= limit <= 500:
             raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
         return await engine.audit.recent_intents(limit)
+
+    @app.get("/api/testnet/events")
+    async def get_testnet_events(limit: int = 100) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 500:
+            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+        return await engine.audit.recent_user_events(limit)
 
     @app.post("/api/decisions/evaluate")
     async def evaluate_decision(request: DecisionRequest) -> dict[str, Any]:
