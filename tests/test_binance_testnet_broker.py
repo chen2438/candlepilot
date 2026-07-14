@@ -71,3 +71,47 @@ def test_signed_testnet_entry_and_stop() -> None:
     for request in signed:
         assert request.headers["X-MBX-APIKEY"] == "test-key"
         assert "signature=" in str(request.url)
+
+
+@pytest.mark.parametrize(
+    ("orders", "unprotected"),
+    [
+        ([], ("BTCUSDT",)),
+        (
+            [
+                {
+                    "symbol": "BTCUSDT",
+                    "type": "STOP_MARKET",
+                    "closePosition": True,
+                }
+            ],
+            (),
+        ),
+    ],
+)
+def test_reconciles_protective_stops(orders, unprotected) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fapi/v1/time":
+            return httpx.Response(200, json={"serverTime": 1784040000000})
+        if request.url.path == "/fapi/v3/account":
+            return httpx.Response(
+                200,
+                json={"positions": [{"symbol": "BTCUSDT", "positionAmt": "1"}]},
+            )
+        if request.url.path == "/fapi/v1/openOrders":
+            return httpx.Response(200, json=orders)
+        return httpx.Response(404, json={"code": -1, "msg": "not found"})
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        report = await broker.reconcile_account()
+        await client.aclose()
+        return report
+
+    report = asyncio.run(scenario())
+    assert report.position_symbols == ("BTCUSDT",)
+    assert report.unprotected_symbols == unprotected
+    assert report.open_order_count == len(orders)

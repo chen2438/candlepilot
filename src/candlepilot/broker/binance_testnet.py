@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import asyncio
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -27,10 +28,21 @@ class ProtectiveStopError(RuntimeError):
     pass
 
 
+class AccountReconciliationError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class BinanceTestnetCredentials:
     api_key: SecretStr
     api_secret: SecretStr
+
+
+@dataclass(frozen=True, slots=True)
+class ReconciliationReport:
+    position_symbols: tuple[str, ...]
+    open_order_count: int
+    unprotected_symbols: tuple[str, ...]
 
 
 class BinanceTestnetBroker:
@@ -105,6 +117,33 @@ class BinanceTestnetBroker:
 
     async def account(self) -> dict[str, Any]:
         return await self._signed_request("GET", "/fapi/v3/account", {})
+
+    async def reconcile_account(self) -> ReconciliationReport:
+        await self.sync_time()
+        account, open_orders = await asyncio.gather(
+            self.account(),
+            self._signed_request("GET", "/fapi/v1/openOrders", {}),
+        )
+        positions = {
+            item["symbol"]
+            for item in account.get("positions", [])
+            if Decimal(str(item.get("positionAmt", "0"))) != 0
+        }
+        protected = {
+            item["symbol"]
+            for item in open_orders
+            if item.get("type") in {"STOP", "STOP_MARKET"}
+            and (
+                item.get("closePosition") in {True, "true", "TRUE"}
+                or item.get("reduceOnly") in {True, "true", "TRUE"}
+            )
+        }
+        unprotected = tuple(sorted(positions - protected))
+        return ReconciliationReport(
+            position_symbols=tuple(sorted(positions)),
+            open_order_count=len(open_orders),
+            unprotected_symbols=unprotected,
+        )
 
     async def configure_symbol(self, symbol: str, leverage: int) -> None:
         if not 1 <= leverage <= 10:

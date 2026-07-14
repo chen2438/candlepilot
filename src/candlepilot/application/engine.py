@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 
-from candlepilot.broker.binance_testnet import BinanceTestnetBroker
+from candlepilot.broker.binance_testnet import (
+    AccountReconciliationError,
+    BinanceTestnetBroker,
+    ReconciliationReport,
+)
 from candlepilot.domain.models import (
     ExecutionReport,
     MarketSnapshot,
@@ -56,6 +60,7 @@ class TradingEngine:
         self.running = False
         self.emergency_locked = False
         self.emergency_locked_until: datetime | None = None
+        self.testnet_reconciliation: ReconciliationReport | None = None
         self.candidates: list[Candidate] = []
         self.universe_refreshed_at: datetime | None = None
 
@@ -74,6 +79,14 @@ class TradingEngine:
             raise RuntimeError("an authenticated LLM provider must be selected")
         if self.mode == TradingMode.TESTNET and self.testnet_broker is None:
             raise RuntimeError("Binance testnet credentials are not configured")
+        if self.mode == TradingMode.TESTNET and self.testnet_broker is not None:
+            report = await self.testnet_broker.reconcile_account()
+            self.testnet_reconciliation = report
+            if report.unprotected_symbols:
+                symbols = ", ".join(report.unprotected_symbols)
+                raise AccountReconciliationError(
+                    f"testnet positions lack protective stops: {symbols}"
+                )
         health = await self.providers.get(self.selected_provider).health_check()
         if not health.available or not health.authenticated:
             raise RuntimeError(f"provider is unavailable: {health.detail}")
