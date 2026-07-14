@@ -69,6 +69,7 @@ export default function App() {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [signals, setSignals] = useState<Signal[]>([]);
   const [backtests, setBacktests] = useState<BacktestRun[]>([]);
+  const [selectedBacktest, setSelectedBacktest] = useState<BacktestRun | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [socketOnline, setSocketOnline] = useState(false);
@@ -164,6 +165,18 @@ export default function App() {
       setBusy(null);
     }
   }, [replayForm]);
+
+  const openBacktest = useCallback(async (id: number) => {
+    setBusy("backtest-detail");
+    setError(null);
+    try {
+      setSelectedBacktest(await api<BacktestRun>(`/api/backtests/${id}`));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }, []);
 
   const activeProvider = useMemo(
     () => providers.find((provider) => provider.provider === status.selected_provider),
@@ -310,7 +323,7 @@ export default function App() {
             </form>
             <div className="table-wrap">
               <table>
-                <thead><tr><th>运行</th><th>标的</th><th>周期</th><th>总收益</th><th>最大回撤</th><th>胜率</th><th>交易数</th><th>时间</th></tr></thead>
+                <thead><tr><th>运行</th><th>标的</th><th>周期</th><th>总收益</th><th>最大回撤</th><th>胜率</th><th>交易数</th><th>时间</th><th /></tr></thead>
                 <tbody>
                   {backtests.map((run) => (
                     <tr key={run.id}>
@@ -320,14 +333,18 @@ export default function App() {
                       <td className={Number(run.result.total_return) >= 0 ? "positive" : "negative"}>{percent(run.result.total_return)}</td>
                       <td className="negative">{percent(run.result.max_drawdown)}</td>
                       <td>{percent(run.result.win_rate)}</td>
-                      <td>{run.result.trades.length}</td>
+                      <td>{run.result.trade_count ?? run.result.trades?.length ?? 0}</td>
                       <td>{new Date(run.created_at).toLocaleString("zh-CN", { hour12: false })}</td>
+                      <td><button className="text-button" disabled={busy !== null} onClick={() => openBacktest(run.id)}>详情</button></td>
                     </tr>
                   ))}
-                  {!backtests.length && <tr><td colSpan={8} className="empty">尚无回测运行。请使用上方表单重放已审计的历史决策。</td></tr>}
+                  {!backtests.length && <tr><td colSpan={9} className="empty">尚无回测运行。请使用上方表单重放已审计的历史决策。</td></tr>}
                 </tbody>
               </table>
             </div>
+            {selectedBacktest && (
+              <BacktestDetail run={selectedBacktest} onClose={() => setSelectedBacktest(null)} />
+            )}
           </article>
         </section>
       </main>
@@ -346,4 +363,68 @@ function PanelTitle({ code, title, meta }: { code: string; title: string; meta: 
 
 function RiskItem({ label, value, detail }: { label: string; value: string; detail: string }) {
   return <div className="risk-item"><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;
+}
+
+function EquityChart({ points }: { points: Array<{ timestamp: string; equity: string }> }) {
+  if (points.length < 2) return <div className="empty chart-empty">权益点不足，无法绘制曲线。</div>;
+  const width = 900;
+  const height = 190;
+  const values = points.map((point) => Number(point.equity));
+  const minimum = Math.min(...values);
+  const maximum = Math.max(...values);
+  const range = maximum - minimum || 1;
+  const coordinates = values.map((value, index) => {
+    const x = (index / (values.length - 1)) * width;
+    const y = height - 12 - ((value - minimum) / range) * (height - 24);
+    return `${x.toFixed(2)},${y.toFixed(2)}`;
+  }).join(" ");
+  return (
+    <div className="equity-chart">
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="回测权益曲线">
+        <line x1="0" y1={height - 12} x2={width} y2={height - 12} />
+        <polyline points={coordinates} />
+      </svg>
+      <div><span>{minimum.toFixed(2)}</span><strong>{values.at(-1)?.toFixed(2)}</strong><span>{maximum.toFixed(2)}</span></div>
+    </div>
+  );
+}
+
+function BacktestDetail({ run, onClose }: { run: BacktestRun; onClose: () => void }) {
+  const trades = run.result.trades ?? [];
+  const curve = run.result.equity_curve ?? [];
+  return (
+    <section className="backtest-detail" aria-label={`回测 #${run.id} 详情`}>
+      <div className="detail-heading">
+        <div><span className="eyebrow">RUN #{run.id} / {run.symbol} / {run.cadence}</span><h3>回测详情</h3></div>
+        <button className="text-button" onClick={onClose}>关闭</button>
+      </div>
+      <div className="detail-metrics">
+        <Metric label="总收益" value={(Number(run.result.total_return) * 100).toFixed(2)} suffix="%" />
+        <Metric label="最大回撤" value={(Number(run.result.max_drawdown) * 100).toFixed(2)} suffix="%" />
+        <Metric label="Sharpe" value={run.result.sharpe_ratio === null ? "—" : Number(run.result.sharpe_ratio).toFixed(2)} suffix="" />
+        <Metric label="Sortino" value={run.result.sortino_ratio === null ? "—" : Number(run.result.sortino_ratio).toFixed(2)} suffix="" />
+        <Metric label="换手" value={Number(run.result.turnover).toFixed(2)} suffix="×" />
+      </div>
+      <EquityChart points={curve} />
+      <div className="table-wrap detail-trades">
+        <table>
+          <thead><tr><th>方向</th><th>数量</th><th>入场</th><th>出场</th><th>净盈亏</th><th>费用</th><th>原因</th></tr></thead>
+          <tbody>
+            {trades.map((trade, index) => (
+              <tr key={`${trade.entry_time}-${index}`}>
+                <td className={trade.side === "LONG" ? "positive" : "negative"}>{trade.side}</td>
+                <td>{Number(trade.quantity).toFixed(4)}</td>
+                <td>{Number(trade.entry_price).toFixed(4)}<small>{new Date(trade.entry_time).toLocaleString("zh-CN", { hour12: false })}</small></td>
+                <td>{Number(trade.exit_price).toFixed(4)}<small>{new Date(trade.exit_time).toLocaleString("zh-CN", { hour12: false })}</small></td>
+                <td className={Number(trade.net_pnl) >= 0 ? "positive" : "negative"}>{Number(trade.net_pnl).toFixed(2)}</td>
+                <td>{Number(trade.fees).toFixed(2)}</td>
+                <td>{trade.exit_reason}</td>
+              </tr>
+            ))}
+            {!trades.length && <tr><td colSpan={7} className="empty">该运行没有成交记录。</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
 }

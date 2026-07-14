@@ -367,19 +367,35 @@ class AuditRepository:
                     select(BacktestRow).order_by(BacktestRow.id.desc()).limit(limit)
                 )
             ).all()
-        return [self._backtest_dict(row) for row in rows]
+        return [self._backtest_dict(row, detail=False) for row in rows]
+
+    async def backtest(self, backtest_id: int) -> dict[str, Any] | None:
+        async with self.sessions() as session:
+            row = await session.get(BacktestRow, backtest_id)
+        return self._backtest_dict(row, detail=True) if row is not None else None
 
     @staticmethod
-    def _backtest_dict(row: BacktestRow) -> dict[str, Any]:
+    def _backtest_dict(row: BacktestRow, *, detail: bool = True) -> dict[str, Any]:
         created_at = (
             row.created_at.replace(tzinfo=UTC)
             if row.created_at.tzinfo is None
             else row.created_at
         )
+        result = json.loads(row.result_json)
+        if not detail:
+            result = dict(result)
+            result["trade_count"] = len(result.pop("trades", []))
+            result.pop("equity_curve", None)
+            per_symbol = result.get("per_symbol")
+            if isinstance(per_symbol, dict):
+                for sleeve in per_symbol.values():
+                    if isinstance(sleeve, dict):
+                        sleeve["trade_count"] = len(sleeve.pop("trades", []))
+                        sleeve.pop("equity_curve", None)
         return {
             "id": row.id,
             "symbol": row.symbol,
             "cadence": row.cadence,
-            "result": json.loads(row.result_json),
+            "result": result,
             "created_at": created_at,
         }

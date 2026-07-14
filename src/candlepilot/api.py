@@ -500,6 +500,15 @@ def create_app(
             raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
         return await engine.audit.recent_backtests(limit)
 
+    @app.get("/api/backtests/{backtest_id}")
+    async def get_backtest(backtest_id: int) -> dict[str, Any]:
+        if backtest_id < 1:
+            raise HTTPException(status_code=422, detail="backtest id must be positive")
+        result = await engine.audit.backtest(backtest_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="backtest not found")
+        return result
+
     @app.post("/api/backtests", status_code=201)
     async def run_backtest(request: BacktestRunRequest) -> dict[str, Any]:
         mismatched = [

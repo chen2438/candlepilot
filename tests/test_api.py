@@ -190,7 +190,11 @@ def test_backtest_run_is_persisted_and_listed(tmp_path: Path) -> None:
         )
 
         listed = client.get("/api/backtests").json()
-        assert listed == [run]
+        assert listed[0]["id"] == run["id"]
+        assert listed[0]["result"]["trade_count"] == 1
+        assert "trades" not in listed[0]["result"]
+        assert "equity_curve" not in listed[0]["result"]
+        assert client.get(f"/api/backtests/{run['id']}").json() == run
     asyncio.run(database.close())
 
 
@@ -223,6 +227,21 @@ def test_cached_replay_rejects_range_without_decisions(tmp_path: Path) -> None:
         )
         assert response.status_code == 409, response.text
         assert "no cached LLM decisions" in response.json()["detail"]
+    asyncio.run(database.close())
+
+
+def test_backtest_detail_returns_404_for_unknown_run(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'missing-backtest.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.PAPER,
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        assert client.get("/api/backtests/999").status_code == 404
     asyncio.run(database.close())
 
 

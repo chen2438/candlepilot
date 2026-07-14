@@ -84,7 +84,20 @@ export interface BacktestRun {
     profit_factor: string | null;
     total_fees: string;
     total_funding: string;
-    trades: unknown[];
+    trade_count?: number;
+    trades?: Array<{
+      side: string;
+      quantity: string;
+      entry_time: string;
+      entry_price: string;
+      exit_time: string;
+      exit_price: string;
+      net_pnl: string;
+      fees: string;
+      funding: string;
+      exit_reason: string;
+    }>;
+    equity_curve?: Array<{ timestamp: string; equity: string }>;
     replay?: {
       source: string;
       decision_count: number;
