@@ -4,6 +4,7 @@ import asyncio
 from datetime import UTC, datetime
 
 from candlepilot.application.engine import DecisionOutcome, TradingEngine
+from candlepilot.application.paper_feed import PaperMarketFeed
 from candlepilot.domain.models import PortfolioState, TradingMode
 from candlepilot.market.binance import BinancePublicClient
 
@@ -19,6 +20,7 @@ class TradingScheduler:
         *,
         candidates_per_cycle: int = 5,
         universe_refresh_seconds: float = 60,
+        paper_feed: PaperMarketFeed | None = None,
     ) -> None:
         if universe_refresh_seconds <= 0:
             raise ValueError("universe_refresh_seconds must be positive")
@@ -26,6 +28,7 @@ class TradingScheduler:
         self.market = market
         self.candidates_per_cycle = candidates_per_cycle
         self.universe_refresh_seconds = universe_refresh_seconds
+        self.paper_feed = paper_feed
         self._tasks: list[asyncio.Task[None]] = []
         self._stop = asyncio.Event()
         self.last_error: str | None = None
@@ -45,6 +48,8 @@ class TradingScheduler:
 
     async def stop(self) -> None:
         self._stop.set()
+        if self.paper_feed is not None:
+            await self.paper_feed.stop()
         for task in self._tasks:
             task.cancel()
         if self._tasks:
@@ -74,6 +79,7 @@ class TradingScheduler:
             if self.engine.running:
                 try:
                     await self.engine.refresh_universe()
+                    await self.sync_market_feed()
                     self.universe_last_error = None
                 except Exception as exc:
                     self.universe_last_error = str(exc)
@@ -84,6 +90,13 @@ class TradingScheduler:
                 return
             except TimeoutError:
                 pass
+
+    async def sync_market_feed(self) -> None:
+        if self.paper_feed is None or self.engine.mode != TradingMode.PAPER:
+            return
+        symbols = [candidate.symbol for candidate in self.engine.candidates]
+        symbols.extend(self.engine.paper_executor.position_symbols)
+        await self.paper_feed.start(list(dict.fromkeys(symbols)))
 
     async def run_cycle(self, cadence: str) -> list[DecisionOutcome]:
         if cadence not in CADENCE_SECONDS:

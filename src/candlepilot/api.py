@@ -14,12 +14,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from candlepilot.application.engine import TradingEngine
+from candlepilot.application.paper_feed import PaperMarketFeed
 from candlepilot.application.scheduler import TradingScheduler
 from candlepilot.backtest.engine import BacktestConfig, BacktestEngine, Candle, ReplayIntent
 from candlepilot.backtest.replay import align_cached_intents
 from candlepilot.broker.binance_testnet import BinanceTestnetBroker, BinanceTestnetCredentials
 from candlepilot.config import Settings
-from candlepilot.domain.models import MarketSnapshot, PortfolioState, TradeIntent
+from candlepilot.domain.models import MarketSnapshot, PortfolioState, TradeIntent, TradingMode
 from candlepilot.market.binance import BinancePublicClient
 from candlepilot.market.cache import HistoricalMarketCache
 from candlepilot.market.history import build_backtest_candles
@@ -155,7 +156,12 @@ def create_app(
         market=market,
         testnet_broker=testnet_broker,
     )
-    scheduler = TradingScheduler(engine, market)
+    paper_feed = (
+        PaperMarketFeed(engine.paper_executor, engine.audit)
+        if engine.mode == TradingMode.PAPER and owns_market
+        else None
+    )
+    scheduler = TradingScheduler(engine, market, paper_feed=paper_feed)
     history_cache = HistoricalMarketCache(settings.data_dir / "market")
 
     @asynccontextmanager
@@ -181,6 +187,7 @@ def create_app(
     app.state.database = database
     app.state.scheduler = scheduler
     app.state.history_cache = history_cache
+    app.state.paper_feed = paper_feed
 
     async def load_backtest_candles(
         symbol: str,
@@ -335,6 +342,7 @@ def create_app(
     async def refresh_universe() -> list[dict[str, Any]]:
         try:
             await engine.refresh_universe()
+            await scheduler.sync_market_feed()
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"market refresh failed: {exc}") from exc
         return await get_universe()

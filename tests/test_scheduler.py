@@ -65,6 +65,18 @@ class SchedulerMarket:
         )
 
 
+class FakePaperFeed:
+    def __init__(self):
+        self.started: list[list[str]] = []
+        self.stopped = False
+
+    async def start(self, symbols):
+        self.started.append(symbols)
+
+    async def stop(self):
+        self.stopped = True
+
+
 def test_scheduler_runs_ranked_candidate_cycle(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'scheduler.db'}")
@@ -182,3 +194,48 @@ def test_scheduler_marks_and_stops_paper_position(tmp_path: Path) -> None:
     orders, portfolio = asyncio.run(scenario())
     assert any(report.message == "paper stop_loss" for report in orders)
     assert portfolio.open_positions == 0
+
+
+def test_market_feed_tracks_candidates_and_open_positions(tmp_path: Path) -> None:
+    from candlepilot.domain.models import OrderPlan, OrderType
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'feed-sync.db'}")
+        await database.initialize()
+        market = SchedulerMarket()
+        engine = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([HoldProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        await engine.paper_executor.execute(
+            OrderPlan(
+                client_order_id="eth-position",
+                symbol="ETHUSDT",
+                side="BUY",
+                quantity=Decimal("1"),
+                order_type=OrderType.MARKET,
+                stop_price=Decimal("90"),
+            ),
+            MarketSnapshot(
+                symbol="ETHUSDT",
+                cadence="1m",
+                timestamp=datetime.now(UTC),
+                mark_price="100",
+                bid="99.9",
+                ask="100.1",
+                quote_volume_24h="1000000",
+            ),
+        )
+        await engine.refresh_universe()
+        feed = FakePaperFeed()
+        scheduler = TradingScheduler(engine, market, paper_feed=feed)  # type: ignore[arg-type]
+        await scheduler.sync_market_feed()
+        await scheduler.stop()
+        await database.close()
+        return feed
+
+    feed = asyncio.run(scenario())
+    assert feed.started == [["BTCUSDT", "ETHUSDT"]]
+    assert feed.stopped

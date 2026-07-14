@@ -221,3 +221,7 @@ class PaperExecutor:
     @property
     def orders(self) -> tuple[ExecutionReport, ...]:
         return tuple(self._orders.values())
+
+    @property
+    def position_symbols(self) -> tuple[str, ...]:
+        return tuple(self._positions)
