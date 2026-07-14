@@ -243,7 +243,14 @@ def create_app(
 
     @app.get("/api/providers")
     async def get_providers() -> list[dict[str, Any]]:
-        return [item.model_dump(mode="json") for item in await engine.provider_health()]
+        health = await engine.provider_health()
+        return [
+            {
+                **item.model_dump(mode="json"),
+                "capabilities": asdict(engine.providers.get(item.provider).capabilities),
+            }
+            for item in health
+        ]
 
     @app.post("/api/providers/select")
     async def select_provider(selection: ProviderSelection) -> dict[str, Any]:

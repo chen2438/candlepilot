@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -116,3 +117,34 @@ def test_claude_provider_unwraps_result(tmp_path: Path) -> None:
     )
     assert result.intent.action == TradeAction.HOLD
     assert result.usage["num_turns"] == 1
+
+
+def test_cli_providers_declare_subscription_capabilities(tmp_path: Path) -> None:
+    executable = _write_fake_cli(tmp_path / "provider", "exit 0\n")
+
+    for provider in (
+        CodexAuthProvider(executable=executable),
+        ClaudeCodeAuthProvider(executable=executable),
+    ):
+        assert provider.capabilities.subscription_auth
+        assert provider.capabilities.structured_output
+        assert provider.capabilities.tools_disabled
+        assert provider.capabilities.cancellable
+        assert provider.capabilities.max_concurrency == 1
+
+
+def test_cancel_terminates_active_cli_process(tmp_path: Path) -> None:
+    executable = _write_fake_cli(tmp_path / "codex", "sleep 30\n")
+
+    async def scenario():
+        provider = CodexAuthProvider(executable=executable, timeout=40)
+        task = asyncio.create_task(provider.generate_trade_intent(_market(), _portfolio()))
+        await asyncio.sleep(0.1)
+        started = time.monotonic()
+        cancelled = await provider.cancel()
+        return cancelled, task.cancelled(), time.monotonic() - started
+
+    cancelled, task_cancelled, duration = asyncio.run(scenario())
+    assert cancelled
+    assert task_cancelled
+    assert duration < 3

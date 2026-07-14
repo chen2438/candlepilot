@@ -17,8 +17,24 @@ class ProviderResult:
     usage: dict[str, int | float | str]
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderCapabilities:
+    subscription_auth: bool = True
+    structured_output: bool = True
+    tools_disabled: bool = True
+    cancellable: bool = False
+    max_concurrency: int = 1
+
+
 class LLMProvider(ABC):
     name: str
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities()
+
+    async def cancel(self) -> bool:
+        return False
 
     @abstractmethod
     async def health_check(self) -> ProviderHealth:
@@ -31,4 +47,3 @@ class LLMProvider(ABC):
         portfolio: PortfolioState,
     ) -> ProviderResult:
         raise NotImplementedError
-

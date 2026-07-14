@@ -24,6 +24,13 @@ export interface ProviderHealth {
   executable: string | null;
   version: string | null;
   detail: string;
+  capabilities: {
+    subscription_auth: boolean;
+    structured_output: boolean;
+    tools_disabled: boolean;
+    cancellable: boolean;
+    max_concurrency: number;
+  };
 }
 
 export interface Candidate {

@@ -15,7 +15,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from candlepilot.domain.models import MarketSnapshot, PortfolioState, ProviderHealth, TradeIntent
-from candlepilot.providers.base import LLMProvider, ProviderResult
+from candlepilot.providers.base import LLMProvider, ProviderCapabilities, ProviderResult
 
 
 CODEX_APP_BINARY = Path("/Applications/Codex.app/Contents/Resources/codex")
@@ -101,7 +101,7 @@ async def _run_process(
         stdout, stderr = await asyncio.wait_for(
             process.communicate(stdin.encode() if stdin is not None else None), timeout=timeout
         )
-    except TimeoutError as exc:
+    except (TimeoutError, asyncio.CancelledError) as exc:
         try:
             os.killpg(process.pid, signal.SIGTERM)
             await asyncio.wait_for(process.wait(), timeout=2)
@@ -110,7 +110,9 @@ async def _run_process(
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-        raise ProviderTimeout(f"provider timed out after {timeout:g}s") from exc
+        if isinstance(exc, TimeoutError):
+            raise ProviderTimeout(f"provider timed out after {timeout:g}s") from exc
+        raise
 
     stdout = stdout[:MAX_OUTPUT_BYTES]
     stderr = stderr[:MAX_OUTPUT_BYTES]
@@ -174,6 +176,19 @@ class CodexAuthProvider(LLMProvider):
         self.executable = executable or find_codex_executable()
         self.timeout = timeout
         self._semaphore = asyncio.Semaphore(1)
+        self._active_task: asyncio.Task[Any] | None = None
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(cancellable=True)
+
+    async def cancel(self) -> bool:
+        task = self._active_task
+        if task is None or task.done():
+            return False
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return True
 
     async def health_check(self) -> ProviderHealth:
         if self.executable is None:
@@ -214,32 +229,36 @@ class CodexAuthProvider(LLMProvider):
         if self.executable is None:
             raise ProviderUnavailable("Codex executable was not found")
         started = time.monotonic()
-        async with self._semaphore:
-            with tempfile.TemporaryDirectory(prefix="candlepilot-codex-") as directory:
-                root = Path(directory)
-                schema_path = root / "trade-intent.schema.json"
-                schema_path.write_text(
-                    json.dumps(trade_intent_output_schema(), separators=(",", ":")),
-                    encoding="utf-8",
-                )
-                stdout, _ = await _run_process(
-                    [
-                        str(self.executable),
-                        "exec",
-                        "--ephemeral",
-                        "--ignore-user-config",
-                        "--ignore-rules",
-                        "--sandbox",
-                        "read-only",
-                        "--skip-git-repo-check",
-                        "--output-schema",
-                        str(schema_path),
-                        "-",
-                    ],
-                    cwd=root,
-                    stdin=_decision_prompt(snapshot, portfolio),
-                    timeout=self.timeout,
-                )
+        self._active_task = asyncio.current_task()
+        try:
+            async with self._semaphore:
+                with tempfile.TemporaryDirectory(prefix="candlepilot-codex-") as directory:
+                    root = Path(directory)
+                    schema_path = root / "trade-intent.schema.json"
+                    schema_path.write_text(
+                        json.dumps(trade_intent_output_schema(), separators=(",", ":")),
+                        encoding="utf-8",
+                    )
+                    stdout, _ = await _run_process(
+                        [
+                            str(self.executable),
+                            "exec",
+                            "--ephemeral",
+                            "--ignore-user-config",
+                            "--ignore-rules",
+                            "--sandbox",
+                            "read-only",
+                            "--skip-git-repo-check",
+                            "--output-schema",
+                            str(schema_path),
+                            "-",
+                        ],
+                        cwd=root,
+                        stdin=_decision_prompt(snapshot, portfolio),
+                        timeout=self.timeout,
+                    )
+        finally:
+            self._active_task = None
         try:
             intent = _parse_intent(stdout)
         except (json.JSONDecodeError, ValidationError) as exc:
@@ -261,6 +280,19 @@ class ClaudeCodeAuthProvider(LLMProvider):
         self.executable = executable or find_claude_executable()
         self.timeout = timeout
         self._semaphore = asyncio.Semaphore(1)
+        self._active_task: asyncio.Task[Any] | None = None
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(cancellable=True)
+
+    async def cancel(self) -> bool:
+        task = self._active_task
+        if task is None or task.done():
+            return False
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return True
 
     async def health_check(self) -> ProviderHealth:
         if self.executable is None:
@@ -301,25 +333,29 @@ class ClaudeCodeAuthProvider(LLMProvider):
         if self.executable is None:
             raise ProviderUnavailable("Claude Code CLI was not found")
         started = time.monotonic()
-        async with self._semaphore:
-            with tempfile.TemporaryDirectory(prefix="candlepilot-claude-") as directory:
-                stdout, _ = await _run_process(
-                    [
-                        str(self.executable),
-                        "-p",
-                        "--output-format",
-                        "json",
-                        "--permission-mode",
-                        "plan",
-                        "--max-turns",
-                        "1",
-                        "--disallowedTools",
-                        "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit",
-                        _decision_prompt(snapshot, portfolio),
-                    ],
-                    cwd=Path(directory),
-                    timeout=self.timeout,
-                )
+        self._active_task = asyncio.current_task()
+        try:
+            async with self._semaphore:
+                with tempfile.TemporaryDirectory(prefix="candlepilot-claude-") as directory:
+                    stdout, _ = await _run_process(
+                        [
+                            str(self.executable),
+                            "-p",
+                            "--output-format",
+                            "json",
+                            "--permission-mode",
+                            "plan",
+                            "--max-turns",
+                            "1",
+                            "--disallowedTools",
+                            "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit",
+                            _decision_prompt(snapshot, portfolio),
+                        ],
+                        cwd=Path(directory),
+                        timeout=self.timeout,
+                    )
+        finally:
+            self._active_task = None
         try:
             envelope = json.loads(stdout)
             intent = _parse_intent(envelope["result"])
