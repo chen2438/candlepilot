@@ -108,8 +108,12 @@ class FeaturePipeline:
         ask: Decimal,
         quote_volume_24h: Decimal,
         funding_rate: Decimal,
+        extra_features: dict[str, float] | None = None,
         timestamp: datetime | None = None,
     ) -> MarketSnapshot:
+        features = self.calculate(rows)
+        if extra_features:
+            features.update(extra_features)
         return MarketSnapshot(
             symbol=symbol,
             cadence=cadence,
@@ -119,6 +123,44 @@ class FeaturePipeline:
             ask=ask,
             quote_volume_24h=quote_volume_24h,
             funding_rate=funding_rate,
-            features=self.calculate(rows),
+            features=features,
         )
 
+    @staticmethod
+    def microstructure(
+        *,
+        mark_price: Decimal,
+        index_price: Decimal,
+        open_interest: Decimal,
+        bids: list[list[Any]],
+        asks: list[list[Any]],
+        trades: list[dict[str, Any]],
+    ) -> dict[str, float]:
+        bid_quantity = sum(Decimal(str(level[1])) for level in bids)
+        ask_quantity = sum(Decimal(str(level[1])) for level in asks)
+        depth_total = bid_quantity + ask_quantity
+        buy_notional = Decimal("0")
+        sell_notional = Decimal("0")
+        for trade in trades:
+            notional = Decimal(str(trade["p"])) * Decimal(str(trade["q"]))
+            if bool(trade.get("m")):
+                sell_notional += notional
+            else:
+                buy_notional += notional
+        trade_total = buy_notional + sell_notional
+        return {
+            "basis_bps": float(
+                ((mark_price / index_price) - 1) * Decimal("10000")
+                if index_price
+                else Decimal("0")
+            ),
+            "open_interest": float(open_interest),
+            "book_imbalance": float(
+                (bid_quantity - ask_quantity) / depth_total if depth_total else Decimal("0")
+            ),
+            "recent_trade_imbalance": float(
+                (buy_notional - sell_notional) / trade_total
+                if trade_total
+                else Decimal("0")
+            ),
+        }

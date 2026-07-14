@@ -168,3 +168,43 @@ def test_historical_funding_rates_are_typed_and_paginated() -> None:
     assert str(events[0].rate) == "0.0001"
     assert str(events[0].mark_price) == "50000.5"
     assert len(requests) == 2
+
+
+def test_market_snapshot_includes_microstructure() -> None:
+    rows = []
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    for index in range(20):
+        open_ms = int(start.timestamp() * 1000) + index * 60_000
+        rows.append([open_ms, "100", "102", "99", "101", "10", open_ms + 59_999, "1000"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        responses = {
+            "/fapi/v1/klines": rows,
+            "/fapi/v1/ticker/bookTicker": {"bidPrice": "100", "askPrice": "101"},
+            "/fapi/v1/ticker/24hr": {"quoteVolume": "1000000"},
+            "/fapi/v1/premiumIndex": {
+                "markPrice": "100.5",
+                "indexPrice": "100",
+                "lastFundingRate": "0.0001",
+            },
+            "/fapi/v1/depth": {"bids": [["100", "3"]], "asks": [["101", "1"]]},
+            "/fapi/v1/openInterest": {"openInterest": "42"},
+            "/fapi/v1/aggTrades": [{"p": "100", "q": "2", "m": False}],
+        }
+        payload = responses.get(request.url.path)
+        return httpx.Response(200, json=payload) if payload is not None else httpx.Response(404)
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="https://example.test"
+        )
+        adapter = BinancePublicClient(client=client)
+        snapshot = await adapter.market_snapshot("BTCUSDT", "1m")
+        await client.aclose()
+        return snapshot
+
+    snapshot = asyncio.run(scenario())
+    assert snapshot.features["basis_bps"] == 50.0
+    assert snapshot.features["book_imbalance"] == 0.5
+    assert snapshot.features["recent_trade_imbalance"] == 1.0
+    assert snapshot.features["open_interest"] == 42.0

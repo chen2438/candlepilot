@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -244,17 +245,33 @@ class BinancePublicClient:
     async def market_snapshot(self, symbol: str, cadence: str) -> MarketSnapshot:
         if cadence not in {"1m", "5m", "15m"}:
             raise ValueError("unsupported decision cadence")
-        rows = await self.klines(symbol, cadence, 200)
-        book = await self._get("/fapi/v1/ticker/bookTicker", symbol=symbol)
-        ticker = await self._get("/fapi/v1/ticker/24hr", symbol=symbol)
-        premium = await self._get("/fapi/v1/premiumIndex", symbol=symbol)
-        return FeaturePipeline().snapshot(
+        rows, book, ticker, premium, depth, interest, trades = await asyncio.gather(
+            self.klines(symbol, cadence, 200),
+            self._get("/fapi/v1/ticker/bookTicker", symbol=symbol),
+            self._get("/fapi/v1/ticker/24hr", symbol=symbol),
+            self._get("/fapi/v1/premiumIndex", symbol=symbol),
+            self._get("/fapi/v1/depth", symbol=symbol, limit=20),
+            self._get("/fapi/v1/openInterest", symbol=symbol),
+            self._get("/fapi/v1/aggTrades", symbol=symbol, limit=100),
+        )
+        pipeline = FeaturePipeline()
+        mark_price = Decimal(premium["markPrice"])
+        extra_features = pipeline.microstructure(
+            mark_price=mark_price,
+            index_price=Decimal(premium["indexPrice"]),
+            open_interest=Decimal(interest["openInterest"]),
+            bids=depth["bids"],
+            asks=depth["asks"],
+            trades=trades,
+        )
+        return pipeline.snapshot(
             symbol=symbol,
             cadence=cadence,  # type: ignore[arg-type]
             rows=rows,
-            mark_price=Decimal(premium["markPrice"]),
+            mark_price=mark_price,
             bid=Decimal(book["bidPrice"]),
             ask=Decimal(book["askPrice"]),
             quote_volume_24h=Decimal(ticker["quoteVolume"]),
             funding_rate=Decimal(premium["lastFundingRate"]),
+            extra_features=extra_features,
         )

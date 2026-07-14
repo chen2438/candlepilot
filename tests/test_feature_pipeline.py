@@ -57,3 +57,22 @@ def test_snapshot_contains_exchange_and_derived_data() -> None:
     )
     assert snapshot.features["rsi_14"] > 50
     assert snapshot.funding_rate == Decimal("0.0001")
+
+
+def test_microstructure_features_capture_direction_and_basis() -> None:
+    features = FeaturePipeline.microstructure(
+        mark_price=Decimal("101"),
+        index_price=Decimal("100"),
+        open_interest=Decimal("1234.5"),
+        bids=[["100", "8"], ["99", "2"]],
+        asks=[["101", "4"], ["102", "1"]],
+        trades=[
+            {"p": "100", "q": "2", "m": False},
+            {"p": "100", "q": "1", "m": True},
+        ],
+    )
+
+    assert features["basis_bps"] == 100.0
+    assert features["open_interest"] == 1234.5
+    assert features["book_imbalance"] == 1 / 3
+    assert features["recent_trade_imbalance"] == 1 / 3
