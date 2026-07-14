@@ -14,6 +14,7 @@ from candlepilot.domain.models import (
 )
 from candlepilot.market.scanner import MarketCandidateInput
 from candlepilot.providers.base import LLMProvider, ProviderResult
+from candlepilot.providers.cli import ProviderError
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.risk.engine import SymbolRules
 from candlepilot.storage.database import AuditRepository, Database
@@ -38,6 +39,16 @@ class FakeProvider(LLMProvider):
             rationale="fixture",
         )
         return ProviderResult(intent, self.name, "fixture", timedelta(milliseconds=1), "{}", {})
+
+
+class FailedProvider(LLMProvider):
+    name = "failed-primary"
+
+    async def health_check(self) -> ProviderHealth:
+        return ProviderHealth(provider=self.name, available=True, authenticated=True)
+
+    async def generate_trade_intent(self, snapshot, portfolio) -> ProviderResult:
+        raise ProviderError("fixture failure")
 
 
 class FakeMarket:
@@ -118,6 +129,40 @@ def test_testnet_mode_refuses_to_start_without_credentials(tmp_path: Path) -> No
         await database.close()
 
     asyncio.run(scenario())
+
+
+def test_engine_fails_over_once_to_explicit_backup_provider(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'fallback.db'}")
+        await database.initialize()
+        engine = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([FailedProvider(), FakeProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=FakeMarket(),  # type: ignore[arg-type]
+        )
+        engine.select_provider("failed-primary", "fake-auth")
+        await engine.start()
+        snapshot = MarketSnapshot(
+            symbol="BTCUSDT",
+            cadence="5m",
+            timestamp=datetime.now(UTC),
+            mark_price="100",
+            bid="99.9",
+            ask="100.1",
+            quote_volume_24h="1000000",
+        )
+        outcome = await engine.evaluate(
+            snapshot,
+            PortfolioState(equity="10000", available_balance="8000"),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+        )
+        await database.close()
+        return outcome
+
+    outcome = asyncio.run(scenario())
+    assert outcome.provider == "fake-auth"
+    assert outcome.execution is not None
 
 
 def test_emergency_lock_persists_and_expires_at_next_utc_day(tmp_path: Path) -> None:

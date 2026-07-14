@@ -38,6 +38,7 @@ class ApiModel(BaseModel):
 
 class ProviderSelection(ApiModel):
     name: str
+    backup: str | None = None
 
 
 class SymbolRulesInput(ApiModel):
@@ -146,6 +147,7 @@ def _status(
         if engine.emergency_locked_until
         else None,
         "selected_provider": engine.selected_provider,
+        "backup_provider": engine.backup_provider,
         "candidate_count": len(engine.candidates),
         "universe_refreshed_at": engine.universe_refreshed_at.isoformat()
         if engine.universe_refreshed_at
@@ -314,9 +316,11 @@ def create_app(
     @app.post("/api/providers/select")
     async def select_provider(selection: ProviderSelection) -> dict[str, Any]:
         try:
-            engine.select_provider(selection.name)
+            engine.select_provider(selection.name, selection.backup)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return _status(engine, scheduler)
 
     @app.post("/api/engine/start")

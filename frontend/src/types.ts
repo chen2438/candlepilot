@@ -4,6 +4,7 @@ export interface EngineStatus {
   emergency_locked: boolean;
   emergency_locked_until: string | null;
   selected_provider: string | null;
+  backup_provider: string | null;
   candidate_count: number;
   universe_refreshed_at: string | null;
   market_stream: {

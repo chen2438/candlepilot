@@ -57,6 +57,7 @@ class TradingEngine:
         self.paper_executor = paper_executor or PaperExecutor(state_store=audit)
         self.testnet_broker = testnet_broker
         self.selected_provider: str | None = None
+        self.backup_provider: str | None = None
         self.running = False
         self.emergency_locked = False
         self.emergency_locked_until: datetime | None = None
@@ -67,9 +68,14 @@ class TradingEngine:
     async def provider_health(self) -> list[ProviderHealth]:
         return await self.providers.health()
 
-    def select_provider(self, name: str) -> None:
+    def select_provider(self, name: str, backup: str | None = None) -> None:
         self.providers.get(name)
+        if backup is not None:
+            self.providers.get(backup)
+            if backup == name:
+                raise ValueError("backup provider must differ from primary provider")
         self.selected_provider = name
+        self.backup_provider = backup
 
     async def start(self) -> None:
         await self.restore_runtime_state()
@@ -154,16 +160,30 @@ class TradingEngine:
         provider = self.providers.get(self.selected_provider)
         try:
             result = await provider.generate_trade_intent(snapshot, portfolio)
-        except ProviderError as exc:
-            intent = TradeIntent.hold(snapshot.symbol, snapshot.cadence, f"provider error: {exc}")
-            result = ProviderResult(
-                intent=intent,
-                provider=self.selected_provider,
-                model=None,
-                duration=timedelta(0),
-                raw_output=str(exc),
-                usage={"error": type(exc).__name__},
-            )
+        except ProviderError as primary_exc:
+            result = None
+            if self.backup_provider is not None:
+                backup = self.providers.get(self.backup_provider)
+                try:
+                    result = await backup.generate_trade_intent(snapshot, portfolio)
+                except ProviderError as backup_exc:
+                    primary_exc = ProviderError(
+                        f"primary failed: {primary_exc}; backup failed: {backup_exc}"
+                    )
+            if result is None:
+                intent = TradeIntent.hold(
+                    snapshot.symbol,
+                    snapshot.cadence,
+                    f"provider error: {primary_exc}",
+                )
+                result = ProviderResult(
+                    intent=intent,
+                    provider=self.selected_provider,
+                    model=None,
+                    duration=timedelta(0),
+                    raw_output=str(primary_exc),
+                    usage={"error": type(primary_exc).__name__},
+                )
         inference_id = await self.audit.record_inference(result)
         evaluation = self.risk.evaluate(result.intent, snapshot, portfolio, rules)
         await self.audit.record_risk(

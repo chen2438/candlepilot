@@ -7,6 +7,7 @@ const emptyStatus: EngineStatus = {
   emergency_locked: false,
   emergency_locked_until: null,
   selected_provider: null,
+  backup_provider: null,
   candidate_count: 0,
   universe_refreshed_at: null,
   market_stream: {
