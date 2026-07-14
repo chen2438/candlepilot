@@ -5,6 +5,7 @@ const emptyStatus: EngineStatus = {
   mode: "paper-production-data",
   running: false,
   emergency_locked: false,
+  emergency_locked_until: null,
   selected_provider: null,
   candidate_count: 0,
   universe_refreshed_at: null,
@@ -202,7 +203,7 @@ export default function App() {
         </section>
 
         {error && <div className="error-banner"><b>操作失败</b><span>{error}</span><button onClick={() => setError(null)}>×</button></div>}
-        {status.emergency_locked && <div className="lock-banner">紧急锁定已生效。检查账户状态后才能手动解除。</div>}
+        {status.emergency_locked && <div className="lock-banner">紧急锁定已生效{status.emergency_locked_until ? `，自动解锁时间：${new Date(status.emergency_locked_until).toLocaleString("zh-CN", { hour12: false })}` : ""}。检查账户状态后也可手动解除。</div>}
 
         <section className="grid">
           <article className="panel provider-panel">

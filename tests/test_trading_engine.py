@@ -118,3 +118,37 @@ def test_testnet_mode_refuses_to_start_without_credentials(tmp_path: Path) -> No
         await database.close()
 
     asyncio.run(scenario())
+
+
+def test_emergency_lock_persists_and_expires_at_next_utc_day(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'runtime-state.db'}")
+        await database.initialize()
+        audit = AuditRepository(database.sessions)
+        first = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=audit,
+            market=FakeMarket(),  # type: ignore[arg-type]
+        )
+        stopped_at = datetime(2026, 1, 1, 22, 30, tzinfo=UTC)
+        await first.emergency_stop(now=stopped_at)
+
+        restored = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=audit,
+            market=FakeMarket(),  # type: ignore[arg-type]
+        )
+        await restored.restore_runtime_state(now=stopped_at + timedelta(hours=1))
+        before_midnight = (restored.emergency_locked, restored.emergency_locked_until)
+        await restored.restore_runtime_state(now=stopped_at + timedelta(hours=2))
+        after_midnight = (restored.emergency_locked, restored.emergency_locked_until)
+        stored = await audit.get_runtime_state("emergency_locked_until")
+        await database.close()
+        return before_midnight, after_midnight, stored
+
+    before_midnight, after_midnight, stored = asyncio.run(scenario())
+    assert before_midnight == (True, datetime(2026, 1, 2, tzinfo=UTC))
+    assert after_midnight == (False, None)
+    assert stored is None

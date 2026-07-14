@@ -72,6 +72,16 @@ class BacktestRow(Base):
     )
 
 
+class RuntimeStateRow(Base):
+    __tablename__ = "runtime_state"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC)
+    )
+
+
 class Database:
     def __init__(self, url: str) -> None:
         self.engine: AsyncEngine = create_async_engine(url)
@@ -138,6 +148,25 @@ class AuditRepository:
         async with self.sessions.begin() as session:
             session.add(row)
         return row.id
+
+    async def set_runtime_state(self, key: str, value: str) -> None:
+        async with self.sessions.begin() as session:
+            row = await session.get(RuntimeStateRow, key)
+            if row is None:
+                session.add(RuntimeStateRow(key=key, value=value))
+            else:
+                row.value = value
+
+    async def get_runtime_state(self, key: str) -> str | None:
+        async with self.sessions() as session:
+            row = await session.get(RuntimeStateRow, key)
+            return row.value if row is not None else None
+
+    async def delete_runtime_state(self, key: str) -> None:
+        async with self.sessions.begin() as session:
+            row = await session.get(RuntimeStateRow, key)
+            if row is not None:
+                await session.delete(row)
 
     async def recent_intents(self, limit: int = 100) -> list[dict[str, Any]]:
         async with self.sessions() as session:

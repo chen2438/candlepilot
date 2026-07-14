@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 
 from candlepilot.broker.binance_testnet import BinanceTestnetBroker
 from candlepilot.domain.models import (
@@ -55,6 +55,7 @@ class TradingEngine:
         self.selected_provider: str | None = None
         self.running = False
         self.emergency_locked = False
+        self.emergency_locked_until: datetime | None = None
         self.candidates: list[Candidate] = []
         self.universe_refreshed_at: datetime | None = None
 
@@ -66,6 +67,7 @@ class TradingEngine:
         self.selected_provider = name
 
     async def start(self) -> None:
+        await self.restore_runtime_state()
         if self.emergency_locked:
             raise RuntimeError("engine is emergency locked")
         if self.selected_provider is None:
@@ -80,18 +82,46 @@ class TradingEngine:
     def stop(self) -> None:
         self.running = False
 
-    async def emergency_stop(self) -> None:
+    async def emergency_stop(self, *, now: datetime | None = None) -> None:
+        now = now or datetime.now(UTC)
+        if now.tzinfo is None:
+            raise ValueError("emergency stop time must be timezone-aware")
         self.running = False
         self.emergency_locked = True
+        tomorrow = now.astimezone(UTC).date() + timedelta(days=1)
+        self.emergency_locked_until = datetime.combine(tomorrow, time.min, tzinfo=UTC)
+        await self.audit.set_runtime_state(
+            "emergency_locked_until", self.emergency_locked_until.isoformat()
+        )
         if self.mode == TradingMode.TESTNET and self.testnet_broker is not None:
             await self.testnet_broker.emergency_flatten()
         else:
             await self.paper_executor.emergency_flatten()
 
-    def clear_emergency_lock(self) -> None:
+    async def clear_emergency_lock(self) -> None:
         if self.running:
             raise RuntimeError("cannot clear emergency lock while running")
         self.emergency_locked = False
+        self.emergency_locked_until = None
+        await self.audit.delete_runtime_state("emergency_locked_until")
+
+    async def restore_runtime_state(self, *, now: datetime | None = None) -> None:
+        now = now or datetime.now(UTC)
+        stored = await self.audit.get_runtime_state("emergency_locked_until")
+        if stored is None:
+            self.emergency_locked = False
+            self.emergency_locked_until = None
+            return
+        locked_until = datetime.fromisoformat(stored)
+        if locked_until.tzinfo is None:
+            locked_until = locked_until.replace(tzinfo=UTC)
+        if now >= locked_until:
+            await self.audit.delete_runtime_state("emergency_locked_until")
+            self.emergency_locked = False
+            self.emergency_locked_until = None
+            return
+        self.emergency_locked = True
+        self.emergency_locked_until = locked_until
 
     async def refresh_universe(self) -> list[Candidate]:
         inputs = await self.market.candidate_inputs()

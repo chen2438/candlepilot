@@ -117,6 +117,9 @@ def _status(engine: TradingEngine) -> dict[str, Any]:
         "mode": engine.mode.value,
         "running": engine.running,
         "emergency_locked": engine.emergency_locked,
+        "emergency_locked_until": engine.emergency_locked_until.isoformat()
+        if engine.emergency_locked_until
+        else None,
         "selected_provider": engine.selected_provider,
         "candidate_count": len(engine.candidates),
         "universe_refreshed_at": engine.universe_refreshed_at.isoformat()
@@ -158,6 +161,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await database.initialize()
+        await engine.restore_runtime_state()
         yield
         await scheduler.stop()
         if owns_market:
@@ -240,7 +244,7 @@ def create_app(
     @app.post("/api/engine/clear-emergency-lock")
     async def clear_emergency_lock() -> dict[str, Any]:
         try:
-            engine.clear_emergency_lock()
+            await engine.clear_emergency_lock()
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _status(engine)
