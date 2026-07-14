@@ -28,6 +28,7 @@ class HoldProvider(LLMProvider):
 class SchedulerMarket:
     def __init__(self):
         self.candidate_calls = 0
+        self.mark_price = Decimal("100")
 
     async def candidate_inputs(self):
         self.candidate_calls += 1
@@ -57,9 +58,9 @@ class SchedulerMarket:
             symbol=symbol,
             cadence=cadence,
             timestamp=datetime.now(UTC),
-            mark_price="100",
-            bid="99.9",
-            ask="100.1",
+            mark_price=self.mark_price,
+            bid=self.mark_price - Decimal("0.1"),
+            ask=self.mark_price + Decimal("0.1"),
             quote_volume_24h="1000000",
         )
 
@@ -142,3 +143,42 @@ def test_scheduler_refreshes_universe_periodically(tmp_path: Path) -> None:
     assert calls >= 2
     assert scheduler.universe_last_error is None
     assert scheduler._tasks == []
+
+
+def test_scheduler_marks_and_stops_paper_position(tmp_path: Path) -> None:
+    from candlepilot.domain.models import OrderPlan, OrderType
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'paper-mark.db'}")
+        await database.initialize()
+        market = SchedulerMarket()
+        engine = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([HoldProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider("hold")
+        await engine.start()
+        await engine.paper_executor.execute(
+            OrderPlan(
+                client_order_id="scheduled-entry",
+                symbol="BTCUSDT",
+                side="BUY",
+                quantity=Decimal("1"),
+                order_type=OrderType.MARKET,
+                stop_price=Decimal("98"),
+            ),
+            await market.market_snapshot("BTCUSDT", "5m"),
+        )
+        market.mark_price = Decimal("97")
+        scheduler = TradingScheduler(engine, market)  # type: ignore[arg-type]
+        await scheduler.run_cycle("5m")
+        orders = engine.paper_executor.orders
+        portfolio = engine.paper_executor.portfolio_state()
+        await database.close()
+        return orders, portfolio
+
+    orders, portfolio = asyncio.run(scenario())
+    assert any(report.message == "paper stop_loss" for report in orders)
+    assert portfolio.open_positions == 0

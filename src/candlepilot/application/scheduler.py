@@ -99,6 +99,10 @@ class TradingScheduler:
             if contract is None:
                 continue
             snapshot = await self.market.market_snapshot(candidate.symbol, cadence)
+            if self.engine.mode in {TradingMode.PAPER, TradingMode.BACKTEST}:
+                protective_reports = await self.engine.paper_executor.mark_to_market(snapshot)
+                for report in protective_reports:
+                    await self.engine.audit.record_execution(candidate.symbol, report)
             portfolio = await self._portfolio()
             outcomes.append(
                 await self.engine.evaluate(snapshot, portfolio, contract.rules)
