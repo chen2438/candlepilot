@@ -2,7 +2,7 @@ import asyncio
 import json
 from datetime import UTC, datetime
 
-from candlepilot.market.stream import BinanceMarketStream
+from candlepilot.market.stream import BinanceMarketStream, MarketEventSequencer
 
 
 class FakeSocket:
@@ -101,3 +101,59 @@ def test_reconnects_after_transport_failure() -> None:
     assert event.symbol == "BTCUSDT"
     assert stream.reconnect_count == 1
     assert stream.last_error is None
+
+
+def test_drops_duplicate_and_out_of_order_book_updates() -> None:
+    sequencer = MarketEventSequencer()
+    first = BinanceMarketStream.parse_message(
+        json.dumps(
+            {
+                "stream": "btcusdt@bookTicker",
+                "data": {"e": "bookTicker", "E": 10, "s": "BTCUSDT", "u": 100},
+            }
+        )
+    )
+    duplicate = BinanceMarketStream.parse_message(
+        json.dumps(
+            {
+                "stream": "btcusdt@bookTicker",
+                "data": {"e": "bookTicker", "E": 11, "s": "BTCUSDT", "u": 100},
+            }
+        )
+    )
+    stale = BinanceMarketStream.parse_message(
+        json.dumps(
+            {
+                "stream": "btcusdt@bookTicker",
+                "data": {"e": "bookTicker", "E": 12, "s": "BTCUSDT", "u": 99},
+            }
+        )
+    )
+
+    assert sequencer.accept(first)
+    assert not sequencer.accept(duplicate)
+    assert not sequencer.accept(stale)
+    assert sequencer.dropped == 2
+
+
+def test_kline_revisions_require_increasing_event_time() -> None:
+    sequencer = MarketEventSequencer()
+
+    def kline(event_time):
+        return BinanceMarketStream.parse_message(
+            json.dumps(
+                {
+                    "stream": "btcusdt@kline_1m",
+                    "data": {
+                        "e": "kline",
+                        "E": event_time,
+                        "s": "BTCUSDT",
+                        "k": {"t": 1000},
+                    },
+                }
+            )
+        )
+
+    assert sequencer.accept(kline(10))
+    assert sequencer.accept(kline(11))
+    assert not sequencer.accept(kline(9))

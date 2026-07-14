@@ -23,6 +23,29 @@ class MarketStreamEvent:
     payload: dict[str, Any]
 
 
+class MarketEventSequencer:
+    """Reject duplicate and stale updates while preserving kline revisions."""
+
+    def __init__(self) -> None:
+        self._last_sequence: dict[str, tuple[int, ...]] = {}
+        self.dropped = 0
+
+    def accept(self, event: MarketStreamEvent) -> bool:
+        payload = event.payload
+        if event.event_type == "bookTicker" and "u" in payload:
+            sequence = (int(payload["u"]),)
+        elif event.event_type == "kline" and "k" in payload:
+            sequence = (int(payload["k"]["t"]), int(payload["E"]))
+        else:
+            sequence = (int(payload["E"]),)
+        previous = self._last_sequence.get(event.stream)
+        if previous is not None and sequence <= previous:
+            self.dropped += 1
+            return False
+        self._last_sequence[event.stream] = sequence
+        return True
+
+
 ConnectionFactory = Callable[[str], AsyncContextManager[Any]]
 
 
@@ -58,6 +81,7 @@ class BinanceMarketStream:
         self._socket: Any | None = None
         self.last_error: str | None = None
         self.reconnect_count = 0
+        self.sequencer = MarketEventSequencer()
 
     @property
     def streams(self) -> tuple[str, ...]:
@@ -77,6 +101,10 @@ class BinanceMarketStream:
     @property
     def url(self) -> str:
         return f"{self.base_url}/stream?streams={'/'.join(self.streams)}"
+
+    @property
+    def dropped_event_count(self) -> int:
+        return self.sequencer.dropped
 
     def _connection(self, url: str) -> AsyncContextManager[Any]:
         return connect(
@@ -99,7 +127,9 @@ class BinanceMarketStream:
                     async for message in socket:
                         if self._stop.is_set():
                             return
-                        yield self.parse_message(message)
+                        event = self.parse_message(message)
+                        if self.sequencer.accept(event):
+                            yield event
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
