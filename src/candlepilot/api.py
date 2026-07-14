@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from candlepilot.application.engine import TradingEngine
 from candlepilot.application.scheduler import TradingScheduler
 from candlepilot.backtest.engine import BacktestConfig, BacktestEngine, Candle, ReplayIntent
+from candlepilot.backtest.replay import align_cached_intents
 from candlepilot.broker.binance_testnet import BinanceTestnetBroker, BinanceTestnetCredentials
 from candlepilot.config import Settings
 from candlepilot.domain.models import MarketSnapshot, PortfolioState, TradeIntent
@@ -78,6 +79,15 @@ class BacktestRunRequest(ApiModel):
     config: BacktestConfigInput = Field(default_factory=BacktestConfigInput)
 
 
+class BacktestReplayRequest(ApiModel):
+    symbol: str = Field(pattern=r"^[A-Z0-9]+USDT$")
+    cadence: Literal["1m", "5m", "15m"]
+    start: datetime
+    end: datetime
+    limit: int = Field(default=10_000, ge=1, le=100_000)
+    config: BacktestConfigInput = Field(default_factory=BacktestConfigInput)
+
+
 def _json_value(value: Any) -> Any:
     if isinstance(value, Decimal):
         return str(value)
@@ -88,6 +98,18 @@ def _json_value(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_json_value(item) for item in value]
     return value
+
+
+def _candle_from_payload(payload: dict[str, Any]) -> Candle:
+    return Candle(
+        timestamp=payload["timestamp"],
+        open=Decimal(str(payload["open"])),
+        high=Decimal(str(payload["high"])),
+        low=Decimal(str(payload["low"])),
+        close=Decimal(str(payload["close"])),
+        volume=Decimal(str(payload["volume"])),
+        funding_rate=Decimal(str(payload.get("funding_rate", "0"))),
+    )
 
 
 def _status(engine: TradingEngine) -> dict[str, Any]:
@@ -155,6 +177,28 @@ def create_app(
     app.state.database = database
     app.state.scheduler = scheduler
     app.state.history_cache = history_cache
+
+    async def load_backtest_candles(
+        symbol: str,
+        cadence: str,
+        start: datetime,
+        end: datetime,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        cached = await asyncio.to_thread(
+            history_cache.load, symbol, cadence, start, end, limit
+        )
+        if cached is not None:
+            return cached
+        rows, events = await asyncio.gather(
+            market.historical_klines(symbol, cadence, start, end, max_candles=limit),
+            market.historical_funding_rates(symbol, start, end),
+        )
+        candles = build_backtest_candles(rows, events, cadence)
+        await asyncio.to_thread(
+            history_cache.store, symbol, cadence, start, end, limit, candles
+        )
+        return candles
 
     @app.get("/api/status")
     async def get_status() -> dict[str, Any]:
@@ -277,32 +321,11 @@ def create_app(
         limit: int = 10_000,
     ) -> list[dict[str, Any]]:
         try:
-            cached = await asyncio.to_thread(
-                history_cache.load, symbol.upper(), cadence, start, end, limit
-            )
-            if cached is not None:
-                return cached
-            rows, events = await asyncio.gather(
-                market.historical_klines(
-                    symbol.upper(), cadence, start, end, max_candles=limit
-                ),
-                market.historical_funding_rates(symbol.upper(), start, end),
-            )
+            return await load_backtest_candles(symbol.upper(), cadence, start, end, limit)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"backtest history failed: {exc}") from exc
-        candles = build_backtest_candles(rows, events, cadence)
-        await asyncio.to_thread(
-            history_cache.store,
-            symbol.upper(),
-            cadence,
-            start,
-            end,
-            limit,
-            candles,
-        )
-        return candles
 
     @app.post("/api/universe/refresh")
     async def refresh_universe() -> list[dict[str, Any]]:
@@ -369,6 +392,47 @@ def create_app(
             request.cadence,
             _json_value(asdict(result)),
         )
+
+    @app.post("/api/backtests/replay", status_code=201)
+    async def replay_cached_backtest(request: BacktestReplayRequest) -> dict[str, Any]:
+        symbol = request.symbol.upper()
+        try:
+            candle_payloads, records = await asyncio.gather(
+                load_backtest_candles(
+                    symbol, request.cadence, request.start, request.end, request.limit
+                ),
+                engine.audit.intents_between(
+                    symbol, request.cadence, request.start, request.end
+                ),
+            )
+            candles = [_candle_from_payload(payload) for payload in candle_payloads]
+            decisions = align_cached_intents(
+                records,
+                request.cadence,
+                {candle.timestamp for candle in candles},
+            )
+            if not decisions:
+                raise HTTPException(
+                    status_code=409,
+                    detail="no cached LLM decisions match this symbol, cadence, and range",
+                )
+            result = BacktestEngine(BacktestConfig(**request.config.model_dump())).run(
+                candles, decisions
+            )
+        except HTTPException:
+            raise
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"cached replay failed: {exc}") from exc
+        serialized = _json_value(asdict(result))
+        serialized["replay"] = {
+            "source": "cached_llm_decisions",
+            "decision_count": len(decisions),
+            "start": request.start.isoformat(),
+            "end": request.end.isoformat(),
+        }
+        return await engine.audit.record_backtest(symbol, request.cadence, serialized)
 
     @app.websocket("/ws/events")
     async def event_stream(websocket: WebSocket) -> None:

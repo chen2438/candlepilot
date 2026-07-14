@@ -160,6 +160,38 @@ class AuditRepository:
             for row in rows
         ]
 
+    async def intents_between(
+        self,
+        symbol: str,
+        cadence: str,
+        start: datetime,
+        end: datetime,
+    ) -> list[dict[str, Any]]:
+        async with self.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(InferenceRow)
+                    .where(
+                        InferenceRow.symbol == symbol,
+                        InferenceRow.cadence == cadence,
+                        InferenceRow.created_at >= start,
+                        InferenceRow.created_at < end,
+                    )
+                    .order_by(InferenceRow.created_at.asc(), InferenceRow.id.asc())
+                )
+            ).all()
+        return [
+            {
+                "id": row.id,
+                "provider": row.provider,
+                "intent": TradeIntent.model_validate_json(row.intent_json),
+                "created_at": row.created_at.replace(tzinfo=UTC)
+                if row.created_at.tzinfo is None
+                else row.created_at,
+            }
+            for row in rows
+        ]
+
     async def record_backtest(
         self, symbol: str, cadence: str, result: dict[str, Any]
     ) -> dict[str, Any]:

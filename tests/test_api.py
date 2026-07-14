@@ -43,6 +43,17 @@ class ApiMarket:
     async def close(self):
         return None
 
+    async def historical_klines(self, symbol, interval, start, end, *, max_candles=10_000):
+        step = {"1m": 60_000, "5m": 300_000, "15m": 900_000}[interval]
+        start_ms = int(start.timestamp() * 1000)
+        return [
+            [start_ms + offset * step, "100", "101", "99", "100", "10"]
+            for offset in range(min(2, max_candles))
+        ]
+
+    async def historical_funding_rates(self, symbol, start, end, *, max_events=10_000):
+        return []
+
 
 def test_control_api_lifecycle(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'api.db'}")
@@ -157,4 +168,36 @@ def test_backtest_run_is_persisted_and_listed(tmp_path: Path) -> None:
 
         listed = client.get("/api/backtests").json()
         assert listed == [run]
+    asyncio.run(database.close())
+
+
+def test_cached_replay_rejects_range_without_decisions(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'replay-api.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.PAPER,
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(
+        settings=Settings(data_dir=tmp_path),
+        database=database,
+        market=market,  # type: ignore[arg-type]
+        engine=engine,
+    )
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/backtests/replay",
+            json={
+                "symbol": "BTCUSDT",
+                "cadence": "5m",
+                "start": start.isoformat(),
+                "end": (start + timedelta(minutes=10)).isoformat(),
+            },
+        )
+        assert response.status_code == 409, response.text
+        assert "no cached LLM decisions" in response.json()["detail"]
     asyncio.run(database.close())

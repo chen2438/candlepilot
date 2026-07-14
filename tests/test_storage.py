@@ -1,5 +1,5 @@
 import asyncio
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from candlepilot.domain.models import TradeIntent
@@ -24,11 +24,18 @@ def test_inference_audit_round_trip(tmp_path: Path) -> None:
             )
         )
         rows = await repository.recent_intents()
+        replay_rows = await repository.intents_between(
+            "BTCUSDT",
+            "5m",
+            datetime.now(UTC) - timedelta(minutes=1),
+            datetime.now(UTC) + timedelta(minutes=1),
+        )
         await database.close()
-        return identifier, rows
+        return identifier, rows, replay_rows
 
-    identifier, rows = asyncio.run(scenario())
+    identifier, rows, replay_rows = asyncio.run(scenario())
     assert identifier == 1
     assert rows[0]["provider"] == "codex-auth"
     assert rows[0]["intent"]["symbol"] == "BTCUSDT"
     assert rows[0]["duration_ms"] == 123
+    assert replay_rows[0]["intent"].symbol == "BTCUSDT"
