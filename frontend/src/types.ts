@@ -59,6 +59,54 @@ export interface Signal {
   created_at: string;
 }
 
+export interface AccountPortfolio {
+  mode: string;
+  initial_equity: string;
+  cash: string;
+  equity: string;
+  available_balance: string;
+  daily_pnl: string;
+  open_positions: number;
+  margin_used: string;
+}
+
+export interface AccountPosition {
+  symbol: string;
+  side: string;
+  quantity: string;
+  average_price: string;
+  mark_price: string;
+  leverage: number;
+  unrealized_pnl: string;
+  notional: string;
+  margin_used: string;
+  stop_loss: string | null;
+  take_profit: string | null;
+}
+
+export interface OrderRecord {
+  id: number;
+  client_order_id: string;
+  symbol: string;
+  status: string;
+  report: {
+    filled_quantity: string;
+    average_price: string | null;
+    message: string;
+  };
+  created_at: string;
+}
+
+export interface RiskEvent {
+  id: number;
+  inference_id: number | null;
+  symbol: string;
+  accepted: boolean;
+  reason: string;
+  decision: { max_quantity: string | null };
+  created_at: string;
+}
+
 export interface BacktestRun {
   id: number;
   symbol: string;

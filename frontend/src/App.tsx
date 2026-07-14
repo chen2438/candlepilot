@@ -1,5 +1,15 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import type { BacktestRun, Candidate, EngineStatus, ProviderHealth, Signal } from "./types";
+import type {
+  AccountPortfolio,
+  AccountPosition,
+  BacktestRun,
+  Candidate,
+  EngineStatus,
+  OrderRecord,
+  ProviderHealth,
+  RiskEvent,
+  Signal,
+} from "./types";
 
 const emptyStatus: EngineStatus = {
   mode: "paper-production-data",
@@ -70,6 +80,10 @@ export default function App() {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [backtests, setBacktests] = useState<BacktestRun[]>([]);
   const [selectedBacktest, setSelectedBacktest] = useState<BacktestRun | null>(null);
+  const [portfolio, setPortfolio] = useState<AccountPortfolio | null>(null);
+  const [positions, setPositions] = useState<AccountPosition[]>([]);
+  const [orders, setOrders] = useState<OrderRecord[]>([]);
+  const [riskEvents, setRiskEvents] = useState<RiskEvent[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [socketOnline, setSocketOnline] = useState(false);
@@ -90,8 +104,25 @@ export default function App() {
     setBacktests(nextBacktests);
   }, []);
 
+  const refreshAccount = useCallback(async () => {
+    const [nextPortfolio, nextPositions, nextOrders, nextRisk] = await Promise.all([
+      api<AccountPortfolio>("/api/account/portfolio"),
+      api<AccountPosition[]>("/api/account/positions"),
+      api<OrderRecord[]>("/api/orders?limit=25"),
+      api<RiskEvent[]>("/api/risk-events?limit=25"),
+    ]);
+    setPortfolio(nextPortfolio);
+    setPositions(nextPositions);
+    setOrders(nextOrders);
+    setRiskEvents(nextRisk);
+  }, []);
+
   useEffect(() => {
     refresh().catch((reason: Error) => setError(reason.message));
+    refreshAccount().catch((reason: Error) => setError(reason.message));
+    const account = window.setInterval(() => {
+      refreshAccount().catch(() => undefined);
+    }, 5000);
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
     const socket = new WebSocket(`${protocol}://${window.location.host}/ws/events`);
     socket.onopen = () => setSocketOnline(true);
@@ -100,8 +131,11 @@ export default function App() {
       const message = JSON.parse(event.data) as { type: string; data: EngineStatus };
       if (message.type === "status") setStatus(message.data);
     };
-    return () => socket.close();
-  }, [refresh]);
+    return () => {
+      window.clearInterval(account);
+      socket.close();
+    };
+  }, [refresh, refreshAccount]);
 
   const act = useCallback(async (name: string, path: string, body?: unknown) => {
     setBusy(name);
@@ -346,6 +380,13 @@ export default function App() {
               <BacktestDetail run={selectedBacktest} onClose={() => setSelectedBacktest(null)} />
             )}
           </article>
+
+          <AccountPanel
+            portfolio={portfolio}
+            positions={positions}
+            orders={orders}
+            riskEvents={riskEvents}
+          />
         </section>
       </main>
       <footer><span>CANDLEPILOT / GPL-3.0</span><span>LOCALHOST ONLY · NO LIVE MONEY</span></footer>
@@ -363,6 +404,90 @@ function PanelTitle({ code, title, meta }: { code: string; title: string; meta: 
 
 function RiskItem({ label, value, detail }: { label: string; value: string; detail: string }) {
   return <div className="risk-item"><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;
+}
+
+function money(value: string): string {
+  return Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function AccountPanel({
+  portfolio,
+  positions,
+  orders,
+  riskEvents,
+}: {
+  portfolio: AccountPortfolio | null;
+  positions: AccountPosition[];
+  orders: OrderRecord[];
+  riskEvents: RiskEvent[];
+}) {
+  const dailyPnl = portfolio ? Number(portfolio.daily_pnl) : 0;
+  return (
+    <article className="panel account-panel">
+      <PanelTitle code="06" title="账户与风险" meta="模拟账户 · 只读" />
+      <div className="account-metrics">
+        <Metric label="权益" value={portfolio ? money(portfolio.equity) : "—"} suffix="" />
+        <Metric label="可用余额" value={portfolio ? money(portfolio.available_balance) : "—"} suffix="" />
+        <div className="metric"><span>当日盈亏</span><strong className={dailyPnl >= 0 ? "positive" : "negative"}>{portfolio ? money(portfolio.daily_pnl) : "—"}</strong></div>
+        <Metric label="占用保证金" value={portfolio ? money(portfolio.margin_used) : "—"} suffix="" />
+        <Metric label="持仓数" value={portfolio ? String(portfolio.open_positions) : "—"} suffix="" />
+      </div>
+
+      <h4 className="account-subhead">持仓</h4>
+      <div className="table-wrap account-table">
+        <table>
+          <thead><tr><th>标的</th><th>方向</th><th>数量</th><th>均价</th><th>标记价</th><th>杠杆</th><th>未实现盈亏</th><th>止损</th></tr></thead>
+          <tbody>
+            {positions.map((position) => (
+              <tr key={position.symbol}>
+                <td><strong>{position.symbol.replace("USDT", "")}</strong></td>
+                <td className={position.side === "LONG" ? "positive" : "negative"}>{position.side}</td>
+                <td>{Number(position.quantity).toFixed(4)}</td>
+                <td>{Number(position.average_price).toFixed(4)}</td>
+                <td>{Number(position.mark_price).toFixed(4)}</td>
+                <td>{position.leverage}×</td>
+                <td className={Number(position.unrealized_pnl) >= 0 ? "positive" : "negative"}>{money(position.unrealized_pnl)}</td>
+                <td>{position.stop_loss === null ? "—" : Number(position.stop_loss).toFixed(4)}</td>
+              </tr>
+            ))}
+            {!positions.length && <tr><td colSpan={8} className="empty">当前无持仓。</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <h4 className="account-subhead">订单与成交</h4>
+      <div className="table-wrap account-table">
+        <table>
+          <thead><tr><th>订单号</th><th>标的</th><th>状态</th><th>成交量</th><th>成交价</th><th>时间</th></tr></thead>
+          <tbody>
+            {orders.map((order) => (
+              <tr key={order.id}>
+                <td><small>{order.client_order_id}</small></td>
+                <td>{order.symbol.replace("USDT", "")}</td>
+                <td><span className={`order-status ${order.status.toLowerCase()}`}>{order.status}</span></td>
+                <td>{Number(order.report.filled_quantity).toFixed(4)}</td>
+                <td>{order.report.average_price === null ? "—" : Number(order.report.average_price).toFixed(4)}</td>
+                <td><small>{new Date(order.created_at).toLocaleString("zh-CN", { hour12: false })}</small></td>
+              </tr>
+            ))}
+            {!orders.length && <tr><td colSpan={6} className="empty">尚无订单记录。</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <h4 className="account-subhead">风险事件</h4>
+      <div className="risk-events">
+        {riskEvents.map((event) => (
+          <div className="risk-event" key={event.id}>
+            <span className={`status-pill ${event.accepted ? "ok" : "off"}`}>{event.accepted ? "放行" : "否决"}</span>
+            <span className="risk-event-symbol"><strong>{event.symbol}</strong><small>{new Date(event.created_at).toLocaleString("zh-CN", { hour12: false })}</small></span>
+            <span className="risk-event-reason">{event.reason}</span>
+          </div>
+        ))}
+        {!riskEvents.length && <div className="empty cards">尚无风控决策记录。</div>}
+      </div>
+    </article>
+  );
 }
 
 function EquityChart({ points }: { points: Array<{ timestamp: string; equity: string }> }) {
