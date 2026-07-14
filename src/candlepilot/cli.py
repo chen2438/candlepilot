@@ -9,6 +9,7 @@ import uvicorn
 
 from candlepilot.config import Settings
 from candlepilot.market.binance import BinanceError, BinancePublicClient
+from candlepilot.observability import configure_structured_logging
 from candlepilot.providers.registry import ProviderRegistry
 
 
@@ -58,14 +59,16 @@ def main() -> None:
     settings = Settings.from_env()
     if settings.bind_host not in {"127.0.0.1", "localhost", "::1"}:
         raise SystemExit("CandlePilot v0.1 only permits a localhost bind address")
+    configure_structured_logging()
     uvicorn.run(
         "candlepilot.api:app",
         host=settings.bind_host,
         port=settings.bind_port,
         reload=False,
+        log_config=None,
+        access_log=False,
     )
 
 
 if __name__ == "__main__":
     main()
-

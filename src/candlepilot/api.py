@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
+from uuid import uuid4
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -9,7 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
@@ -28,6 +31,7 @@ from candlepilot.domain.models import MarketSnapshot, PortfolioState, TradeInten
 from candlepilot.market.binance import BinancePublicClient
 from candlepilot.market.cache import HistoricalMarketCache
 from candlepilot.market.history import build_backtest_candles
+from candlepilot.observability import OperationalMetrics
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.provenance import BACKTEST_DATA_SCHEMA_VERSION, content_fingerprint
 from candlepilot.risk.engine import SymbolRules
@@ -267,6 +271,8 @@ def create_app(
         testnet_feed=testnet_feed,
     )
     history_cache = HistoricalMarketCache(settings.data_dir / "market")
+    operational_metrics = OperationalMetrics()
+    request_logger = logging.getLogger("candlepilot.http")
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -295,6 +301,47 @@ def create_app(
     app.state.history_cache = history_cache
     app.state.paper_feed = paper_feed
     app.state.testnet_feed = testnet_feed
+    app.state.operational_metrics = operational_metrics
+
+    @app.middleware("http")
+    async def observe_request(request: Request, call_next: Any) -> Any:
+        request_id = uuid4().hex
+        started = time.perf_counter()
+        operational_metrics.request_started()
+        try:
+            response = await call_next(request)
+        except Exception:
+            duration_ms = (time.perf_counter() - started) * 1_000
+            operational_metrics.request_finished(500, duration_ms)
+            request_logger.exception(
+                "request_failed",
+                extra={
+                    "structured": {
+                        "request_id": request_id,
+                        "method": request.method,
+                        "path": request.url.path,
+                        "status_code": 500,
+                        "duration_ms": round(duration_ms, 3),
+                    }
+                },
+            )
+            raise
+        duration_ms = (time.perf_counter() - started) * 1_000
+        operational_metrics.request_finished(response.status_code, duration_ms)
+        response.headers["X-Request-ID"] = request_id
+        request_logger.info(
+            "request_completed",
+            extra={
+                "structured": {
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": response.status_code,
+                    "duration_ms": round(duration_ms, 3),
+                }
+            },
+        )
+        return response
 
     async def load_backtest_candles(
         symbol: str,
@@ -377,6 +424,10 @@ def create_app(
             "window_hours": hours,
             "providers": await engine.audit.provider_metrics(hours),
         }
+
+    @app.get("/api/metrics/runtime")
+    async def get_runtime_metrics() -> dict[str, Any]:
+        return operational_metrics.snapshot()
 
     @app.post("/api/providers/select")
     async def select_provider(selection: ProviderSelection) -> dict[str, Any]:

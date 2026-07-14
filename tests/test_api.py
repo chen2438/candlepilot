@@ -126,6 +126,11 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
             "schema_version": 1,
             "expected_schema_version": 1,
         }
+        runtime_metrics = client.get("/api/metrics/runtime")
+        assert runtime_metrics.status_code == 200
+        assert int(runtime_metrics.headers["X-Request-ID"], 16) >= 0
+        assert runtime_metrics.json()["requests_total"] >= 2
+        assert runtime_metrics.json()["in_flight"] == 1
         assert client.get("/api/status").json()["running"] is False
         assert client.get("/api/status").json()["market_stream"]["enabled"] is False
         assert client.get("/api/status").json()["user_stream"]["enabled"] is False
