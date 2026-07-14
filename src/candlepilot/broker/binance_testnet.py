@@ -32,6 +32,12 @@ class AccountReconciliationError(RuntimeError):
     pass
 
 
+class OrderStatusUnknown(RuntimeError):
+    def __init__(self, client_order_id: str) -> None:
+        super().__init__(f"order status remains unknown: {client_order_id}")
+        self.client_order_id = client_order_id
+
+
 @dataclass(frozen=True, slots=True)
 class BinanceTestnetCredentials:
     api_key: SecretStr
@@ -54,11 +60,17 @@ class BinanceTestnetBroker:
         *,
         base_url: str = BINANCE_FUTURES_TESTNET,
         client: httpx.AsyncClient | None = None,
+        recovery_attempts: int = 4,
+        recovery_delay: float = 0.25,
     ) -> None:
         normalized = base_url.rstrip("/")
         if normalized != BINANCE_FUTURES_TESTNET:
             raise ValueError("BinanceTestnetBroker only permits the official futures testnet")
         self.credentials = credentials
+        if recovery_attempts < 1 or recovery_delay < 0:
+            raise ValueError("invalid order recovery settings")
+        self.recovery_attempts = recovery_attempts
+        self.recovery_delay = recovery_delay
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             base_url=normalized,
@@ -205,11 +217,7 @@ class BinanceTestnetBroker:
         try:
             payload = await self._signed_request("POST", "/fapi/v1/order", params)
         except TimeoutError:
-            payload = await self._signed_request(
-                "GET",
-                "/fapi/v1/order",
-                {"symbol": order.symbol, "origClientOrderId": order.client_order_id},
-            )
+            payload = await self._recover_unknown_order(order)
         executed = Decimal(str(payload.get("executedQty", "0")))
         average = Decimal(str(payload.get("avgPrice", "0")))
         return ExecutionReport(
@@ -220,6 +228,24 @@ class BinanceTestnetBroker:
             message="Binance USD-M futures testnet",
             timestamp=datetime.now(UTC),
         )
+
+    async def _recover_unknown_order(self, order: OrderPlan) -> dict[str, Any]:
+        for attempt in range(self.recovery_attempts):
+            if attempt and self.recovery_delay:
+                await asyncio.sleep(self.recovery_delay * (2 ** (attempt - 1)))
+            try:
+                return await self._signed_request(
+                    "GET",
+                    "/fapi/v1/order",
+                    {
+                        "symbol": order.symbol,
+                        "origClientOrderId": order.client_order_id,
+                    },
+                )
+            except BinanceApiError as exc:
+                if exc.code != -2013:
+                    raise
+        raise OrderStatusUnknown(order.client_order_id)
 
     async def _emergency_reduce(self, order: OrderPlan, side: str) -> None:
         await self._signed_request(

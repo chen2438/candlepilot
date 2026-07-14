@@ -6,7 +6,11 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
-from candlepilot.broker.binance_testnet import BinanceTestnetBroker, BinanceTestnetCredentials
+from candlepilot.broker.binance_testnet import (
+    BinanceTestnetBroker,
+    BinanceTestnetCredentials,
+    OrderStatusUnknown,
+)
 from candlepilot.domain.models import OrderPlan, OrderType
 from candlepilot.market.binance import BINANCE_FUTURES_TESTNET
 
@@ -115,3 +119,80 @@ def test_reconciles_protective_stops(orders, unprotected) -> None:
     assert report.position_symbols == ("BTCUSDT",)
     assert report.unprotected_symbols == unprotected
     assert report.open_order_count == len(orders)
+
+
+def test_recovers_timed_out_order_by_client_id() -> None:
+    query_attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal query_attempts
+        if request.method == "POST":
+            raise httpx.ReadTimeout("unknown", request=request)
+        query_attempts += 1
+        if query_attempts < 3:
+            return httpx.Response(400, json={"code": -2013, "msg": "Order does not exist"})
+        return httpx.Response(
+            200,
+            json={
+                "clientOrderId": "cp-recover",
+                "status": "FILLED",
+                "executedQty": "1",
+                "avgPrice": "100",
+            },
+        )
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(
+            _credentials(), client=client, recovery_attempts=3, recovery_delay=0
+        )
+        report = await broker._place_order(
+            OrderPlan(
+                client_order_id="cp-recover",
+                symbol="BTCUSDT",
+                side="BUY",
+                quantity=Decimal("1"),
+                order_type=OrderType.MARKET,
+            )
+        )
+        await client.aclose()
+        return report
+
+    report = asyncio.run(scenario())
+    assert report.status == "FILLED"
+    assert query_attempts == 3
+
+
+def test_unknown_order_is_not_resubmitted() -> None:
+    post_attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal post_attempts
+        if request.method == "POST":
+            post_attempts += 1
+            raise httpx.ReadTimeout("unknown", request=request)
+        return httpx.Response(400, json={"code": -2013, "msg": "Order does not exist"})
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(
+            _credentials(), client=client, recovery_attempts=2, recovery_delay=0
+        )
+        with pytest.raises(OrderStatusUnknown):
+            await broker._place_order(
+                OrderPlan(
+                    client_order_id="cp-unknown",
+                    symbol="BTCUSDT",
+                    side="BUY",
+                    quantity=Decimal("1"),
+                    order_type=OrderType.MARKET,
+                )
+            )
+        await client.aclose()
+
+    asyncio.run(scenario())
+    assert post_attempts == 1
