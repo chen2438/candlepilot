@@ -178,6 +178,12 @@ class AuditRepository:
         self.sessions = sessions
 
     async def record_inference(self, result: ProviderResult) -> int:
+        usage = dict(result.usage)
+        usage["_provenance"] = {
+            "prompt_version": result.prompt_version,
+            "data_version": result.data_version,
+            "provider_version": result.provider_version,
+        }
         row = InferenceRow(
             provider=result.provider,
             model=result.model,
@@ -185,7 +191,7 @@ class AuditRepository:
             cadence=result.intent.cadence,
             intent_json=result.intent.model_dump_json(),
             raw_output=result.raw_output,
-            usage_json=json.dumps(result.usage, separators=(",", ":")),
+            usage_json=json.dumps(usage, separators=(",", ":")),
             duration_ms=result.duration.total_seconds() * 1000,
         )
         async with self.sessions.begin() as session:
@@ -291,19 +297,21 @@ class AuditRepository:
                     select(InferenceRow).order_by(InferenceRow.id.desc()).limit(limit)
                 )
             ).all()
-        return [
-            {
+        results = []
+        for row in rows:
+            usage = json.loads(row.usage_json)
+            results.append({
                 "id": row.id,
                 "provider": row.provider,
                 "model": row.model,
+                "provenance": usage.get("_provenance", {}),
                 "intent": TradeIntent.model_validate_json(row.intent_json).model_dump(mode="json"),
                 "duration_ms": row.duration_ms,
                 "created_at": row.created_at.replace(tzinfo=UTC)
                 if row.created_at.tzinfo is None
                 else row.created_at,
-            }
-            for row in rows
-        ]
+            })
+        return results
 
     async def intents_between(
         self,
@@ -325,17 +333,20 @@ class AuditRepository:
                     .order_by(InferenceRow.created_at.asc(), InferenceRow.id.asc())
                 )
             ).all()
-        return [
-            {
+        results = []
+        for row in rows:
+            usage = json.loads(row.usage_json)
+            results.append({
                 "id": row.id,
                 "provider": row.provider,
+                "model": row.model,
+                "provenance": usage.get("_provenance", {}),
                 "intent": TradeIntent.model_validate_json(row.intent_json),
                 "created_at": row.created_at.replace(tzinfo=UTC)
                 if row.created_at.tzinfo is None
                 else row.created_at,
-            }
-            for row in rows
-        ]
+            })
+        return results
 
     async def record_backtest(
         self, symbol: str, cadence: str, result: dict[str, Any]

@@ -28,6 +28,7 @@ from candlepilot.market.binance import BinancePublicClient
 from candlepilot.market.cache import HistoricalMarketCache
 from candlepilot.market.history import build_backtest_candles
 from candlepilot.providers.registry import ProviderRegistry
+from candlepilot.provenance import BACKTEST_DATA_SCHEMA_VERSION, content_fingerprint
 from candlepilot.risk.engine import SymbolRules
 from candlepilot.storage.database import AuditRepository, Database
 
@@ -132,6 +133,24 @@ def _candle_from_payload(payload: dict[str, Any]) -> Candle:
         volume=Decimal(str(payload["volume"])),
         funding_rate=Decimal(str(payload.get("funding_rate", "0"))),
     )
+
+
+def _backtest_provenance(
+    candles: list[Candle],
+    *,
+    prompt_versions: list[str | None] | None = None,
+    models: list[str | None] | None = None,
+    provider_versions: list[str | None] | None = None,
+) -> dict[str, Any]:
+    return {
+        "data_version": content_fingerprint(
+            candles,
+            schema_version=BACKTEST_DATA_SCHEMA_VERSION,
+        ),
+        "prompt_versions": sorted({item for item in prompt_versions or [] if item}),
+        "models": sorted({item for item in models or [] if item}),
+        "provider_versions": sorted({item for item in provider_versions or [] if item}),
+    }
 
 
 def _status(
@@ -501,10 +520,12 @@ def create_app(
             result = BacktestEngine(config).run(candles, decisions)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        serialized = _json_value(asdict(result))
+        serialized["provenance"] = _backtest_provenance(candles)
         return await engine.audit.record_backtest(
             request.symbol,
             request.cadence,
-            _json_value(asdict(result)),
+            serialized,
         )
 
     @app.post("/api/backtests/replay", status_code=201)
@@ -540,6 +561,14 @@ def create_app(
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"cached replay failed: {exc}") from exc
         serialized = _json_value(asdict(result))
+        serialized["provenance"] = _backtest_provenance(
+            candles,
+            prompt_versions=[item["provenance"].get("prompt_version") for item in records],
+            models=[item.get("model") for item in records],
+            provider_versions=[
+                item["provenance"].get("provider_version") for item in records
+            ],
+        )
         serialized["replay"] = {
             "source": "cached_llm_decisions",
             "decision_count": len(decisions),
@@ -588,6 +617,12 @@ def create_app(
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"fresh LLM replay failed: {exc}") from exc
         serialized = _json_value(asdict(result))
+        serialized["provenance"] = _backtest_provenance(
+            candles,
+            prompt_versions=[item.prompt_version for item in provider_results],
+            models=[item.model for item in provider_results],
+            provider_versions=[item.provider_version for item in provider_results],
+        )
         serialized["replay"] = {
             "source": "fresh_llm_calls",
             "provider": request.provider,
@@ -631,6 +666,19 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         serialized = _json_value(asdict(result))
+        serialized["provenance"] = {
+            "data_version": content_fingerprint(
+                legs,
+                schema_version=BACKTEST_DATA_SCHEMA_VERSION,
+            ),
+            "per_symbol_data_versions": {
+                symbol: _backtest_provenance(candles)["data_version"]
+                for symbol, (candles, _) in legs.items()
+            },
+            "prompt_versions": [],
+            "models": [],
+            "provider_versions": [],
+        }
         serialized["symbols"] = symbols
         serialized["cadences"] = {leg.symbol: leg.cadence for leg in request.legs}
         return await engine.audit.record_backtest("PORTFOLIO", "mixed", serialized)

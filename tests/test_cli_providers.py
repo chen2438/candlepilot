@@ -93,6 +93,9 @@ def test_codex_provider_parses_schema_output(tmp_path: Path) -> None:
     )
     assert result.intent.action == TradeAction.OPEN_LONG
     assert result.intent.risk_fraction == Decimal("0.01")
+    assert result.prompt_version == "trade-intent-v1"
+    assert result.data_version is not None
+    assert result.data_version.startswith("market-snapshot-v1:sha256:")
 
 
 def test_claude_provider_unwraps_result(tmp_path: Path) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import Any
 
 from candlepilot.domain.models import MarketSnapshot, PortfolioState, ProviderHealth, TradeIntent
 
@@ -14,7 +15,10 @@ class ProviderResult:
     model: str | None
     duration: timedelta
     raw_output: str
-    usage: dict[str, int | float | str]
+    usage: dict[str, Any]
+    prompt_version: str | None = None
+    data_version: str | None = None
+    provider_version: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

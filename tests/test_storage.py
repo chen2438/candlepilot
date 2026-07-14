@@ -21,6 +21,9 @@ def test_inference_audit_round_trip(tmp_path: Path) -> None:
                 duration=timedelta(milliseconds=123),
                 raw_output=intent.model_dump_json(),
                 usage={"input_tokens": 10},
+                prompt_version="trade-intent-v1",
+                data_version="market-snapshot-v1:sha256:test",
+                provider_version="codex-cli 1.0",
             )
         )
         rows = await repository.recent_intents()
@@ -38,6 +41,8 @@ def test_inference_audit_round_trip(tmp_path: Path) -> None:
     assert rows[0]["provider"] == "codex-auth"
     assert rows[0]["intent"]["symbol"] == "BTCUSDT"
     assert rows[0]["duration_ms"] == 123
+    assert rows[0]["provenance"]["prompt_version"] == "trade-intent-v1"
+    assert replay_rows[0]["model"] == "test-model"
     assert replay_rows[0]["intent"].symbol == "BTCUSDT"
 
 

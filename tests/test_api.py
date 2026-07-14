@@ -185,6 +185,9 @@ def test_backtest_run_is_persisted_and_listed(tmp_path: Path) -> None:
         assert run["symbol"] == "BTCUSDT"
         assert len(run["result"]["trades"]) == 1
         assert run["result"]["total_return"] != "0"
+        assert run["result"]["provenance"]["data_version"].startswith(
+            "backtest-candles-v1:sha256:"
+        )
 
         listed = client.get("/api/backtests").json()
         assert listed == [run]

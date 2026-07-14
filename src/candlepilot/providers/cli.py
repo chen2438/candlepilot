@@ -16,6 +16,11 @@ from pydantic import ValidationError
 
 from candlepilot.domain.models import MarketSnapshot, PortfolioState, ProviderHealth, TradeIntent
 from candlepilot.providers.base import LLMProvider, ProviderCapabilities, ProviderResult
+from candlepilot.provenance import (
+    DECISION_PROMPT_VERSION,
+    MARKET_SNAPSHOT_SCHEMA_VERSION,
+    content_fingerprint,
+)
 
 
 CODEX_APP_BINARY = Path("/Applications/Codex.app/Contents/Resources/codex")
@@ -130,6 +135,7 @@ def _decision_prompt(snapshot: MarketSnapshot, portfolio: PortfolioState) -> str
         "portfolio": portfolio.model_dump(mode="json"),
     }
     return (
+        f"Prompt version: {DECISION_PROMPT_VERSION}. "
         "You are the decision component of a testnet-only intraday futures system. "
         "Do not use tools, files, shell commands, web search, or external context. "
         "Analyze only the JSON supplied below. Return exactly one object matching the "
@@ -177,6 +183,7 @@ class CodexAuthProvider(LLMProvider):
         self.timeout = timeout
         self._semaphore = asyncio.Semaphore(1)
         self._active_task: asyncio.Task[Any] | None = None
+        self._provider_version: str | None = None
 
     @property
     def capabilities(self) -> ProviderCapabilities:
@@ -206,6 +213,7 @@ class CodexAuthProvider(LLMProvider):
                 auth, _ = await _run_process(
                     [str(self.executable), "login", "status"], cwd=Path(directory), timeout=8
                 )
+            self._provider_version = version.strip()
             return ProviderHealth(
                 provider=self.name,
                 available=True,
@@ -270,6 +278,12 @@ class CodexAuthProvider(LLMProvider):
             duration=timedelta(seconds=time.monotonic() - started),
             raw_output=stdout,
             usage={},
+            prompt_version=DECISION_PROMPT_VERSION,
+            data_version=content_fingerprint(
+                snapshot.model_dump(mode="json"),
+                schema_version=MARKET_SNAPSHOT_SCHEMA_VERSION,
+            ),
+            provider_version=self._provider_version,
         )
 
 
@@ -281,6 +295,7 @@ class ClaudeCodeAuthProvider(LLMProvider):
         self.timeout = timeout
         self._semaphore = asyncio.Semaphore(1)
         self._active_task: asyncio.Task[Any] | None = None
+        self._provider_version: str | None = None
 
     @property
     def capabilities(self) -> ProviderCapabilities:
@@ -310,6 +325,7 @@ class ClaudeCodeAuthProvider(LLMProvider):
                 auth, _ = await _run_process(
                     [str(self.executable), "auth", "status"], cwd=Path(directory), timeout=8
                 )
+            self._provider_version = version.strip()
             return ProviderHealth(
                 provider=self.name,
                 available=True,
@@ -373,4 +389,10 @@ class ClaudeCodeAuthProvider(LLMProvider):
             duration=timedelta(seconds=time.monotonic() - started),
             raw_output=stdout,
             usage=usage,
+            prompt_version=DECISION_PROMPT_VERSION,
+            data_version=content_fingerprint(
+                snapshot.model_dump(mode="json"),
+                schema_version=MARKET_SNAPSHOT_SCHEMA_VERSION,
+            ),
+            provider_version=self._provider_version,
         )
