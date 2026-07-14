@@ -4,9 +4,11 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from decimal import Decimal
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from candlepilot.application.engine import TradingEngine
@@ -45,7 +47,9 @@ def _status(engine: TradingEngine) -> dict[str, Any]:
         "emergency_locked": engine.emergency_locked,
         "selected_provider": engine.selected_provider,
         "candidate_count": len(engine.candidates),
-        "universe_refreshed_at": engine.universe_refreshed_at,
+        "universe_refreshed_at": engine.universe_refreshed_at.isoformat()
+        if engine.universe_refreshed_at
+        else None,
     }
 
 
@@ -186,8 +190,11 @@ def create_app(
         except (WebSocketDisconnect, RuntimeError):
             return
 
+    frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+    if frontend_dist.is_dir():
+        app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="console")
+
     return app
 
 
 app = create_app()
-

@@ -1,6 +1,7 @@
 .DS_Store
 .env
 .venv/
+.pnpm-store/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -14,4 +15,6 @@ dist/
 build/
 node_modules/
 frontend/dist/
-
+*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts

@@ -67,6 +67,12 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         assert client.post("/api/engine/start").json()["running"] is True
         universe = client.post("/api/universe/refresh").json()
         assert universe[0]["symbol"] == "BTCUSDT"
+        refreshed_at = client.get("/api/status").json()["universe_refreshed_at"]
+        assert isinstance(refreshed_at, str) and refreshed_at.endswith("+00:00")
+        with client.websocket_connect("/ws/events") as socket:
+            event = socket.receive_json()
+            assert event["type"] == "status"
+            assert event["data"]["universe_refreshed_at"] == refreshed_at
         stopped = client.post("/api/engine/emergency-stop").json()
         assert stopped["running"] is False
         assert stopped["emergency_locked"] is True
