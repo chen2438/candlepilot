@@ -135,6 +135,7 @@ class AggressiveRiskPolicy:
             order_type=intent.order_type,
             price=intent.entry_price,
             stop_price=stop,
+            take_profit_price=intent.take_profit,
             reduce_only=False,
         )
         return RiskEvaluation(

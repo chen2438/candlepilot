@@ -138,6 +138,7 @@ class OrderPlan(StrictModel):
     order_type: OrderType
     price: Decimal | None = Field(default=None, gt=0)
     stop_price: Decimal | None = Field(default=None, gt=0)
+    take_profit_price: Decimal | None = Field(default=None, gt=0)
     reduce_only: bool = False
 
 

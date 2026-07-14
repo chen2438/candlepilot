@@ -61,6 +61,7 @@ def test_sizes_position_from_stop_distance_and_rounds_down() -> None:
     assert result.order is not None
     assert result.order.quantity == Decimal("95.238")
     assert result.order.stop_price == Decimal("98")
+    assert result.order.take_profit_price == Decimal("104")
 
 
 def test_rejects_stale_market_data() -> None:
