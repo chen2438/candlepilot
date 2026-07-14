@@ -2,7 +2,9 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from candlepilot.domain.models import TradeIntent
+from decimal import Decimal
+
+from candlepilot.domain.models import ExecutionReport, RiskDecision, TradeIntent
 from candlepilot.providers.base import ProviderResult
 from candlepilot.storage.database import AuditRepository, Database
 
@@ -44,6 +46,42 @@ def test_inference_audit_round_trip(tmp_path: Path) -> None:
     assert rows[0]["provenance"]["prompt_version"] == "trade-intent-v1"
     assert replay_rows[0]["model"] == "test-model"
     assert replay_rows[0]["intent"].symbol == "BTCUSDT"
+
+
+def test_execution_and_risk_queries_filter_and_order(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'queries.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        await repository.record_execution(
+            "BTCUSDT",
+            ExecutionReport(client_order_id="cp-1", status="FILLED", average_price=Decimal("100")),
+        )
+        await repository.record_execution(
+            "ETHUSDT",
+            ExecutionReport(client_order_id="cp-2", status="NEW"),
+        )
+        await repository.record_risk(
+            "BTCUSDT", RiskDecision(accepted=True, reason="within limits")
+        )
+        await repository.record_risk(
+            "ETHUSDT", RiskDecision(accepted=False, reason="missing stop"), inference_id=7
+        )
+        orders = await repository.recent_executions()
+        fills = await repository.recent_executions(status="FILLED")
+        risk = await repository.recent_risk_decisions()
+        rejections = await repository.recent_risk_decisions(accepted=False)
+        await database.close()
+        return orders, fills, risk, rejections
+
+    orders, fills, risk, rejections = asyncio.run(scenario())
+    assert [item["client_order_id"] for item in orders] == ["cp-2", "cp-1"]
+    assert [item["status"] for item in fills] == ["FILLED"]
+    assert fills[0]["report"]["average_price"] == "100"
+    assert risk[0]["symbol"] == "ETHUSDT" and risk[0]["accepted"] is False
+    assert len(rejections) == 1
+    assert rejections[0]["reason"] == "missing stop"
+    assert rejections[0]["inference_id"] == 7
 
 
 def test_database_migrations_are_versioned_and_idempotent(tmp_path: Path) -> None:

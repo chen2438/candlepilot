@@ -296,6 +296,31 @@ class PaperExecutor:
             },
         )
 
+    def position_snapshots(self) -> list[dict[str, Any]]:
+        snapshots: list[dict[str, Any]] = []
+        for symbol, position in self._positions.items():
+            mark = self._marks.get(symbol, position.average_price)
+            direction = Decimal("1") if position.side == "LONG" else Decimal("-1")
+            notional = position.quantity * mark
+            snapshots.append(
+                {
+                    "symbol": symbol,
+                    "side": position.side,
+                    "quantity": position.quantity,
+                    "average_price": position.average_price,
+                    "mark_price": mark,
+                    "leverage": position.leverage,
+                    "unrealized_pnl": position.quantity
+                    * (mark - position.average_price)
+                    * direction,
+                    "notional": notional,
+                    "margin_used": notional / position.leverage,
+                    "stop_loss": position.stop_loss,
+                    "take_profit": position.take_profit,
+                }
+            )
+        return snapshots
+
     @property
     def orders(self) -> tuple[ExecutionReport, ...]:
         return tuple(self._orders.values())

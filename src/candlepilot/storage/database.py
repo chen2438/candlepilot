@@ -223,6 +223,49 @@ class AuditRepository:
             session.add(row)
         return row.id
 
+    async def recent_executions(
+        self, limit: int = 100, *, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        query = select(ExecutionRow)
+        if status is not None:
+            query = query.where(ExecutionRow.status == status)
+        query = query.order_by(ExecutionRow.id.desc()).limit(limit)
+        async with self.sessions() as session:
+            rows = (await session.scalars(query)).all()
+        return [
+            {
+                "id": row.id,
+                "client_order_id": row.client_order_id,
+                "symbol": row.symbol,
+                "status": row.status,
+                "report": json.loads(row.report_json),
+                "created_at": self._utc(row.created_at),
+            }
+            for row in rows
+        ]
+
+    async def recent_risk_decisions(
+        self, limit: int = 100, *, accepted: bool | None = None
+    ) -> list[dict[str, Any]]:
+        query = select(RiskRow)
+        if accepted is not None:
+            query = query.where(RiskRow.accepted == int(accepted))
+        query = query.order_by(RiskRow.id.desc()).limit(limit)
+        async with self.sessions() as session:
+            rows = (await session.scalars(query)).all()
+        return [
+            {
+                "id": row.id,
+                "inference_id": row.inference_id,
+                "symbol": row.symbol,
+                "accepted": bool(row.accepted),
+                "reason": row.reason,
+                "decision": json.loads(row.decision_json),
+                "created_at": self._utc(row.created_at),
+            }
+            for row in rows
+        ]
+
     async def record_user_event(self, event: UserStreamEvent) -> int:
         row = UserStreamEventRow(
             event_type=event.event_type,

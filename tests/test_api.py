@@ -8,7 +8,12 @@ from fastapi.testclient import TestClient
 from candlepilot.api import create_app
 from candlepilot.application.engine import TradingEngine
 from candlepilot.config import Settings
-from candlepilot.domain.models import ProviderHealth, TradeIntent, TradingMode
+from candlepilot.domain.models import (
+    MarketSnapshot,
+    ProviderHealth,
+    TradeIntent,
+    TradingMode,
+)
 from candlepilot.market.scanner import MarketCandidateInput
 from candlepilot.providers.base import LLMProvider, ProviderResult
 from candlepilot.providers.registry import ProviderRegistry
@@ -108,6 +113,68 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         stopped = client.post("/api/engine/emergency-stop").json()
         assert stopped["running"] is False
         assert stopped["emergency_locked"] is True
+    asyncio.run(database.close())
+
+
+def test_account_and_risk_query_endpoints(tmp_path: Path) -> None:
+    from candlepilot.domain.models import OrderPlan, OrderType
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'account-api.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.PAPER,
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        # Empty account before any trading activity.
+        assert client.get("/api/account/positions").json() == []
+        assert client.get("/api/orders").json() == []
+        assert client.get("/api/fills").json() == []
+        assert client.get("/api/risk-events").json() == []
+        portfolio = client.get("/api/account/portfolio").json()
+        assert portfolio["mode"] == "paper-production-data"
+        assert portfolio["equity"] == "10000"
+        assert portfolio["open_positions"] == 0
+
+        # Seed one filled paper position directly through the executor.
+        snapshot = MarketSnapshot(
+            symbol="BTCUSDT",
+            cadence="1m",
+            timestamp=datetime.now(UTC),
+            mark_price="100",
+            bid="99.9",
+            ask="100.1",
+            quote_volume_24h="1000000",
+        )
+        report = asyncio.run(
+            engine.paper_executor.execute(
+                OrderPlan(
+                    client_order_id="cp-account-1",
+                    symbol="BTCUSDT",
+                    side="BUY",
+                    quantity=Decimal("1"),
+                    order_type=OrderType.MARKET,
+                    stop_price=Decimal("95"),
+                ),
+                snapshot,
+                leverage=3,
+            )
+        )
+        asyncio.run(engine.audit.record_execution("BTCUSDT", report))
+
+        positions = client.get("/api/account/positions").json()
+        assert positions[0]["symbol"] == "BTCUSDT"
+        assert positions[0]["side"] == "LONG"
+        assert positions[0]["leverage"] == 3
+        orders = client.get("/api/orders").json()
+        assert orders[0]["client_order_id"] == "cp-account-1"
+        assert client.get("/api/fills").json()[0]["status"] == "FILLED"
+        assert client.get("/api/account/portfolio").json()["open_positions"] == 1
+        assert client.get("/api/orders?limit=0").status_code == 422
     asyncio.run(database.close())
 
 

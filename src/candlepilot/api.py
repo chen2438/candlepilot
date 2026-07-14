@@ -474,6 +474,49 @@ def create_app(
             raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
         return await engine.audit.recent_user_events(limit)
 
+    @app.get("/api/account/portfolio")
+    async def get_account_portfolio() -> dict[str, Any]:
+        executor = engine.paper_executor
+        state = executor.portfolio_state()
+        return _json_value(
+            {
+                "mode": engine.mode.value,
+                "initial_equity": executor.initial_equity,
+                "cash": executor.cash,
+                "equity": state.equity,
+                "available_balance": state.available_balance,
+                "daily_pnl": state.daily_pnl,
+                "open_positions": state.open_positions,
+                "margin_used": state.margin_used,
+            }
+        )
+
+    @app.get("/api/account/positions")
+    async def get_account_positions() -> list[dict[str, Any]]:
+        return [_json_value(item) for item in engine.paper_executor.position_snapshots()]
+
+    @app.get("/api/orders")
+    async def get_orders(
+        limit: int = 100, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 500:
+            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+        return await engine.audit.recent_executions(limit, status=status)
+
+    @app.get("/api/fills")
+    async def get_fills(limit: int = 100) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 500:
+            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+        return await engine.audit.recent_executions(limit, status="FILLED")
+
+    @app.get("/api/risk-events")
+    async def get_risk_events(
+        limit: int = 100, accepted: bool | None = None
+    ) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 500:
+            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+        return await engine.audit.recent_risk_decisions(limit, accepted=accepted)
+
     @app.post("/api/decisions/evaluate")
     async def evaluate_decision(request: DecisionRequest) -> dict[str, Any]:
         rules = SymbolRules(

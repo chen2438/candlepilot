@@ -66,6 +66,39 @@ def test_protective_stop_closes_paper_position() -> None:
     assert executor.portfolio_state().open_positions == 0
 
 
+def test_position_snapshots_report_unrealized_pnl_and_margin() -> None:
+    async def scenario():
+        executor = PaperExecutor(slippage_fraction=Decimal("0"), fee_rate=Decimal("0"))
+        await executor.execute(
+            OrderPlan(
+                client_order_id="long-entry",
+                symbol="BTCUSDT",
+                side="BUY",
+                quantity=Decimal("2"),
+                order_type=OrderType.MARKET,
+                stop_price=Decimal("95"),
+                take_profit_price=Decimal("110"),
+            ),
+            _snapshot("100", "99.9", "100.1"),
+            leverage=4,
+        )
+        await executor.mark_to_market(_snapshot("105", "104.9", "105.1"))
+        return executor.position_snapshots()
+
+    snapshots = asyncio.run(scenario())
+    assert len(snapshots) == 1
+    position = snapshots[0]
+    assert position["symbol"] == "BTCUSDT"
+    assert position["side"] == "LONG"
+    assert position["leverage"] == 4
+    # Entered at the slippage-free ask of 100.1, mark now 105.
+    assert position["unrealized_pnl"] == Decimal("2") * (Decimal("105") - Decimal("100.1"))
+    assert position["notional"] == Decimal("2") * Decimal("105")
+    assert position["margin_used"] == position["notional"] / Decimal("4")
+    assert position["stop_loss"] == Decimal("95")
+    assert position["take_profit"] == Decimal("110")
+
+
 def test_take_profit_closes_short_position() -> None:
     async def scenario():
         executor = PaperExecutor(slippage_fraction=Decimal("0"))
