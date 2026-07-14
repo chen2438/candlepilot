@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -91,3 +91,66 @@ def test_unknown_provider_is_404(tmp_path: Path) -> None:
     with TestClient(app) as client:
         response = client.post("/api/providers/select", json={"name": "missing"})
         assert response.status_code == 404
+
+
+def test_backtest_run_is_persisted_and_listed(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'backtest-api.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.PAPER,
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    first = datetime(2026, 1, 1, tzinfo=UTC)
+    payload = {
+        "symbol": "BTCUSDT",
+        "cadence": "5m",
+        "candles": [
+            {
+                "timestamp": first.isoformat(),
+                "open": "100",
+                "high": "101",
+                "low": "99",
+                "close": "100",
+                "volume": "10",
+            },
+            {
+                "timestamp": (first + timedelta(minutes=5)).isoformat(),
+                "open": "100",
+                "high": "111",
+                "low": "99",
+                "close": "110",
+                "volume": "12",
+            },
+        ],
+        "decisions": [
+            {
+                "decided_at": first.isoformat(),
+                "intent": {
+                    "symbol": "BTCUSDT",
+                    "cadence": "5m",
+                    "action": "OPEN_LONG",
+                    "confidence": 0.8,
+                    "leverage": 2,
+                    "risk_fraction": "0.01",
+                    "stop_loss": "95",
+                    "take_profit": "108",
+                    "rationale": "fixture breakout",
+                },
+            }
+        ],
+    }
+
+    with TestClient(app) as client:
+        created = client.post("/api/backtests", json=payload)
+        assert created.status_code == 201
+        run = created.json()
+        assert run["id"] == 1
+        assert run["symbol"] == "BTCUSDT"
+        assert len(run["result"]["trades"]) == 1
+        assert run["result"]["total_return"] != "0"
+
+        listed = client.get("/api/backtests").json()
+        assert listed == [run]

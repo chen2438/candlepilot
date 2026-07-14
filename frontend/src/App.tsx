@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { Candidate, EngineStatus, ProviderHealth, Signal } from "./types";
+import type { BacktestRun, Candidate, EngineStatus, ProviderHealth, Signal } from "./types";
 
 const emptyStatus: EngineStatus = {
   mode: "paper-production-data",
@@ -37,21 +37,24 @@ export default function App() {
   const [providers, setProviders] = useState<ProviderHealth[]>([]);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [signals, setSignals] = useState<Signal[]>([]);
+  const [backtests, setBacktests] = useState<BacktestRun[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [socketOnline, setSocketOnline] = useState(false);
 
   const refresh = useCallback(async () => {
-    const [nextStatus, nextProviders, nextCandidates, nextSignals] = await Promise.all([
+    const [nextStatus, nextProviders, nextCandidates, nextSignals, nextBacktests] = await Promise.all([
       api<EngineStatus>("/api/status"),
       api<ProviderHealth[]>("/api/providers"),
       api<Candidate[]>("/api/universe"),
       api<Signal[]>("/api/signals?limit=20"),
+      api<BacktestRun[]>("/api/backtests?limit=10"),
     ]);
     setStatus(nextStatus);
     setProviders(nextProviders);
     setCandidates(nextCandidates);
     setSignals(nextSignals);
+    setBacktests(nextBacktests);
   }, []);
 
   useEffect(() => {
@@ -225,6 +228,30 @@ export default function App() {
               {!signals.length && <div className="empty cards">启动引擎后，结构化交易意图会显示在这里。</div>}
             </div>
           </article>
+
+          <article className="panel backtest-panel">
+            <PanelTitle code="05" title="回测运行" meta="事件驱动 · 下一根 K 线成交" />
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>运行</th><th>标的</th><th>周期</th><th>总收益</th><th>最大回撤</th><th>胜率</th><th>交易数</th><th>时间</th></tr></thead>
+                <tbody>
+                  {backtests.map((run) => (
+                    <tr key={run.id}>
+                      <td>#{run.id}</td>
+                      <td><strong>{run.symbol}</strong></td>
+                      <td>{run.cadence}</td>
+                      <td className={Number(run.result.total_return) >= 0 ? "positive" : "negative"}>{percent(run.result.total_return)}</td>
+                      <td className="negative">{percent(run.result.max_drawdown)}</td>
+                      <td>{percent(run.result.win_rate)}</td>
+                      <td>{run.result.trades.length}</td>
+                      <td>{new Date(run.created_at).toLocaleString("zh-CN", { hour12: false })}</td>
+                    </tr>
+                  ))}
+                  {!backtests.length && <tr><td colSpan={8} className="empty">尚无回测运行。通过 POST /api/backtests 提交历史 K 线与交易意图。</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </article>
         </section>
       </main>
       <footer><span>CANDLEPILOT / GPL-3.0</span><span>LOCALHOST ONLY · NO LIVE MONEY</span></footer>
@@ -243,4 +270,3 @@ function PanelTitle({ code, title, meta }: { code: string; title: string; meta: 
 function RiskItem({ label, value, detail }: { label: string; value: string; detail: string }) {
   return <div className="risk-item"><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;
 }
-

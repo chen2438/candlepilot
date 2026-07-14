@@ -60,6 +60,18 @@ class ExecutionRow(Base):
     )
 
 
+class BacktestRow(Base):
+    __tablename__ = "backtests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    cadence: Mapped[str] = mapped_column(String(8), index=True)
+    result_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
+    )
+
+
 class Database:
     def __init__(self, url: str) -> None:
         self.engine: AsyncEngine = create_async_engine(url)
@@ -147,3 +159,39 @@ class AuditRepository:
             }
             for row in rows
         ]
+
+    async def record_backtest(
+        self, symbol: str, cadence: str, result: dict[str, Any]
+    ) -> dict[str, Any]:
+        row = BacktestRow(
+            symbol=symbol,
+            cadence=cadence,
+            result_json=json.dumps(result, separators=(",", ":")),
+        )
+        async with self.sessions.begin() as session:
+            session.add(row)
+        return self._backtest_dict(row)
+
+    async def recent_backtests(self, limit: int = 20) -> list[dict[str, Any]]:
+        async with self.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(BacktestRow).order_by(BacktestRow.id.desc()).limit(limit)
+                )
+            ).all()
+        return [self._backtest_dict(row) for row in rows]
+
+    @staticmethod
+    def _backtest_dict(row: BacktestRow) -> dict[str, Any]:
+        created_at = (
+            row.created_at.replace(tzinfo=UTC)
+            if row.created_at.tzinfo is None
+            else row.created_at
+        )
+        return {
+            "id": row.id,
+            "symbol": row.symbol,
+            "cadence": row.cadence,
+            "result": json.loads(row.result_json),
+            "created_at": created_at,
+        }

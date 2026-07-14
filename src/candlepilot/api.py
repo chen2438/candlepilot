@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import asdict
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
@@ -13,9 +15,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from candlepilot.application.engine import TradingEngine
 from candlepilot.application.scheduler import TradingScheduler
+from candlepilot.backtest.engine import BacktestConfig, BacktestEngine, Candle, ReplayIntent
 from candlepilot.broker.binance_testnet import BinanceTestnetBroker, BinanceTestnetCredentials
 from candlepilot.config import Settings
-from candlepilot.domain.models import MarketSnapshot, PortfolioState
+from candlepilot.domain.models import MarketSnapshot, PortfolioState, TradeIntent
 from candlepilot.market.binance import BinancePublicClient
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.risk.engine import SymbolRules
@@ -40,6 +43,49 @@ class DecisionRequest(ApiModel):
     snapshot: MarketSnapshot
     portfolio: PortfolioState
     rules: SymbolRulesInput
+
+
+class BacktestCandleInput(ApiModel):
+    timestamp: datetime
+    open: Annotated[Decimal, Field(gt=0)]
+    high: Annotated[Decimal, Field(gt=0)]
+    low: Annotated[Decimal, Field(gt=0)]
+    close: Annotated[Decimal, Field(gt=0)]
+    volume: Annotated[Decimal, Field(ge=0)]
+    funding_rate: Decimal = Decimal("0")
+
+
+class ReplayIntentInput(ApiModel):
+    decided_at: datetime
+    intent: TradeIntent
+
+
+class BacktestConfigInput(ApiModel):
+    initial_equity: Annotated[Decimal, Field(gt=0)] = Decimal("10000")
+    fee_rate: Annotated[Decimal, Field(ge=0, le=1)] = Decimal("0.0005")
+    slippage_fraction: Annotated[Decimal, Field(ge=0, le=1)] = Decimal("0.0005")
+    max_risk_fraction: Annotated[Decimal, Field(gt=0, le=1)] = Decimal("0.02")
+    max_margin_fraction: Annotated[Decimal, Field(gt=0, le=1)] = Decimal("0.60")
+
+
+class BacktestRunRequest(ApiModel):
+    symbol: str = Field(pattern=r"^[A-Z0-9]+USDT$")
+    cadence: Literal["1m", "5m", "15m"]
+    candles: list[BacktestCandleInput] = Field(min_length=1, max_length=100_000)
+    decisions: list[ReplayIntentInput] = Field(default_factory=list, max_length=100_000)
+    config: BacktestConfigInput = Field(default_factory=BacktestConfigInput)
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    return value
 
 
 def _status(engine: TradingEngine) -> dict[str, Any]:
@@ -198,6 +244,38 @@ def create_app(
             if outcome.execution
             else None,
         }
+
+    @app.get("/api/backtests")
+    async def get_backtests(limit: int = 20) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 100:
+            raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
+        return await engine.audit.recent_backtests(limit)
+
+    @app.post("/api/backtests", status_code=201)
+    async def run_backtest(request: BacktestRunRequest) -> dict[str, Any]:
+        mismatched = [
+            replay
+            for replay in request.decisions
+            if replay.intent.symbol != request.symbol
+            or replay.intent.cadence != request.cadence
+        ]
+        if mismatched:
+            raise HTTPException(
+                status_code=422,
+                detail="all replay intents must match the requested symbol and cadence",
+            )
+        config = BacktestConfig(**request.config.model_dump())
+        candles = [Candle(**item.model_dump()) for item in request.candles]
+        decisions = [ReplayIntent(item.decided_at, item.intent) for item in request.decisions]
+        try:
+            result = BacktestEngine(config).run(candles, decisions)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return await engine.audit.record_backtest(
+            request.symbol,
+            request.cadence,
+            _json_value(asdict(result)),
+        )
 
     @app.websocket("/ws/events")
     async def event_stream(websocket: WebSocket) -> None:

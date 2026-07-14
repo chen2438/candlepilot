@@ -41,3 +41,20 @@ export interface Signal {
   created_at: string;
 }
 
+export interface BacktestRun {
+  id: number;
+  symbol: string;
+  cadence: string;
+  result: {
+    initial_equity: string;
+    final_equity: string;
+    total_return: string;
+    max_drawdown: string;
+    win_rate: string;
+    profit_factor: string | null;
+    total_fees: string;
+    total_funding: string;
+    trades: unknown[];
+  };
+  created_at: string;
+}
