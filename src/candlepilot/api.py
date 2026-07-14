@@ -31,7 +31,7 @@ from candlepilot.domain.models import MarketSnapshot, PortfolioState, TradeInten
 from candlepilot.market.binance import BinancePublicClient
 from candlepilot.market.cache import HistoricalMarketCache
 from candlepilot.market.history import build_backtest_candles
-from candlepilot.observability import OperationalMetrics, evaluate_alerts
+from candlepilot.observability import AlertNotifier, OperationalMetrics, evaluate_alerts
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.provenance import BACKTEST_DATA_SCHEMA_VERSION, content_fingerprint
 from candlepilot.risk.engine import SymbolRules
@@ -272,6 +272,8 @@ def create_app(
     )
     history_cache = HistoricalMarketCache(settings.data_dir / "market")
     operational_metrics = OperationalMetrics()
+    alert_notifier = AlertNotifier()
+    alert_lock = asyncio.Lock()
     request_logger = logging.getLogger("candlepilot.http")
 
     @asynccontextmanager
@@ -445,11 +447,23 @@ def create_app(
                 engine.mode == TradingMode.TESTNET and engine.testnet_broker is None
             ),
         )
+        async with alert_lock:
+            transitions = alert_notifier.diff(alerts)
+            alert_notifier.emit(transitions)
+            for event in transitions:
+                await engine.audit.record_alert_event(event)
         return {
             "active_count": len(alerts),
             "alerts": alerts,
+            "transitions": transitions,
             "evaluated_at": datetime.now(UTC),
         }
+
+    @app.get("/api/alerts/history")
+    async def get_alert_history(limit: int = 100) -> dict[str, Any]:
+        if not 1 <= limit <= 500:
+            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+        return {"events": await engine.audit.recent_alert_events(limit)}
 
     @app.post("/api/providers/select")
     async def select_provider(selection: ProviderSelection) -> dict[str, Any]:

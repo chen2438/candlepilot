@@ -105,6 +105,21 @@ class UserStreamEventRow(Base):
     )
 
 
+class AlertEventRow(Base):
+    __tablename__ = "alert_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    alert_id: Mapped[str] = mapped_column(String(96), index=True)
+    transition: Mapped[str] = mapped_column(String(16), index=True)
+    severity: Mapped[str] = mapped_column(String(16))
+    source: Mapped[str] = mapped_column(String(64), index=True)
+    title: Mapped[str] = mapped_column(Text)
+    detail: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
+    )
+
+
 class SchemaMigrationRow(Base):
     __tablename__ = "schema_migrations"
 
@@ -313,6 +328,40 @@ class AuditRepository:
                 "symbol": row.symbol,
                 "accepted": bool(row.accepted),
                 "reason": row.reason,
+                "created_at": self._utc(row.created_at),
+            }
+            for row in rows
+        ]
+
+    async def record_alert_event(self, event: dict[str, Any]) -> int:
+        row = AlertEventRow(
+            alert_id=str(event["id"]),
+            transition=str(event["transition"]),
+            severity=str(event.get("severity", "")),
+            source=str(event.get("source", "")),
+            title=str(event.get("title", "")),
+            detail=str(event.get("detail", "")),
+        )
+        async with self.sessions.begin() as session:
+            session.add(row)
+        return row.id
+
+    async def recent_alert_events(self, limit: int = 100) -> list[dict[str, Any]]:
+        async with self.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(AlertEventRow).order_by(AlertEventRow.id.desc()).limit(limit)
+                )
+            ).all()
+        return [
+            {
+                "id": row.id,
+                "alert_id": row.alert_id,
+                "transition": row.transition,
+                "severity": row.severity,
+                "source": row.source,
+                "title": row.title,
+                "detail": row.detail,
                 "created_at": self._utc(row.created_at),
             }
             for row in rows

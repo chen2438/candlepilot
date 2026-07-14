@@ -1,7 +1,12 @@
 import json
 import logging
 
-from candlepilot.observability import JsonFormatter, OperationalMetrics, evaluate_alerts
+from candlepilot.observability import (
+    AlertNotifier,
+    JsonFormatter,
+    OperationalMetrics,
+    evaluate_alerts,
+)
 
 
 def test_json_formatter_and_runtime_metrics_are_structured() -> None:
@@ -70,3 +75,43 @@ def test_alert_rules_require_minimum_volume_and_report_safety_failures() -> None
     assert next(alert for alert in alerts if alert["id"] == "testnet-unprotected-position")[
         "severity"
     ] == "critical"
+
+
+def _alert(identifier: str, severity: str = "warning") -> dict[str, str]:
+    return {
+        "id": identifier,
+        "severity": severity,
+        "source": "test",
+        "title": identifier,
+        "detail": "detail",
+    }
+
+
+def test_alert_notifier_deduplicates_and_reports_transitions() -> None:
+    notifier = AlertNotifier()
+
+    fired = notifier.diff([_alert("a", "critical"), _alert("b")])
+    assert {(event["id"], event["transition"]) for event in fired} == {
+        ("a", "fired"),
+        ("b", "fired"),
+    }
+
+    # Steady state emits nothing.
+    assert notifier.diff([_alert("a", "critical"), _alert("b")]) == []
+
+    # "a" clears while a new "c" fires.
+    transitions = notifier.diff([_alert("b"), _alert("c")])
+    assert {(event["id"], event["transition"]) for event in transitions} == {
+        ("a", "resolved"),
+        ("c", "fired"),
+    }
+    assert set(notifier.active_ids) == {"b", "c"}
+
+
+def test_alert_notifier_emit_logs_severity(caplog) -> None:
+    notifier = AlertNotifier()
+    events = notifier.diff([_alert("engine-emergency-lock", "critical")])
+    with caplog.at_level(logging.WARNING, logger="candlepilot.alerts"):
+        notifier.emit(events)
+    assert any(record.levelno == logging.ERROR for record in caplog.records)
+    assert any("alert_fired" in record.getMessage() for record in caplog.records)

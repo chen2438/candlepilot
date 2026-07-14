@@ -75,6 +75,50 @@ class OperationalMetrics:
         }
 
 
+class AlertNotifier:
+    """Local alert notification channel with fire/resolve de-duplication.
+
+    Given the currently active alerts on each evaluation, it emits a transition
+    event only when an alert first fires or clears, so repeated polling never
+    re-notifies for a steady-state alert. Transitions are written to the JSON
+    structured log (which external log shippers can forward) and returned for
+    audit persistence. No data leaves the host.
+    """
+
+    def __init__(self, logger: logging.Logger | None = None) -> None:
+        self._active: dict[str, dict[str, str]] = {}
+        self._logger = logger or logging.getLogger("candlepilot.alerts")
+
+    def diff(self, alerts: list[dict[str, str]]) -> list[dict[str, str]]:
+        current = {alert["id"]: alert for alert in alerts}
+        events: list[dict[str, str]] = []
+        for alert_id, alert in current.items():
+            if alert_id not in self._active:
+                events.append({**alert, "transition": "fired"})
+        for alert_id, alert in self._active.items():
+            if alert_id not in current:
+                events.append({**alert, "transition": "resolved"})
+        self._active = current
+        return events
+
+    def emit(self, events: list[dict[str, str]]) -> None:
+        for event in events:
+            level = (
+                logging.ERROR
+                if event["transition"] == "fired" and event.get("severity") == "critical"
+                else logging.WARNING
+            )
+            self._logger.log(
+                level,
+                f"alert_{event['transition']}",
+                extra={"structured": {"alert": event}},
+            )
+
+    @property
+    def active_ids(self) -> tuple[str, ...]:
+        return tuple(self._active)
+
+
 def evaluate_alerts(
     runtime: dict[str, Any],
     provider_metrics: list[dict[str, Any]],

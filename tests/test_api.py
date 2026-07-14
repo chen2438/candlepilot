@@ -301,6 +301,45 @@ def test_account_and_risk_query_endpoints(tmp_path: Path) -> None:
     asyncio.run(database.close())
 
 
+def test_alert_transitions_are_logged_and_persisted(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'alerts-api.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.PAPER,
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        # No alerts yet, so no history.
+        assert client.get("/api/alerts").json()["active_count"] == 0
+        assert client.get("/api/alerts/history").json()["events"] == []
+
+        # Emergency lock fires a critical alert on the next evaluation.
+        client.post("/api/engine/emergency-stop")
+        fired = client.get("/api/alerts").json()
+        assert any(a["id"] == "engine-emergency-lock" for a in fired["alerts"])
+        assert [t["transition"] for t in fired["transitions"]] == ["fired"]
+
+        # A steady-state re-poll emits no new transition.
+        assert client.get("/api/alerts").json()["transitions"] == []
+
+        # The fired transition is persisted to history.
+        history = client.get("/api/alerts/history").json()["events"]
+        assert history[0]["alert_id"] == "engine-emergency-lock"
+        assert history[0]["transition"] == "fired"
+        assert history[0]["severity"] == "critical"
+
+        # Clearing the lock resolves the alert.
+        client.post("/api/engine/clear-emergency-lock")
+        resolved = client.get("/api/alerts").json()
+        assert [t["transition"] for t in resolved["transitions"]] == ["resolved"]
+        assert client.get("/api/alerts/history").json()["events"][0]["transition"] == "resolved"
+        assert client.get("/api/alerts/history?limit=0").status_code == 422
+    asyncio.run(database.close())
+
+
 def test_unknown_provider_is_404(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'api.db'}")
     market = ApiMarket()
