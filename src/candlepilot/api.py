@@ -332,6 +332,15 @@ def create_app(
             for item in health
         ]
 
+    @app.get("/api/metrics/providers")
+    async def get_provider_metrics(hours: int = 24) -> dict[str, Any]:
+        if not 1 <= hours <= 720:
+            raise HTTPException(status_code=422, detail="hours must be between 1 and 720")
+        return {
+            "window_hours": hours,
+            "providers": await engine.audit.provider_metrics(hours),
+        }
+
     @app.post("/api/providers/select")
     async def select_provider(selection: ProviderSelection) -> dict[str, Any]:
         try:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+import math
+from collections import Counter
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import DateTime, Float, Integer, String, Text, event, insert, select, text
@@ -355,6 +357,44 @@ class AuditRepository:
                 else row.created_at,
             })
         return results
+
+    async def provider_metrics(self, hours: int = 24) -> list[dict[str, Any]]:
+        cutoff = datetime.now(UTC) - timedelta(hours=hours)
+        async with self.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(InferenceRow)
+                    .where(InferenceRow.created_at >= cutoff)
+                    .order_by(InferenceRow.created_at.asc(), InferenceRow.id.asc())
+                )
+            ).all()
+
+        grouped: dict[str, list[InferenceRow]] = {}
+        for row in rows:
+            grouped.setdefault(row.provider, []).append(row)
+
+        metrics = []
+        for provider, provider_rows in grouped.items():
+            durations = sorted(row.duration_ms for row in provider_rows)
+            error_count = sum(
+                1 for row in provider_rows if "error" in json.loads(row.usage_json)
+            )
+            model_counts = Counter(row.model or "unknown" for row in provider_rows)
+            call_count = len(provider_rows)
+            p95_index = max(0, math.ceil(call_count * 0.95) - 1)
+            metrics.append(
+                {
+                    "provider": provider,
+                    "call_count": call_count,
+                    "error_count": error_count,
+                    "error_rate": error_count / call_count,
+                    "average_duration_ms": sum(durations) / call_count,
+                    "p95_duration_ms": durations[p95_index],
+                    "models": dict(sorted(model_counts.items())),
+                    "last_call_at": self._utc(provider_rows[-1].created_at),
+                }
+            )
+        return sorted(metrics, key=lambda item: item["provider"])
 
     async def intents_between(
         self,

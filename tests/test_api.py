@@ -97,6 +97,11 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         assert client.get("/api/status").json()["market_stream"]["enabled"] is False
         assert client.get("/api/status").json()["user_stream"]["enabled"] is False
         assert client.get("/api/testnet/events").json() == []
+        assert client.get("/api/metrics/providers").json() == {
+            "window_hours": 24,
+            "providers": [],
+        }
+        assert client.get("/api/metrics/providers?hours=0").status_code == 422
         assert client.post("/api/engine/start").status_code == 409
         assert client.post(
             "/api/providers/select", json={"name": "api-fixture"}

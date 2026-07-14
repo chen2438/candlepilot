@@ -84,6 +84,43 @@ def test_execution_and_risk_queries_filter_and_order(tmp_path: Path) -> None:
     assert rejections[0]["inference_id"] == 7
 
 
+def test_provider_metrics_aggregate_latency_errors_and_models(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'provider-metrics.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        intent = TradeIntent.hold("BTCUSDT", "5m", "test")
+        for model, duration_ms, usage in (
+            ("model-a", 100, {}),
+            ("model-a", 300, {"error": "ProviderError"}),
+            ("model-b", 200, {}),
+        ):
+            await repository.record_inference(
+                ProviderResult(
+                    intent=intent,
+                    provider="codex-auth",
+                    model=model,
+                    duration=timedelta(milliseconds=duration_ms),
+                    raw_output="{}",
+                    usage=usage,
+                )
+            )
+        metrics = await repository.provider_metrics(24)
+        await database.close()
+        return metrics
+
+    metrics = asyncio.run(scenario())
+    assert len(metrics) == 1
+    assert metrics[0]["provider"] == "codex-auth"
+    assert metrics[0]["call_count"] == 3
+    assert metrics[0]["error_count"] == 1
+    assert metrics[0]["error_rate"] == 1 / 3
+    assert metrics[0]["average_duration_ms"] == 200
+    assert metrics[0]["p95_duration_ms"] == 300
+    assert metrics[0]["models"] == {"model-a": 2, "model-b": 1}
+    assert metrics[0]["last_call_at"].tzinfo is UTC
+
+
 def test_database_migrations_are_versioned_and_idempotent(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'migrations.db'}")
