@@ -120,6 +120,7 @@ class PortfolioState(StrictModel):
     open_positions: int = Field(default=0, ge=0)
     margin_used: NonNegativeDecimal = Decimal("0")
     symbol_sides: dict[str, Literal["LONG", "SHORT"]] = Field(default_factory=dict)
+    symbol_quantities: dict[str, PositiveDecimal] = Field(default_factory=dict)
 
 
 class RiskDecision(StrictModel):
@@ -147,4 +148,3 @@ class ExecutionReport(StrictModel):
     average_price: Decimal | None = Field(default=None, gt=0)
     message: str = ""
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
-
