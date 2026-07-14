@@ -1,0 +1,124 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any, Literal
+
+from candlepilot.domain.models import MarketSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class Kline:
+    open_time: datetime
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: Decimal
+    quote_volume: Decimal
+    closed: bool = True
+
+    @classmethod
+    def from_binance(cls, row: list[Any], *, now_ms: int | None = None) -> Kline:
+        now_ms = now_ms or int(datetime.now(UTC).timestamp() * 1000)
+        return cls(
+            open_time=datetime.fromtimestamp(int(row[0]) / 1000, tz=UTC),
+            open=Decimal(str(row[1])),
+            high=Decimal(str(row[2])),
+            low=Decimal(str(row[3])),
+            close=Decimal(str(row[4])),
+            volume=Decimal(str(row[5])),
+            quote_volume=Decimal(str(row[7])),
+            closed=int(row[6]) < now_ms,
+        )
+
+
+def _ema(values: list[float], period: int) -> float:
+    if not values:
+        raise ValueError("EMA requires values")
+    alpha = 2 / (period + 1)
+    result = values[0]
+    for value in values[1:]:
+        result = alpha * value + (1 - alpha) * result
+    return result
+
+
+def _rsi(closes: list[float], period: int = 14) -> float:
+    if len(closes) <= period:
+        return 50.0
+    changes = [current - previous for previous, current in zip(closes, closes[1:])]
+    sample = changes[-period:]
+    gains = sum(max(change, 0) for change in sample) / period
+    losses = sum(max(-change, 0) for change in sample) / period
+    if losses == 0:
+        return 100.0 if gains > 0 else 50.0
+    return 100 - (100 / (1 + gains / losses))
+
+
+def _atr(klines: list[Kline], period: int = 14) -> float:
+    if len(klines) < 2:
+        return 0.0
+    ranges = []
+    for previous, current in zip(klines, klines[1:]):
+        ranges.append(
+            max(
+                float(current.high - current.low),
+                abs(float(current.high - previous.close)),
+                abs(float(current.low - previous.close)),
+            )
+        )
+    sample = ranges[-period:]
+    return sum(sample) / len(sample)
+
+
+class FeaturePipeline:
+    def calculate(self, rows: list[list[Any]]) -> dict[str, float]:
+        klines = [Kline.from_binance(row) for row in rows]
+        closed = [item for item in klines if item.closed]
+        if len(closed) < 20:
+            raise ValueError("at least 20 closed klines are required")
+        closes = [float(item.close) for item in closed]
+        volumes = [float(item.quote_volume) for item in closed]
+        last = closes[-1]
+        ema_fast = _ema(closes[-50:], 20)
+        ema_slow = _ema(closes[-100:], 50)
+        atr = _atr(closed, 14)
+        volume_mean = sum(volumes[-20:]) / 20
+        return {
+            "return_1": (last / closes[-2]) - 1,
+            "return_5": (last / closes[-6]) - 1 if len(closes) >= 6 else 0.0,
+            "ema_20": ema_fast,
+            "ema_50": ema_slow,
+            "ema_spread": (ema_fast / ema_slow) - 1 if ema_slow else 0.0,
+            "rsi_14": _rsi(closes),
+            "atr_14": atr,
+            "atr_fraction": atr / last if last else 0.0,
+            "quote_volume_ratio": volumes[-1] / volume_mean if volume_mean else 0.0,
+        }
+
+    def snapshot(
+        self,
+        *,
+        symbol: str,
+        cadence: Literal["1m", "5m", "15m"],
+        rows: list[list[Any]],
+        mark_price: Decimal,
+        bid: Decimal,
+        ask: Decimal,
+        quote_volume_24h: Decimal,
+        funding_rate: Decimal,
+        timestamp: datetime | None = None,
+    ) -> MarketSnapshot:
+        return MarketSnapshot(
+            symbol=symbol,
+            cadence=cadence,
+            timestamp=timestamp or datetime.now(UTC),
+            mark_price=mark_price,
+            bid=bid,
+            ask=ask,
+            quote_volume_24h=quote_volume_24h,
+            funding_rate=funding_rate,
+            features=self.calculate(rows),
+        )
+

@@ -7,6 +7,8 @@ from typing import Any
 
 import httpx
 
+from candlepilot.domain.models import MarketSnapshot
+from candlepilot.market.features import FeaturePipeline
 from candlepilot.market.scanner import MarketCandidateInput
 from candlepilot.risk.engine import SymbolRules
 
@@ -141,5 +143,23 @@ class BinancePublicClient:
             raise ValueError("kline limit must be between 1 and 1500")
         return await self._get(
             "/fapi/v1/klines", symbol=symbol, interval=interval, limit=limit
+        )
+
+    async def market_snapshot(self, symbol: str, cadence: str) -> MarketSnapshot:
+        if cadence not in {"1m", "5m", "15m"}:
+            raise ValueError("unsupported decision cadence")
+        rows = await self.klines(symbol, cadence, 200)
+        book = await self._get("/fapi/v1/ticker/bookTicker", symbol=symbol)
+        ticker = await self._get("/fapi/v1/ticker/24hr", symbol=symbol)
+        premium = await self._get("/fapi/v1/premiumIndex", symbol=symbol)
+        return FeaturePipeline().snapshot(
+            symbol=symbol,
+            cadence=cadence,  # type: ignore[arg-type]
+            rows=rows,
+            mark_price=Decimal(premium["markPrice"]),
+            bid=Decimal(book["bidPrice"]),
+            ask=Decimal(book["askPrice"]),
+            quote_volume_24h=Decimal(ticker["quoteVolume"]),
+            funding_rate=Decimal(premium["lastFundingRate"]),
         )
 
