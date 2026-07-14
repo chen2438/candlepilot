@@ -196,3 +196,35 @@ def test_unknown_order_is_not_resubmitted() -> None:
 
     asyncio.run(scenario())
     assert post_attempts == 1
+
+
+def test_retries_rate_limit_and_resyncs_timestamp() -> None:
+    account_attempts = 0
+    time_requests = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal account_attempts, time_requests
+        if request.url.path == "/fapi/v1/time":
+            time_requests += 1
+            return httpx.Response(200, json={"serverTime": 1784040000000})
+        account_attempts += 1
+        if account_attempts == 1:
+            return httpx.Response(429, headers={"Retry-After": "0"}, json={"code": -1003})
+        if account_attempts == 2:
+            return httpx.Response(400, json={"code": -1021, "msg": "Timestamp outside window"})
+        return httpx.Response(200, json={"positions": []})
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(
+            _credentials(), client=client, rate_limit_attempts=4, recovery_delay=0
+        )
+        account = await broker.account()
+        await client.aclose()
+        return account
+
+    assert asyncio.run(scenario()) == {"positions": []}
+    assert account_attempts == 3
+    assert time_requests == 1

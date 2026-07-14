@@ -62,15 +62,17 @@ class BinanceTestnetBroker:
         client: httpx.AsyncClient | None = None,
         recovery_attempts: int = 4,
         recovery_delay: float = 0.25,
+        rate_limit_attempts: int = 3,
     ) -> None:
         normalized = base_url.rstrip("/")
         if normalized != BINANCE_FUTURES_TESTNET:
             raise ValueError("BinanceTestnetBroker only permits the official futures testnet")
         self.credentials = credentials
-        if recovery_attempts < 1 or recovery_delay < 0:
+        if recovery_attempts < 1 or recovery_delay < 0 or rate_limit_attempts < 1:
             raise ValueError("invalid order recovery settings")
         self.recovery_attempts = recovery_attempts
         self.recovery_delay = recovery_delay
+        self.rate_limit_attempts = rate_limit_attempts
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             base_url=normalized,
@@ -108,24 +110,39 @@ class BinanceTestnetBroker:
     async def _signed_request(
         self, method: str, path: str, params: dict[str, Any]
     ) -> dict[str, Any]:
-        query = self._signed_params(params)
-        try:
-            response = await self._client.request(
-                method,
-                f"{path}?{query}",
-                headers={"X-MBX-APIKEY": self.credentials.api_key.get_secret_value()},
-            )
-        except httpx.TimeoutException as exc:
-            raise TimeoutError("Binance testnet request status is unknown") from exc
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise BinanceApiError(0, response.text, response.status_code) from exc
-        if response.is_error:
-            raise BinanceApiError(
-                int(payload.get("code", 0)), str(payload.get("msg", response.text)), response.status_code
-            )
-        return payload
+        time_resynced = False
+        for attempt in range(self.rate_limit_attempts):
+            query = self._signed_params(params)
+            try:
+                response = await self._client.request(
+                    method,
+                    f"{path}?{query}",
+                    headers={"X-MBX-APIKEY": self.credentials.api_key.get_secret_value()},
+                )
+            except httpx.TimeoutException as exc:
+                raise TimeoutError("Binance testnet request status is unknown") from exc
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise BinanceApiError(0, response.text, response.status_code) from exc
+            if response.status_code in {418, 429} and attempt + 1 < self.rate_limit_attempts:
+                retry_after = float(response.headers.get("Retry-After", self.recovery_delay))
+                if retry_after:
+                    await asyncio.sleep(retry_after)
+                continue
+            code = int(payload.get("code", 0)) if isinstance(payload, dict) else 0
+            if response.is_error and code == -1021 and not time_resynced:
+                await self.sync_time()
+                time_resynced = True
+                continue
+            if response.is_error:
+                raise BinanceApiError(
+                    code,
+                    str(payload.get("msg", response.text)),
+                    response.status_code,
+                )
+            return payload
+        raise BinanceApiError(0, "rate limit retry budget exhausted", 429)
 
     async def account(self) -> dict[str, Any]:
         return await self._signed_request("GET", "/fapi/v3/account", {})
