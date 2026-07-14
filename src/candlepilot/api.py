@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -30,7 +31,7 @@ from candlepilot.market.history import build_backtest_candles
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.provenance import BACKTEST_DATA_SCHEMA_VERSION, content_fingerprint
 from candlepilot.risk.engine import SymbolRules
-from candlepilot.storage.database import AuditRepository, Database
+from candlepilot.storage.database import AuditRepository, CURRENT_SCHEMA_VERSION, Database
 
 
 class ApiModel(BaseModel):
@@ -320,6 +321,42 @@ def create_app(
     @app.get("/api/status")
     async def get_status() -> dict[str, Any]:
         return _status(engine, scheduler)
+
+    @app.get("/api/health/live")
+    async def health_live() -> dict[str, Any]:
+        return {
+            "status": "alive",
+            "service": "candlepilot",
+            "checked_at": datetime.now(UTC),
+        }
+
+    @app.get("/api/health/ready")
+    async def health_ready() -> JSONResponse:
+        checks: dict[str, dict[str, Any]] = {}
+        try:
+            schema_version = await database.schema_version()
+            checks["database"] = {
+                "ready": schema_version == CURRENT_SCHEMA_VERSION,
+                "schema_version": schema_version,
+                "expected_schema_version": CURRENT_SCHEMA_VERSION,
+            }
+        except Exception as exc:
+            checks["database"] = {"ready": False, "error": str(exc)}
+        broker_required = engine.mode == TradingMode.TESTNET
+        checks["testnet_broker"] = {
+            "ready": not broker_required or engine.testnet_broker is not None,
+            "required": broker_required,
+            "configured": engine.testnet_broker is not None,
+        }
+        ready = all(check["ready"] for check in checks.values())
+        return JSONResponse(
+            status_code=200 if ready else 503,
+            content={
+                "status": "ready" if ready else "not_ready",
+                "checks": checks,
+                "checked_at": datetime.now(UTC).isoformat(),
+            },
+        )
 
     @app.get("/api/providers")
     async def get_providers() -> list[dict[str, Any]]:

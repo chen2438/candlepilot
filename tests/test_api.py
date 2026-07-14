@@ -118,6 +118,14 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         engine=engine,
     )
     with TestClient(application) as client:
+        assert client.get("/api/health/live").json()["status"] == "alive"
+        readiness = client.get("/api/health/ready")
+        assert readiness.status_code == 200
+        assert readiness.json()["checks"]["database"] == {
+            "ready": True,
+            "schema_version": 1,
+            "expected_schema_version": 1,
+        }
         assert client.get("/api/status").json()["running"] is False
         assert client.get("/api/status").json()["market_stream"]["enabled"] is False
         assert client.get("/api/status").json()["user_stream"]["enabled"] is False
@@ -144,6 +152,31 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         stopped = client.post("/api/engine/emergency-stop").json()
         assert stopped["running"] is False
         assert stopped["emergency_locked"] is True
+    asyncio.run(database.close())
+
+
+def test_readiness_rejects_testnet_mode_without_broker(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'not-ready-api.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.TESTNET,
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        response = client.get("/api/health/ready")
+        assert response.status_code == 503
+        payload = response.json()
+        assert payload["status"] == "not_ready"
+        assert payload["checks"]["database"]["ready"] is True
+        assert payload["checks"]["testnet_broker"] == {
+            "ready": False,
+            "required": True,
+            "configured": False,
+        }
     asyncio.run(database.close())
 
 

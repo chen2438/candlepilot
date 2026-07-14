@@ -121,6 +121,7 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
         ),
     ),
 )
+CURRENT_SCHEMA_VERSION = max(version for version, _ in MIGRATIONS)
 
 
 class Database:
