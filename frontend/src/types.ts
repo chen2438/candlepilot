@@ -74,6 +74,13 @@ export interface BacktestRun {
     payoff_ratio: string | null;
     turnover: string;
     exposure_fraction: string;
+    grouped_stats: Record<string, Record<string, {
+      trade_count: number;
+      win_rate: string;
+      net_pnl: string;
+      average_net_pnl: string;
+      profit_factor: string | null;
+    }>>;
     profit_factor: string | null;
     total_fees: string;
     total_funding: string;

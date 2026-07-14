@@ -81,3 +81,17 @@ def test_backtest_reports_risk_adjusted_turnover_and_exposure_metrics() -> None:
     assert result.sortino_ratio is not None
     assert result.turnover > 0
     assert Decimal("0") < result.exposure_fraction < Decimal("1")
+
+
+def test_backtest_groups_trades_by_side_and_exit_reason() -> None:
+    candles = [
+        _candle(0, "100", "101", "99", "100"),
+        _candle(1, "100", "105", "99", "104"),
+    ]
+    result = BacktestEngine().run(candles, [ReplayIntent(candles[0].timestamp, _long())])
+
+    long_stats = result.grouped_stats["side"]["LONG"]
+    target_stats = result.grouped_stats["exit_reason"]["take_profit"]
+    assert long_stats.trade_count == 1
+    assert long_stats.win_rate == Decimal("1")
+    assert target_stats.net_pnl == result.trades[0].net_pnl

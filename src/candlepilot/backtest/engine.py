@@ -63,6 +63,15 @@ class EquityPoint:
 
 
 @dataclass(frozen=True, slots=True)
+class TradeGroupStats:
+    trade_count: int
+    win_rate: Decimal
+    net_pnl: Decimal
+    average_net_pnl: Decimal
+    profit_factor: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
 class BacktestResult:
     initial_equity: Decimal
     final_equity: Decimal
@@ -75,6 +84,7 @@ class BacktestResult:
     payoff_ratio: Decimal | None
     turnover: Decimal
     exposure_fraction: Decimal
+    grouped_stats: dict[str, dict[str, TradeGroupStats]]
     total_fees: Decimal
     total_funding: Decimal
     trades: tuple[BacktestTrade, ...]
@@ -307,11 +317,38 @@ class BacktestEngine:
             exposure_fraction=(
                 Decimal(exposed_points) / Decimal(len(curve)) if curve else Decimal("0")
             ),
+            grouped_stats={
+                "side": self._group_trades(trades, "side"),
+                "exit_reason": self._group_trades(trades, "exit_reason"),
+            },
             total_fees=sum((trade.fees for trade in trades), Decimal("0")),
             total_funding=sum((trade.funding for trade in trades), Decimal("0")),
             trades=tuple(trades),
             equity_curve=tuple(curve),
         )
+
+    @staticmethod
+    def _group_trades(
+        trades: list[BacktestTrade], attribute: str
+    ) -> dict[str, TradeGroupStats]:
+        grouped: dict[str, list[BacktestTrade]] = {}
+        for trade in trades:
+            grouped.setdefault(str(getattr(trade, attribute)), []).append(trade)
+        results: dict[str, TradeGroupStats] = {}
+        for name, items in grouped.items():
+            wins = [trade.net_pnl for trade in items if trade.net_pnl > 0]
+            losses = [-trade.net_pnl for trade in items if trade.net_pnl < 0]
+            gross_profit = sum(wins, Decimal("0"))
+            gross_loss = sum(losses, Decimal("0"))
+            net_pnl = sum((trade.net_pnl for trade in items), Decimal("0"))
+            results[name] = TradeGroupStats(
+                trade_count=len(items),
+                win_rate=Decimal(len(wins)) / Decimal(len(items)),
+                net_pnl=net_pnl,
+                average_net_pnl=net_pnl / Decimal(len(items)),
+                profit_factor=gross_profit / gross_loss if gross_loss else None,
+            )
+        return results
 
     @staticmethod
     def _periods_per_year(curve: list[EquityPoint]) -> Decimal | None:

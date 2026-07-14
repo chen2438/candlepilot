@@ -4,6 +4,7 @@ from candlepilot.backtest.engine import (
     BacktestResult,
     Candle,
     ReplayIntent,
+    TradeGroupStats,
 )
 from candlepilot.backtest.portfolio import PortfolioBacktestEngine, PortfolioBacktestResult
 
@@ -15,4 +16,5 @@ __all__ = [
     "PortfolioBacktestEngine",
     "PortfolioBacktestResult",
     "ReplayIntent",
+    "TradeGroupStats",
 ]
