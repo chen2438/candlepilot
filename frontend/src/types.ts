@@ -68,6 +68,11 @@ export interface BacktestRun {
     total_return: string;
     max_drawdown: string;
     win_rate: string;
+    sharpe_ratio: string | null;
+    sortino_ratio: string | null;
+    payoff_ratio: string | null;
+    turnover: string;
+    exposure_fraction: string;
     profit_factor: string | null;
     total_fees: string;
     total_funding: string;

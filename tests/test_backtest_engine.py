@@ -65,3 +65,19 @@ def test_backtest_is_reproducible() -> None:
     first = BacktestEngine().run(candles, decisions)
     second = BacktestEngine().run(candles, decisions)
     assert first == second
+
+
+def test_backtest_reports_risk_adjusted_turnover_and_exposure_metrics() -> None:
+    candles = [
+        _candle(0, "100", "101", "99", "100"),
+        _candle(1, "100", "102", "99", "101"),
+        _candle(2, "101", "102", "99", "100"),
+        _candle(3, "100", "103", "99", "102"),
+    ]
+    intent = _long().model_copy(update={"stop_loss": Decimal("90"), "take_profit": None})
+    result = BacktestEngine().run(candles, [ReplayIntent(candles[0].timestamp, intent)])
+
+    assert result.sharpe_ratio is not None
+    assert result.sortino_ratio is not None
+    assert result.turnover > 0
+    assert Decimal("0") < result.exposure_fraction < Decimal("1")

@@ -70,6 +70,11 @@ class BacktestResult:
     max_drawdown: Decimal
     win_rate: Decimal
     profit_factor: Decimal | None
+    sharpe_ratio: Decimal | None
+    sortino_ratio: Decimal | None
+    payoff_ratio: Decimal | None
+    turnover: Decimal
+    exposure_fraction: Decimal
     total_fees: Decimal
     total_funding: Decimal
     trades: tuple[BacktestTrade, ...]
@@ -263,6 +268,31 @@ class BacktestEngine:
         gross_profit = sum(wins, Decimal("0"))
         gross_loss = sum(losses, Decimal("0"))
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else None
+        payoff_ratio = (
+            (gross_profit / Decimal(len(wins))) / (gross_loss / Decimal(len(losses)))
+            if wins and losses
+            else None
+        )
+        returns = [
+            (current.equity / previous.equity) - Decimal("1")
+            for previous, current in zip(curve, curve[1:])
+            if previous.equity > 0
+        ]
+        periods_per_year = self._periods_per_year(curve)
+        sharpe_ratio = self._sharpe(returns, periods_per_year)
+        sortino_ratio = self._sortino(returns, periods_per_year)
+        traded_notional = sum(
+            (
+                trade.quantity * trade.entry_price
+                + trade.quantity * trade.exit_price
+                for trade in trades
+            ),
+            Decimal("0"),
+        )
+        exposed_points = sum(
+            any(trade.entry_time <= point.timestamp < trade.exit_time for trade in trades)
+            for point in curve
+        )
         return BacktestResult(
             initial_equity=self.config.initial_equity,
             final_equity=final_equity,
@@ -270,9 +300,49 @@ class BacktestEngine:
             max_drawdown=max_drawdown,
             win_rate=win_rate,
             profit_factor=profit_factor,
+            sharpe_ratio=sharpe_ratio,
+            sortino_ratio=sortino_ratio,
+            payoff_ratio=payoff_ratio,
+            turnover=traded_notional / self.config.initial_equity,
+            exposure_fraction=(
+                Decimal(exposed_points) / Decimal(len(curve)) if curve else Decimal("0")
+            ),
             total_fees=sum((trade.fees for trade in trades), Decimal("0")),
             total_funding=sum((trade.funding for trade in trades), Decimal("0")),
             trades=tuple(trades),
             equity_curve=tuple(curve),
         )
 
+    @staticmethod
+    def _periods_per_year(curve: list[EquityPoint]) -> Decimal | None:
+        intervals = [
+            Decimal(str((current.timestamp - previous.timestamp).total_seconds()))
+            for previous, current in zip(curve, curve[1:])
+            if current.timestamp > previous.timestamp
+        ]
+        if not intervals:
+            return None
+        intervals.sort()
+        seconds = intervals[len(intervals) // 2]
+        return Decimal(365 * 24 * 60 * 60) / seconds if seconds > 0 else None
+
+    @staticmethod
+    def _sharpe(returns: list[Decimal], periods_per_year: Decimal | None) -> Decimal | None:
+        if len(returns) < 2 or periods_per_year is None:
+            return None
+        mean = sum(returns, Decimal("0")) / Decimal(len(returns))
+        variance = sum(((item - mean) ** 2 for item in returns), Decimal("0")) / Decimal(
+            len(returns) - 1
+        )
+        return mean / variance.sqrt() * periods_per_year.sqrt() if variance > 0 else None
+
+    @staticmethod
+    def _sortino(returns: list[Decimal], periods_per_year: Decimal | None) -> Decimal | None:
+        if not returns or periods_per_year is None:
+            return None
+        mean = sum(returns, Decimal("0")) / Decimal(len(returns))
+        downside = (
+            sum((min(item, Decimal("0")) ** 2 for item in returns), Decimal("0"))
+            / Decimal(len(returns))
+        ).sqrt()
+        return mean / downside * periods_per_year.sqrt() if downside > 0 else None
