@@ -39,3 +39,16 @@ def test_inference_audit_round_trip(tmp_path: Path) -> None:
     assert rows[0]["intent"]["symbol"] == "BTCUSDT"
     assert rows[0]["duration_ms"] == 123
     assert replay_rows[0]["intent"].symbol == "BTCUSDT"
+
+
+def test_database_migrations_are_versioned_and_idempotent(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'migrations.db'}")
+        await database.initialize()
+        first = await database.schema_version()
+        await database.initialize()
+        second = await database.schema_version()
+        await database.close()
+        return first, second
+
+    assert asyncio.run(scenario()) == (1, 1)

@@ -4,8 +4,14 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Float, Integer, String, Text, event, select
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy import DateTime, Float, Integer, String, Text, event, insert, select, text
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from candlepilot.broker.user_stream import UserStreamEvent
@@ -97,6 +103,24 @@ class UserStreamEventRow(Base):
     )
 
 
+class SchemaMigrationRow(Base):
+    __tablename__ = "schema_migrations"
+
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    applied_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
+    (
+        1,
+        (
+            "CREATE INDEX IF NOT EXISTS ix_user_stream_event_symbol_time "
+            "ON user_stream_events (event_type, symbol, event_time)",
+        ),
+    ),
+)
+
+
 class Database:
     def __init__(self, url: str) -> None:
         self.engine: AsyncEngine = create_async_engine(url)
@@ -115,6 +139,35 @@ class Database:
     async def initialize(self) -> None:
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
+            await self._apply_migrations(connection)
+
+    @staticmethod
+    async def _apply_migrations(connection: AsyncConnection) -> None:
+        current = await connection.scalar(
+            select(SchemaMigrationRow.version)
+            .order_by(SchemaMigrationRow.version.desc())
+            .limit(1)
+        )
+        for version, statements in MIGRATIONS:
+            if current is not None and version <= current:
+                continue
+            for statement in statements:
+                await connection.execute(text(statement))
+            await connection.execute(
+                insert(SchemaMigrationRow).values(
+                    version=version,
+                    applied_at=datetime.now(UTC),
+                )
+            )
+
+    async def schema_version(self) -> int:
+        async with self.sessions() as session:
+            version = await session.scalar(
+                select(SchemaMigrationRow.version)
+                .order_by(SchemaMigrationRow.version.desc())
+                .limit(1)
+            )
+        return int(version or 0)
 
     async def close(self) -> None:
         await self.engine.dispose()
