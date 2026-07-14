@@ -107,6 +107,60 @@ export interface RiskEvent {
   created_at: string;
 }
 
+export interface ProviderMetric {
+  provider: string;
+  call_count: number;
+  error_count: number;
+  error_rate: number;
+  average_duration_ms: number;
+  p95_duration_ms: number;
+  models: Record<string, number>;
+  last_call_at: string;
+}
+
+export interface ProviderMetricsResponse {
+  window_hours: number;
+  providers: ProviderMetric[];
+}
+
+export interface TestnetAccountStatus {
+  enabled: boolean;
+  active: boolean;
+  mode: string;
+  account: null | {
+    can_trade: boolean;
+    total_wallet_balance: string;
+    total_margin_balance: string;
+    available_balance: string;
+    total_unrealized_profit: string;
+    total_initial_margin: string;
+  };
+  positions: Array<{
+    symbol: string;
+    position_amount: string;
+    entry_price: string;
+    mark_price: string;
+    unrealized_profit: string;
+    leverage: number;
+    isolated: boolean;
+  }>;
+  reconciliation: null | {
+    position_symbols: string[];
+    open_order_count: number;
+    unprotected_symbols: string[];
+  };
+  user_stream: {
+    enabled: boolean;
+    running: boolean;
+    event_count: number;
+    last_event_at: string | null;
+    reconnect_count: number;
+    dropped_event_count: number;
+    last_error: string | null;
+  };
+  fetched_at: string | null;
+}
+
 export interface BacktestRun {
   id: number;
   symbol: string;

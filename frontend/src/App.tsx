@@ -7,8 +7,11 @@ import type {
   EngineStatus,
   OrderRecord,
   ProviderHealth,
+  ProviderMetric,
+  ProviderMetricsResponse,
   RiskEvent,
   Signal,
+  TestnetAccountStatus,
 } from "./types";
 
 const emptyStatus: EngineStatus = {
@@ -84,6 +87,9 @@ export default function App() {
   const [positions, setPositions] = useState<AccountPosition[]>([]);
   const [orders, setOrders] = useState<OrderRecord[]>([]);
   const [riskEvents, setRiskEvents] = useState<RiskEvent[]>([]);
+  const [providerMetrics, setProviderMetrics] = useState<ProviderMetric[]>([]);
+  const [testnetStatus, setTestnetStatus] = useState<TestnetAccountStatus | null>(null);
+  const [operationsError, setOperationsError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [socketOnline, setSocketOnline] = useState(false);
@@ -117,11 +123,26 @@ export default function App() {
     setRiskEvents(nextRisk);
   }, []);
 
+  const refreshOperations = useCallback(async () => {
+    const [metrics, testnet] = await Promise.allSettled([
+      api<ProviderMetricsResponse>("/api/metrics/providers?hours=24"),
+      api<TestnetAccountStatus>("/api/testnet/account-status"),
+    ]);
+    if (metrics.status === "fulfilled") setProviderMetrics(metrics.value.providers);
+    if (testnet.status === "fulfilled") setTestnetStatus(testnet.value);
+    const failures = [metrics, testnet]
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => result.reason instanceof Error ? result.reason.message : String(result.reason));
+    setOperationsError(failures.length ? failures.join("；") : null);
+  }, []);
+
   useEffect(() => {
     refresh().catch((reason: Error) => setError(reason.message));
     refreshAccount().catch((reason: Error) => setError(reason.message));
+    refreshOperations().catch(() => undefined);
     const account = window.setInterval(() => {
       refreshAccount().catch(() => undefined);
+      refreshOperations().catch(() => undefined);
     }, 5000);
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
     const socket = new WebSocket(`${protocol}://${window.location.host}/ws/events`);
@@ -135,7 +156,7 @@ export default function App() {
       window.clearInterval(account);
       socket.close();
     };
-  }, [refresh, refreshAccount]);
+  }, [refresh, refreshAccount, refreshOperations]);
 
   const act = useCallback(async (name: string, path: string, body?: unknown) => {
     setBusy(name);
@@ -387,6 +408,12 @@ export default function App() {
             orders={orders}
             riskEvents={riskEvents}
           />
+
+          <OperationsPanel
+            providerMetrics={providerMetrics}
+            testnetStatus={testnetStatus}
+            operationsError={operationsError}
+          />
         </section>
       </main>
       <footer><span>CANDLEPILOT / GPL-3.0</span><span>LOCALHOST ONLY · NO LIVE MONEY</span></footer>
@@ -485,6 +512,93 @@ function AccountPanel({
           </div>
         ))}
         {!riskEvents.length && <div className="empty cards">尚无风控决策记录。</div>}
+      </div>
+    </article>
+  );
+}
+
+function OperationsPanel({
+  providerMetrics,
+  testnetStatus,
+  operationsError,
+}: {
+  providerMetrics: ProviderMetric[];
+  testnetStatus: TestnetAccountStatus | null;
+  operationsError: string | null;
+}) {
+  const reconciliation = testnetStatus?.reconciliation;
+  const testnetSafe = reconciliation !== null
+    && reconciliation !== undefined
+    && reconciliation.unprotected_symbols.length === 0;
+  return (
+    <article className="panel operations-panel">
+      <PanelTitle code="07" title="模型与测试网" meta="24 小时运维窗口 · 只读" />
+      {operationsError && <div className="operations-error">部分运维数据暂不可用：{operationsError}</div>}
+      <div className="operations-grid">
+        <section>
+          <h4 className="account-subhead">模型调用</h4>
+          <div className="provider-metrics-list">
+            {providerMetrics.map((metric) => (
+              <div className="provider-metric-card" key={metric.provider}>
+                <div className="provider-metric-heading">
+                  <strong>{providerLabel(metric.provider)}</strong>
+                  <span className={`status-pill ${metric.error_count === 0 ? "ok" : "off"}`}>
+                    {metric.error_count === 0 ? "HEALTHY" : `${metric.error_count} ERROR`}
+                  </span>
+                </div>
+                <div className="provider-metric-values">
+                  <Metric label="调用量" value={String(metric.call_count)} suffix="" />
+                  <Metric label="平均延迟" value={(metric.average_duration_ms / 1000).toFixed(2)} suffix="s" />
+                  <Metric label="P95 延迟" value={(metric.p95_duration_ms / 1000).toFixed(2)} suffix="s" />
+                  <Metric label="错误率" value={(metric.error_rate * 100).toFixed(1)} suffix="%" />
+                </div>
+                <small className="metric-models">
+                  {Object.entries(metric.models).map(([model, count]) => `${model} × ${count}`).join(" · ")}
+                </small>
+              </div>
+            ))}
+            {!providerMetrics.length && <div className="empty cards">过去 24 小时没有模型调用。</div>}
+          </div>
+        </section>
+
+        <section className="testnet-summary">
+          <h4 className="account-subhead">币安测试网</h4>
+          <div className="testnet-heading">
+            <div>
+              <strong>{testnetStatus?.enabled ? "账户已配置" : "未配置"}</strong>
+              <small>{testnetStatus?.active ? "当前交易模式" : "当前未启用测试网交易模式"}</small>
+            </div>
+            <span className={`status-pill ${testnetStatus?.enabled ? "ok" : "off"}`}>
+              {testnetStatus?.enabled ? "TESTNET" : "DISABLED"}
+            </span>
+          </div>
+          <div className="testnet-balances">
+            <Metric label="钱包余额" value={testnetStatus?.account ? money(testnetStatus.account.total_wallet_balance) : "—"} suffix="" />
+            <Metric label="可用余额" value={testnetStatus?.account ? money(testnetStatus.account.available_balance) : "—"} suffix="" />
+            <Metric label="未实现盈亏" value={testnetStatus?.account ? money(testnetStatus.account.total_unrealized_profit) : "—"} suffix="" />
+          </div>
+          <div className="testnet-checks">
+            <span><i className={testnetStatus?.user_stream.running ? "ok" : ""} />用户流 {testnetStatus?.user_stream.running ? "在线" : "离线"}</span>
+            <span><i className={testnetSafe ? "ok" : ""} />启动对账 {reconciliation ? testnetSafe ? "安全" : "有未保护仓位" : "尚未执行"}</span>
+            <span><i className={testnetStatus?.account?.can_trade ? "ok" : ""} />账户交易权限 {testnetStatus?.account?.can_trade ? "可用" : "不可用"}</span>
+          </div>
+          {testnetStatus?.positions.length ? (
+            <div className="table-wrap testnet-positions">
+              <table>
+                <thead><tr><th>持仓</th><th>数量</th><th>标记价</th><th>杠杆</th><th>未实现盈亏</th></tr></thead>
+                <tbody>{testnetStatus.positions.map((position) => (
+                  <tr key={position.symbol}>
+                    <td>{position.symbol}</td>
+                    <td>{Number(position.position_amount).toFixed(4)}</td>
+                    <td>{Number(position.mark_price).toFixed(4)}</td>
+                    <td>{position.leverage}×</td>
+                    <td className={Number(position.unrealized_profit) >= 0 ? "positive" : "negative"}>{money(position.unrealized_profit)}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          ) : <div className="empty testnet-empty">测试网当前无持仓。</div>}
+        </section>
       </div>
     </article>
   );
