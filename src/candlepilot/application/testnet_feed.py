@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 
 from candlepilot.broker.user_stream import BinanceTestnetUserStream, UserStreamEvent
@@ -12,9 +13,16 @@ class TestnetUserFeed:
 
     __test__ = False
 
-    def __init__(self, stream: BinanceTestnetUserStream, audit: AuditRepository) -> None:
+    def __init__(
+        self,
+        stream: BinanceTestnetUserStream,
+        audit: AuditRepository,
+        *,
+        event_handler: Callable[[UserStreamEvent], Awaitable[None]] | None = None,
+    ) -> None:
         self.stream = stream
         self.audit = audit
+        self.event_handler = event_handler
         self.event_count = 0
         self.last_event_at: datetime | None = None
         self.last_error: str | None = None
@@ -43,6 +51,11 @@ class TestnetUserFeed:
         self.event_count += 1
         self.last_event_at = event.event_time
         self.last_error = None
+        if self.event_handler is not None:
+            try:
+                await self.event_handler(event)
+            except Exception as exc:
+                self.last_error = f"user event handling failed: {exc}"
 
     async def stop(self) -> None:
         task = self._task

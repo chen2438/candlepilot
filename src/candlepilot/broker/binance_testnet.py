@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 import httpx
@@ -15,6 +15,9 @@ from pydantic import SecretStr
 
 from candlepilot.domain.models import ExecutionReport, OrderPlan, OrderType
 from candlepilot.market.binance import BINANCE_FUTURES_TESTNET
+
+if TYPE_CHECKING:
+    from candlepilot.broker.user_stream import UserStreamEvent
 
 
 class BinanceApiError(RuntimeError):
@@ -280,6 +283,33 @@ class BinanceTestnetBroker:
 
     async def cancel_all(self, symbol: str) -> None:
         await self._signed_request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol})
+
+    async def handle_user_event(self, event: UserStreamEvent) -> None:
+        """Freeze a partially-filled CandlePilot entry so it cannot reopen after its stop."""
+
+        if event.event_type != "ORDER_TRADE_UPDATE":
+            return
+        order = event.payload.get("o", {})
+        client_order_id = str(order.get("c", ""))
+        if (
+            order.get("X") != "PARTIALLY_FILLED"
+            or not client_order_id.startswith("cp-")
+            or client_order_id.endswith(("-sl", "-rescue"))
+            or order.get("R") in {True, "true", "TRUE"}
+        ):
+            return
+        try:
+            await self._signed_request(
+                "DELETE",
+                "/fapi/v1/order",
+                {
+                    "symbol": str(order["s"]),
+                    "origClientOrderId": client_order_id,
+                },
+            )
+        except BinanceApiError as exc:
+            if exc.code != -2011:  # Already completed or cancelled before this event was handled.
+                raise
 
     async def emergency_flatten(self) -> None:
         await self.sync_time()

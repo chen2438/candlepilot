@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 from decimal import Decimal
 from urllib.parse import parse_qs
 
@@ -11,6 +12,7 @@ from candlepilot.broker.binance_testnet import (
     BinanceTestnetCredentials,
     OrderStatusUnknown,
 )
+from candlepilot.broker.user_stream import UserStreamEvent
 from candlepilot.domain.models import OrderPlan, OrderType
 from candlepilot.market.binance import BINANCE_FUTURES_TESTNET
 
@@ -81,6 +83,13 @@ def test_signed_testnet_entry_and_stop() -> None:
     for request in signed:
         assert request.headers["X-MBX-APIKEY"] == "test-key"
         assert "signature=" in str(request.url)
+    stop_query = next(
+        parse_qs(request.url.query.decode())
+        for request in signed
+        if parse_qs(request.url.query.decode()).get("type") == ["STOP_MARKET"]
+    )
+    assert stop_query["closePosition"] == ["true"]
+    assert "quantity" not in stop_query
 
 
 @pytest.mark.parametrize(
@@ -234,3 +243,42 @@ def test_retries_rate_limit_and_resyncs_timestamp() -> None:
     assert asyncio.run(scenario()) == {"positions": []}
     assert account_attempts == 3
     assert time_requests == 1
+
+
+def test_partial_entry_event_cancels_remainder_while_close_position_stop_protects_fill() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"status": "CANCELED"})
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        now = datetime.now(UTC)
+        await broker.handle_user_event(
+            UserStreamEvent(
+                event_type="ORDER_TRADE_UPDATE",
+                event_time=now,
+                transaction_time=now,
+                symbol="BTCUSDT",
+                payload={
+                    "e": "ORDER_TRADE_UPDATE",
+                    "o": {
+                        "s": "BTCUSDT",
+                        "c": "cp-partial-entry",
+                        "X": "PARTIALLY_FILLED",
+                        "R": False,
+                    },
+                },
+            )
+        )
+        await client.aclose()
+
+    asyncio.run(scenario())
+    assert len(requests) == 1
+    assert requests[0].method == "DELETE"
+    query = parse_qs(requests[0].url.query.decode())
+    assert query["origClientOrderId"] == ["cp-partial-entry"]

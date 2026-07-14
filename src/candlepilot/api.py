@@ -212,7 +212,13 @@ def create_app(
         else None
     )
     testnet_feed = (
-        TestnetUserFeed(testnet_stream, engine.audit) if testnet_stream is not None else None
+        TestnetUserFeed(
+            testnet_stream,
+            engine.audit,
+            event_handler=testnet_broker.handle_user_event if testnet_broker is not None else None,
+        )
+        if testnet_stream is not None
+        else None
     )
     scheduler = TradingScheduler(
         engine,
