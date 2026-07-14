@@ -10,6 +10,7 @@ from candlepilot.providers.cli import (
     CodexAuthProvider,
     find_codex_executable,
     sanitized_subprocess_env,
+    trade_intent_output_schema,
 )
 
 
@@ -51,6 +52,14 @@ def test_sensitive_environment_is_removed() -> None:
     assert "OPENAI_API_KEY" not in clean
     assert "ANTHROPIC_API_KEY" not in clean
     assert "UNRELATED_SECRET" not in clean
+
+
+def test_codex_output_schema_requires_every_property() -> None:
+    schema = trade_intent_output_schema()
+    assert set(schema["required"]) == set(schema["properties"])
+    assert schema["additionalProperties"] is False
+    assert '"default"' not in json.dumps(schema)
+    assert '"pattern"' not in json.dumps(schema)
 
 
 def test_codex_detection_falls_back_to_path(monkeypatch, tmp_path: Path) -> None:

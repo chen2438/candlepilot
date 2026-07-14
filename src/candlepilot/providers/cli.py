@@ -147,6 +147,26 @@ def _parse_intent(value: str | dict[str, Any]) -> TradeIntent:
     return TradeIntent.model_validate(data)
 
 
+def trade_intent_output_schema() -> dict[str, Any]:
+    """Return a strict-output schema accepted by Codex/OpenAI structured output."""
+    schema = TradeIntent.model_json_schema()
+
+    def remove_defaults(node: Any) -> None:
+        if isinstance(node, dict):
+            node.pop("default", None)
+            node.pop("pattern", None)
+            for value in node.values():
+                remove_defaults(value)
+        elif isinstance(node, list):
+            for value in node:
+                remove_defaults(value)
+
+    remove_defaults(schema)
+    schema["required"] = list(schema.get("properties", {}))
+    schema["additionalProperties"] = False
+    return schema
+
+
 class CodexAuthProvider(LLMProvider):
     name = "codex-auth"
 
@@ -199,7 +219,7 @@ class CodexAuthProvider(LLMProvider):
                 root = Path(directory)
                 schema_path = root / "trade-intent.schema.json"
                 schema_path.write_text(
-                    json.dumps(TradeIntent.model_json_schema(), separators=(",", ":")),
+                    json.dumps(trade_intent_output_schema(), separators=(",", ":")),
                     encoding="utf-8",
                 )
                 stdout, _ = await _run_process(
@@ -318,4 +338,3 @@ class ClaudeCodeAuthProvider(LLMProvider):
             raw_output=stdout,
             usage=usage,
         )
-
