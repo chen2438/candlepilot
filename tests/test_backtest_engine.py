@@ -95,3 +95,31 @@ def test_backtest_groups_trades_by_side_and_exit_reason() -> None:
     assert long_stats.trade_count == 1
     assert long_stats.win_rate == Decimal("1")
     assert target_stats.net_pnl == result.trades[0].net_pnl
+
+
+def test_backtest_groups_trades_by_market_regime() -> None:
+    def _rising(index: int) -> Candle:
+        base = Decimal(100 + index)
+        return Candle(
+            timestamp=START + timedelta(minutes=5 * index),
+            open=base,
+            high=base + Decimal("2"),
+            low=base - Decimal("1"),
+            close=base + Decimal("0.5"),
+            volume=Decimal("1000"),
+        )
+
+    candles = [_rising(index) for index in range(20)]
+    intent = _long().model_copy(update={"stop_loss": Decimal("50"), "take_profit": None})
+    # Decision at candle 16 executes at candle 17, whose trailing window is a
+    # clean uptrend, so the entry regime must be classified as trend_up.
+    result = BacktestEngine().run(candles, [ReplayIntent(candles[16].timestamp, intent)])
+
+    assert "regime" in result.grouped_stats
+    assert len(result.trades) == 1
+    assert result.trades[0].regime == "trend_up"
+    assert result.grouped_stats["regime"]["trend_up"].trade_count == 1
+    grouped_total = sum(
+        stats.trade_count for stats in result.grouped_stats["regime"].values()
+    )
+    assert grouped_total == len(result.trades)

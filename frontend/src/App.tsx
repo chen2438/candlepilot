@@ -389,6 +389,52 @@ function EquityChart({ points }: { points: Array<{ timestamp: string; equity: st
   );
 }
 
+const GROUP_LABELS: Record<string, string> = {
+  side: "方向",
+  exit_reason: "退出原因",
+  regime: "市场状态",
+};
+
+const REGIME_LABELS: Record<string, string> = {
+  trend_up: "上升趋势",
+  trend_down: "下降趋势",
+  range: "震荡",
+  high_volatility: "高波动",
+  unknown: "未知",
+};
+
+type GroupStats = BacktestRun["result"]["grouped_stats"];
+
+function GroupedStatsPanel({ grouped }: { grouped: GroupStats }) {
+  const groups = Object.entries(grouped).filter(([, buckets]) => Object.keys(buckets).length > 0);
+  if (!groups.length) return null;
+  return (
+    <div className="grouped-stats">
+      {groups.map(([groupName, buckets]) => (
+        <div className="grouped-stats-block" key={groupName}>
+          <h4>{GROUP_LABELS[groupName] ?? groupName}</h4>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>分组</th><th>笔数</th><th>胜率</th><th>净盈亏</th><th>盈亏因子</th></tr></thead>
+              <tbody>
+                {Object.entries(buckets).map(([bucket, stats]) => (
+                  <tr key={bucket}>
+                    <td>{groupName === "regime" ? (REGIME_LABELS[bucket] ?? bucket) : bucket}</td>
+                    <td>{stats.trade_count}</td>
+                    <td>{(Number(stats.win_rate) * 100).toFixed(1)}%</td>
+                    <td className={Number(stats.net_pnl) >= 0 ? "positive" : "negative"}>{Number(stats.net_pnl).toFixed(2)}</td>
+                    <td>{stats.profit_factor === null ? "—" : Number(stats.profit_factor).toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function BacktestDetail({ run, onClose }: { run: BacktestRun; onClose: () => void }) {
   const trades = run.result.trades ?? [];
   const curve = run.result.equity_curve ?? [];
@@ -406,6 +452,7 @@ function BacktestDetail({ run, onClose }: { run: BacktestRun; onClose: () => voi
         <Metric label="换手" value={Number(run.result.turnover).toFixed(2)} suffix="×" />
       </div>
       <EquityChart points={curve} />
+      <GroupedStatsPanel grouped={run.result.grouped_stats} />
       <div className="table-wrap detail-trades">
         <table>
           <thead><tr><th>方向</th><th>数量</th><th>入场</th><th>出场</th><th>净盈亏</th><th>费用</th><th>原因</th></tr></thead>

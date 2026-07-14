@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
+from candlepilot.backtest.regime import UNKNOWN, RegimeClassifier
 from candlepilot.domain.models import TradeAction, TradeIntent
 
 
@@ -54,6 +55,7 @@ class BacktestTrade:
     funding: Decimal
     net_pnl: Decimal
     exit_reason: str
+    regime: str = UNKNOWN
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,14 +102,20 @@ class _Position:
     stop_loss: Decimal
     take_profit: Decimal | None
     entry_fee: Decimal
+    regime: str = UNKNOWN
     funding: Decimal = Decimal("0")
 
 
 class BacktestEngine:
     """Single-symbol event engine with next-bar execution and conservative fills."""
 
-    def __init__(self, config: BacktestConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: BacktestConfig | None = None,
+        regime_classifier: RegimeClassifier | None = None,
+    ) -> None:
         self.config = config or BacktestConfig()
+        self.regime_classifier = regime_classifier or RegimeClassifier()
 
     def run(self, candles: list[Candle], decisions: list[ReplayIntent]) -> BacktestResult:
         if not candles:
@@ -115,6 +123,13 @@ class BacktestEngine:
         ordered_candles = sorted(candles, key=lambda item: item.timestamp)
         if len({item.timestamp for item in ordered_candles}) != len(ordered_candles):
             raise ValueError("candle timestamps must be unique")
+        regime_labels = self.regime_classifier.labels(
+            [candle.close for candle in ordered_candles]
+        )
+        regime_by_time = {
+            candle.timestamp: label
+            for candle, label in zip(ordered_candles, regime_labels)
+        }
         decision_map = {decision.decided_at: decision.intent for decision in decisions}
         if len(decision_map) != len(decisions):
             raise ValueError("only one replay intent per candle is supported")
@@ -128,7 +143,7 @@ class BacktestEngine:
         for candle in ordered_candles:
             if pending is not None:
                 cash, position, completed = self._execute_pending(
-                    pending, candle, cash, position
+                    pending, candle, cash, position, regime_by_time.get(candle.timestamp, UNKNOWN)
                 )
                 if completed is not None:
                     trades.append(completed)
@@ -166,6 +181,7 @@ class BacktestEngine:
         candle: Candle,
         cash: Decimal,
         position: _Position | None,
+        regime: str,
     ) -> tuple[Decimal, _Position | None, BacktestTrade | None]:
         if intent.action == TradeAction.HOLD:
             return cash, position, None
@@ -202,6 +218,7 @@ class BacktestEngine:
                 stop_loss=stop,
                 take_profit=intent.take_profit,
                 entry_fee=entry_fee,
+                regime=regime,
             ),
             None,
         )
@@ -247,6 +264,7 @@ class BacktestEngine:
             funding=position.funding,
             net_pnl=net - position.entry_fee,
             exit_reason=reason,
+            regime=position.regime,
         )
 
     def _slipped(self, price: Decimal, side: str) -> Decimal:
@@ -320,6 +338,7 @@ class BacktestEngine:
             grouped_stats={
                 "side": self._group_trades(trades, "side"),
                 "exit_reason": self._group_trades(trades, "exit_reason"),
+                "regime": self._group_trades(trades, "regime"),
             },
             total_fees=sum((trade.fees for trade in trades), Decimal("0")),
             total_funding=sum((trade.funding for trade in trades), Decimal("0")),
