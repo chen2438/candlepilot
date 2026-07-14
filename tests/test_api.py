@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -76,6 +77,7 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         stopped = client.post("/api/engine/emergency-stop").json()
         assert stopped["running"] is False
         assert stopped["emergency_locked"] is True
+    asyncio.run(database.close())
 
 
 def test_unknown_provider_is_404(tmp_path: Path) -> None:
@@ -91,6 +93,7 @@ def test_unknown_provider_is_404(tmp_path: Path) -> None:
     with TestClient(app) as client:
         response = client.post("/api/providers/select", json={"name": "missing"})
         assert response.status_code == 404
+    asyncio.run(database.close())
 
 
 def test_backtest_run_is_persisted_and_listed(tmp_path: Path) -> None:
@@ -154,3 +157,4 @@ def test_backtest_run_is_persisted_and_listed(tmp_path: Path) -> None:
 
         listed = client.get("/api/backtests").json()
         assert listed == [run]
+    asyncio.run(database.close())
