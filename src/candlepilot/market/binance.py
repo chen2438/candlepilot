@@ -14,7 +14,7 @@ from candlepilot.risk.engine import SymbolRules
 
 
 BINANCE_FUTURES_PRODUCTION = "https://fapi.binance.com"
-BINANCE_FUTURES_TESTNET = "https://testnet.binancefuture.com"
+BINANCE_FUTURES_TESTNET = "https://demo-fapi.binance.com"
 
 
 class BinanceError(RuntimeError):

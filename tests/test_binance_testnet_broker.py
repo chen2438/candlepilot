@@ -24,6 +24,12 @@ def test_broker_refuses_production_endpoint() -> None:
         BinanceTestnetBroker(_credentials(), base_url="https://fapi.binance.com")
 
 
+def test_broker_uses_current_official_demo_endpoint() -> None:
+    assert BINANCE_FUTURES_TESTNET == "https://demo-fapi.binance.com"
+    with pytest.raises(ValueError, match="only permits"):
+        BinanceTestnetBroker(_credentials(), base_url="https://testnet.binancefuture.com")
+
+
 def test_signed_testnet_entry_and_stop() -> None:
     requests: list[httpx.Request] = []
 
