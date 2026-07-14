@@ -115,6 +115,8 @@ export interface ProviderMetric {
   average_duration_ms: number;
   p95_duration_ms: number;
   models: Record<string, number>;
+  tokens_total: number;
+  cost_usd_total: number | null;
   last_call_at: string;
 }
 

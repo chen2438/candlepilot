@@ -487,9 +487,18 @@ class AuditRepository:
         metrics = []
         for provider, provider_rows in grouped.items():
             durations = sorted(row.duration_ms for row in provider_rows)
-            error_count = sum(
-                1 for row in provider_rows if "error" in json.loads(row.usage_json)
-            )
+            error_count = 0
+            tokens_total = 0
+            cost_total = 0.0
+            cost_present = False
+            for row in provider_rows:
+                usage = json.loads(row.usage_json)
+                if "error" in usage:
+                    error_count += 1
+                tokens_total += int(usage.get("total_tokens") or 0)
+                if usage.get("cost_usd") is not None:
+                    cost_present = True
+                    cost_total += float(usage["cost_usd"])
             model_counts = Counter(row.model or "unknown" for row in provider_rows)
             call_count = len(provider_rows)
             p95_index = max(0, math.ceil(call_count * 0.95) - 1)
@@ -502,6 +511,8 @@ class AuditRepository:
                     "average_duration_ms": sum(durations) / call_count,
                     "p95_duration_ms": durations[p95_index],
                     "models": dict(sorted(model_counts.items())),
+                    "tokens_total": tokens_total,
+                    "cost_usd_total": cost_total if cost_present else None,
                     "last_call_at": self._utc(provider_rows[-1].created_at),
                 }
             )

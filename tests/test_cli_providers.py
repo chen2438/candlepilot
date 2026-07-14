@@ -10,6 +10,8 @@ from candlepilot.providers.cli import (
     ClaudeCodeAuthProvider,
     CodexAuthProvider,
     find_codex_executable,
+    parse_claude_usage,
+    parse_codex_stderr,
     sanitized_subprocess_env,
     trade_intent_output_schema,
 )
@@ -59,6 +61,59 @@ def test_sensitive_environment_is_removed() -> None:
     assert "OPENAI_API_KEY" not in clean
     assert "ANTHROPIC_API_KEY" not in clean
     assert "UNRELATED_SECRET" not in clean
+
+
+def test_parse_codex_stderr_extracts_model_and_tokens() -> None:
+    stderr = (
+        "workdir: /tmp\n"
+        "model: gpt-5.6-sol\n"
+        "provider: openai\n"
+        "codex\nok\n"
+        "tokens used\n6,903\n"
+    )
+    model, usage = parse_codex_stderr(stderr)
+    assert model == "gpt-5.6-sol"
+    assert usage == {"total_tokens": 6903}
+
+
+def test_parse_codex_stderr_is_defensive_when_absent() -> None:
+    model, usage = parse_codex_stderr("no telemetry here")
+    assert model is None
+    assert usage == {}
+
+
+def test_parse_claude_usage_sums_tokens_and_reads_cost_and_model() -> None:
+    envelope = {
+        "result": "{}",
+        "model": None,
+        "total_cost_usd": 0.0732009,
+        "duration_ms": 4200,
+        "num_turns": 1,
+        "usage": {
+            "input_tokens": 2,
+            "output_tokens": 44,
+            "cache_read_input_tokens": 18053,
+            "cache_creation_input_tokens": 11088,
+        },
+        "modelUsage": {
+            "claude-haiku-4-5-20251001": {"outputTokens": 14},
+            "claude-sonnet-5": {"outputTokens": 44},
+        },
+    }
+    model, usage = parse_claude_usage(envelope)
+    assert model == "claude-sonnet-5"  # dominant model by output tokens
+    assert usage["input_tokens"] == 2
+    assert usage["output_tokens"] == 44
+    assert usage["total_tokens"] == 2 + 44 + 18053 + 11088
+    assert usage["cost_usd"] == 0.0732009
+    assert usage["num_turns"] == 1
+
+
+def test_parse_claude_usage_tolerates_missing_usage() -> None:
+    model, usage = parse_claude_usage({"result": "{}"})
+    assert model is None
+    assert usage["total_tokens"] == 0
+    assert "cost_usd" not in usage
 
 
 def test_codex_output_schema_requires_every_property() -> None:

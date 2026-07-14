@@ -121,6 +121,49 @@ def test_provider_metrics_aggregate_latency_errors_and_models(tmp_path: Path) ->
     assert metrics[0]["last_call_at"].tzinfo is UTC
 
 
+def test_provider_metrics_aggregate_tokens_and_equivalent_cost(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'metrics.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        intent = TradeIntent.hold("BTCUSDT", "5m", "test")
+
+        def result(provider: str, model: str | None, usage: dict) -> ProviderResult:
+            return ProviderResult(
+                intent=intent,
+                provider=provider,
+                model=model,
+                duration=timedelta(milliseconds=100),
+                raw_output=intent.model_dump_json(),
+                usage=usage,
+            )
+
+        # Claude: tokens + equivalent USD cost.
+        await repository.record_inference(
+            result("claude-code-auth", "claude-sonnet-5", {"total_tokens": 100, "cost_usd": 0.05})
+        )
+        await repository.record_inference(
+            result("claude-code-auth", "claude-sonnet-5", {"total_tokens": 40, "cost_usd": 0.02})
+        )
+        # Codex: tokens only, no cost data (subscription).
+        await repository.record_inference(
+            result("codex-auth", "gpt-5.6-sol", {"total_tokens": 6903})
+        )
+        metrics = await repository.provider_metrics(24)
+        await database.close()
+        return {item["provider"]: item for item in metrics}
+
+    metrics = asyncio.run(scenario())
+    claude = metrics["claude-code-auth"]
+    codex = metrics["codex-auth"]
+    assert claude["tokens_total"] == 140
+    assert abs(claude["cost_usd_total"] - 0.07) < 1e-9
+    assert claude["models"] == {"claude-sonnet-5": 2}
+    assert codex["tokens_total"] == 6903
+    assert codex["cost_usd_total"] is None  # no equivalent cost for Codex
+    assert codex["models"] == {"gpt-5.6-sol": 1}
+
+
 def test_database_migrations_are_versioned_and_idempotent(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'migrations.db'}")

@@ -552,6 +552,13 @@ function OperationsPanel({
                   <Metric label="P95 延迟" value={(metric.p95_duration_ms / 1000).toFixed(2)} suffix="s" />
                   <Metric label="错误率" value={(metric.error_rate * 100).toFixed(1)} suffix="%" />
                 </div>
+                <div className="provider-metric-usage">
+                  <span>Token 用量<strong>{metric.tokens_total.toLocaleString("zh-CN")}</strong></span>
+                  <span>
+                    等效成本
+                    <strong>{metric.cost_usd_total === null ? "—" : `$${metric.cost_usd_total.toFixed(4)}`}</strong>
+                  </span>
+                </div>
                 <small className="metric-models">
                   {Object.entries(metric.models).map(([model, count]) => `${model} × ${count}`).join(" · ")}
                 </small>
@@ -559,6 +566,11 @@ function OperationsPanel({
             ))}
             {!providerMetrics.length && <div className="empty cards">过去 24 小时没有模型调用。</div>}
           </div>
+          {providerMetrics.length > 0 && (
+            <small className="usage-note">
+              等效成本为按 API 标准计价折算的估算；订阅计划（Codex/Claude Pro）不按次计费，Codex 不提供折算价故显示「—」。
+            </small>
+          )}
         </section>
 
         <section className="testnet-summary">

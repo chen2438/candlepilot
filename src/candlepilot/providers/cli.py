@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import signal
 import tempfile
@@ -150,6 +151,65 @@ def _decision_prompt(snapshot: MarketSnapshot, portfolio: PortfolioState) -> str
     )
 
 
+_CODEX_MODEL_RE = re.compile(r"^model:\s*(\S+)", re.MULTILINE)
+_CODEX_TOKENS_RE = re.compile(r"tokens used[:\s]+([\d,]+)")
+
+
+def parse_codex_stderr(stderr: str) -> tuple[str | None, dict[str, Any]]:
+    """Best-effort extraction of the model and token count from codex stderr.
+
+    Codex prints ``model: <name>`` and a trailing ``tokens used\\n<count>`` to
+    stderr in a human-readable form. Parsing is defensive: if the format is
+    absent or changes, the model stays ``None`` and usage stays empty rather
+    than raising, so a decision is never lost over telemetry.
+    """
+
+    model_match = _CODEX_MODEL_RE.search(stderr)
+    tokens_match = _CODEX_TOKENS_RE.search(stderr)
+    usage: dict[str, Any] = {}
+    if tokens_match:
+        usage["total_tokens"] = int(tokens_match.group(1).replace(",", ""))
+    return (model_match.group(1) if model_match else None), usage
+
+
+def parse_claude_usage(envelope: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+    """Extract token counts, equivalent cost and model from a Claude envelope.
+
+    The Claude Code CLI reports full token usage and a ``total_cost_usd`` figure
+    (the equivalent API cost; subscription plans are not billed per call). The
+    top-level ``model`` is often null, so fall back to the dominant model in the
+    ``modelUsage`` breakdown.
+    """
+
+    raw = envelope.get("usage") or {}
+    input_tokens = int(raw.get("input_tokens") or 0)
+    output_tokens = int(raw.get("output_tokens") or 0)
+    cache_read = int(raw.get("cache_read_input_tokens") or 0)
+    cache_creation = int(raw.get("cache_creation_input_tokens") or 0)
+    usage: dict[str, Any] = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_input_tokens": cache_read,
+        "cache_creation_input_tokens": cache_creation,
+        "total_tokens": input_tokens + output_tokens + cache_read + cache_creation,
+    }
+    for key in ("duration_ms", "duration_api_ms", "num_turns"):
+        if key in envelope:
+            usage[key] = envelope[key]
+    cost = envelope.get("total_cost_usd")
+    if cost is not None:
+        usage["cost_usd"] = float(cost)
+    model = envelope.get("model")
+    if not model:
+        model_usage = envelope.get("modelUsage")
+        if isinstance(model_usage, dict) and model_usage:
+            model = max(
+                model_usage.items(),
+                key=lambda item: (item[1] or {}).get("outputTokens", 0),
+            )[0]
+    return model, usage
+
+
 def _parse_intent(value: str | dict[str, Any]) -> TradeIntent:
     data: Any = value
     if isinstance(value, str):
@@ -252,7 +312,7 @@ class CodexAuthProvider(LLMProvider):
                         json.dumps(trade_intent_output_schema(), separators=(",", ":")),
                         encoding="utf-8",
                     )
-                    stdout, _ = await _run_process(
+                    stdout, stderr = await _run_process(
                         [
                             str(self.executable),
                             "exec",
@@ -276,13 +336,14 @@ class CodexAuthProvider(LLMProvider):
             intent = _parse_intent(stdout)
         except (json.JSONDecodeError, ValidationError) as exc:
             raise ProviderError(f"Codex returned an invalid TradeIntent: {exc}") from exc
+        model, usage = parse_codex_stderr(stderr)
         return ProviderResult(
             intent=intent,
             provider=self.name,
-            model=None,
+            model=model,
             duration=timedelta(seconds=time.monotonic() - started),
             raw_output=stdout,
-            usage={},
+            usage=usage,
             prompt_version=DECISION_PROMPT_VERSION,
             data_version=content_fingerprint(
                 snapshot.model_dump(mode="json"),
@@ -382,15 +443,11 @@ class ClaudeCodeAuthProvider(LLMProvider):
             intent = _parse_intent(envelope["result"])
         except (KeyError, TypeError, json.JSONDecodeError, ValidationError) as exc:
             raise ProviderError(f"Claude Code returned an invalid TradeIntent: {exc}") from exc
-        usage = {
-            key: envelope[key]
-            for key in ("duration_ms", "duration_api_ms", "num_turns", "total_cost_usd")
-            if key in envelope
-        }
+        model, usage = parse_claude_usage(envelope)
         return ProviderResult(
             intent=intent,
             provider=self.name,
-            model=envelope.get("model"),
+            model=model,
             duration=timedelta(seconds=time.monotonic() - started),
             raw_output=stdout,
             usage=usage,
