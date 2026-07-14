@@ -20,6 +20,7 @@ from candlepilot.broker.binance_testnet import BinanceTestnetBroker, BinanceTest
 from candlepilot.config import Settings
 from candlepilot.domain.models import MarketSnapshot, PortfolioState, TradeIntent
 from candlepilot.market.binance import BinancePublicClient
+from candlepilot.market.history import build_backtest_candles
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.risk.engine import SymbolRules
 from candlepilot.storage.database import AuditRepository, Database
@@ -263,6 +264,27 @@ def create_app(
             }
             for event in events
         ]
+
+    @app.get("/api/market/backtest-candles")
+    async def get_backtest_candles(
+        symbol: str,
+        cadence: Literal["1m", "5m", "15m"],
+        start: datetime,
+        end: datetime,
+        limit: int = 10_000,
+    ) -> list[dict[str, Any]]:
+        try:
+            rows, events = await asyncio.gather(
+                market.historical_klines(
+                    symbol.upper(), cadence, start, end, max_candles=limit
+                ),
+                market.historical_funding_rates(symbol.upper(), start, end),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"backtest history failed: {exc}") from exc
+        return build_backtest_candles(rows, events, cadence)
 
     @app.post("/api/universe/refresh")
     async def refresh_universe() -> list[dict[str, Any]]:
