@@ -125,3 +125,46 @@ def test_historical_klines_paginate_without_duplicates() -> None:
     assert len(rows) == 60
     assert len({row[0] for row in rows}) == 60
     assert len(requests) == 1
+
+
+def test_historical_funding_rates_are_typed_and_paginated() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        start = int(request.url.params["startTime"])
+        limit = int(request.url.params["limit"])
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "symbol": "BTCUSDT",
+                    "fundingTime": start + offset,
+                    "fundingRate": "0.0001",
+                    "markPrice": "50000.5",
+                }
+                for offset in range(limit)
+            ],
+        )
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="https://example.test"
+        )
+        adapter = BinancePublicClient(client=client)
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        result = await adapter.historical_funding_rates(
+            "BTCUSDT",
+            start,
+            start.replace(day=2),
+            max_events=1_200,
+        )
+        await client.aclose()
+        return result
+
+    events = asyncio.run(scenario())
+    assert len(events) == 1_200
+    assert events[0].timestamp.tzinfo is UTC
+    assert str(events[0].rate) == "0.0001"
+    assert str(events[0].mark_price) == "50000.5"
+    assert len(requests) == 2

@@ -240,6 +240,30 @@ def create_app(
             for row in rows
         ]
 
+    @app.get("/api/market/funding-rates")
+    async def get_historical_funding_rates(
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        limit: int = 10_000,
+    ) -> list[dict[str, Any]]:
+        try:
+            events = await market.historical_funding_rates(
+                symbol.upper(), start, end, max_events=limit
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"funding history failed: {exc}") from exc
+        return [
+            {
+                "timestamp": event.timestamp,
+                "rate": str(event.rate),
+                "mark_price": str(event.mark_price) if event.mark_price is not None else None,
+            }
+            for event in events
+        ]
+
     @app.post("/api/universe/refresh")
     async def refresh_universe() -> list[dict[str, Any]]:
         try:

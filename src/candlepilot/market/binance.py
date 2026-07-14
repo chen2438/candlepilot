@@ -34,6 +34,13 @@ class ContractInfo:
     rules: SymbolRules
 
 
+@dataclass(frozen=True, slots=True)
+class FundingRate:
+    timestamp: datetime
+    rate: Decimal
+    mark_price: Decimal | None = None
+
+
 class BinancePublicClient:
     """Read-only USD-M futures client used for discovery and paper trading."""
 
@@ -187,6 +194,52 @@ class BinancePublicClient:
                 break
             cursor = next_cursor
         return rows[:max_candles]
+
+    async def historical_funding_rates(
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        *,
+        max_events: int = 10_000,
+    ) -> list[FundingRate]:
+        if start.tzinfo is None or end.tzinfo is None:
+            raise ValueError("funding range must be timezone-aware")
+        if end <= start:
+            raise ValueError("funding range end must be after start")
+        if not 1 <= max_events <= 100_000:
+            raise ValueError("max_events must be between 1 and 100000")
+
+        cursor = int(start.timestamp() * 1000)
+        end_ms = int(end.timestamp() * 1000)
+        events: list[FundingRate] = []
+        while cursor < end_ms and len(events) < max_events:
+            page_limit = min(1000, max_events - len(events))
+            page = await self._get(
+                "/fapi/v1/fundingRate",
+                symbol=symbol,
+                startTime=cursor,
+                endTime=end_ms - 1,
+                limit=page_limit,
+            )
+            if not page:
+                break
+            for item in page:
+                timestamp_ms = int(item["fundingTime"])
+                if cursor <= timestamp_ms < end_ms:
+                    mark_price = item.get("markPrice")
+                    events.append(
+                        FundingRate(
+                            timestamp=datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC),
+                            rate=Decimal(item["fundingRate"]),
+                            mark_price=Decimal(mark_price) if mark_price is not None else None,
+                        )
+                    )
+            next_cursor = int(page[-1]["fundingTime"]) + 1
+            if next_cursor <= cursor or len(page) < page_limit:
+                break
+            cursor = next_cursor
+        return events[:max_events]
 
     async def market_snapshot(self, symbol: str, cadence: str) -> MarketSnapshot:
         if cadence not in {"1m", "5m", "15m"}:
