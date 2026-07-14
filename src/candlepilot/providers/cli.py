@@ -37,6 +37,11 @@ ENV_ALLOWLIST = {
     "HOME",
     "PATH",
     "SHELL",
+    # USER and LOGNAME carry only the (non-secret) username, but the macOS
+    # Keychain lookup that Claude Code uses to read its OAuth login fails
+    # without them, reporting the CLI as logged out even when it is not.
+    "USER",
+    "LOGNAME",
     "TMPDIR",
     "LANG",
     "LC_ALL",

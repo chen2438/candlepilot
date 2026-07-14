@@ -42,6 +42,8 @@ def test_sensitive_environment_is_removed() -> None:
         {
             "HOME": "/tmp/home",
             "PATH": "/usr/bin",
+            "USER": "trader",
+            "LOGNAME": "trader",
             "BINANCE_API_SECRET": "secret",
             "OPENAI_API_KEY": "secret",
             "ANTHROPIC_API_KEY": "secret",
@@ -49,6 +51,10 @@ def test_sensitive_environment_is_removed() -> None:
         }
     )
     assert clean["HOME"] == "/tmp/home"
+    # USER/LOGNAME are non-secret and required for the macOS Keychain lookup
+    # that Claude Code uses to confirm its login.
+    assert clean["USER"] == "trader"
+    assert clean["LOGNAME"] == "trader"
     assert "BINANCE_API_SECRET" not in clean
     assert "OPENAI_API_KEY" not in clean
     assert "ANTHROPIC_API_KEY" not in clean
