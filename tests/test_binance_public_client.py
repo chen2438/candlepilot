@@ -93,3 +93,35 @@ def test_rate_limit_exposes_retry_after() -> None:
         raise AssertionError("expected BinanceRateLimit")
     except BinanceRateLimit as exc:
         assert exc.retry_after == 3
+
+
+def test_historical_klines_paginate_without_duplicates() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        start = int(request.url.params["startTime"])
+        limit = int(request.url.params["limit"])
+        rows = [[start + offset * 60_000, "1", "2", "0.5", "1.5", "10"] for offset in range(limit)]
+        return httpx.Response(200, json=rows)
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="https://example.test"
+        )
+        adapter = BinancePublicClient(client=client)
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        result = await adapter.historical_klines(
+            "BTCUSDT",
+            "1m",
+            start,
+            start.replace(hour=1),
+            max_candles=2_000,
+        )
+        await client.aclose()
+        return result
+
+    rows = asyncio.run(scenario())
+    assert len(rows) == 60
+    assert len({row[0] for row in rows}) == 60
+    assert len(requests) == 1

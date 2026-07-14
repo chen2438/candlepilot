@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -209,6 +209,35 @@ def create_app(
                 "trend_strength": str(item.trend_strength),
             }
             for item in engine.candidates
+        ]
+
+    @app.get("/api/market/klines")
+    async def get_historical_klines(
+        symbol: str,
+        cadence: Literal["1m", "5m", "15m"],
+        start: datetime,
+        end: datetime,
+        limit: int = 10_000,
+    ) -> list[dict[str, Any]]:
+        try:
+            rows = await market.historical_klines(
+                symbol.upper(), cadence, start, end, max_candles=limit
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"market history failed: {exc}") from exc
+        return [
+            {
+                "timestamp": datetime.fromtimestamp(int(row[0]) / 1000, tz=UTC),
+                "open": row[1],
+                "high": row[2],
+                "low": row[3],
+                "close": row[4],
+                "volume": row[5],
+                "funding_rate": "0",
+            }
+            for row in rows
         ]
 
     @app.post("/api/universe/refresh")

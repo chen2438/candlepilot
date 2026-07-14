@@ -145,6 +145,49 @@ class BinancePublicClient:
             "/fapi/v1/klines", symbol=symbol, interval=interval, limit=limit
         )
 
+    async def historical_klines(
+        self,
+        symbol: str,
+        interval: str,
+        start: datetime,
+        end: datetime,
+        *,
+        max_candles: int = 10_000,
+    ) -> list[list[Any]]:
+        if interval not in {"1m", "5m", "15m", "1h"}:
+            raise ValueError("unsupported kline interval")
+        if start.tzinfo is None or end.tzinfo is None:
+            raise ValueError("historical range must be timezone-aware")
+        if end <= start:
+            raise ValueError("historical range end must be after start")
+        if not 1 <= max_candles <= 100_000:
+            raise ValueError("max_candles must be between 1 and 100000")
+
+        interval_ms = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000}[
+            interval
+        ]
+        cursor = int(start.timestamp() * 1000)
+        end_ms = int(end.timestamp() * 1000)
+        rows: list[list[Any]] = []
+        while cursor < end_ms and len(rows) < max_candles:
+            page_limit = min(1500, max_candles - len(rows))
+            page = await self._get(
+                "/fapi/v1/klines",
+                symbol=symbol,
+                interval=interval,
+                startTime=cursor,
+                endTime=end_ms - 1,
+                limit=page_limit,
+            )
+            if not page:
+                break
+            rows.extend(row for row in page if cursor <= int(row[0]) < end_ms)
+            next_cursor = int(page[-1][0]) + interval_ms
+            if next_cursor <= cursor or len(page) < page_limit:
+                break
+            cursor = next_cursor
+        return rows[:max_candles]
+
     async def market_snapshot(self, symbol: str, cadence: str) -> MarketSnapshot:
         if cadence not in {"1m", "5m", "15m"}:
             raise ValueError("unsupported decision cadence")
@@ -162,4 +205,3 @@ class BinancePublicClient:
             quote_volume_24h=Decimal(ticker["quoteVolume"]),
             funding_rate=Decimal(premium["lastFundingRate"]),
         )
-
