@@ -72,6 +72,7 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
     )
     with TestClient(application) as client:
         assert client.get("/api/status").json()["running"] is False
+        assert client.get("/api/status").json()["market_stream"]["enabled"] is False
         assert client.post("/api/engine/start").status_code == 409
         assert client.post(
             "/api/providers/select", json={"name": "api-fixture"}

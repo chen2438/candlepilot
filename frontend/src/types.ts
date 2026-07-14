@@ -6,6 +6,13 @@ export interface EngineStatus {
   selected_provider: string | null;
   candidate_count: number;
   universe_refreshed_at: string | null;
+  market_stream: {
+    enabled: boolean;
+    running: boolean;
+    symbol_count: number;
+    event_count: number;
+    last_error: string | null;
+  };
 }
 
 export interface ProviderHealth {

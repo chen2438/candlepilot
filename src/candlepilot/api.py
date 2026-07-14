@@ -113,7 +113,10 @@ def _candle_from_payload(payload: dict[str, Any]) -> Candle:
     )
 
 
-def _status(engine: TradingEngine) -> dict[str, Any]:
+def _status(
+    engine: TradingEngine, scheduler: TradingScheduler | None = None
+) -> dict[str, Any]:
+    paper_feed = scheduler.paper_feed if scheduler is not None else None
     return {
         "mode": engine.mode.value,
         "running": engine.running,
@@ -126,6 +129,13 @@ def _status(engine: TradingEngine) -> dict[str, Any]:
         "universe_refreshed_at": engine.universe_refreshed_at.isoformat()
         if engine.universe_refreshed_at
         else None,
+        "market_stream": {
+            "enabled": paper_feed is not None,
+            "running": paper_feed.running if paper_feed is not None else False,
+            "symbol_count": len(paper_feed.symbols) if paper_feed is not None else 0,
+            "event_count": paper_feed.event_count if paper_feed is not None else 0,
+            "last_error": paper_feed.last_error if paper_feed is not None else None,
+        },
     }
 
 
@@ -213,7 +223,7 @@ def create_app(
 
     @app.get("/api/status")
     async def get_status() -> dict[str, Any]:
-        return _status(engine)
+        return _status(engine, scheduler)
 
     @app.get("/api/providers")
     async def get_providers() -> list[dict[str, Any]]:
@@ -225,7 +235,7 @@ def create_app(
             engine.select_provider(selection.name)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return _status(engine)
+        return _status(engine, scheduler)
 
     @app.post("/api/engine/start")
     async def start_engine() -> dict[str, Any]:
@@ -234,19 +244,19 @@ def create_app(
             scheduler.start()
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return _status(engine)
+        return _status(engine, scheduler)
 
     @app.post("/api/engine/stop")
     async def stop_engine() -> dict[str, Any]:
         engine.stop()
         await scheduler.stop()
-        return _status(engine)
+        return _status(engine, scheduler)
 
     @app.post("/api/engine/emergency-stop")
     async def emergency_stop() -> dict[str, Any]:
         await scheduler.stop()
         await engine.emergency_stop()
-        return _status(engine)
+        return _status(engine, scheduler)
 
     @app.post("/api/engine/clear-emergency-lock")
     async def clear_emergency_lock() -> dict[str, Any]:
@@ -254,7 +264,7 @@ def create_app(
             await engine.clear_emergency_lock()
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return _status(engine)
+        return _status(engine, scheduler)
 
     @app.get("/api/universe")
     async def get_universe() -> list[dict[str, Any]]:
@@ -451,7 +461,9 @@ def create_app(
         await websocket.accept()
         try:
             while True:
-                await websocket.send_json({"type": "status", "data": _status(engine)})
+                await websocket.send_json(
+                    {"type": "status", "data": _status(engine, scheduler)}
+                )
                 await asyncio.sleep(2)
         except (WebSocketDisconnect, RuntimeError):
             return

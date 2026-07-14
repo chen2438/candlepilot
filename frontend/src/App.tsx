@@ -9,6 +9,13 @@ const emptyStatus: EngineStatus = {
   selected_provider: null,
   candidate_count: 0,
   universe_refreshed_at: null,
+  market_stream: {
+    enabled: false,
+    running: false,
+    symbol_count: 0,
+    event_count: 0,
+    last_error: null,
+  },
 };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -170,10 +177,11 @@ export default function App() {
         <div className="environment">
           <span className="eyebrow">环境</span>
           <strong>{status.mode === "paper-production-data" ? "生产行情 · 模拟成交" : status.mode}</strong>
+          <small>{status.market_stream.running ? `币安实时 · ${status.market_stream.symbol_count} 标的 · ${status.market_stream.event_count} 事件` : status.market_stream.enabled ? "币安实时流待启动" : "REST 行情"}</small>
         </div>
         <div className="live-state">
           <span className={`dot ${socketOnline ? "online" : ""}`} />
-          {socketOnline ? "LOCAL STREAM ONLINE" : "STREAM OFFLINE"}
+          {socketOnline ? status.market_stream.running ? "BINANCE MARKET LIVE" : "LOCAL STREAM ONLINE" : "STREAM OFFLINE"}
         </div>
       </header>
 
