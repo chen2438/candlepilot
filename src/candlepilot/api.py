@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from candlepilot.application.engine import TradingEngine
+from candlepilot.broker.binance_testnet import BinanceTestnetBroker, BinanceTestnetCredentials
 from candlepilot.config import Settings
 from candlepilot.domain.models import MarketSnapshot, PortfolioState
 from candlepilot.market.binance import BinancePublicClient
@@ -65,11 +66,20 @@ def create_app(
     owns_market = market is None
     database = database or Database(settings.database_url)
     market = market or BinancePublicClient()
+    testnet_broker = None
+    if settings.binance_testnet_api_key and settings.binance_testnet_api_secret:
+        testnet_broker = BinanceTestnetBroker(
+            BinanceTestnetCredentials(
+                settings.binance_testnet_api_key,
+                settings.binance_testnet_api_secret,
+            )
+        )
     engine = engine or TradingEngine(
         mode=settings.mode,
         providers=ProviderRegistry(),
         audit=AuditRepository(database.sessions),
         market=market,
+        testnet_broker=testnet_broker,
     )
 
     @asynccontextmanager
@@ -78,6 +88,8 @@ def create_app(
         yield
         if owns_market:
             await market.close()
+        if testnet_broker is not None:
+            await testnet_broker.close()
         if owns_database:
             await database.close()
 

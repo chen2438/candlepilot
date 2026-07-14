@@ -97,3 +97,24 @@ def test_engine_requires_provider_and_audits_paper_fill(tmp_path: Path) -> None:
     assert outcome.risk.accepted
     assert outcome.execution is not None and outcome.execution.status == "FILLED"
     assert intents[0]["intent"]["action"] == "OPEN_LONG"
+
+
+def test_testnet_mode_refuses_to_start_without_credentials(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'testnet.db'}")
+        await database.initialize()
+        engine = TradingEngine(
+            mode=TradingMode.TESTNET,
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=FakeMarket(),  # type: ignore[arg-type]
+        )
+        engine.select_provider("fake-auth")
+        try:
+            await engine.start()
+            raise AssertionError("testnet should require broker credentials")
+        except RuntimeError as exc:
+            assert "credentials" in str(exc)
+        await database.close()
+
+    asyncio.run(scenario())

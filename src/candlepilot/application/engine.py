@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from candlepilot.broker.binance_testnet import BinanceTestnetBroker
 from candlepilot.domain.models import (
     ExecutionReport,
     MarketSnapshot,
@@ -41,6 +42,7 @@ class TradingEngine:
         scanner: MarketScanner | None = None,
         risk: AggressiveRiskPolicy | None = None,
         paper_executor: PaperExecutor | None = None,
+        testnet_broker: BinanceTestnetBroker | None = None,
     ) -> None:
         self.mode = mode
         self.providers = providers
@@ -49,6 +51,7 @@ class TradingEngine:
         self.scanner = scanner or MarketScanner()
         self.risk = risk or AggressiveRiskPolicy()
         self.paper_executor = paper_executor or PaperExecutor()
+        self.testnet_broker = testnet_broker
         self.selected_provider: str | None = None
         self.running = False
         self.emergency_locked = False
@@ -67,6 +70,8 @@ class TradingEngine:
             raise RuntimeError("engine is emergency locked")
         if self.selected_provider is None:
             raise RuntimeError("an authenticated LLM provider must be selected")
+        if self.mode == TradingMode.TESTNET and self.testnet_broker is None:
+            raise RuntimeError("Binance testnet credentials are not configured")
         health = await self.providers.get(self.selected_provider).health_check()
         if not health.available or not health.authenticated:
             raise RuntimeError(f"provider is unavailable: {health.detail}")
@@ -78,7 +83,10 @@ class TradingEngine:
     async def emergency_stop(self) -> None:
         self.running = False
         self.emergency_locked = True
-        await self.paper_executor.emergency_flatten()
+        if self.mode == TradingMode.TESTNET and self.testnet_broker is not None:
+            await self.testnet_broker.emergency_flatten()
+        else:
+            await self.paper_executor.emergency_flatten()
 
     def clear_emergency_lock(self) -> None:
         if self.running:
@@ -119,9 +127,14 @@ class TradingEngine:
         )
         execution = None
         if evaluation.order is not None and evaluation.decision.accepted:
-            if self.mode not in {TradingMode.PAPER, TradingMode.BACKTEST}:
-                raise RuntimeError("testnet execution adapter is not enabled yet")
-            execution = await self.paper_executor.execute(evaluation.order, snapshot)
+            if self.mode == TradingMode.TESTNET:
+                if self.testnet_broker is None:
+                    raise RuntimeError("Binance testnet broker is unavailable")
+                execution = await self.testnet_broker.execute_with_stop(
+                    evaluation.order, leverage=result.intent.leverage
+                )
+            else:
+                execution = await self.paper_executor.execute(evaluation.order, snapshot)
             await self.audit.record_execution(snapshot.symbol, execution)
         return DecisionOutcome(
             intent=result.intent,
@@ -129,4 +142,3 @@ class TradingEngine:
             execution=execution,
             provider=result.provider,
         )
-

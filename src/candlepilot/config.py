@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
+from pydantic import SecretStr
+
 from candlepilot.domain.models import TradingMode
 
 
@@ -24,6 +26,8 @@ class Settings:
     max_margin_fraction: Decimal = Decimal("0.60")
     daily_loss_fraction: Decimal = Decimal("0.08")
     inference_timeout_seconds: float = 45.0
+    binance_testnet_api_key: SecretStr | None = None
+    binance_testnet_api_secret: SecretStr | None = None
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -34,4 +38,10 @@ class Settings:
             bind_host=os.getenv("CANDLEPILOT_HOST", "127.0.0.1"),
             bind_port=int(os.getenv("CANDLEPILOT_PORT", "8000")),
             inference_timeout_seconds=float(os.getenv("CANDLEPILOT_LLM_TIMEOUT", "45")),
+            binance_testnet_api_key=SecretStr(os.environ["BINANCE_TESTNET_API_KEY"])
+            if os.getenv("BINANCE_TESTNET_API_KEY")
+            else None,
+            binance_testnet_api_secret=SecretStr(os.environ["BINANCE_TESTNET_API_SECRET"])
+            if os.getenv("BINANCE_TESTNET_API_SECRET")
+            else None,
         )
