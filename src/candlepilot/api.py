@@ -18,6 +18,7 @@ from candlepilot.application.paper_feed import PaperMarketFeed
 from candlepilot.application.scheduler import TradingScheduler
 from candlepilot.application.testnet_feed import TestnetUserFeed
 from candlepilot.backtest.engine import BacktestConfig, BacktestEngine, Candle, ReplayIntent
+from candlepilot.backtest.portfolio import PortfolioBacktestEngine
 from candlepilot.backtest.replay import align_cached_intents, generate_fresh_intents
 from candlepilot.broker.binance_testnet import BinanceTestnetBroker, BinanceTestnetCredentials
 from candlepilot.broker.user_stream import BinanceTestnetUserStream
@@ -94,6 +95,18 @@ class BacktestReplayRequest(ApiModel):
 class BacktestLLMRequest(BacktestReplayRequest):
     provider: str
     max_calls: int = Field(default=100, ge=1, le=500)
+
+
+class PortfolioBacktestLeg(ApiModel):
+    symbol: str = Field(pattern=r"^[A-Z0-9]+USDT$")
+    cadence: Literal["1m", "5m", "15m"]
+    candles: list[BacktestCandleInput] = Field(min_length=1, max_length=100_000)
+    decisions: list[ReplayIntentInput] = Field(default_factory=list, max_length=100_000)
+
+
+class PortfolioBacktestRequest(ApiModel):
+    legs: list[PortfolioBacktestLeg] = Field(min_length=2, max_length=20)
+    config: BacktestConfigInput = Field(default_factory=BacktestConfigInput)
 
 
 def _json_value(value: Any) -> Any:
@@ -582,6 +595,41 @@ def create_app(
             "end": request.end.isoformat(),
         }
         return await engine.audit.record_backtest(symbol, request.cadence, serialized)
+
+    @app.post("/api/backtests/portfolio", status_code=201)
+    async def run_portfolio_backtest(request: PortfolioBacktestRequest) -> dict[str, Any]:
+        symbols = [leg.symbol for leg in request.legs]
+        if len(set(symbols)) != len(symbols):
+            raise HTTPException(status_code=422, detail="portfolio symbols must be unique")
+        mismatched = [
+            decision
+            for leg in request.legs
+            for decision in leg.decisions
+            if decision.intent.symbol != leg.symbol
+            or decision.intent.cadence != leg.cadence
+        ]
+        if mismatched:
+            raise HTTPException(
+                status_code=422,
+                detail="all portfolio intents must match their leg symbol and cadence",
+            )
+        legs = {
+            leg.symbol: (
+                [Candle(**item.model_dump()) for item in leg.candles],
+                [ReplayIntent(item.decided_at, item.intent) for item in leg.decisions],
+            )
+            for leg in request.legs
+        }
+        try:
+            result = PortfolioBacktestEngine(
+                BacktestConfig(**request.config.model_dump())
+            ).run(legs)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        serialized = _json_value(asdict(result))
+        serialized["symbols"] = symbols
+        serialized["cadences"] = {leg.symbol: leg.cadence for leg in request.legs}
+        return await engine.audit.record_backtest("PORTFOLIO", "mixed", serialized)
 
     @app.websocket("/ws/events")
     async def event_stream(websocket: WebSocket) -> None:

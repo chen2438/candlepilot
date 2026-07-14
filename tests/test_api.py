@@ -258,3 +258,43 @@ def test_fresh_llm_backtest_calls_provider_and_audits_decisions(tmp_path: Path) 
         assert replay["decision_count"] == 2
         assert len(client.get("/api/signals").json()) == 2
     asyncio.run(database.close())
+
+
+def test_portfolio_backtest_api_persists_aggregate_result(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'portfolio-api.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.PAPER,
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    candles = [
+        {
+            "timestamp": start.isoformat(),
+            "open": "100",
+            "high": "101",
+            "low": "99",
+            "close": "100",
+            "volume": "10",
+        }
+    ]
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/backtests/portfolio",
+            json={
+                "legs": [
+                    {"symbol": "BTCUSDT", "cadence": "5m", "candles": candles},
+                    {"symbol": "ETHUSDT", "cadence": "5m", "candles": candles},
+                ]
+            },
+        )
+        assert response.status_code == 201, response.text
+        run = response.json()
+        assert run["symbol"] == "PORTFOLIO"
+        assert run["result"]["allocation"] == "equal_weight_sleeves"
+        assert set(run["result"]["per_symbol"]) == {"BTCUSDT", "ETHUSDT"}
+    asyncio.run(database.close())
