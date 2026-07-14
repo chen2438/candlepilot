@@ -20,6 +20,7 @@ from candlepilot.broker.binance_testnet import BinanceTestnetBroker, BinanceTest
 from candlepilot.config import Settings
 from candlepilot.domain.models import MarketSnapshot, PortfolioState, TradeIntent
 from candlepilot.market.binance import BinancePublicClient
+from candlepilot.market.cache import HistoricalMarketCache
 from candlepilot.market.history import build_backtest_candles
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.risk.engine import SymbolRules
@@ -130,6 +131,7 @@ def create_app(
         testnet_broker=testnet_broker,
     )
     scheduler = TradingScheduler(engine, market)
+    history_cache = HistoricalMarketCache(settings.data_dir / "market")
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -152,6 +154,7 @@ def create_app(
     app.state.engine = engine
     app.state.database = database
     app.state.scheduler = scheduler
+    app.state.history_cache = history_cache
 
     @app.get("/api/status")
     async def get_status() -> dict[str, Any]:
@@ -274,6 +277,11 @@ def create_app(
         limit: int = 10_000,
     ) -> list[dict[str, Any]]:
         try:
+            cached = await asyncio.to_thread(
+                history_cache.load, symbol.upper(), cadence, start, end, limit
+            )
+            if cached is not None:
+                return cached
             rows, events = await asyncio.gather(
                 market.historical_klines(
                     symbol.upper(), cadence, start, end, max_candles=limit
@@ -284,7 +292,17 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"backtest history failed: {exc}") from exc
-        return build_backtest_candles(rows, events, cadence)
+        candles = build_backtest_candles(rows, events, cadence)
+        await asyncio.to_thread(
+            history_cache.store,
+            symbol.upper(),
+            cadence,
+            start,
+            end,
+            limit,
+            candles,
+        )
+        return candles
 
     @app.post("/api/universe/refresh")
     async def refresh_universe() -> list[dict[str, Any]]:
