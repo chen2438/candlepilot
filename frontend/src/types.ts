@@ -11,6 +11,8 @@ export interface EngineStatus {
     running: boolean;
     symbol_count: number;
     event_count: number;
+    backfill_count: number;
+    last_backfill_at: string | null;
     last_error: string | null;
   };
 }

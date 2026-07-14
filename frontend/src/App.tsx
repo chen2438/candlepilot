@@ -14,6 +14,8 @@ const emptyStatus: EngineStatus = {
     running: false,
     symbol_count: 0,
     event_count: 0,
+    backfill_count: 0,
+    last_backfill_at: null,
     last_error: null,
   },
 };
@@ -177,7 +179,7 @@ export default function App() {
         <div className="environment">
           <span className="eyebrow">环境</span>
           <strong>{status.mode === "paper-production-data" ? "生产行情 · 模拟成交" : status.mode}</strong>
-          <small>{status.market_stream.running ? `币安实时 · ${status.market_stream.symbol_count} 标的 · ${status.market_stream.event_count} 事件` : status.market_stream.enabled ? "币安实时流待启动" : "REST 行情"}</small>
+          <small>{status.market_stream.running ? `币安实时 · ${status.market_stream.symbol_count} 标的 · ${status.market_stream.event_count} 事件 · ${status.market_stream.backfill_count} 回补` : status.market_stream.enabled ? "币安实时流待启动" : "REST 行情"}</small>
         </div>
         <div className="live-state">
           <span className={`dot ${socketOnline ? "online" : ""}`} />

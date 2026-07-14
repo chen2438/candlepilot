@@ -134,6 +134,10 @@ def _status(
             "running": paper_feed.running if paper_feed is not None else False,
             "symbol_count": len(paper_feed.symbols) if paper_feed is not None else 0,
             "event_count": paper_feed.event_count if paper_feed is not None else 0,
+            "backfill_count": paper_feed.backfill_count if paper_feed is not None else 0,
+            "last_backfill_at": paper_feed.last_backfill_at.isoformat()
+            if paper_feed is not None and paper_feed.last_backfill_at
+            else None,
             "last_error": paper_feed.last_error if paper_feed is not None else None,
         },
     }
@@ -166,8 +170,20 @@ def create_app(
         market=market,
         testnet_broker=testnet_broker,
     )
+
+    async def load_paper_backfill(symbols: list[str]) -> list[MarketSnapshot]:
+        results = await asyncio.gather(
+            *(market.market_snapshot(symbol, "1m") for symbol in symbols),
+            return_exceptions=True,
+        )
+        return [result for result in results if isinstance(result, MarketSnapshot)]
+
     paper_feed = (
-        PaperMarketFeed(engine.paper_executor, engine.audit)
+        PaperMarketFeed(
+            engine.paper_executor,
+            engine.audit,
+            backfill_loader=load_paper_backfill,
+        )
         if engine.mode == TradingMode.PAPER and owns_market
         else None
     )

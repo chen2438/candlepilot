@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 
 from candlepilot.domain.models import MarketSnapshot
@@ -20,6 +21,7 @@ class _LiveQuote:
 
 
 StreamFactory = Callable[[list[str]], BinanceMarketStream]
+BackfillLoader = Callable[[list[str]], Awaitable[list[MarketSnapshot]]]
 
 
 class PaperMarketFeed:
@@ -31,13 +33,17 @@ class PaperMarketFeed:
         audit: AuditRepository,
         *,
         stream_factory: StreamFactory = BinanceMarketStream,
+        backfill_loader: BackfillLoader | None = None,
     ) -> None:
         self.executor = executor
         self.audit = audit
         self.stream_factory = stream_factory
+        self.backfill_loader = backfill_loader
         self.symbols: tuple[str, ...] = ()
         self.event_count = 0
         self.last_error: str | None = None
+        self.backfill_count = 0
+        self.last_backfill_at: datetime | None = None
         self._quotes: dict[str, _LiveQuote] = {}
         self._stream: BinanceMarketStream | None = None
         self._task: asyncio.Task[None] | None = None
@@ -70,13 +76,34 @@ class PaperMarketFeed:
 
     async def _run(self) -> None:
         assert self._stream is not None
+        seen_reconnects = 0
         try:
             async for event in self._stream.events():
+                if self._stream.reconnect_count > seen_reconnects:
+                    await self.backfill()
+                    seen_reconnects = self._stream.reconnect_count
                 await self.process(event)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             self.last_error = str(exc)
+
+    async def backfill(self) -> None:
+        if self.backfill_loader is None or not self.symbols:
+            return
+        try:
+            snapshots = await self.backfill_loader(list(self.symbols))
+            for snapshot in snapshots:
+                reports = await self.executor.mark_to_market(snapshot)
+                for report in reports:
+                    await self.audit.record_execution(snapshot.symbol, report)
+            self.backfill_count += 1
+            self.last_backfill_at = max(
+                (snapshot.timestamp for snapshot in snapshots), default=self.last_backfill_at
+            )
+            self.last_error = None
+        except Exception as exc:
+            self.last_error = f"REST backfill failed: {exc}"
 
     async def process(self, event: MarketStreamEvent) -> None:
         quote = self._quotes.setdefault(event.symbol, _LiveQuote())

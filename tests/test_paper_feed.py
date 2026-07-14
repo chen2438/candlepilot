@@ -69,3 +69,57 @@ def test_unsupported_stream_event_is_ignored(tmp_path: Path) -> None:
         return feed.event_count
 
     assert asyncio.run(scenario()) == 0
+
+
+def test_rest_backfill_updates_protection_before_live_resume(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'backfill.db'}")
+        await database.initialize()
+        executor = PaperExecutor(slippage_fraction=Decimal("0"))
+        snapshot = MarketSnapshot(
+            symbol="BTCUSDT",
+            cadence="1m",
+            timestamp=datetime.now(UTC),
+            mark_price="100",
+            bid="99.9",
+            ask="100.1",
+            quote_volume_24h="1000000",
+        )
+        await executor.execute(
+            OrderPlan(
+                client_order_id="backfill-entry",
+                symbol="BTCUSDT",
+                side="BUY",
+                quantity=Decimal("1"),
+                order_type=OrderType.MARKET,
+                stop_price=Decimal("98"),
+            ),
+            snapshot,
+        )
+
+        async def loader(_):
+            return [
+                snapshot.model_copy(
+                    update={
+                        "mark_price": Decimal("97"),
+                        "bid": Decimal("96.9"),
+                        "ask": Decimal("97.1"),
+                    }
+                )
+            ]
+
+        feed = PaperMarketFeed(
+            executor,
+            AuditRepository(database.sessions),
+            backfill_loader=loader,
+        )
+        feed.symbols = ("BTCUSDT",)
+        await feed.backfill()
+        state = executor.portfolio_state()
+        await database.close()
+        return feed, state
+
+    feed, state = asyncio.run(scenario())
+    assert feed.backfill_count == 1
+    assert feed.last_backfill_at is not None
+    assert state.open_positions == 0
