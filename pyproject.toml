@@ -20,6 +20,9 @@ dependencies = [
   "websockets>=14,<16",
 ]
 
+[project.scripts]
+candlepilot = "candlepilot.cli:main"
+
 [project.optional-dependencies]
 dev = [
   "pytest>=8,<9",
