@@ -269,6 +269,67 @@ class AuditRepository:
             for row in rows
         ]
 
+    async def executions_between(
+        self, start: datetime, end: datetime
+    ) -> list[dict[str, Any]]:
+        async with self.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(ExecutionRow)
+                    .where(
+                        ExecutionRow.created_at >= start,
+                        ExecutionRow.created_at < end,
+                    )
+                    .order_by(ExecutionRow.created_at.asc(), ExecutionRow.id.asc())
+                )
+            ).all()
+        return [
+            {
+                "id": row.id,
+                "client_order_id": row.client_order_id,
+                "symbol": row.symbol,
+                "status": row.status,
+                "report": json.loads(row.report_json),
+                "created_at": self._utc(row.created_at),
+            }
+            for row in rows
+        ]
+
+    async def risk_decisions_between(
+        self, start: datetime, end: datetime
+    ) -> list[dict[str, Any]]:
+        async with self.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(RiskRow)
+                    .where(RiskRow.created_at >= start, RiskRow.created_at < end)
+                    .order_by(RiskRow.created_at.asc(), RiskRow.id.asc())
+                )
+            ).all()
+        return [
+            {
+                "id": row.id,
+                "inference_id": row.inference_id,
+                "symbol": row.symbol,
+                "accepted": bool(row.accepted),
+                "reason": row.reason,
+                "created_at": self._utc(row.created_at),
+            }
+            for row in rows
+        ]
+
+    async def inference_ids_between(self, start: datetime, end: datetime) -> set[int]:
+        async with self.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(InferenceRow.id).where(
+                        InferenceRow.created_at >= start,
+                        InferenceRow.created_at < end,
+                    )
+                )
+            ).all()
+        return set(rows)
+
     async def record_user_event(self, event: UserStreamEvent) -> int:
         row = UserStreamEventRow(
             event_type=event.event_type,

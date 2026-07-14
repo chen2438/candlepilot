@@ -67,6 +67,15 @@ export BINANCE_TESTNET_API_SECRET='...'
 测试网 Broker 硬性拒绝生产交易地址。凭证不会传入 Codex/Claude 子进程，也不会写入
 数据库和日志。
 
+连续运行测试网后，可用审计工具检查发布不变量（连续运行 ≥24 小时、订单号唯一、持仓已
+对账且带保护、每笔成交可追溯到模型与风控）：
+
+```bash
+candlepilot acceptance --required-hours 24
+```
+
+证据不足时该命令返回非零退出码，绝不虚假标记验收通过。
+
 ## 验证
 
 ```bash
