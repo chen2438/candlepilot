@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from candlepilot.application.engine import TradingEngine
+from candlepilot.application.scheduler import TradingScheduler
 from candlepilot.broker.binance_testnet import BinanceTestnetBroker, BinanceTestnetCredentials
 from candlepilot.config import Settings
 from candlepilot.domain.models import MarketSnapshot, PortfolioState
@@ -81,11 +82,13 @@ def create_app(
         market=market,
         testnet_broker=testnet_broker,
     )
+    scheduler = TradingScheduler(engine, market)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await database.initialize()
         yield
+        await scheduler.stop()
         if owns_market:
             await market.close()
         if testnet_broker is not None:
@@ -101,6 +104,7 @@ def create_app(
     )
     app.state.engine = engine
     app.state.database = database
+    app.state.scheduler = scheduler
 
     @app.get("/api/status")
     async def get_status() -> dict[str, Any]:
@@ -122,6 +126,7 @@ def create_app(
     async def start_engine() -> dict[str, Any]:
         try:
             await engine.start()
+            scheduler.start()
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _status(engine)
@@ -129,10 +134,12 @@ def create_app(
     @app.post("/api/engine/stop")
     async def stop_engine() -> dict[str, Any]:
         engine.stop()
+        await scheduler.stop()
         return _status(engine)
 
     @app.post("/api/engine/emergency-stop")
     async def emergency_stop() -> dict[str, Any]:
+        await scheduler.stop()
         await engine.emergency_stop()
         return _status(engine)
 

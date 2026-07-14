@@ -134,7 +134,9 @@ class TradingEngine:
                     evaluation.order, leverage=result.intent.leverage
                 )
             else:
-                execution = await self.paper_executor.execute(evaluation.order, snapshot)
+                execution = await self.paper_executor.execute(
+                    evaluation.order, snapshot, leverage=result.intent.leverage
+                )
             await self.audit.record_execution(snapshot.symbol, execution)
         return DecisionOutcome(
             intent=result.intent,
