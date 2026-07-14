@@ -55,6 +55,12 @@ export interface BacktestRun {
     total_fees: string;
     total_funding: string;
     trades: unknown[];
+    replay?: {
+      source: string;
+      decision_count: number;
+      start: string;
+      end: string;
+    };
   };
   created_at: string;
 }

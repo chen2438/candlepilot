@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import type { BacktestRun, Candidate, EngineStatus, ProviderHealth, Signal } from "./types";
 
 const emptyStatus: EngineStatus = {
@@ -32,6 +32,26 @@ function percent(value: string): string {
   return `${(Number(value) * 100).toFixed(2)}%`;
 }
 
+function localDateTime(date: Date): string {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function initialReplayForm() {
+  const end = new Date();
+  end.setSeconds(0, 0);
+  const start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
+  return {
+    symbol: "BTCUSDT",
+    cadence: "5m",
+    start: localDateTime(start),
+    end: localDateTime(end),
+    initialEquity: "10000",
+    feeRate: "0.0005",
+    slippage: "0.0005",
+  };
+}
+
 export default function App() {
   const [status, setStatus] = useState<EngineStatus>(emptyStatus);
   const [providers, setProviders] = useState<ProviderHealth[]>([]);
@@ -41,6 +61,7 @@ export default function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [socketOnline, setSocketOnline] = useState(false);
+  const [replayForm, setReplayForm] = useState(initialReplayForm);
 
   const refresh = useCallback(async () => {
     const [nextStatus, nextProviders, nextCandidates, nextSignals, nextBacktests] = await Promise.all([
@@ -99,6 +120,39 @@ export default function App() {
       setBusy(null);
     }
   }, []);
+
+  const runCachedReplay = useCallback(async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy("backtest");
+    setError(null);
+    try {
+      const start = new Date(replayForm.start);
+      const end = new Date(replayForm.end);
+      if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end <= start) {
+        throw new Error("回测结束时间必须晚于开始时间");
+      }
+      const created = await api<BacktestRun>("/api/backtests/replay", {
+        method: "POST",
+        body: JSON.stringify({
+          symbol: replayForm.symbol.trim().toUpperCase(),
+          cadence: replayForm.cadence,
+          start: start.toISOString(),
+          end: end.toISOString(),
+          config: {
+            initial_equity: replayForm.initialEquity,
+            fee_rate: replayForm.feeRate,
+            slippage_fraction: replayForm.slippage,
+          },
+        }),
+      });
+      setBacktests((current) => [created, ...current.filter((run) => run.id !== created.id)]);
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setError(message.includes("no cached LLM decisions") ? "该区间没有可重放的已审计 LLM 决策" : message);
+    } finally {
+      setBusy(null);
+    }
+  }, [replayForm]);
 
   const activeProvider = useMemo(
     () => providers.find((provider) => provider.provider === status.selected_provider),
@@ -231,13 +285,24 @@ export default function App() {
 
           <article className="panel backtest-panel">
             <PanelTitle code="05" title="回测运行" meta="事件驱动 · 下一根 K 线成交" />
+            <form className="backtest-form" onSubmit={runCachedReplay}>
+              <label><span>标的</span><input required pattern="[A-Za-z0-9]+USDT" value={replayForm.symbol} onChange={(event) => setReplayForm({ ...replayForm, symbol: event.target.value })} /></label>
+              <label><span>周期</span><select value={replayForm.cadence} onChange={(event) => setReplayForm({ ...replayForm, cadence: event.target.value })}><option value="1m">1m</option><option value="5m">5m</option><option value="15m">15m</option></select></label>
+              <label><span>开始时间</span><input required type="datetime-local" value={replayForm.start} onChange={(event) => setReplayForm({ ...replayForm, start: event.target.value })} /></label>
+              <label><span>结束时间</span><input required type="datetime-local" value={replayForm.end} onChange={(event) => setReplayForm({ ...replayForm, end: event.target.value })} /></label>
+              <label><span>初始权益</span><input required min="1" step="any" type="number" value={replayForm.initialEquity} onChange={(event) => setReplayForm({ ...replayForm, initialEquity: event.target.value })} /></label>
+              <label><span>手续费率</span><input required min="0" max="1" step="any" type="number" value={replayForm.feeRate} onChange={(event) => setReplayForm({ ...replayForm, feeRate: event.target.value })} /></label>
+              <label><span>滑点比例</span><input required min="0" max="1" step="any" type="number" value={replayForm.slippage} onChange={(event) => setReplayForm({ ...replayForm, slippage: event.target.value })} /></label>
+              <button className="compact" disabled={busy !== null} type="submit">{busy === "backtest" ? "重放中…" : "重放缓存决策"}</button>
+              <small>仅使用已审计的 LLM 决策，不会在回测时产生新的模型调用。</small>
+            </form>
             <div className="table-wrap">
               <table>
                 <thead><tr><th>运行</th><th>标的</th><th>周期</th><th>总收益</th><th>最大回撤</th><th>胜率</th><th>交易数</th><th>时间</th></tr></thead>
                 <tbody>
                   {backtests.map((run) => (
                     <tr key={run.id}>
-                      <td>#{run.id}</td>
+                      <td>#{run.id}{run.result.replay && <small>{run.result.replay.decision_count} 决策</small>}</td>
                       <td><strong>{run.symbol}</strong></td>
                       <td>{run.cadence}</td>
                       <td className={Number(run.result.total_return) >= 0 ? "positive" : "negative"}>{percent(run.result.total_return)}</td>
@@ -247,7 +312,7 @@ export default function App() {
                       <td>{new Date(run.created_at).toLocaleString("zh-CN", { hour12: false })}</td>
                     </tr>
                   ))}
-                  {!backtests.length && <tr><td colSpan={8} className="empty">尚无回测运行。通过 POST /api/backtests 提交历史 K 线与交易意图。</td></tr>}
+                  {!backtests.length && <tr><td colSpan={8} className="empty">尚无回测运行。请使用上方表单重放已审计的历史决策。</td></tr>}
                 </tbody>
               </table>
             </div>
