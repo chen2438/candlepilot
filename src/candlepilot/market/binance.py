@@ -245,8 +245,8 @@ class BinancePublicClient:
     async def market_snapshot(self, symbol: str, cadence: str) -> MarketSnapshot:
         if cadence not in {"1m", "5m", "15m"}:
             raise ValueError("unsupported decision cadence")
-        rows, book, ticker, premium, depth, interest, trades = await asyncio.gather(
-            self.klines(symbol, cadence, 200),
+        results = await asyncio.gather(
+            *(self.klines(symbol, interval, 200) for interval in ("1m", "5m", "15m")),
             self._get("/fapi/v1/ticker/bookTicker", symbol=symbol),
             self._get("/fapi/v1/ticker/24hr", symbol=symbol),
             self._get("/fapi/v1/premiumIndex", symbol=symbol),
@@ -254,6 +254,8 @@ class BinancePublicClient:
             self._get("/fapi/v1/openInterest", symbol=symbol),
             self._get("/fapi/v1/aggTrades", symbol=symbol, limit=100),
         )
+        rows_by_interval = dict(zip(("1m", "5m", "15m"), results[:3], strict=True))
+        book, ticker, premium, depth, interest, trades = results[3:]
         pipeline = FeaturePipeline()
         mark_price = Decimal(premium["markPrice"])
         extra_features = pipeline.microstructure(
@@ -264,10 +266,11 @@ class BinancePublicClient:
             asks=depth["asks"],
             trades=trades,
         )
+        extra_features.update(pipeline.multitimeframe(rows_by_interval))
         return pipeline.snapshot(
             symbol=symbol,
             cadence=cadence,  # type: ignore[arg-type]
-            rows=rows,
+            rows=rows_by_interval[cadence],
             mark_price=mark_price,
             bid=Decimal(book["bidPrice"]),
             ask=Decimal(book["askPrice"]),

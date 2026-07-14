@@ -76,3 +76,13 @@ def test_microstructure_features_capture_direction_and_basis() -> None:
     assert features["open_interest"] == 1234.5
     assert features["book_imbalance"] == 1 / 3
     assert features["recent_trade_imbalance"] == 1 / 3
+
+
+def test_multitimeframe_features_are_namespaced() -> None:
+    features = FeaturePipeline().multitimeframe(
+        {"1m": _rows(), "5m": _rows(), "15m": _rows()}
+    )
+
+    assert len(features) == 27
+    assert features["1m_ema_spread"] == features["5m_ema_spread"]
+    assert "15m_rsi_14" in features

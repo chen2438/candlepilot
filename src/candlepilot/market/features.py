@@ -97,6 +97,17 @@ class FeaturePipeline:
             "quote_volume_ratio": volumes[-1] / volume_mean if volume_mean else 0.0,
         }
 
+    def multitimeframe(
+        self, rows_by_interval: dict[str, list[list[Any]]]
+    ) -> dict[str, float]:
+        if set(rows_by_interval) != {"1m", "5m", "15m"}:
+            raise ValueError("multitimeframe features require 1m, 5m, and 15m rows")
+        combined: dict[str, float] = {}
+        for interval in ("1m", "5m", "15m"):
+            for name, value in self.calculate(rows_by_interval[interval]).items():
+                combined[f"{interval}_{name}"] = value
+        return combined
+
     def snapshot(
         self,
         *,

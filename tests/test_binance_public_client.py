@@ -208,3 +208,4 @@ def test_market_snapshot_includes_microstructure() -> None:
     assert snapshot.features["book_imbalance"] == 0.5
     assert snapshot.features["recent_trade_imbalance"] == 1.0
     assert snapshot.features["open_interest"] == 42.0
+    assert snapshot.features["1m_ema_spread"] == snapshot.features["15m_ema_spread"]
