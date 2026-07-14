@@ -88,9 +88,19 @@ class AggressiveRiskPolicy:
         opening = intent.action in {TradeAction.OPEN_LONG, TradeAction.OPEN_SHORT, TradeAction.ADD}
         if opening and existing_side is None and portfolio.open_positions >= self.max_positions:
             return self._reject("maximum open position count reached")
-        requested_side = "LONG" if intent.action == TradeAction.OPEN_LONG else "SHORT"
+        requested_side = (
+            existing_side
+            if intent.action == TradeAction.ADD
+            else "LONG"
+            if intent.action == TradeAction.OPEN_LONG
+            else "SHORT"
+        )
         if intent.action == TradeAction.ADD and existing_side is None:
             return self._reject("cannot add without an existing position")
+        if intent.action == TradeAction.OPEN_LONG and existing_side == "LONG":
+            return self._reject("existing long position requires an explicit ADD intent")
+        if intent.action == TradeAction.OPEN_SHORT and existing_side == "SHORT":
+            return self._reject("existing short position requires an explicit ADD intent")
         if intent.action == TradeAction.OPEN_LONG and existing_side == "SHORT":
             return self._reject("opposing position must be closed before opening long")
         if intent.action == TradeAction.OPEN_SHORT and existing_side == "LONG":

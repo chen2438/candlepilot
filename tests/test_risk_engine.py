@@ -91,6 +91,28 @@ def test_opposing_position_must_close_first() -> None:
     assert "closed" in result.decision.reason
 
 
+def test_same_side_open_requires_explicit_add() -> None:
+    result = AggressiveRiskPolicy().evaluate(
+        _intent(TradeAction.OPEN_LONG),
+        _snapshot(),
+        _portfolio(open_positions=1, symbol_sides={"BTCUSDT": "LONG"}),
+        RULES,
+    )
+    assert not result.decision.accepted
+    assert "explicit ADD" in result.decision.reason
+
+
+def test_add_uses_existing_position_direction() -> None:
+    result = AggressiveRiskPolicy().evaluate(
+        _intent(TradeAction.ADD),
+        _snapshot(),
+        _portfolio(open_positions=1, symbol_sides={"BTCUSDT": "LONG"}),
+        RULES,
+    )
+    assert result.decision.accepted
+    assert result.order is not None and result.order.side == "BUY"
+
+
 def test_close_is_always_reduce_only() -> None:
     result = AggressiveRiskPolicy().evaluate(
         _intent(TradeAction.CLOSE),

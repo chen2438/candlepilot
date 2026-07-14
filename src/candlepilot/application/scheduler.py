@@ -33,6 +33,7 @@ class TradingScheduler:
         self.paper_feed = paper_feed
         self.testnet_feed = testnet_feed
         self._tasks: list[asyncio.Task[None]] = []
+        self._symbol_locks: dict[str, asyncio.Lock] = {}
         self._stop = asyncio.Event()
         self.last_error: str | None = None
         self.universe_last_error: str | None = None
@@ -118,15 +119,17 @@ class TradingScheduler:
             contract = contracts.get(candidate.symbol)
             if contract is None:
                 continue
-            snapshot = await self.market.market_snapshot(candidate.symbol, cadence)
-            if self.engine.mode in {TradingMode.PAPER, TradingMode.BACKTEST}:
-                protective_reports = await self.engine.paper_executor.mark_to_market(snapshot)
-                for report in protective_reports:
-                    await self.engine.audit.record_execution(candidate.symbol, report)
-            portfolio = await self._portfolio()
-            outcomes.append(
-                await self.engine.evaluate(snapshot, portfolio, contract.rules)
-            )
+            lock = self._symbol_locks.setdefault(candidate.symbol, asyncio.Lock())
+            async with lock:
+                snapshot = await self.market.market_snapshot(candidate.symbol, cadence)
+                if self.engine.mode in {TradingMode.PAPER, TradingMode.BACKTEST}:
+                    protective_reports = await self.engine.paper_executor.mark_to_market(snapshot)
+                    for report in protective_reports:
+                        await self.engine.audit.record_execution(candidate.symbol, report)
+                portfolio = await self._portfolio()
+                outcomes.append(
+                    await self.engine.evaluate(snapshot, portfolio, contract.rules)
+                )
         return outcomes
 
     async def _portfolio(self) -> PortfolioState:

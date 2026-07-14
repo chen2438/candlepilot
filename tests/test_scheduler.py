@@ -25,6 +25,28 @@ class HoldProvider(LLMProvider):
         return ProviderResult(intent, self.name, None, timedelta(0), intent.model_dump_json(), {})
 
 
+class ConflictingProvider(LLMProvider):
+    name = "conflicting"
+
+    async def health_check(self):
+        return ProviderHealth(provider=self.name, available=True, authenticated=True)
+
+    async def generate_trade_intent(self, snapshot, portfolio):
+        long = snapshot.cadence == "1m"
+        intent = TradeIntent(
+            symbol=snapshot.symbol,
+            cadence=snapshot.cadence,
+            action="OPEN_LONG" if long else "OPEN_SHORT",
+            confidence=0.9,
+            leverage=2,
+            risk_fraction="0.01",
+            stop_loss="98" if long else "102",
+            rationale="conflict fixture",
+        )
+        await asyncio.sleep(0.01)
+        return ProviderResult(intent, self.name, None, timedelta(0), intent.model_dump_json(), {})
+
+
 class SchedulerMarket:
     def __init__(self):
         self.candidate_calls = 0
@@ -98,6 +120,35 @@ def test_scheduler_runs_ranked_candidate_cycle(tmp_path: Path) -> None:
     outcomes = asyncio.run(scenario())
     assert len(outcomes) == 1
     assert outcomes[0].intent.action.value == "HOLD"
+
+
+def test_concurrent_cadences_cannot_open_opposing_positions(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'conflict.db'}")
+        await database.initialize()
+        market = SchedulerMarket()
+        engine = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([ConflictingProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider("conflicting")
+        await engine.start()
+        await engine.refresh_universe()
+        scheduler = TradingScheduler(engine, market)  # type: ignore[arg-type]
+        cycles = await asyncio.gather(
+            scheduler.run_cycle("1m"), scheduler.run_cycle("5m")
+        )
+        portfolio = engine.paper_executor.portfolio_state()
+        await database.close()
+        return cycles, portfolio
+
+    cycles, portfolio = asyncio.run(scenario())
+    outcomes = [outcome for cycle in cycles for outcome in cycle]
+    assert sum(outcome.execution is not None for outcome in outcomes) == 1
+    assert sum(outcome.risk.accepted for outcome in outcomes) == 1
+    assert portfolio.open_positions == 1
 
 
 def test_paper_account_tracks_open_position() -> None:
