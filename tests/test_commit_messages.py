@@ -27,6 +27,17 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
     assert CHECKER.validate_message(claude) == []
 
 
+def test_accepts_explicit_human_authorship() -> None:
+    message = """docs: clarify setup
+
+Explain the setup change and why it is needed.
+
+Human-authored: true
+"""
+
+    assert CHECKER.validate_message(message) == []
+
+
 def test_rejects_literal_newlines_and_unparseable_trailer() -> None:
     message = (
         "feat: add guard\n\n"

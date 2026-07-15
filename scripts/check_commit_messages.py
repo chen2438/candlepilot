@@ -17,6 +17,7 @@ CONVENTIONAL_TITLE = re.compile(
 COAUTHOR = re.compile(r"^Co-authored-by: (.+) <([^<>]+)>$", re.IGNORECASE)
 CODEX_IDENTITY = ("Codex", "noreply@openai.com")
 CLAUDE_EMAIL = "noreply@anthropic.com"
+HUMAN_TRAILER = "Human-authored: true"
 
 
 def validate_message(message: str) -> list[str]:
@@ -35,14 +36,18 @@ def validate_message(message: str) -> list[str]:
         errors.append("title must be followed by a blank line")
 
     trailer = COAUTHOR.fullmatch(lines[-1])
-    if trailer is None:
-        errors.append("the final line must be a recognized Co-authored-by trailer")
-    else:
+    if lines[-1] == HUMAN_TRAILER:
+        pass
+    elif trailer is not None:
         name, email = trailer.groups()
         is_codex = (name, email.lower()) == CODEX_IDENTITY
         is_claude = name.lower().startswith("claude") and email.lower() == CLAUDE_EMAIL
         if not (is_codex or is_claude):
             errors.append("Co-authored-by must identify Codex or Claude Code")
+    else:
+        errors.append(
+            "the final line must be a recognized Co-authored-by or Human-authored trailer"
+        )
 
     body = lines[2:-1] if len(lines) >= 3 else []
     if not any(line.strip() for line in body):

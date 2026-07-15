@@ -258,11 +258,22 @@ python scripts/check_commit_messages.py --commit HEAD
 ```
 
 首次克隆后执行 `git config core.hooksPath .githooks`，启用版本化 `commit-msg` hook。该 hook
-会在提交创建前要求 Conventional Commit 标题、空行后的 description，以及位于最后一行且
-可被 GitHub 识别的 Codex 或 Claude Code 共同作者 trailer；包含字面量 `\\n` 的错误消息会被
-拒绝。GitHub Actions CI（`.github/workflows/ci.yml`）会对每次 push/PR 的所有新增提交重复
-执行同一校验，即使本地 hook 被绕过也会失败；其余 CI 检查同样运行上述 Ruff、Pytest 和构建。
+会在提交创建前要求 Conventional Commit 标题、空行后的 description，以及位于最后一行的
+归属 trailer。Agent 实现的提交使用 GitHub 可识别的 Codex 或 Claude Code `Co-authored-by`；
+完全由用户本人实现、没有 Agent 参与的提交使用 `Human-authored: true`，Agent 不得冒用该标记。
+包含字面量 `\\n` 的错误消息会被拒绝。GitHub Actions CI（`.github/workflows/ci.yml`）会对每次
+push/PR 的所有新增提交重复执行同一校验，即使本地 hook 被绕过也会失败；其余 CI 检查同样
+运行上述 Ruff、Pytest 和构建。
 Python 依赖锁定于 `requirements.lock`，前端锁定于 `frontend/pnpm-lock.yaml`。
+
+纯人工提交示例（只有确实没有 Agent 参与时使用）：
+
+```bash
+git commit \
+  -m "fix: correct account label" \
+  -m "Correct the label so it matches the underlying account source." \
+  -m "Human-authored: true"
+```
 
 ## 9. 尚未实施 / 路线图
 
