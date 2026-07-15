@@ -80,9 +80,10 @@ def test_microstructure_features_capture_direction_and_basis() -> None:
 
 def test_multitimeframe_features_are_namespaced() -> None:
     features = FeaturePipeline().multitimeframe(
-        {"1m": _rows(), "5m": _rows(), "15m": _rows()}
+        {"1m": _rows(), "5m": _rows(), "15m": _rows(), "30m": _rows()}
     )
 
-    assert len(features) == 27
+    assert len(features) == 36
     assert features["1m_ema_spread"] == features["5m_ema_spread"]
     assert "15m_rsi_14" in features
+    assert "30m_rsi_14" in features

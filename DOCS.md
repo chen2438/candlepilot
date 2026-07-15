@@ -75,12 +75,14 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 
 - 动态全市场扫描 USDT 永续，按上市时间、完整度、价差、成交额、波动率、趋势过滤排名；
   启动即扫，之后每分钟自动刷新轮换，每周期最多向 LLM 提交 5 个候选。
-- 特征：1m/5m/15m 共享 EMA、RSI、ATR、收益率、成交量，以及基差、持仓量、
-  20 档盘口与近期成交失衡等微观结构特征。
-- 1m/5m/15m 对齐调度；每周期分析候选池前 N 个标的并额外包含全部已有持仓，确保掉出候选池的
+- 特征：1m/5m/15m/30m 共享 EMA、RSI、ATR、收益率、成交量，以及基差、持仓量、
+  20 档盘口与近期成交失衡等微观结构特征。每个周期获取最近 200 根 K 线、排除未收盘 K 线
+  后计算合计 49 个快照特征；LLM 接收特征值而不是原始 K 线数组。
+- 5m/15m/30m 对齐调度；每周期分析候选池前 N 个标的并额外包含全部已有持仓，确保掉出候选池的
   仓位仍会获得主动 `HOLD/ADD/REDUCE/CLOSE` 决策；同标的跨周期串行评估，禁止相反方向
   并发开仓，同向增仓须显式 `ADD`。
-- **可选分析周期**：用户可自由选择分析 1m/5m/15m 的任意子集（默认全部）；
+- **可选分析周期**：用户可自由选择分析 5m/15m/30m 的任意子集（默认全部）；1m 不触发
+  LLM 决策，但继续作为多周期特征输入和模拟持仓实时盯市周期；
   默认取自 `CANDLEPILOT_CADENCES`，也可在控制台运行前经 `POST /api/cadences` 修改，
   运行时锁定。只有被选中的周期会启动调度任务。
 - **每周期标的数**：每个周期只分析候选池排名前 N 的标的，N 可配置（默认 5，范围 1–20）；
@@ -202,7 +204,7 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 | `CANDLEPILOT_DATA_DIR` | 数据目录（Parquet 行情缓存、models.dev 定价缓存）|
 | `CANDLEPILOT_LLM_TIMEOUT` | LLM 子进程硬超时（秒，默认 45）|
 | `CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS` | LLM 分析快照允许进入下单前行情刷新的最大年龄（秒，默认 30，必须为正整数）|
-| `CANDLEPILOT_CADENCES` | 逗号分隔的分析周期子集，默认 `1m,5m,15m` |
+| `CANDLEPILOT_CADENCES` | 逗号分隔的分析周期子集，默认 `5m,15m,30m` |
 | `CANDLEPILOT_CANDIDATES_PER_CYCLE` | 每周期分析候选池前 N 个标的，默认 5（范围 1–20）|
 | `CANDLEPILOT_DEFAULT_PROVIDER` | 启动时默认选中的 LLM Provider；支持 `codex` / `claude-code`（也接受内部名 `codex-auth` / `claude-code-auth`），留空则在控制台手动选择 |
 | `CANDLEPILOT_CODEX_MODEL` / `CANDLEPILOT_CODEX_REASONING_EFFORT` | Codex 模型 / 推理强度（minimal/low/medium/high）|

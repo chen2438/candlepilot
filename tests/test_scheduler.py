@@ -32,7 +32,7 @@ class ConflictingProvider(LLMProvider):
         return ProviderHealth(provider=self.name, available=True, authenticated=True)
 
     async def generate_trade_intent(self, snapshot, portfolio):
-        long = snapshot.cadence == "1m"
+        long = snapshot.cadence == "5m"
         intent = TradeIntent(
             symbol=snapshot.symbol,
             cadence=snapshot.cadence,
@@ -134,7 +134,7 @@ def test_scheduler_only_runs_selected_cadences(tmp_path: Path) -> None:
             market=market,  # type: ignore[arg-type]
         )
         engine.select_provider("hold")
-        engine.select_cadences(["15m", "1m"])  # order-insensitive input
+        engine.select_cadences(["30m", "15m"])  # order-insensitive input
         await engine.start()
         scheduler = TradingScheduler(engine, market)  # type: ignore[arg-type]
         scheduler.start()
@@ -144,7 +144,7 @@ def test_scheduler_only_runs_selected_cadences(tmp_path: Path) -> None:
         return names
 
     names = asyncio.run(scenario())
-    assert names == ["candlepilot-15m", "candlepilot-1m", "candlepilot-universe"]
+    assert names == ["candlepilot-15m", "candlepilot-30m", "candlepilot-universe"]
 
 
 def test_scheduler_candidates_per_cycle_validates_and_locks_when_running(
@@ -301,7 +301,7 @@ def test_concurrent_cadences_cannot_open_opposing_positions(tmp_path: Path) -> N
         await engine.refresh_universe()
         scheduler = TradingScheduler(engine, market)  # type: ignore[arg-type]
         cycles = await asyncio.gather(
-            scheduler.run_cycle("1m"), scheduler.run_cycle("5m")
+            scheduler.run_cycle("5m"), scheduler.run_cycle("15m")
         )
         portfolio = engine.paper_executor.portfolio_state()
         await database.close()

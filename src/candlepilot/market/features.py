@@ -100,10 +100,10 @@ class FeaturePipeline:
     def multitimeframe(
         self, rows_by_interval: dict[str, list[list[Any]]]
     ) -> dict[str, float]:
-        if set(rows_by_interval) != {"1m", "5m", "15m"}:
-            raise ValueError("multitimeframe features require 1m, 5m, and 15m rows")
+        if set(rows_by_interval) != {"1m", "5m", "15m", "30m"}:
+            raise ValueError("multitimeframe features require 1m, 5m, 15m, and 30m rows")
         combined: dict[str, float] = {}
-        for interval in ("1m", "5m", "15m"):
+        for interval in ("1m", "5m", "15m", "30m"):
             for name, value in self.calculate(rows_by_interval[interval]).items():
                 combined[f"{interval}_{name}"] = value
         return combined
@@ -112,7 +112,7 @@ class FeaturePipeline:
         self,
         *,
         symbol: str,
-        cadence: Literal["1m", "5m", "15m"],
+        cadence: Literal["1m", "5m", "15m", "30m"],
         rows: list[list[Any]],
         mark_price: Decimal,
         bid: Decimal,

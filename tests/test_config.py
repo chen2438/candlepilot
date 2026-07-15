@@ -38,9 +38,9 @@ def test_load_dotenv_missing_file_is_noop(tmp_path: Path) -> None:
 
 def test_cadences_default_and_env_override(monkeypatch) -> None:
     monkeypatch.delenv("CANDLEPILOT_CADENCES", raising=False)
-    assert Settings.from_env().cadences == ("1m", "5m", "15m")
-    monkeypatch.setenv("CANDLEPILOT_CADENCES", "5m, 15m")
-    assert Settings.from_env().cadences == ("5m", "15m")
+    assert Settings.from_env().cadences == ("5m", "15m", "30m")
+    monkeypatch.setenv("CANDLEPILOT_CADENCES", "15m, 30m")
+    assert Settings.from_env().cadences == ("15m", "30m")
 
 
 def test_candidates_per_cycle_default_and_env_override(monkeypatch) -> None:

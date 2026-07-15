@@ -352,11 +352,11 @@ def test_engine_cadence_selection_validates_and_locks_when_running(tmp_path: Pat
             market=FakeMarket(),  # type: ignore[arg-type]
         )
         default = engine.active_cadences
-        engine.select_cadences(["15m", "1m"])  # unordered input
+        engine.select_cadences(["30m", "15m"])  # unordered input
         normalized = engine.active_cadences
 
         errors = {}
-        for label, cadences in (("invalid", ["30m"]), ("empty", [])):
+        for label, cadences in (("invalid", ["1m"]), ("empty", [])):
             try:
                 engine.select_cadences(cadences)
             except ValueError:
@@ -365,7 +365,7 @@ def test_engine_cadence_selection_validates_and_locks_when_running(tmp_path: Pat
         engine.select_provider("fake-auth")
         await engine.start()
         try:
-            engine.select_cadences(["1m"])
+            engine.select_cadences(["5m"])
             errors["locked"] = False
         except RuntimeError:
             errors["locked"] = True
@@ -374,7 +374,7 @@ def test_engine_cadence_selection_validates_and_locks_when_running(tmp_path: Pat
 
     default, normalized, errors = asyncio.run(scenario())
     assert default == SUPPORTED_CADENCES
-    assert normalized == ("1m", "15m")  # normalized to canonical order
+    assert normalized == ("15m", "30m")  # normalized to canonical order
     assert errors == {"invalid": True, "empty": True, "locked": True}
 
 

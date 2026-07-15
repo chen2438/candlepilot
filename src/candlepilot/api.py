@@ -110,7 +110,7 @@ class BacktestConfigInput(ApiModel):
 
 class BacktestRunRequest(ApiModel):
     symbol: str = Field(pattern=r"^[A-Z0-9]+USDT$")
-    cadence: Literal["1m", "5m", "15m"]
+    cadence: Literal["1m", "5m", "15m", "30m"]
     candles: list[BacktestCandleInput] = Field(min_length=1, max_length=100_000)
     decisions: list[ReplayIntentInput] = Field(default_factory=list, max_length=100_000)
     config: BacktestConfigInput = Field(default_factory=BacktestConfigInput)
@@ -118,7 +118,7 @@ class BacktestRunRequest(ApiModel):
 
 class BacktestReplayRequest(ApiModel):
     symbol: str = Field(pattern=r"^[A-Z0-9]+USDT$")
-    cadence: Literal["1m", "5m", "15m"]
+    cadence: Literal["1m", "5m", "15m", "30m"]
     start: datetime
     end: datetime
     limit: int = Field(default=10_000, ge=1, le=100_000)
@@ -132,7 +132,7 @@ class BacktestLLMRequest(BacktestReplayRequest):
 
 class PortfolioBacktestLeg(ApiModel):
     symbol: str = Field(pattern=r"^[A-Z0-9]+USDT$")
-    cadence: Literal["1m", "5m", "15m"]
+    cadence: Literal["1m", "5m", "15m", "30m"]
     candles: list[BacktestCandleInput] = Field(min_length=1, max_length=100_000)
     decisions: list[ReplayIntentInput] = Field(default_factory=list, max_length=100_000)
 
@@ -723,7 +723,7 @@ def create_app(
     @app.get("/api/market/klines")
     async def get_historical_klines(
         symbol: str,
-        cadence: Literal["1m", "5m", "15m"],
+        cadence: Literal["1m", "5m", "15m", "30m"],
         start: datetime,
         end: datetime,
         limit: int = 10_000,
@@ -776,7 +776,7 @@ def create_app(
     @app.get("/api/market/backtest-candles")
     async def get_backtest_candles(
         symbol: str,
-        cadence: Literal["1m", "5m", "15m"],
+        cadence: Literal["1m", "5m", "15m", "30m"],
         start: datetime,
         end: datetime,
         limit: int = 10_000,

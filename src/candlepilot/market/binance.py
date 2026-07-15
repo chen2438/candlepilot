@@ -145,7 +145,7 @@ class BinancePublicClient:
         return inputs
 
     async def klines(self, symbol: str, interval: str, limit: int = 200) -> list[list[Any]]:
-        if interval not in {"1m", "5m", "15m", "1h"}:
+        if interval not in {"1m", "5m", "15m", "30m", "1h"}:
             raise ValueError("unsupported kline interval")
         if not 1 <= limit <= 1500:
             raise ValueError("kline limit must be between 1 and 1500")
@@ -162,7 +162,7 @@ class BinancePublicClient:
         *,
         max_candles: int = 10_000,
     ) -> list[list[Any]]:
-        if interval not in {"1m", "5m", "15m", "1h"}:
+        if interval not in {"1m", "5m", "15m", "30m", "1h"}:
             raise ValueError("unsupported kline interval")
         if start.tzinfo is None or end.tzinfo is None:
             raise ValueError("historical range must be timezone-aware")
@@ -171,9 +171,13 @@ class BinancePublicClient:
         if not 1 <= max_candles <= 100_000:
             raise ValueError("max_candles must be between 1 and 100000")
 
-        interval_ms = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000}[
-            interval
-        ]
+        interval_ms = {
+            "1m": 60_000,
+            "5m": 300_000,
+            "15m": 900_000,
+            "30m": 1_800_000,
+            "1h": 3_600_000,
+        }[interval]
         cursor = int(start.timestamp() * 1000)
         end_ms = int(end.timestamp() * 1000)
         rows: list[list[Any]] = []
@@ -243,10 +247,11 @@ class BinancePublicClient:
         return events[:max_events]
 
     async def market_snapshot(self, symbol: str, cadence: str) -> MarketSnapshot:
-        if cadence not in {"1m", "5m", "15m"}:
+        if cadence not in {"1m", "5m", "15m", "30m"}:
             raise ValueError("unsupported decision cadence")
+        feature_intervals = ("1m", "5m", "15m", "30m")
         results = await asyncio.gather(
-            *(self.klines(symbol, interval, 200) for interval in ("1m", "5m", "15m")),
+            *(self.klines(symbol, interval, 200) for interval in feature_intervals),
             self._get("/fapi/v1/ticker/bookTicker", symbol=symbol),
             self._get("/fapi/v1/ticker/24hr", symbol=symbol),
             self._get("/fapi/v1/premiumIndex", symbol=symbol),
@@ -254,8 +259,10 @@ class BinancePublicClient:
             self._get("/fapi/v1/openInterest", symbol=symbol),
             self._get("/fapi/v1/aggTrades", symbol=symbol, limit=100),
         )
-        rows_by_interval = dict(zip(("1m", "5m", "15m"), results[:3], strict=True))
-        book, ticker, premium, depth, interest, trades = results[3:]
+        rows_by_interval = dict(
+            zip(feature_intervals, results[: len(feature_intervals)], strict=True)
+        )
+        book, ticker, premium, depth, interest, trades = results[len(feature_intervals) :]
         pipeline = FeaturePipeline()
         mark_price = Decimal(premium["markPrice"])
         extra_features = pipeline.microstructure(

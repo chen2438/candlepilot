@@ -10,7 +10,7 @@ from candlepilot.domain.models import PortfolioState, TradingMode
 from candlepilot.market.binance import BinancePublicClient
 
 
-CADENCE_SECONDS = {"1m": 60, "5m": 300, "15m": 900}
+CADENCE_SECONDS = {"5m": 300, "15m": 900, "30m": 1_800}
 
 DEFAULT_CANDIDATES_PER_CYCLE = 5
 MAX_CANDIDATES_PER_CYCLE = 20

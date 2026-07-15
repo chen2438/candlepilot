@@ -48,7 +48,7 @@ class ProviderHealth(StrictModel):
 
 class MarketSnapshot(StrictModel):
     symbol: str = Field(pattern=r"^[A-Z0-9]+USDT$")
-    cadence: Literal["1m", "5m", "15m"]
+    cadence: Literal["1m", "5m", "15m", "30m"]
     timestamp: datetime
     mark_price: PositiveDecimal
     bid: PositiveDecimal
@@ -68,7 +68,7 @@ class MarketSnapshot(StrictModel):
 
 class TradeIntent(StrictModel):
     symbol: str = Field(pattern=r"^[A-Z0-9]+USDT$")
-    cadence: Literal["1m", "5m", "15m"]
+    cadence: Literal["1m", "5m", "15m", "30m"]
     action: TradeAction
     confidence: float = Field(ge=0, le=1)
     leverage: int = Field(ge=1, le=10)
@@ -101,7 +101,12 @@ class TradeIntent(StrictModel):
         return self
 
     @classmethod
-    def hold(cls, symbol: str, cadence: Literal["1m", "5m", "15m"], reason: str) -> TradeIntent:
+    def hold(
+        cls,
+        symbol: str,
+        cadence: Literal["1m", "5m", "15m", "30m"],
+        reason: str,
+    ) -> TradeIntent:
         return cls(
             symbol=symbol,
             cadence=cadence,

@@ -52,9 +52,9 @@ def load_dotenv(path: Path | None = None) -> None:
 
 def _parse_cadences(raw: str | None) -> tuple[str, ...]:
     if not raw:
-        return ("1m", "5m", "15m")
+        return ("5m", "15m", "30m")
     parsed = tuple(item.strip() for item in raw.split(",") if item.strip())
-    return parsed or ("1m", "5m", "15m")
+    return parsed or ("5m", "15m", "30m")
 
 
 def _parse_candidates_per_cycle(raw: str | None) -> int:
@@ -105,7 +105,7 @@ class Settings:
     daily_loss_fraction: Decimal = Decimal("0.08")
     inference_timeout_seconds: float = 45.0
     max_snapshot_age_seconds: int = 30
-    cadences: tuple[str, ...] = ("1m", "5m", "15m")
+    cadences: tuple[str, ...] = ("5m", "15m", "30m")
     candidates_per_cycle: int = 5
     default_provider: str | None = None
     codex_model: str | None = None

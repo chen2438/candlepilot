@@ -29,7 +29,7 @@ from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
 from candlepilot.storage.database import AuditRepository
 
 
-SUPPORTED_CADENCES: tuple[str, ...] = ("1m", "5m", "15m")
+SUPPORTED_CADENCES: tuple[str, ...] = ("5m", "15m", "30m")
 
 
 @dataclass(frozen=True, slots=True)

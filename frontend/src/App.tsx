@@ -20,8 +20,8 @@ const emptyStatus: EngineStatus = {
   emergency_locked_until: null,
   selected_provider: null,
   backup_provider: null,
-  active_cadences: ["1m", "5m", "15m"],
-  supported_cadences: ["1m", "5m", "15m"],
+  active_cadences: ["5m", "15m", "30m"],
+  supported_cadences: ["5m", "15m", "30m"],
   candidates_per_cycle: 5,
   max_candidates_per_cycle: 20,
   candidate_count: 0,
@@ -622,7 +622,7 @@ export default function App() {
             <PanelTitle code="05" title="回测运行" meta="事件驱动 · 下一根 K 线成交" />
             <form className="backtest-form" onSubmit={runCachedReplay}>
               <label><span>标的</span><input required pattern="[A-Za-z0-9]+USDT" value={replayForm.symbol} onChange={(event) => setReplayForm({ ...replayForm, symbol: event.target.value })} /></label>
-              <label><span>周期</span><select value={replayForm.cadence} onChange={(event) => setReplayForm({ ...replayForm, cadence: event.target.value })}><option value="1m">1m</option><option value="5m">5m</option><option value="15m">15m</option></select></label>
+              <label><span>周期</span><select value={replayForm.cadence} onChange={(event) => setReplayForm({ ...replayForm, cadence: event.target.value })}><option value="1m">1m</option><option value="5m">5m</option><option value="15m">15m</option><option value="30m">30m</option></select></label>
               <label><span>开始时间</span><input required type="datetime-local" value={replayForm.start} onChange={(event) => setReplayForm({ ...replayForm, start: event.target.value })} /></label>
               <label><span>结束时间</span><input required type="datetime-local" value={replayForm.end} onChange={(event) => setReplayForm({ ...replayForm, end: event.target.value })} /></label>
               <label><span>初始权益</span><input required min="1" step="any" type="number" value={replayForm.initialEquity} onChange={(event) => setReplayForm({ ...replayForm, initialEquity: event.target.value })} /></label>

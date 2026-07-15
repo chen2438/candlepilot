@@ -10,7 +10,12 @@ from candlepilot.market.features import FeaturePipeline
 from candlepilot.providers.base import LLMProvider, ProviderResult
 
 
-CADENCE_MILLISECONDS = {"1m": 60_000, "5m": 300_000, "15m": 900_000}
+CADENCE_MILLISECONDS = {
+    "1m": 60_000,
+    "5m": 300_000,
+    "15m": 900_000,
+    "30m": 1_800_000,
+}
 
 
 def align_cached_intents(

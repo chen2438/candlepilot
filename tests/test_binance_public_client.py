@@ -172,12 +172,15 @@ def test_historical_funding_rates_are_typed_and_paginated() -> None:
 
 def test_market_snapshot_includes_microstructure() -> None:
     rows = []
+    requested_intervals: list[str] = []
     start = datetime(2026, 1, 1, tzinfo=UTC)
     for index in range(20):
         open_ms = int(start.timestamp() * 1000) + index * 60_000
         rows.append([open_ms, "100", "102", "99", "101", "10", open_ms + 59_999, "1000"])
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fapi/v1/klines":
+            requested_intervals.append(request.url.params["interval"])
         responses = {
             "/fapi/v1/klines": rows,
             "/fapi/v1/ticker/bookTicker": {"bidPrice": "100", "askPrice": "101"},
@@ -199,13 +202,15 @@ def test_market_snapshot_includes_microstructure() -> None:
             transport=httpx.MockTransport(handler), base_url="https://example.test"
         )
         adapter = BinancePublicClient(client=client)
-        snapshot = await adapter.market_snapshot("BTCUSDT", "1m")
+        snapshot = await adapter.market_snapshot("BTCUSDT", "30m")
         await client.aclose()
         return snapshot
 
     snapshot = asyncio.run(scenario())
+    assert snapshot.cadence == "30m"
+    assert requested_intervals == ["1m", "5m", "15m", "30m"]
     assert snapshot.features["basis_bps"] == 50.0
     assert snapshot.features["book_imbalance"] == 0.5
     assert snapshot.features["recent_trade_imbalance"] == 1.0
     assert snapshot.features["open_interest"] == 42.0
-    assert snapshot.features["1m_ema_spread"] == snapshot.features["15m_ema_spread"]
+    assert snapshot.features["1m_ema_spread"] == snapshot.features["30m_ema_spread"]

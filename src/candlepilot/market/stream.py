@@ -11,7 +11,7 @@ from websockets.asyncio.client import connect
 
 
 BINANCE_FUTURES_WS = "wss://fstream.binance.com"
-SUPPORTED_INTERVALS = {"1m", "5m", "15m"}
+SUPPORTED_INTERVALS = {"1m", "5m", "15m", "30m"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +56,7 @@ class BinanceMarketStream:
         self,
         symbols: list[str],
         *,
-        intervals: tuple[str, ...] = ("1m", "5m", "15m"),
+        intervals: tuple[str, ...] = ("1m", "5m", "15m", "30m"),
         base_url: str = BINANCE_FUTURES_WS,
         connection_factory: ConnectionFactory | None = None,
         reconnect_initial: float = 0.5,

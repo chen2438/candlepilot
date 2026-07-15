@@ -55,7 +55,9 @@ class ApiMarket:
         return None
 
     async def historical_klines(self, symbol, interval, start, end, *, max_candles=10_000):
-        step = {"1m": 60_000, "5m": 300_000, "15m": 900_000}[interval]
+        step = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000}[
+            interval
+        ]
         start_ms = int(start.timestamp() * 1000)
         return [
             [start_ms + offset * step, "100", "101", "99", "100", "10"]
@@ -68,7 +70,9 @@ class ApiMarket:
 
 class LLMReplayMarket(ApiMarket):
     async def historical_klines(self, symbol, interval, start, end, *, max_candles=10_000):
-        step = {"1m": 60_000, "5m": 300_000, "15m": 900_000}[interval]
+        step = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000}[
+            interval
+        ]
         start_ms = int(start.timestamp() * 1000)
         return [
             [
@@ -635,20 +639,20 @@ def test_cadence_selection_endpoint(tmp_path: Path) -> None:
     app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
     with TestClient(app) as client:
         status = client.get("/api/status").json()
-        assert status["active_cadences"] == ["1m", "5m", "15m"]
-        assert status["supported_cadences"] == ["1m", "5m", "15m"]
+        assert status["active_cadences"] == ["5m", "15m", "30m"]
+        assert status["supported_cadences"] == ["5m", "15m", "30m"]
 
-        updated = client.post("/api/cadences", json={"cadences": ["15m", "1m"]})
+        updated = client.post("/api/cadences", json={"cadences": ["30m", "15m"]})
         assert updated.status_code == 200, updated.text
-        assert updated.json()["active_cadences"] == ["1m", "15m"]  # canonical order
+        assert updated.json()["active_cadences"] == ["15m", "30m"]  # canonical order
 
-        assert client.post("/api/cadences", json={"cadences": ["30m"]}).status_code == 422
+        assert client.post("/api/cadences", json={"cadences": ["1m"]}).status_code == 422
         assert client.post("/api/cadences", json={"cadences": []}).status_code == 422
 
         # Locked while the engine runs.
         client.post("/api/providers/select", json={"name": "api-fixture"})
         client.post("/api/engine/start")
-        assert client.post("/api/cadences", json={"cadences": ["1m"]}).status_code == 409
+        assert client.post("/api/cadences", json={"cadences": ["5m"]}).status_code == 409
     asyncio.run(database.close())
 
 
