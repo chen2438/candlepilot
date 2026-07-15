@@ -61,6 +61,16 @@ const HISTORY_CATEGORIES: Array<{ key: string; label: string; hint: string }> = 
   { key: "pricing_cache", label: "定价缓存", hint: "models.dev" },
 ];
 
+type TabKey = "overview" | "account" | "backtest" | "operations" | "data";
+
+const TABS: Array<{ key: TabKey; label: string; meta: string }> = [
+  { key: "overview", label: "总览", meta: "引擎 · 认证 · 候选 · 决策" },
+  { key: "account", label: "账户", meta: "持仓 · 订单 · 风险" },
+  { key: "backtest", label: "回测", meta: "重放已审计决策" },
+  { key: "operations", label: "运维", meta: "模型 · 测试网" },
+  { key: "data", label: "数据", meta: "删除历史数据" },
+];
+
 function providerLabel(name: string): string {
   if (name === "codex-auth") return "Codex Auth";
   if (name === "claude-code-auth") return "Claude Code Auth";
@@ -92,6 +102,7 @@ function initialReplayForm() {
 }
 
 export default function App() {
+  const [tab, setTab] = useState<TabKey>("overview");
   const [status, setStatus] = useState<EngineStatus>(emptyStatus);
   const [providers, setProviders] = useState<ProviderHealth[]>([]);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
@@ -346,7 +357,26 @@ export default function App() {
         </div>
       </header>
 
+      <nav className="tabnav">
+        <div className="tabnav-inner">
+          {TABS.map((item) => (
+            <button
+              key={item.key}
+              className={tab === item.key ? "active" : ""}
+              onClick={() => setTab(item.key)}
+            >
+              <strong>{item.label}</strong>
+              <small>{item.meta}</small>
+            </button>
+          ))}
+        </div>
+      </nav>
+
       <main>
+        {error && <div className="error-banner"><b>操作失败</b><span>{error}</span><button onClick={() => setError(null)}>×</button></div>}
+        {status.emergency_locked && <div className="lock-banner">紧急锁定已生效{status.emergency_locked_until ? `，自动解锁时间：${new Date(status.emergency_locked_until).toLocaleString("zh-CN", { hour12: false })}` : ""}。检查账户状态后也可手动解除。</div>}
+
+        {tab === "overview" && (<>
         <section className="hero panel">
           <div>
             <p className="eyebrow">AUTONOMOUS DESK / 本地控制台</p>
@@ -397,9 +427,6 @@ export default function App() {
             <button className="danger" disabled={busy !== null} onClick={() => act("kill", "/api/engine/emergency-stop")}>紧急熔断</button>
           </div>
         </section>
-
-        {error && <div className="error-banner"><b>操作失败</b><span>{error}</span><button onClick={() => setError(null)}>×</button></div>}
-        {status.emergency_locked && <div className="lock-banner">紧急锁定已生效{status.emergency_locked_until ? `，自动解锁时间：${new Date(status.emergency_locked_until).toLocaleString("zh-CN", { hour12: false })}` : ""}。检查账户状态后也可手动解除。</div>}
 
         <section className="grid">
           <article className="panel provider-panel">
@@ -534,7 +561,11 @@ export default function App() {
               {!signals.length && <div className="empty cards">启动引擎后，结构化交易意图会显示在这里。</div>}
             </div>
           </article>
+        </section>
+        </>)}
 
+        {tab === "backtest" && (
+        <section className="grid">
           <article className="panel backtest-panel">
             <PanelTitle code="05" title="回测运行" meta="事件驱动 · 下一根 K 线成交" />
             <form className="backtest-form" onSubmit={runCachedReplay}>
@@ -573,20 +604,32 @@ export default function App() {
               <BacktestDetail run={selectedBacktest} onClose={() => setSelectedBacktest(null)} />
             )}
           </article>
+        </section>
+        )}
 
+        {tab === "account" && (
+        <section className="grid">
           <AccountPanel
             portfolio={portfolio}
             positions={positions}
             orders={orders}
             riskEvents={riskEvents}
           />
+        </section>
+        )}
 
+        {tab === "operations" && (
+        <section className="grid">
           <OperationsPanel
             providerMetrics={providerMetrics}
             testnetStatus={testnetStatus}
             operationsError={operationsError}
           />
+        </section>
+        )}
 
+        {tab === "data" && (
+        <section className="grid">
           <article className="panel history-panel">
             <PanelTitle code="08" title="数据管理" meta="删除历史数据 · 不可恢复" />
             <div className="history-grid">
@@ -619,6 +662,7 @@ export default function App() {
             </div>
           </article>
         </section>
+        )}
       </main>
       <footer><span>CANDLEPILOT / GPL-3.0</span><span>LOCALHOST ONLY · NO LIVE MONEY</span></footer>
     </div>
