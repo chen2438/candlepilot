@@ -557,7 +557,7 @@ export default function App() {
                   setConfigDraft((current) => ({ ...current, [provider.provider]: { ...draft, ...next } }));
                 return (
                   <div className="provider-config-row" key={provider.provider}>
-                    <span className="config-name">{provider.provider.startsWith("codex") ? "CX" : "CC"}</span>
+                    <span className="config-name">{provider.provider.startsWith("codex") ? "Codex" : "Claude"}</span>
                     <div className="config-model-cell">
                       <select
                         value={custom ? "__custom__" : model}
