@@ -241,6 +241,10 @@ class TradingEngine:
                     duration=timedelta(0),
                     raw_output=str(primary_exc),
                     usage={"error": type(primary_exc).__name__},
+                    input_payload={
+                        "market": snapshot.model_dump(mode="json"),
+                        "portfolio": portfolio.model_dump(mode="json"),
+                    },
                 )
         inference_id = await self.audit.record_inference(result)
         evaluation_snapshot = snapshot

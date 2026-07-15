@@ -6,7 +6,19 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import DateTime, Float, Integer, String, Text, delete, event, insert, select, text
+from sqlalchemy import (
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    delete,
+    event,
+    insert,
+    select,
+    text,
+)
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     AsyncEngine,
@@ -41,6 +53,16 @@ class InferenceRow(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
     )
+
+
+class InferenceDetailRow(Base):
+    __tablename__ = "inference_details"
+
+    inference_id: Mapped[int] = mapped_column(
+        ForeignKey("inferences.id", ondelete="CASCADE"), primary_key=True
+    )
+    input_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class RiskRow(Base):
@@ -134,6 +156,15 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
         (
             "CREATE INDEX IF NOT EXISTS ix_user_stream_event_symbol_time "
             "ON user_stream_events (event_type, symbol, event_time)",
+        ),
+    ),
+    (
+        2,
+        (
+            "CREATE TABLE IF NOT EXISTS inference_details ("
+            "inference_id INTEGER NOT NULL PRIMARY KEY, "
+            "input_json TEXT, prompt_text TEXT, "
+            "FOREIGN KEY(inference_id) REFERENCES inferences(id) ON DELETE CASCADE)",
         ),
     ),
 )
@@ -238,6 +269,19 @@ class AuditRepository:
         )
         async with self.sessions.begin() as session:
             session.add(row)
+            await session.flush()
+            if result.input_payload is not None or result.prompt is not None:
+                session.add(
+                    InferenceDetailRow(
+                        inference_id=row.id,
+                        input_json=json.dumps(
+                            result.input_payload, separators=(",", ":"), ensure_ascii=False
+                        )
+                        if result.input_payload is not None
+                        else None,
+                        prompt_text=result.prompt,
+                    )
+                )
         return row.id
 
     async def record_risk(
@@ -507,14 +551,7 @@ class AuditRepository:
         for inference, risk in rows:
             usage = json.loads(inference.usage_json)
             intent = TradeIntent.model_validate_json(inference.intent_json)
-            if intent.action.value == "HOLD":
-                outcome = "hold"
-            elif risk is None:
-                outcome = "analysis_only"
-            elif risk.accepted:
-                outcome = "approved"
-            else:
-                outcome = "rejected"
+            outcome = self._decision_outcome(intent, risk)
             events.append(
                 {
                     "id": inference.id,
@@ -537,6 +574,83 @@ class AuditRepository:
                 }
             )
         return events
+
+    @staticmethod
+    def _decision_outcome(intent: TradeIntent, risk: RiskRow | None) -> str:
+        if intent.action.value == "HOLD":
+            return "hold"
+        if risk is None:
+            return "analysis_only"
+        return "approved" if risk.accepted else "rejected"
+
+    @staticmethod
+    def _inference_cost(
+        inference: InferenceRow,
+        usage: dict[str, Any],
+        catalog: ModelPricingCatalog | None,
+    ) -> float | None:
+        cost = usage.get("cost_usd")
+        provider_id = PROVIDER_IDS.get(inference.provider)
+        if cost is None and catalog is not None and provider_id is not None:
+            cost = catalog.cost_usd(
+                provider_id,
+                inference.model,
+                input_tokens=int(usage.get("input_tokens") or 0),
+                cached_input_tokens=int(usage.get("cached_input_tokens") or 0),
+                output_tokens=int(usage.get("output_tokens") or 0),
+                cache_write_tokens=int(usage.get("cache_creation_input_tokens") or 0),
+            )
+        return float(cost) if cost is not None else None
+
+    async def decision_detail(
+        self,
+        inference_id: int,
+        *,
+        catalog: ModelPricingCatalog | None = None,
+    ) -> dict[str, Any] | None:
+        async with self.sessions() as session:
+            row = (
+                await session.execute(
+                    select(InferenceRow, RiskRow, InferenceDetailRow)
+                    .outerjoin(RiskRow, RiskRow.inference_id == InferenceRow.id)
+                    .outerjoin(
+                        InferenceDetailRow,
+                        InferenceDetailRow.inference_id == InferenceRow.id,
+                    )
+                    .where(InferenceRow.id == inference_id)
+                )
+            ).one_or_none()
+        if row is None:
+            return None
+        inference, risk, detail = row
+        usage = json.loads(inference.usage_json)
+        intent = TradeIntent.model_validate_json(inference.intent_json)
+        return {
+            "id": inference.id,
+            "provider": inference.provider,
+            "model": inference.model,
+            "provenance": usage.get("_provenance", {}),
+            "intent": intent.model_dump(mode="json"),
+            "duration_ms": inference.duration_ms,
+            "outcome": self._decision_outcome(intent, risk),
+            "risk": {
+                "id": risk.id,
+                "accepted": bool(risk.accepted),
+                "reason": risk.reason,
+                "decision": json.loads(risk.decision_json),
+                "created_at": self._utc(risk.created_at),
+            }
+            if risk is not None
+            else None,
+            "input": json.loads(detail.input_json)
+            if detail is not None and detail.input_json is not None
+            else None,
+            "prompt": detail.prompt_text if detail is not None else None,
+            "raw_output": inference.raw_output,
+            "usage": {key: value for key, value in usage.items() if key != "_provenance"},
+            "equivalent_cost_usd": self._inference_cost(inference, usage, catalog),
+            "created_at": self._utc(inference.created_at),
+        }
 
     async def provider_metrics(
         self, hours: int = 24, *, catalog: ModelPricingCatalog | None = None

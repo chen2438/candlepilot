@@ -242,6 +242,9 @@ def test_codex_provider_parses_schema_output(tmp_path: Path) -> None:
     assert result.prompt_version == "trade-intent-v2"
     assert result.data_version is not None
     assert result.data_version.startswith("market-snapshot-v1:sha256:")
+    assert result.input_payload is not None
+    assert result.input_payload["market"]["symbol"] == "BTCUSDT"
+    assert result.prompt is not None and '"symbol":"BTCUSDT"' in result.prompt
 
 
 def test_claude_provider_unwraps_result(tmp_path: Path) -> None:
@@ -266,6 +269,8 @@ def test_claude_provider_unwraps_result(tmp_path: Path) -> None:
     )
     assert result.intent.action == TradeAction.HOLD
     assert result.usage["num_turns"] == 1
+    assert result.input_payload is not None
+    assert result.prompt is not None and '"portfolio"' in result.prompt
 
 
 def _minimal_intent() -> dict:

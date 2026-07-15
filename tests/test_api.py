@@ -138,8 +138,8 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         assert readiness.status_code == 200
         assert readiness.json()["checks"]["database"] == {
             "ready": True,
-            "schema_version": 1,
-            "expected_schema_version": 1,
+            "schema_version": 2,
+            "expected_schema_version": 2,
         }
         runtime_metrics = client.get("/api/metrics/runtime")
         assert runtime_metrics.status_code == 200
@@ -491,6 +491,11 @@ def test_provider_metrics_prices_codex_via_injected_catalog(tmp_path: Path) -> N
                         "output_tokens": 200,
                         "total_tokens": 1200,
                     },
+                    input_payload={
+                        "market": {"symbol": "BTCUSDT"},
+                        "portfolio": {"equity": "10000"},
+                    },
+                    prompt="fixture prompt",
                 )
             )
         )
@@ -500,6 +505,14 @@ def test_provider_metrics_prices_codex_via_injected_catalog(tmp_path: Path) -> N
         assert codex["provider"] == "codex-auth"
         expected = 600 * 5e-6 + 400 * 5e-7 + 200 * 3e-5
         assert abs(float(codex["cost_usd_total"]) - expected) < 1e-9
+        detail = client.get("/api/decision-events/1")
+        assert detail.status_code == 200
+        assert detail.json()["input"]["market"]["symbol"] == "BTCUSDT"
+        assert detail.json()["prompt"] == "fixture prompt"
+        assert detail.json()["usage"]["cached_input_tokens"] == 400
+        assert abs(float(detail.json()["equivalent_cost_usd"]) - expected) < 1e-9
+        assert client.get("/api/decision-events/999").status_code == 404
+        assert client.get("/api/decision-events/0").status_code == 422
     asyncio.run(database.close())
 
 

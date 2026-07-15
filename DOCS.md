@@ -107,6 +107,10 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 - 分析快照从采集到 LLM 返回的最大年龄默认 30 秒，可通过
   `CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS` 调整；超过上限会在刷新前否决。刷新后的行情仍须通过
   同一有效期检查。另拒绝余额不足、无止损、强平缓冲不足、不符合交易所精度的意图。
+- 每次新推理都审计结构化行情/组合输入、实际 Prompt、Provider 原始输出和 token usage；控制台
+  在单条决策展开后按需加载“AI 分析详情”，显示输入/缓存输入/输出/总 token、按标准 API
+  定价折算的单次等效成本，并允许复制输入、Prompt 和输出。升级前的旧记录仍可查看已有输出与
+  usage，但精确输入不会被推测或补造；所有详情只经 localhost API 提供且不包含 Provider 或币安凭据。
 
 ### 4.5 执行（模拟 / 测试网）
 
@@ -135,7 +139,8 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 
 ### 4.7 审计、存储与溯源
 
-- SQLite 表：`inferences`（模型推理）、`risk_decisions`、`executions`、`backtests`、
+- SQLite 表：`inferences`（模型推理）、`inference_details`（逐次输入与 Prompt）、
+  `risk_decisions`、`executions`、`backtests`、
   `user_stream_events`、`alert_events`、`runtime_state`、`schema_migrations`。
 - 溯源：SHA-256 数据版本、显式 Prompt 版本、模型标识、CLI Provider 版本。
 - 迁移：顺序数据库迁移、版本记录、幂等升级。
@@ -232,7 +237,9 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 `GET /api/market/backtest-candles`。
 
 **决策与信号**：`POST /api/decisions/evaluate`、`GET /api/decision-events`、
-`GET /api/signals`。`decision-events` 以模型推理为主记录，关联对应硬风控结果并给出
+`GET /api/decision-events/{inference_id}`、`GET /api/signals`。列表接口只返回轻量摘要；按 ID
+详情接口返回该次推理的结构化输入、实际 Prompt、原始输出、token usage 和等效成本。
+`decision-events` 以模型推理为主记录，关联对应硬风控结果并给出
 `approved` / `rejected` / `hold` / `analysis_only` 展示状态；`signals` 保留为原始推理查询，
 二者均不推断订单是否成交。
 

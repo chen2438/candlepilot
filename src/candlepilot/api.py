@@ -809,6 +809,18 @@ def create_app(
             raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
         return await engine.audit.recent_decision_events(limit)
 
+    @app.get("/api/decision-events/{inference_id}")
+    async def get_decision_detail(inference_id: int) -> dict[str, Any]:
+        if inference_id < 1:
+            raise HTTPException(status_code=422, detail="inference id must be positive")
+        detail = await engine.audit.decision_detail(
+            inference_id,
+            catalog=await pricing_catalog(),
+        )
+        if detail is None:
+            raise HTTPException(status_code=404, detail="inference not found")
+        return detail
+
     @app.get("/api/testnet/events")
     async def get_testnet_events(limit: int = 100) -> list[dict[str, Any]]:
         if not 1 <= limit <= 500:

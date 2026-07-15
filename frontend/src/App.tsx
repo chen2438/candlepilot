@@ -5,6 +5,7 @@ import type {
   BacktestRun,
   Candidate,
   DecisionEvent,
+  DecisionDetail,
   EngineStatus,
   OrderRecord,
   ProviderHealth,
@@ -772,9 +773,50 @@ function intentPrice(value: string | null): string {
 function DecisionPanel({ decisions }: { decisions: DecisionEvent[] }) {
   const [filter, setFilter] = useState<"all" | DecisionEvent["outcome"]>("all");
   const [expanded, setExpanded] = useState<number | null>(null);
+  const [details, setDetails] = useState<Record<number, DecisionDetail>>({});
+  const [detailLoading, setDetailLoading] = useState<number | null>(null);
+  const [detailErrors, setDetailErrors] = useState<Record<number, string>>({});
+  const [copied, setCopied] = useState<string | null>(null);
   const visible = filter === "all"
     ? decisions
     : decisions.filter((decision) => decision.outcome === filter);
+
+  const toggleDecision = async (decision: DecisionEvent) => {
+    if (expanded === decision.id) {
+      setExpanded(null);
+      return;
+    }
+    setExpanded(decision.id);
+    if (details[decision.id] || detailLoading === decision.id) return;
+    setDetailLoading(decision.id);
+    setDetailErrors((current) => {
+      const next = { ...current };
+      delete next[decision.id];
+      return next;
+    });
+    try {
+      const detail = await api<DecisionDetail>(`/api/decision-events/${decision.id}`);
+      setDetails((current) => ({ ...current, [decision.id]: detail }));
+    } catch (reason) {
+      setDetailErrors((current) => ({
+        ...current,
+        [decision.id]: reason instanceof Error ? reason.message : String(reason),
+      }));
+    } finally {
+      setDetailLoading((current) => current === decision.id ? null : current);
+    }
+  };
+
+  const copyDetail = async (key: string, value: string) => {
+    try {
+      await copyToClipboard(value);
+      setCopied(key);
+      window.setTimeout(() => setCopied((current) => current === key ? null : current), 1500);
+    } catch {
+      setCopied(null);
+    }
+  };
+
   return (
     <article className="panel signals-panel">
       <PanelTitle code="04" title="决策与风控" meta="LLM 意图 → 硬风控" />
@@ -793,7 +835,7 @@ function DecisionPanel({ decisions }: { decisions: DecisionEvent[] }) {
             <button
               className="signal decision-row"
               aria-expanded={expanded === decision.id}
-              onClick={() => setExpanded(expanded === decision.id ? null : decision.id)}
+              onClick={() => void toggleDecision(decision)}
             >
               <span className={`action ${decision.intent.action.toLowerCase()}`}>{decision.intent.action}</span>
               <span className="signal-symbol"><strong>{decision.intent.symbol}</strong><small>{decision.intent.cadence} · {providerLabel(decision.provider)}</small></span>
@@ -819,6 +861,13 @@ function DecisionPanel({ decisions }: { decisions: DecisionEvent[] }) {
                   <strong>{OUTCOME_LABELS[decision.outcome]}</strong>
                   <span>{decision.risk?.reason ?? "该记录只有模型推理，未进入实时硬风控流程。"}</span>
                 </div>
+                <AnalysisDetail
+                  copied={copied}
+                  detail={details[decision.id]}
+                  error={detailErrors[decision.id]}
+                  loading={detailLoading === decision.id}
+                  onCopy={copyDetail}
+                />
               </div>
             )}
           </div>
@@ -826,6 +875,89 @@ function DecisionPanel({ decisions }: { decisions: DecisionEvent[] }) {
         {!visible.length && <div className="empty cards">当前筛选条件下没有决策记录。</div>}
       </div>
     </article>
+  );
+}
+
+async function copyToClipboard(value: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch {
+      // Fall through for embedded browsers that deny the async clipboard API.
+    }
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("clipboard unavailable");
+}
+
+function AnalysisDetail({
+  copied,
+  detail,
+  error,
+  loading,
+  onCopy,
+}: {
+  copied: string | null;
+  detail?: DecisionDetail;
+  error?: string;
+  loading: boolean;
+  onCopy: (key: string, value: string) => Promise<void>;
+}) {
+  if (loading) return <div className="analysis-detail-state">正在加载 AI 分析详情…</div>;
+  if (error) return <div className="analysis-detail-state error">详情加载失败：{error}</div>;
+  if (!detail) return null;
+
+  const inputText = detail.input === null ? null : JSON.stringify(detail.input, null, 2);
+  const usage = detail.usage;
+  const cachedTokens = Number(
+    usage.cached_input_tokens ?? usage.cache_read_input_tokens ?? 0,
+  );
+  const blocks = [
+    { key: `input-${detail.id}`, title: "结构化输入", value: inputText },
+    { key: `prompt-${detail.id}`, title: "实际 Prompt", value: detail.prompt },
+    { key: `output-${detail.id}`, title: "模型原始输出", value: detail.raw_output },
+  ];
+
+  return (
+    <section className="analysis-detail">
+      <div className="analysis-detail-heading">
+        <div><strong>AI 分析详情</strong><small>逐次审计 · 本地保存</small></div>
+        <span>{detail.provider} · {detail.model ?? "CLI 默认"} · {(detail.duration_ms / 1000).toFixed(2)}s</span>
+      </div>
+      <div className="analysis-usage-grid">
+        <span>输入 Token<strong>{Number(usage.input_tokens ?? 0).toLocaleString("zh-CN")}</strong></span>
+        <span>缓存输入<strong>{cachedTokens.toLocaleString("zh-CN")}</strong></span>
+        <span>输出 Token<strong>{Number(usage.output_tokens ?? 0).toLocaleString("zh-CN")}</strong></span>
+        <span>总 Token<strong>{Number(usage.total_tokens ?? 0).toLocaleString("zh-CN")}</strong></span>
+        <span>等效成本<strong>{detail.equivalent_cost_usd === null ? "—" : `$${detail.equivalent_cost_usd.toFixed(6)}`}</strong></span>
+      </div>
+      <div className="analysis-blocks">
+        {blocks.map((block) => (
+          <div className="analysis-block" key={block.key}>
+            <div>
+              <strong>{block.title}</strong>
+              {block.value !== null && (
+                <button onClick={() => void onCopy(block.key, block.value ?? "")}>
+                  {copied === block.key ? "已复制" : "复制"}
+                </button>
+              )}
+            </div>
+            {block.value === null
+              ? <p>该记录创建于输入审计启用前，无法补回当时的精确输入。</p>
+              : <pre>{block.value}</pre>}
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 

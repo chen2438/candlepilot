@@ -150,11 +150,17 @@ async def _run_process(
     return out_text, err_text
 
 
-def _decision_prompt(snapshot: MarketSnapshot, portfolio: PortfolioState) -> str:
-    payload = {
+def _decision_payload(
+    snapshot: MarketSnapshot, portfolio: PortfolioState
+) -> dict[str, Any]:
+    return {
         "market": snapshot.model_dump(mode="json"),
         "portfolio": portfolio.model_dump(mode="json"),
     }
+
+
+def _decision_prompt(snapshot: MarketSnapshot, portfolio: PortfolioState) -> str:
+    payload = _decision_payload(snapshot, portfolio)
     return (
         f"Prompt version: {DECISION_PROMPT_VERSION}. "
         "You are the decision component of a testnet-only intraday futures system. "
@@ -367,6 +373,8 @@ class CodexAuthProvider(LLMProvider):
         if self.executable is None:
             raise ProviderUnavailable("Codex executable was not found")
         started = time.monotonic()
+        input_payload = _decision_payload(snapshot, portfolio)
+        prompt = _decision_prompt(snapshot, portfolio)
         self._active_task = asyncio.current_task()
         try:
             async with self._semaphore:
@@ -396,7 +404,7 @@ class CodexAuthProvider(LLMProvider):
                     stdout, _ = await _run_process(
                         argv,
                         cwd=root,
-                        stdin=_decision_prompt(snapshot, portfolio),
+                        stdin=prompt,
                         timeout=self.timeout,
                     )
         finally:
@@ -421,6 +429,8 @@ class CodexAuthProvider(LLMProvider):
                 schema_version=MARKET_SNAPSHOT_SCHEMA_VERSION,
             ),
             provider_version=self._provider_version,
+            input_payload=input_payload,
+            prompt=prompt,
         )
 
 
@@ -496,6 +506,8 @@ class ClaudeCodeAuthProvider(LLMProvider):
         if self.executable is None:
             raise ProviderUnavailable("Claude Code CLI was not found")
         started = time.monotonic()
+        input_payload = _decision_payload(snapshot, portfolio)
+        prompt = _decision_prompt(snapshot, portfolio)
         self._active_task = asyncio.current_task()
         try:
             async with self._semaphore:
@@ -516,7 +528,7 @@ class ClaudeCodeAuthProvider(LLMProvider):
                         argv += ["--model", self.model]
                     if self.reasoning_effort:
                         argv += ["--effort", self.reasoning_effort]
-                    argv.append(_decision_prompt(snapshot, portfolio))
+                    argv.append(prompt)
                     stdout, _ = await _run_process(
                         argv,
                         cwd=Path(directory),
@@ -543,4 +555,6 @@ class ClaudeCodeAuthProvider(LLMProvider):
                 schema_version=MARKET_SNAPSHOT_SCHEMA_VERSION,
             ),
             provider_version=self._provider_version,
+            input_payload=input_payload,
+            prompt=prompt,
         )

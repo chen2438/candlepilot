@@ -80,6 +80,25 @@ export interface DecisionEvent {
   created_at: string;
 }
 
+export interface DecisionDetail extends DecisionEvent {
+  input: {
+    market: Record<string, unknown>;
+    portfolio: Record<string, unknown>;
+  } | null;
+  prompt: string | null;
+  raw_output: string;
+  usage: {
+    input_tokens?: number;
+    cached_input_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+    output_tokens?: number;
+    total_tokens?: number;
+    [key: string]: unknown;
+  };
+  equivalent_cost_usd: number | null;
+}
+
 export interface AccountPortfolio {
   mode: string;
   source: "paper" | "binance-testnet";

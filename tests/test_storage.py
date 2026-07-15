@@ -22,13 +22,16 @@ def test_inference_audit_round_trip(tmp_path: Path) -> None:
                 model="test-model",
                 duration=timedelta(milliseconds=123),
                 raw_output=intent.model_dump_json(),
-                usage={"input_tokens": 10},
+                usage={"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
                 prompt_version="trade-intent-v1",
                 data_version="market-snapshot-v1:sha256:test",
                 provider_version="codex-cli 1.0",
+                input_payload={"market": {"symbol": "BTCUSDT"}, "portfolio": {"equity": "1"}},
+                prompt="fixture prompt",
             )
         )
         rows = await repository.recent_intents()
+        detail = await repository.decision_detail(identifier)
         replay_rows = await repository.intents_between(
             "BTCUSDT",
             "5m",
@@ -36,9 +39,9 @@ def test_inference_audit_round_trip(tmp_path: Path) -> None:
             datetime.now(UTC) + timedelta(minutes=1),
         )
         await database.close()
-        return identifier, rows, replay_rows
+        return identifier, rows, replay_rows, detail
 
-    identifier, rows, replay_rows = asyncio.run(scenario())
+    identifier, rows, replay_rows, detail = asyncio.run(scenario())
     assert identifier == 1
     assert rows[0]["provider"] == "codex-auth"
     assert rows[0]["intent"]["symbol"] == "BTCUSDT"
@@ -46,6 +49,11 @@ def test_inference_audit_round_trip(tmp_path: Path) -> None:
     assert rows[0]["provenance"]["prompt_version"] == "trade-intent-v1"
     assert replay_rows[0]["model"] == "test-model"
     assert replay_rows[0]["intent"].symbol == "BTCUSDT"
+    assert detail is not None
+    assert detail["input"]["market"]["symbol"] == "BTCUSDT"
+    assert detail["prompt"] == "fixture prompt"
+    assert '"symbol":"BTCUSDT"' in detail["raw_output"]
+    assert detail["usage"]["input_tokens"] == 10
 
 
 def test_execution_and_risk_queries_filter_and_order(tmp_path: Path) -> None:
@@ -322,4 +330,4 @@ def test_database_migrations_are_versioned_and_idempotent(tmp_path: Path) -> Non
         await database.close()
         return first, second
 
-    assert asyncio.run(scenario()) == (1, 1)
+    assert asyncio.run(scenario()) == (2, 2)
