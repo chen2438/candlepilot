@@ -124,7 +124,7 @@ export default function App() {
   const [historySelected, setHistorySelected] = useState<Record<string, boolean>>({});
   const [historyConfirm, setHistoryConfirm] = useState(false);
   const [historyResult, setHistoryResult] = useState<string | null>(null);
-  const [candidateDraft, setCandidateDraft] = useState<number | null>(null);
+  const [candidateDraft, setCandidateDraft] = useState<string | null>(null);
 
   const applyProviderConfig = useCallback(async (name: string, draft: { model: string; effort: string }) => {
     setBusy("provider-config");
@@ -175,20 +175,26 @@ export default function App() {
     }
   }, []);
 
-  // Slider drag updates candidateDraft locally; only the release (pointer/key
-  // up) commits one request, so dragging across values does not spam the API.
+  // The slider and the number box share candidateDraft (a string so the box can
+  // be cleared and retyped). Editing only updates the draft locally; the release
+  // (slider pointer/key up, or box blur/Enter) commits one clamped request, so
+  // sweeping or typing does not spam the API.
   const commitCandidates = useCallback(() => {
     setCandidateDraft((draft) => {
-      if (draft !== null && draft !== status.candidates_per_cycle) {
-        changeCandidatesPerCycle(draft, status.max_candidates_per_cycle);
+      if (draft === null || draft.trim() === "") return null; // nothing valid; revert
+      const parsed = Math.round(Number(draft));
+      if (!Number.isFinite(parsed)) return null;
+      const clamped = Math.max(1, Math.min(status.max_candidates_per_cycle, parsed));
+      if (clamped !== status.candidates_per_cycle) {
+        changeCandidatesPerCycle(clamped, status.max_candidates_per_cycle);
       }
-      return draft;
+      return String(clamped);
     });
   }, [status.candidates_per_cycle, status.max_candidates_per_cycle, changeCandidatesPerCycle]);
 
   // Clear the draft once the server confirms it, avoiding a value flicker.
   useEffect(() => {
-    if (candidateDraft !== null && candidateDraft === status.candidates_per_cycle) {
+    if (candidateDraft !== null && Number(candidateDraft) === status.candidates_per_cycle) {
       setCandidateDraft(null);
     }
   }, [candidateDraft, status.candidates_per_cycle]);
@@ -423,8 +429,23 @@ export default function App() {
                 ))}
               </div>
             </div>
-            <div className="cadence-select" title={status.running ? "运行时锁定" : "拖动选择每个周期分析候选池前 N 个标的"}>
-              <span>每周期标的数<b>{candidateDraft ?? status.candidates_per_cycle ?? 5}</b></span>
+            <div className="cadence-select" title={status.running ? "运行时锁定" : "拖动滑条或直接输入每个周期分析候选池前 N 个标的"}>
+              <span className="range-head">
+                每周期标的数
+                <input
+                  type="number"
+                  className="range-input"
+                  min={1}
+                  max={status.max_candidates_per_cycle}
+                  step={1}
+                  value={candidateDraft ?? String(status.candidates_per_cycle ?? 5)}
+                  disabled={busy !== null || status.running}
+                  onFocus={(event) => event.target.select()}
+                  onChange={(event) => setCandidateDraft(event.target.value)}
+                  onBlur={commitCandidates}
+                  onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }}
+                />
+              </span>
               <div className="range-row">
                 <input
                   type="range"
@@ -432,9 +453,9 @@ export default function App() {
                   min={1}
                   max={status.max_candidates_per_cycle}
                   step={1}
-                  value={candidateDraft ?? status.candidates_per_cycle ?? 5}
+                  value={Number(candidateDraft ?? status.candidates_per_cycle ?? 5) || 1}
                   disabled={busy !== null || status.running}
-                  onChange={(event) => setCandidateDraft(Number(event.target.value))}
+                  onChange={(event) => setCandidateDraft(event.target.value)}
                   onPointerUp={commitCandidates}
                   onKeyUp={commitCandidates}
                 />
