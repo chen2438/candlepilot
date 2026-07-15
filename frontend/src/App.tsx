@@ -223,6 +223,10 @@ export default function App() {
     setOrders(nextOrders);
   }, []);
 
+  const refreshDecisions = useCallback(async () => {
+    setDecisions(await api<DecisionEvent[]>("/api/decision-events?limit=50"));
+  }, []);
+
   const refreshOperations = useCallback(async () => {
     const [metrics, testnet] = await Promise.allSettled([
       api<ProviderMetricsResponse>("/api/metrics/providers?hours=24"),
@@ -244,19 +248,37 @@ export default function App() {
       refreshAccount().catch(() => undefined);
       refreshOperations().catch(() => undefined);
     }, 5000);
+    const decisionFallback = window.setInterval(() => {
+      refreshDecisions().catch(() => undefined);
+    }, 15000);
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${protocol}://${window.location.host}/ws/events`);
-    socket.onopen = () => setSocketOnline(true);
-    socket.onclose = () => setSocketOnline(false);
-    socket.onmessage = (event) => {
-      const message = JSON.parse(event.data) as { type: string; data: EngineStatus };
-      if (message.type === "status") setStatus(message.data);
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | null = null;
+    let disposed = false;
+    const connect = () => {
+      socket = new WebSocket(`${protocol}://${window.location.host}/ws/events`);
+      socket.onopen = () => setSocketOnline(true);
+      socket.onclose = () => {
+        setSocketOnline(false);
+        if (!disposed) reconnectTimer = window.setTimeout(connect, 2000);
+      };
+      socket.onmessage = (event) => {
+        const message = JSON.parse(event.data) as
+          | { type: "status"; data: EngineStatus }
+          | { type: "decisions"; data: DecisionEvent[] };
+        if (message.type === "status") setStatus(message.data);
+        if (message.type === "decisions") setDecisions(message.data);
+      };
     };
+    connect();
     return () => {
+      disposed = true;
       window.clearInterval(account);
-      socket.close();
+      window.clearInterval(decisionFallback);
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      socket?.close();
     };
-  }, [refresh, refreshAccount, refreshOperations]);
+  }, [refresh, refreshAccount, refreshDecisions, refreshOperations]);
 
   const act = useCallback(async (name: string, path: string, body?: unknown) => {
     setBusy(name);

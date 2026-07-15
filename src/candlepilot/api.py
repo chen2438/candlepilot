@@ -1222,11 +1222,18 @@ def create_app(
     @app.websocket("/ws/events")
     async def event_stream(websocket: WebSocket) -> None:
         await websocket.accept()
+        last_decisions: list[dict[str, Any]] | None = None
         try:
             while True:
                 await websocket.send_json(
                     {"type": "status", "data": _status(engine, scheduler)}
                 )
+                decisions = await engine.audit.recent_decision_events(50)
+                if decisions != last_decisions:
+                    await websocket.send_json(
+                        {"type": "decisions", "data": _json_value(decisions)}
+                    )
+                    last_decisions = decisions
                 await asyncio.sleep(2)
         except (WebSocketDisconnect, RuntimeError):
             return

@@ -165,10 +165,26 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         assert universe[0]["symbol"] == "BTCUSDT"
         refreshed_at = client.get("/api/status").json()["universe_refreshed_at"]
         assert isinstance(refreshed_at, str) and refreshed_at.endswith("+00:00")
+        asyncio.run(
+            engine.audit.record_inference(
+                ProviderResult(
+                    TradeIntent.hold("BTCUSDT", "5m", "websocket fixture"),
+                    "api-fixture",
+                    "test-model",
+                    timedelta(milliseconds=1),
+                    "{}",
+                    {},
+                )
+            )
+        )
         with client.websocket_connect("/ws/events") as socket:
             event = socket.receive_json()
             assert event["type"] == "status"
             assert event["data"]["universe_refreshed_at"] == refreshed_at
+            decision_event = socket.receive_json()
+            assert decision_event["type"] == "decisions"
+            assert decision_event["data"][0]["intent"]["rationale"] == "websocket fixture"
+            assert decision_event["data"][0]["created_at"].endswith("+00:00")
         stopped = client.post("/api/engine/emergency-stop").json()
         assert stopped["running"] is False
         assert stopped["emergency_locked"] is True
