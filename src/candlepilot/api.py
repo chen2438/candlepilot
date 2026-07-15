@@ -32,6 +32,9 @@ from candlepilot.market.binance import BinancePublicClient
 from candlepilot.market.cache import HistoricalMarketCache
 from candlepilot.market.history import build_backtest_candles
 from candlepilot.observability import AlertNotifier, OperationalMetrics, evaluate_alerts
+from candlepilot.providers.pricing import (
+    CACHE_FILENAME as PRICING_CACHE_FILENAME,
+)
 from candlepilot.providers.pricing import PROVIDER_IDS, ModelPricingCatalog
 from candlepilot.providers.pricing import load_catalog as load_pricing_catalog
 from candlepilot.providers.registry import ProviderRegistry
@@ -53,6 +56,10 @@ class ProviderConfig(ApiModel):
     name: str
     model: str | None = None
     reasoning_effort: str | None = None
+
+
+class HistoryClearRequest(ApiModel):
+    categories: list[str] = Field(min_length=1, max_length=16)
 
 
 class SymbolRulesInput(ApiModel):
@@ -149,6 +156,14 @@ def _model_options(
     if current and current not in options:
         options.append(current)
     return options
+
+
+def _delete_pricing_cache(cache_dir: Path) -> int:
+    try:
+        (cache_dir / PRICING_CACHE_FILENAME).unlink()
+        return 1
+    except OSError:
+        return 0
 
 
 def _json_value(value: Any) -> Any:
@@ -550,6 +565,35 @@ def create_app(
         if not 1 <= limit <= 500:
             raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
         return {"events": await engine.audit.recent_alert_events(limit)}
+
+    @app.post("/api/history/clear")
+    async def clear_history(request: HistoryClearRequest) -> dict[str, Any]:
+        db_categories = set(AuditRepository.HISTORY_TABLES)
+        valid = db_categories | {"market_cache", "pricing_cache"}
+        unknown = sorted(set(request.categories) - valid)
+        if unknown:
+            raise HTTPException(
+                status_code=422, detail=f"unknown categories: {', '.join(unknown)}"
+            )
+        selected = set(request.categories)
+        cleared: dict[str, int] = {}
+        db_selected = selected & db_categories
+        if db_selected:
+            cleared.update(await engine.audit.clear_history(db_selected))
+        if "market_cache" in selected:
+            cleared["market_cache"] = await asyncio.to_thread(history_cache.clear)
+        if "pricing_cache" in selected:
+            cleared["pricing_cache"] = await asyncio.to_thread(
+                _delete_pricing_cache, pricing_cache_dir
+            )
+            async with pricing_lock:
+                pricing_memo["catalog"] = None
+                pricing_memo["expires_at"] = None
+        request_logger.info(
+            "history_cleared",
+            extra={"structured": {"categories": sorted(selected), "counts": cleared}},
+        )
+        return {"cleared": cleared}
 
     @app.post("/api/providers/select")
     async def select_provider(selection: ProviderSelection) -> dict[str, Any]:

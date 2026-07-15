@@ -6,7 +6,7 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import DateTime, Float, Integer, String, Text, event, insert, select, text
+from sqlalchemy import DateTime, Float, Integer, String, Text, delete, event, insert, select, text
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     AsyncEngine,
@@ -193,8 +193,31 @@ class Database:
 
 
 class AuditRepository:
+    # History tables safe to clear. Excludes runtime_state (paper account,
+    # emergency lock) and schema_migrations so deletion never weakens recovery
+    # or safety state.
+    HISTORY_TABLES: dict[str, type[Base]] = {
+        "inferences": InferenceRow,
+        "risk_decisions": RiskRow,
+        "executions": ExecutionRow,
+        "backtests": BacktestRow,
+        "user_events": UserStreamEventRow,
+        "alerts": AlertEventRow,
+    }
+
     def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
         self.sessions = sessions
+
+    async def clear_history(self, categories: set[str]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        async with self.sessions.begin() as session:
+            for category in categories:
+                model = self.HISTORY_TABLES.get(category)
+                if model is None:
+                    continue
+                result = await session.execute(delete(model))
+                counts[category] = int(result.rowcount or 0)
+        return counts
 
     async def record_inference(self, result: ProviderResult) -> int:
         usage = dict(result.usage)

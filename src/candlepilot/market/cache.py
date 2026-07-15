@@ -60,6 +60,19 @@ class HistoricalMarketCache:
         temporary.replace(path)
         return path
 
+    def clear(self) -> int:
+        """Delete every cached Parquet file, returning how many were removed."""
+        if not self.root.exists():
+            return 0
+        removed = 0
+        for path in self.root.rglob("*.parquet"):
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                pass
+        return removed
+
     def _path(
         self,
         symbol: str,

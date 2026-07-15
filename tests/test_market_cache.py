@@ -26,3 +26,25 @@ def test_parquet_cache_round_trip(tmp_path: Path) -> None:
 
     assert path.suffix == ".parquet"
     assert loaded == candles
+
+
+def test_cache_clear_removes_parquet_files(tmp_path: Path) -> None:
+    cache = HistoricalMarketCache(tmp_path / "market")
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = start + timedelta(minutes=5)
+    candles = [
+        {
+            "timestamp": start,
+            "open": "100",
+            "high": "101",
+            "low": "99",
+            "close": "100",
+            "volume": "1",
+            "funding_rate": "0",
+        }
+    ]
+    assert cache.clear() == 0  # nothing cached yet
+    cache.store("BTCUSDT", "5m", start, end, 10_000, candles)
+    cache.store("ETHUSDT", "1m", start, end, 10_000, candles)
+    assert cache.clear() == 2
+    assert cache.load("BTCUSDT", "5m", start, end, 10_000) is None

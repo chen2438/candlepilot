@@ -479,6 +479,52 @@ def test_model_options_curated_from_catalog() -> None:
     assert _model_options("claude-code-auth", None, "opus") == ["sonnet", "opus", "haiku", "fable"]
 
 
+def test_history_clear_removes_selected_categories(tmp_path: Path) -> None:
+    from candlepilot.providers.base import ProviderResult
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'history-api.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.PAPER,
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(
+        settings=Settings(data_dir=tmp_path), database=database, market=market, engine=engine  # type: ignore[arg-type]
+    )
+    intent = TradeIntent.hold("BTCUSDT", "5m", "seed")
+    with TestClient(app) as client:
+        asyncio.run(
+            engine.audit.record_inference(
+                ProviderResult(
+                    intent=intent,
+                    provider="codex-auth",
+                    model="m",
+                    duration=timedelta(milliseconds=1),
+                    raw_output=intent.model_dump_json(),
+                    usage={},
+                )
+            )
+        )
+        assert len(client.get("/api/signals").json()) == 1
+
+        response = client.post(
+            "/api/history/clear", json={"categories": ["inferences", "market_cache"]}
+        )
+        assert response.status_code == 200, response.text
+        cleared = response.json()["cleared"]
+        assert cleared["inferences"] == 1
+        assert "market_cache" in cleared
+        assert client.get("/api/signals").json() == []
+
+        assert client.post(
+            "/api/history/clear", json={"categories": ["bogus"]}
+        ).status_code == 422
+        assert client.post("/api/history/clear", json={"categories": []}).status_code == 422
+    asyncio.run(database.close())
+
+
 def test_unknown_provider_is_404(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'api.db'}")
     market = ApiMarket()

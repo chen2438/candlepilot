@@ -46,6 +46,17 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+const HISTORY_CATEGORIES: Array<{ key: string; label: string; hint: string }> = [
+  { key: "inferences", label: "模型调用与决策", hint: "AI 分析 / 最近决策" },
+  { key: "risk_decisions", label: "风控决策", hint: "风险事件" },
+  { key: "executions", label: "订单与成交", hint: "" },
+  { key: "backtests", label: "回测记录", hint: "" },
+  { key: "user_events", label: "测试网事件", hint: "用户数据流" },
+  { key: "alerts", label: "告警历史", hint: "" },
+  { key: "market_cache", label: "行情缓存", hint: "Parquet" },
+  { key: "pricing_cache", label: "定价缓存", hint: "models.dev" },
+];
+
 function providerLabel(name: string): string {
   if (name === "codex-auth") return "Codex Auth";
   if (name === "claude-code-auth") return "Claude Code Auth";
@@ -95,6 +106,9 @@ export default function App() {
   const [socketOnline, setSocketOnline] = useState(false);
   const [replayForm, setReplayForm] = useState(initialReplayForm);
   const [configDraft, setConfigDraft] = useState<Record<string, { model: string; effort: string; custom: boolean }>>({});
+  const [historySelected, setHistorySelected] = useState<Record<string, boolean>>({});
+  const [historyConfirm, setHistoryConfirm] = useState(false);
+  const [historyResult, setHistoryResult] = useState<string | null>(null);
 
   const applyProviderConfig = useCallback(async (name: string, draft: { model: string; effort: string }) => {
     setBusy("provider-config");
@@ -237,6 +251,28 @@ export default function App() {
       setBusy(null);
     }
   }, [replayForm]);
+
+  const clearHistory = useCallback(async () => {
+    const categories = Object.entries(historySelected).filter(([, on]) => on).map(([key]) => key);
+    if (!categories.length) return;
+    setBusy("history-clear");
+    setError(null);
+    try {
+      const res = await api<{ cleared: Record<string, number> }>("/api/history/clear", {
+        method: "POST",
+        body: JSON.stringify({ categories }),
+      });
+      setHistoryResult(Object.entries(res.cleared).map(([key, count]) => `${key}: ${count}`).join(" · "));
+      setHistorySelected({});
+      setHistoryConfirm(false);
+      await refresh();
+      await refreshAccount();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }, [historySelected, refresh, refreshAccount]);
 
   const openBacktest = useCallback(async (id: number) => {
     setBusy("backtest-detail");
@@ -486,6 +522,38 @@ export default function App() {
             testnetStatus={testnetStatus}
             operationsError={operationsError}
           />
+
+          <article className="panel history-panel">
+            <PanelTitle code="08" title="数据管理" meta="删除历史数据 · 不可恢复" />
+            <div className="history-grid">
+              {HISTORY_CATEGORIES.map((category) => (
+                <label className="history-item" key={category.key}>
+                  <input
+                    type="checkbox"
+                    checked={!!historySelected[category.key]}
+                    onChange={(event) => { setHistoryConfirm(false); setHistorySelected((current) => ({ ...current, [category.key]: event.target.checked })); }}
+                  />
+                  <span><strong>{category.label}</strong>{category.hint && <small>{category.hint}</small>}</span>
+                </label>
+              ))}
+            </div>
+            <div className="history-actions">
+              {!historyConfirm ? (
+                <button
+                  className="danger"
+                  disabled={busy !== null || !Object.values(historySelected).some(Boolean)}
+                  onClick={() => setHistoryConfirm(true)}
+                >清除所选</button>
+              ) : (
+                <>
+                  <span className="history-warn">确认删除所选数据？此操作不可恢复。</span>
+                  <button className="danger" disabled={busy !== null} onClick={clearHistory}>{busy === "history-clear" ? "删除中…" : "确认删除"}</button>
+                  <button className="text-button" disabled={busy !== null} onClick={() => setHistoryConfirm(false)}>取消</button>
+                </>
+              )}
+              {historyResult && <span className="history-result">已删除 → {historyResult}</span>}
+            </div>
+          </article>
         </section>
       </main>
       <footer><span>CANDLEPILOT / GPL-3.0</span><span>LOCALHOST ONLY · NO LIVE MONEY</span></footer>

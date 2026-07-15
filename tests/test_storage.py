@@ -202,6 +202,39 @@ def test_provider_metrics_price_codex_via_catalog(tmp_path: Path) -> None:
     assert codex["tokens_total"] == 1200
 
 
+def test_clear_history_is_selective_and_preserves_runtime_state(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'clear.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        intent = TradeIntent.hold("BTCUSDT", "5m", "seed")
+        await repository.record_inference(
+            ProviderResult(
+                intent=intent,
+                provider="codex-auth",
+                model="m",
+                duration=timedelta(milliseconds=1),
+                raw_output=intent.model_dump_json(),
+                usage={},
+            )
+        )
+        await repository.record_risk("BTCUSDT", RiskDecision(accepted=True, reason="ok"))
+        await repository.set_runtime_state("paper_account", "keep-me")
+
+        counts = await repository.clear_history({"inferences"})
+        remaining_inferences = await repository.recent_intents()
+        remaining_risk = await repository.recent_risk_decisions()
+        preserved = await repository.get_runtime_state("paper_account")
+        await database.close()
+        return counts, remaining_inferences, remaining_risk, preserved
+
+    counts, inferences, risk, preserved = asyncio.run(scenario())
+    assert counts == {"inferences": 1}
+    assert inferences == []
+    assert len(risk) == 1  # not selected -> untouched
+    assert preserved == "keep-me"  # runtime_state (paper account) never cleared
+
+
 def test_database_migrations_are_versioned_and_idempotent(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'migrations.db'}")
