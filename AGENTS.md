@@ -1,16 +1,14 @@
-# CandlePilot agent conventions
+# CandlePilot Agent 协作约定
 
-- `DOCS.md` is the single authoritative feature and architecture document. Update it in the same
-  commit whenever a change affects behavior, interfaces, configuration, validation, or boundaries.
-- Keep each independently verifiable feature in its own Git commit.
-- Every commit message must contain:
-  1. a concise Conventional Commit-style subject;
-  2. a blank line followed by a meaningful description explaining what changed and why;
-  3. the co-author trailer for the agent that implemented the change.
-- Codex commits must end with `Co-authored-by: Codex <noreply@openai.com>`.
-- Claude Code commits must end with its applicable Anthropic co-author trailer.
-- Do not use a subject-only commit. Record relevant safety behavior, compatibility implications,
-  and verification in the description when they materially help future maintainers.
-- Run the checks required by `DOCS.md` before committing. UI changes also require browser
-  validation.
-
+- `DOCS.md` 是唯一权威的功能与架构文档。任何影响系统行为、接口、配置、验证方式或安全边界的
+  变更，都必须在同一个提交中同步更新 `DOCS.md`。
+- 每个可独立验收的功能使用一个单独的 Git 提交。
+- 每条提交信息必须包含：
+  1. 简洁的 Conventional Commit 风格标题；
+  2. 一个空行，以及说明“改了什么、为什么改”的有意义 description；
+  3. 实现该变更的 Agent 共同作者 trailer。
+- Codex 提交必须以 `Co-authored-by: Codex <noreply@openai.com>` 结尾。
+- Claude Code 提交必须以其当前适用的 Anthropic 共同作者 trailer 结尾。
+- 禁止只有标题、没有正文的提交。当安全行为、兼容性影响或验证结果对后续维护有实际帮助时，
+  必须在 description 中记录。
+- 提交前执行 `DOCS.md` 要求的检查；控制台变更还必须完成浏览器验证。
