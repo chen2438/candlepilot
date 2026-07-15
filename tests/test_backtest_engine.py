@@ -33,6 +33,19 @@ def _long() -> TradeIntent:
     )
 
 
+def _position_action(action: TradeAction) -> TradeIntent:
+    return TradeIntent(
+        symbol="BTCUSDT",
+        cadence="5m",
+        action=action,
+        confidence=0.8,
+        leverage=3,
+        risk_fraction="0.01" if action == TradeAction.ADD else "0",
+        stop_loss="80" if action == TradeAction.ADD else None,
+        rationale=f"{action.value} cached decision",
+    )
+
+
 def test_decision_executes_at_next_bar_without_lookahead() -> None:
     candles = [
         _candle(0, "100", "103", "99", "102"),
@@ -65,6 +78,57 @@ def test_backtest_is_reproducible() -> None:
     first = BacktestEngine().run(candles, decisions)
     second = BacktestEngine().run(candles, decisions)
     assert first == second
+
+
+def test_backtest_add_increases_quantity_and_reweights_entry() -> None:
+    candles = [
+        _candle(0, "100", "101", "99", "100"),
+        _candle(1, "100", "101", "99", "100"),
+        _candle(2, "110", "111", "109", "110"),
+        _candle(3, "110", "111", "109", "110"),
+    ]
+    opening = _long().model_copy(update={"stop_loss": Decimal("80"), "take_profit": None})
+    result = BacktestEngine().run(
+        candles,
+        [
+            ReplayIntent(candles[0].timestamp, opening),
+            ReplayIntent(candles[1].timestamp, _position_action(TradeAction.ADD)),
+            ReplayIntent(candles[2].timestamp, _position_action(TradeAction.CLOSE)),
+        ],
+    )
+
+    trade = result.trades[0]
+    opening_entry = Decimal("100") * Decimal("1.0005")
+    assert len(result.trades) == 1
+    assert trade.quantity > Decimal("8")
+    assert opening_entry < trade.entry_price < Decimal("110") * Decimal("1.0005")
+    assert trade.exit_reason == "model_exit"
+
+
+def test_backtest_reduce_closes_half_and_preserves_remainder() -> None:
+    candles = [
+        _candle(0, "100", "101", "99", "100"),
+        _candle(1, "100", "101", "99", "100"),
+        _candle(2, "102", "103", "101", "102"),
+        _candle(3, "104", "105", "103", "104"),
+    ]
+    opening = _long().model_copy(update={"stop_loss": Decimal("80"), "take_profit": None})
+    result = BacktestEngine().run(
+        candles,
+        [
+            ReplayIntent(candles[0].timestamp, opening),
+            ReplayIntent(candles[1].timestamp, _position_action(TradeAction.REDUCE)),
+            ReplayIntent(candles[2].timestamp, _position_action(TradeAction.CLOSE)),
+        ],
+    )
+
+    assert len(result.trades) == 2
+    reduced, remainder = result.trades
+    assert reduced.quantity == remainder.quantity
+    assert reduced.exit_time == candles[2].timestamp
+    assert remainder.exit_time == candles[3].timestamp
+    assert reduced.fees + remainder.fees == result.total_fees
+    assert all(trade.exit_reason == "model_exit" for trade in result.trades)
 
 
 def test_backtest_reports_risk_adjusted_turnover_and_exposure_metrics() -> None:

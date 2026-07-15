@@ -97,6 +97,7 @@ class BacktestResult:
 class _Position:
     side: str
     quantity: Decimal
+    leverage: int
     entry_time: datetime
     entry_price: Decimal
     stop_loss: Decimal
@@ -185,10 +186,25 @@ class BacktestEngine:
     ) -> tuple[Decimal, _Position | None, BacktestTrade | None]:
         if intent.action == TradeAction.HOLD:
             return cash, position, None
-        if intent.action in {TradeAction.CLOSE, TradeAction.REDUCE} and position is not None:
+        if intent.action == TradeAction.CLOSE and position is not None:
             exit_price = self._slipped(candle.open, "SELL" if position.side == "LONG" else "BUY")
             cash, trade = self._close(position, candle.timestamp, exit_price, cash, "model_exit")
             return cash, None, trade
+        if intent.action == TradeAction.REDUCE and position is not None:
+            exit_price = self._slipped(
+                candle.open, "SELL" if position.side == "LONG" else "BUY"
+            )
+            cash, trade = self._close_quantity(
+                position,
+                position.quantity / 2,
+                candle.timestamp,
+                exit_price,
+                cash,
+                "model_exit",
+            )
+            return cash, position, trade
+        if intent.action == TradeAction.ADD and position is not None:
+            return self._add(intent, candle, cash, position), position, None
         if position is not None or intent.action not in {
             TradeAction.OPEN_LONG,
             TradeAction.OPEN_SHORT,
@@ -213,6 +229,7 @@ class BacktestEngine:
             _Position(
                 side=side,
                 quantity=quantity,
+                leverage=intent.leverage,
                 entry_time=candle.timestamp,
                 entry_price=entry,
                 stop_loss=stop,
@@ -222,6 +239,47 @@ class BacktestEngine:
             ),
             None,
         )
+
+    def _add(
+        self,
+        intent: TradeIntent,
+        candle: Candle,
+        cash: Decimal,
+        position: _Position,
+    ) -> Decimal:
+        stop = intent.stop_loss
+        if stop is None:
+            return cash
+        entry_side = "BUY" if position.side == "LONG" else "SELL"
+        entry = self._slipped(candle.open, entry_side)
+        if (position.side == "LONG" and stop >= entry) or (
+            position.side == "SHORT" and stop <= entry
+        ):
+            return cash
+        equity = cash + self._unrealized(position, candle.open)
+        per_unit_loss = abs(entry - stop) + entry * self.config.slippage_fraction
+        risk_budget = equity * min(intent.risk_fraction, self.config.max_risk_fraction)
+        risk_quantity = risk_budget / per_unit_loss
+        existing_margin = position.quantity * candle.open / position.leverage
+        remaining_margin = max(
+            Decimal("0"), equity * self.config.max_margin_fraction - existing_margin
+        )
+        margin_quantity = remaining_margin * intent.leverage / entry
+        quantity = min(risk_quantity, margin_quantity)
+        if quantity <= 0:
+            return cash
+        entry_fee = quantity * entry * self.config.fee_rate
+        total = position.quantity + quantity
+        position.entry_price = (
+            position.entry_price * position.quantity + entry * quantity
+        ) / total
+        position.quantity = total
+        position.leverage = max(position.leverage, intent.leverage)
+        position.stop_loss = stop
+        if intent.take_profit is not None:
+            position.take_profit = intent.take_profit
+        position.entry_fee += entry_fee
+        return cash - entry_fee
 
     def _intrabar_exit(self, position: _Position, candle: Candle) -> tuple[Decimal | None, str]:
         # When both stop and target are touched in one candle, use the stop. This is
@@ -246,26 +304,52 @@ class BacktestEngine:
         cash: Decimal,
         reason: str,
     ) -> tuple[Decimal, BacktestTrade]:
+        return self._close_quantity(
+            position,
+            position.quantity,
+            timestamp,
+            exit_price,
+            cash,
+            reason,
+        )
+
+    def _close_quantity(
+        self,
+        position: _Position,
+        quantity: Decimal,
+        timestamp: datetime,
+        exit_price: Decimal,
+        cash: Decimal,
+        reason: str,
+    ) -> tuple[Decimal, BacktestTrade]:
+        quantity = min(quantity, position.quantity)
+        fraction = quantity / position.quantity
+        entry_fee = position.entry_fee * fraction
+        funding = position.funding * fraction
         direction = Decimal("1") if position.side == "LONG" else Decimal("-1")
-        gross = position.quantity * (exit_price - position.entry_price) * direction
-        exit_fee = position.quantity * exit_price * self.config.fee_rate
-        fees = position.entry_fee + exit_fee
-        net = gross - exit_fee + position.funding
+        gross = quantity * (exit_price - position.entry_price) * direction
+        exit_fee = quantity * exit_price * self.config.fee_rate
+        fees = entry_fee + exit_fee
+        net = gross - exit_fee + funding
         cash += gross - exit_fee
-        return cash, BacktestTrade(
+        trade = BacktestTrade(
             side=position.side,
-            quantity=position.quantity,
+            quantity=quantity,
             entry_time=position.entry_time,
             entry_price=position.entry_price,
             exit_time=timestamp,
             exit_price=exit_price,
             gross_pnl=gross,
             fees=fees,
-            funding=position.funding,
-            net_pnl=net - position.entry_fee,
+            funding=funding,
+            net_pnl=net - entry_fee,
             exit_reason=reason,
             regime=position.regime,
         )
+        position.quantity -= quantity
+        position.entry_fee -= entry_fee
+        position.funding -= funding
+        return cash, trade
 
     def _slipped(self, price: Decimal, side: str) -> Decimal:
         direction = Decimal("1") if side == "BUY" else Decimal("-1")
