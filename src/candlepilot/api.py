@@ -19,7 +19,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from candlepilot.application.engine import SUPPORTED_CADENCES, TradingEngine
 from candlepilot.application.paper_feed import PaperMarketFeed
-from candlepilot.application.scheduler import TradingScheduler
+from candlepilot.application.scheduler import (
+    MAX_CANDIDATES_PER_CYCLE,
+    TradingScheduler,
+)
 from candlepilot.application.testnet_feed import TestnetUserFeed
 from candlepilot.backtest.engine import BacktestConfig, BacktestEngine, Candle, ReplayIntent
 from candlepilot.backtest.portfolio import PortfolioBacktestEngine
@@ -64,6 +67,10 @@ class HistoryClearRequest(ApiModel):
 
 class CadenceSelection(ApiModel):
     cadences: list[str] = Field(min_length=1, max_length=8)
+
+
+class CandidatesPerCycleSelection(ApiModel):
+    candidates_per_cycle: int = Field(ge=1, le=MAX_CANDIDATES_PER_CYCLE)
 
 
 class SymbolRulesInput(ApiModel):
@@ -228,6 +235,10 @@ def _status(
         "backup_provider": engine.backup_provider,
         "active_cadences": list(engine.active_cadences),
         "supported_cadences": list(SUPPORTED_CADENCES),
+        "candidates_per_cycle": scheduler.candidates_per_cycle
+        if scheduler is not None
+        else None,
+        "max_candidates_per_cycle": MAX_CANDIDATES_PER_CYCLE,
         "candidate_count": len(engine.candidates),
         "universe_refreshed_at": engine.universe_refreshed_at.isoformat()
         if engine.universe_refreshed_at
@@ -326,6 +337,7 @@ def create_app(
     scheduler = TradingScheduler(
         engine,
         market,
+        candidates_per_cycle=settings.candidates_per_cycle,
         paper_feed=paper_feed,
         testnet_feed=testnet_feed,
     )
@@ -616,6 +628,18 @@ def create_app(
     async def select_cadences(selection: CadenceSelection) -> dict[str, Any]:
         try:
             engine.select_cadences(selection.cadences)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _status(engine, scheduler)
+
+    @app.post("/api/candidates-per-cycle")
+    async def select_candidates_per_cycle(
+        selection: CandidatesPerCycleSelection,
+    ) -> dict[str, Any]:
+        try:
+            scheduler.select_candidates_per_cycle(selection.candidates_per_cycle)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except RuntimeError as exc:

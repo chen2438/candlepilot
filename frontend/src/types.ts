@@ -7,6 +7,8 @@ export interface EngineStatus {
   backup_provider: string | null;
   active_cadences: string[];
   supported_cadences: string[];
+  candidates_per_cycle: number | null;
+  max_candidates_per_cycle: number;
   candidate_count: number;
   universe_refreshed_at: string | null;
   market_stream: {

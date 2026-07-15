@@ -41,6 +41,15 @@ def test_cadences_default_and_env_override(monkeypatch) -> None:
     assert Settings.from_env().cadences == ("5m", "15m")
 
 
+def test_candidates_per_cycle_default_and_env_override(monkeypatch) -> None:
+    monkeypatch.delenv("CANDLEPILOT_CANDIDATES_PER_CYCLE", raising=False)
+    assert Settings.from_env().candidates_per_cycle == 5
+    monkeypatch.setenv("CANDLEPILOT_CANDIDATES_PER_CYCLE", "8")
+    assert Settings.from_env().candidates_per_cycle == 8
+    monkeypatch.setenv("CANDLEPILOT_CANDIDATES_PER_CYCLE", "not-a-number")
+    assert Settings.from_env().candidates_per_cycle == 5
+
+
 def test_from_env_reads_loaded_dotenv(tmp_path: Path, monkeypatch) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text("CANDLEPILOT_PORT=9001\nCANDLEPILOT_CODEX_MODEL=gpt-x\n")

@@ -49,6 +49,15 @@ def _parse_cadences(raw: str | None) -> tuple[str, ...]:
     return parsed or ("1m", "5m", "15m")
 
 
+def _parse_candidates_per_cycle(raw: str | None) -> int:
+    if not raw:
+        return 5
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return 5
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     mode: TradingMode = TradingMode.PAPER
@@ -63,6 +72,7 @@ class Settings:
     daily_loss_fraction: Decimal = Decimal("0.08")
     inference_timeout_seconds: float = 45.0
     cadences: tuple[str, ...] = ("1m", "5m", "15m")
+    candidates_per_cycle: int = 5
     codex_model: str | None = None
     codex_reasoning_effort: str | None = None
     claude_model: str | None = None
@@ -80,6 +90,9 @@ class Settings:
             bind_port=int(os.getenv("CANDLEPILOT_PORT", "8000")),
             inference_timeout_seconds=float(os.getenv("CANDLEPILOT_LLM_TIMEOUT", "45")),
             cadences=_parse_cadences(os.getenv("CANDLEPILOT_CADENCES")),
+            candidates_per_cycle=_parse_candidates_per_cycle(
+                os.getenv("CANDLEPILOT_CANDIDATES_PER_CYCLE")
+            ),
             codex_model=os.getenv("CANDLEPILOT_CODEX_MODEL") or None,
             codex_reasoning_effort=os.getenv("CANDLEPILOT_CODEX_REASONING_EFFORT") or None,
             claude_model=os.getenv("CANDLEPILOT_CLAUDE_MODEL") or None,

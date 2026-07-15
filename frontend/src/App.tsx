@@ -23,6 +23,8 @@ const emptyStatus: EngineStatus = {
   backup_provider: null,
   active_cadences: ["1m", "5m", "15m"],
   supported_cadences: ["1m", "5m", "15m"],
+  candidates_per_cycle: 5,
+  max_candidates_per_cycle: 20,
   candidate_count: 0,
   universe_refreshed_at: null,
   market_stream: {
@@ -136,6 +138,24 @@ export default function App() {
     setError(null);
     try {
       setStatus(await api<EngineStatus>("/api/cadences", { method: "POST", body: JSON.stringify({ cadences: ordered }) }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
+  const changeCandidatesPerCycle = useCallback(async (value: number, max: number) => {
+    const clamped = Math.max(1, Math.min(max, Math.round(value)));
+    setBusy("candidates-per-cycle");
+    setError(null);
+    try {
+      setStatus(
+        await api<EngineStatus>("/api/candidates-per-cycle", {
+          method: "POST",
+          body: JSON.stringify({ candidates_per_cycle: clamped }),
+        }),
+      );
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -352,6 +372,20 @@ export default function App() {
                     onClick={() => toggleCadence(cadence, status.active_cadences, status.supported_cadences)}
                   >{cadence}</button>
                 ))}
+              </div>
+            </div>
+            <div className="cadence-select" title={status.running ? "运行时锁定" : "每个周期分析候选池前 N 个标的"}>
+              <span>每周期标的数</span>
+              <div className="stepper">
+                <button
+                  disabled={busy !== null || status.running || (status.candidates_per_cycle ?? 5) <= 1}
+                  onClick={() => changeCandidatesPerCycle((status.candidates_per_cycle ?? 5) - 1, status.max_candidates_per_cycle)}
+                >−</button>
+                <span className="stepper-value">{status.candidates_per_cycle ?? 5}</span>
+                <button
+                  disabled={busy !== null || status.running || (status.candidates_per_cycle ?? 5) >= status.max_candidates_per_cycle}
+                  onClick={() => changeCandidatesPerCycle((status.candidates_per_cycle ?? 5) + 1, status.max_candidates_per_cycle)}
+                >+</button>
               </div>
             </div>
             <button

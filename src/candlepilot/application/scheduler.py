@@ -12,6 +12,19 @@ from candlepilot.market.binance import BinancePublicClient
 
 CADENCE_SECONDS = {"1m": 60, "5m": 300, "15m": 900}
 
+DEFAULT_CANDIDATES_PER_CYCLE = 5
+MAX_CANDIDATES_PER_CYCLE = 20
+
+
+def _normalize_candidates_per_cycle(value: int) -> int:
+    if value < 1:
+        raise ValueError("candidates_per_cycle must be at least 1")
+    if value > MAX_CANDIDATES_PER_CYCLE:
+        raise ValueError(
+            f"candidates_per_cycle must be at most {MAX_CANDIDATES_PER_CYCLE}"
+        )
+    return value
+
 
 class TradingScheduler:
     def __init__(
@@ -19,7 +32,7 @@ class TradingScheduler:
         engine: TradingEngine,
         market: BinancePublicClient,
         *,
-        candidates_per_cycle: int = 5,
+        candidates_per_cycle: int = DEFAULT_CANDIDATES_PER_CYCLE,
         universe_refresh_seconds: float = 60,
         paper_feed: PaperMarketFeed | None = None,
         testnet_feed: TestnetUserFeed | None = None,
@@ -28,7 +41,7 @@ class TradingScheduler:
             raise ValueError("universe_refresh_seconds must be positive")
         self.engine = engine
         self.market = market
-        self.candidates_per_cycle = candidates_per_cycle
+        self.candidates_per_cycle = _normalize_candidates_per_cycle(candidates_per_cycle)
         self.universe_refresh_seconds = universe_refresh_seconds
         self.paper_feed = paper_feed
         self.testnet_feed = testnet_feed
@@ -37,6 +50,11 @@ class TradingScheduler:
         self._stop = asyncio.Event()
         self.last_error: str | None = None
         self.universe_last_error: str | None = None
+
+    def select_candidates_per_cycle(self, value: int) -> None:
+        if self.engine.running:
+            raise RuntimeError("cannot change candidates_per_cycle while running")
+        self.candidates_per_cycle = _normalize_candidates_per_cycle(value)
 
     def start(self) -> None:
         if self._tasks:

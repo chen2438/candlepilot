@@ -2,7 +2,7 @@
 
 > 本文件是 CandlePilot 的**唯一权威功能文档**，记录系统当前的全部能力、接口与边界。
 > `STATUS.md` 与 `PLAN.md` 已弃用，后续变更只同步更新本文件。
-> 最后更新：2026-07-15（分析周期可选）
+> 最后更新：2026-07-15（每周期标的数可配置）
 
 ---
 
@@ -81,6 +81,9 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 - **可选分析周期**：用户可自由选择分析 1m/5m/15m 的任意子集（默认全部）；
   默认取自 `CANDLEPILOT_CADENCES`，也可在控制台运行前经 `POST /api/cadences` 修改，
   运行时锁定。只有被选中的周期会启动调度任务。
+- **每周期标的数**：每个周期只分析候选池排名前 N 的标的，N 可配置（默认 5，范围 1–20）；
+  默认取自 `CANDLEPILOT_CANDIDATES_PER_CYCLE`，也可在控制台运行前经
+  `POST /api/candidates-per-cycle` 修改，运行时锁定。
 
 ### 4.4 决策与风控
 
@@ -177,6 +180,7 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 | `CANDLEPILOT_DATA_DIR` | 数据目录（Parquet 行情缓存、models.dev 定价缓存）|
 | `CANDLEPILOT_LLM_TIMEOUT` | LLM 子进程硬超时（秒，默认 45）|
 | `CANDLEPILOT_CADENCES` | 逗号分隔的分析周期子集，默认 `1m,5m,15m` |
+| `CANDLEPILOT_CANDIDATES_PER_CYCLE` | 每周期分析候选池前 N 个标的，默认 5（范围 1–20）|
 | `CANDLEPILOT_CODEX_MODEL` / `CANDLEPILOT_CODEX_REASONING_EFFORT` | Codex 模型 / 推理强度（minimal/low/medium/high）|
 | `CANDLEPILOT_CLAUDE_MODEL` / `CANDLEPILOT_CLAUDE_EFFORT` | Claude 模型 / 强度（low/medium/high/xhigh/max）|
 | `BINANCE_TESTNET_API_KEY` / `BINANCE_TESTNET_API_SECRET` | 仅测试网模式需要 |
@@ -193,7 +197,7 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 
 **引擎与 Provider**：`GET /api/status`、`GET /api/providers`、
 `POST /api/providers/select`、`POST /api/providers/config`、`POST /api/cadences`、
-`POST /api/engine/start`、
+`POST /api/candidates-per-cycle`、`POST /api/engine/start`、
 `POST /api/engine/stop`、`POST /api/engine/emergency-stop`、
 `POST /api/engine/clear-emergency-lock`。
 

@@ -554,6 +554,45 @@ def test_cadence_selection_endpoint(tmp_path: Path) -> None:
     asyncio.run(database.close())
 
 
+def test_candidates_per_cycle_endpoint(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'per-cycle-api.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.PAPER,
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        status = client.get("/api/status").json()
+        assert status["candidates_per_cycle"] == 5
+        assert status["max_candidates_per_cycle"] == 20
+
+        updated = client.post("/api/candidates-per-cycle", json={"candidates_per_cycle": 8})
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["candidates_per_cycle"] == 8
+
+        # Out-of-range values are rejected by the request schema.
+        assert (
+            client.post("/api/candidates-per-cycle", json={"candidates_per_cycle": 0}).status_code
+            == 422
+        )
+        assert (
+            client.post("/api/candidates-per-cycle", json={"candidates_per_cycle": 21}).status_code
+            == 422
+        )
+
+        # Locked while the engine runs.
+        client.post("/api/providers/select", json={"name": "api-fixture"})
+        client.post("/api/engine/start")
+        assert (
+            client.post("/api/candidates-per-cycle", json={"candidates_per_cycle": 3}).status_code
+            == 409
+        )
+    asyncio.run(database.close())
+
+
 def test_unknown_provider_is_404(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'api.db'}")
     market = ApiMarket()

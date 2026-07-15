@@ -147,6 +147,95 @@ def test_scheduler_only_runs_selected_cadences(tmp_path: Path) -> None:
     assert names == ["candlepilot-15m", "candlepilot-1m", "candlepilot-universe"]
 
 
+def test_scheduler_candidates_per_cycle_validates_and_locks_when_running(
+    tmp_path: Path,
+) -> None:
+    import pytest
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'per-cycle.db'}")
+        await database.initialize()
+        market = SchedulerMarket()
+        engine = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([HoldProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider("hold")
+        scheduler = TradingScheduler(engine, market)  # type: ignore[arg-type]
+
+        # invalid bounds are rejected
+        with pytest.raises(ValueError):
+            scheduler.select_candidates_per_cycle(0)
+        with pytest.raises(ValueError):
+            scheduler.select_candidates_per_cycle(21)
+
+        scheduler.select_candidates_per_cycle(3)
+        assert scheduler.candidates_per_cycle == 3
+
+        # locked once the engine is running
+        await engine.start()
+        with pytest.raises(RuntimeError):
+            scheduler.select_candidates_per_cycle(7)
+        assert scheduler.candidates_per_cycle == 3
+
+        await database.close()
+
+    asyncio.run(scenario())
+
+
+def test_scheduler_limits_cycle_to_candidates_per_cycle(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'per-cycle-limit.db'}")
+        await database.initialize()
+
+        symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
+
+        class MultiSymbolMarket(SchedulerMarket):
+            async def candidate_inputs(self):
+                self.candidate_calls += 1
+                return [
+                    MarketCandidateInput(
+                        symbol,
+                        Decimal("1000000"),
+                        Decimal("99.9"),
+                        Decimal("100.1"),
+                        Decimal("0.1"),
+                        Decimal("0.03"),
+                        1000,
+                    )
+                    for symbol in symbols
+                ]
+
+            async def exchange_info(self):
+                return {
+                    symbol: ContractInfo(
+                        symbol,
+                        datetime(2020, 1, 1, tzinfo=UTC),
+                        SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+                    )
+                    for symbol in symbols
+                }
+
+        market = MultiSymbolMarket()
+        engine = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([HoldProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider("hold")
+        await engine.start()
+        scheduler = TradingScheduler(engine, market, candidates_per_cycle=2)  # type: ignore[arg-type]
+        outcomes = await scheduler.run_cycle("5m")
+        await database.close()
+        return outcomes
+
+    outcomes = asyncio.run(scenario())
+    assert len(outcomes) == 2
+
+
 def test_concurrent_cadences_cannot_open_opposing_positions(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'conflict.db'}")
