@@ -664,7 +664,7 @@ function OperationsPanel({
           <div className="testnet-checks">
             <span><i className={testnetStatus?.user_stream.running ? "ok" : ""} />用户流 {testnetStatus?.user_stream.running ? "在线" : "离线"}</span>
             <span><i className={testnetSafe ? "ok" : ""} />启动对账 {reconciliation ? testnetSafe ? "安全" : "有未保护仓位" : "尚未执行"}</span>
-            <span><i className={testnetStatus?.account?.can_trade ? "ok" : ""} />账户交易权限 {testnetStatus?.account?.can_trade ? "可用" : "不可用"}</span>
+            <span><i className={testnetStatus?.account?.can_trade ? "ok" : ""} />可用保证金 {testnetStatus?.account?.can_trade ? "就绪" : "不足"}</span>
           </div>
           {testnetStatus?.positions.length ? (
             <div className="table-wrap testnet-positions">

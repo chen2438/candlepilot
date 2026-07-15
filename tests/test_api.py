@@ -85,8 +85,9 @@ class LLMReplayMarket(ApiMarket):
 
 class ApiTestnetBroker:
     async def account(self):
+        # Mirrors the real /fapi/v3/account futures response, which has no
+        # canTrade field; margin readiness is derived from availableBalance.
         return {
-            "canTrade": True,
             "totalWalletBalance": "10000.5",
             "totalMarginBalance": "10025.5",
             "availableBalance": "9000",
@@ -217,6 +218,7 @@ def test_testnet_account_status_is_sanitized_and_includes_reconciliation(
         status = response.json()
         assert status["enabled"] is True and status["active"] is True
         assert status["account"]["total_wallet_balance"] == "10000.5"
+        # No canTrade field in the response, yet available margin (9000) marks it ready.
         assert status["account"]["can_trade"] is True
         assert set(status["account"]) == {
             "can_trade",

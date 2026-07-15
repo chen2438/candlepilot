@@ -737,7 +737,10 @@ def create_app(
             "active": engine.mode == TradingMode.TESTNET,
             "mode": engine.mode.value,
             "account": {
-                "can_trade": bool(account.get("canTrade", False)),
+                # The USD-M futures /fapi/v3/account response has no canTrade
+                # field (futures permission lives on the API key). Report margin
+                # readiness — funds available to open a position — instead.
+                "can_trade": Decimal(str(account.get("availableBalance", "0"))) > 0,
                 "total_wallet_balance": str(account.get("totalWalletBalance", "0")),
                 "total_margin_balance": str(account.get("totalMarginBalance", "0")),
                 "available_balance": str(account.get("availableBalance", "0")),
