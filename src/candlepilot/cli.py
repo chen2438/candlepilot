@@ -17,7 +17,7 @@ from candlepilot.broker.binance_testnet import (
     BinanceTestnetBroker,
     BinanceTestnetCredentials,
 )
-from candlepilot.config import Settings
+from candlepilot.config import Settings, load_dotenv
 from candlepilot.market.binance import BinanceError, BinancePublicClient
 from candlepilot.observability import configure_structured_logging
 from candlepilot.providers.registry import ProviderRegistry
@@ -130,6 +130,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    load_dotenv()
     args = _parser().parse_args()
     if args.command == "doctor":
         raise SystemExit(asyncio.run(_doctor()))
