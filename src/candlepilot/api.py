@@ -61,6 +61,10 @@ class ProviderConfig(ApiModel):
     reasoning_effort: str | None = None
 
 
+class ProviderTestRequest(ApiModel):
+    name: str
+
+
 class HistoryClearRequest(ApiModel):
     categories: list[str] = Field(min_length=1, max_length=16)
 
@@ -566,6 +570,47 @@ def create_app(
         provider.model = model
         provider.reasoning_effort = effort
         return await get_providers()
+
+    @app.post("/api/providers/test")
+    async def test_provider(request: ProviderTestRequest) -> dict[str, Any]:
+        try:
+            provider = engine.providers.get(request.name)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if engine.running:
+            raise HTTPException(
+                status_code=409, detail="cannot test a provider while the engine runs"
+            )
+        # A one-off call with a synthetic snapshot proves the applied model and
+        # reasoning effort authenticate and return a schema-valid TradeIntent.
+        # It is intentionally not audited so it never pollutes decisions/metrics.
+        snapshot = MarketSnapshot(
+            symbol="BTCUSDT",
+            cadence="5m",
+            timestamp=datetime.now(UTC),
+            mark_price="100",
+            bid="99.9",
+            ask="100.1",
+            quote_volume_24h="1000000",
+        )
+        portfolio = PortfolioState(equity="10000", available_balance="10000")
+        started = time.perf_counter()
+        try:
+            result = await provider.generate_trade_intent(snapshot, portfolio)
+        except Exception as exc:  # provider/auth/model failures surface as ok=false
+            return {
+                "ok": False,
+                "provider": request.name,
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+                "detail": str(exc),
+            }
+        return {
+            "ok": True,
+            "provider": request.name,
+            "model": result.model,
+            "action": result.intent.action.value,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+        }
 
     @app.get("/api/metrics/providers")
     async def get_provider_metrics(hours: int = 24) -> dict[str, Any]:

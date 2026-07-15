@@ -2,7 +2,7 @@
 
 > 本文件是 CandlePilot 的**唯一权威功能文档**，记录系统当前的全部能力、接口与边界。
 > `STATUS.md` 与 `PLAN.md` 已弃用，后续变更只同步更新本文件。
-> 最后更新：2026-07-15（测试网强制止盈止损括号单）
+> 最后更新：2026-07-15（Provider 配置连通性测试）
 
 ---
 
@@ -62,6 +62,10 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
   `--model` / `--effort`。默认取自环境变量，也可在控制台运行前经 `/api/providers/config`
   修改；控制台模型为下拉选择（选项来自 models.dev 目录、按 Provider 过滤、含 CLI 别名），
   并保留「自定义」输入以支持目录外模型。
+- **配置连通性测试**：每个 Provider 可经控制台「测试」按钮或 `POST /api/providers/test`
+  用当前已应用的模型与推理强度发起一次合成快照调用，验证认证与配置能否返回 schema 合法的
+  `TradeIntent`，并返回耗时与结果动作。测试调用**不写入审计**（不污染决策/用量），引擎运行时
+  锁定（返回 409）。
 
 ### 4.2 行情与数据
 
@@ -179,7 +183,7 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 | 标签页 | 面板 | 内容 |
 |---|---|---|
 | 总览 | 引擎控制（hero）| 系统状态、分析周期、每周期标的数、启动/停止/紧急熔断 |
-| 总览 | 01 模型认证 | Provider 选择、登录状态、模型与推理强度选择器 |
+| 总览 | 01 模型认证 | Provider 选择、登录状态、模型与推理强度选择器、配置连通性测试 |
 | 总览 | 02 硬风控边界 | 只读展示不可修改的风控参数 |
 | 总览 | 03 动态候选池 | 全市场扫描结果，可手动刷新 |
 | 总览 | 04 决策与风控 | 将 LLM 意图与对应硬风控结果合并为一条审计事件；可按放行、否决、HOLD、仅推理筛选并展开参数与原因 |
@@ -227,7 +231,8 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 ## 7. HTTP / WebSocket API 参考
 
 **引擎与 Provider**：`GET /api/status`、`GET /api/providers`、
-`POST /api/providers/select`、`POST /api/providers/config`、`POST /api/cadences`、
+`POST /api/providers/select`、`POST /api/providers/config`、`POST /api/providers/test`、
+`POST /api/cadences`、
 `POST /api/candidates-per-cycle`、`POST /api/engine/start`、
 `POST /api/engine/stop`、`POST /api/engine/emergency-stop`、
 `POST /api/engine/clear-emergency-lock`。

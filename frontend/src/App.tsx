@@ -124,6 +124,7 @@ export default function App() {
   const [historyConfirm, setHistoryConfirm] = useState(false);
   const [historyResult, setHistoryResult] = useState<string | null>(null);
   const [candidateDraft, setCandidateDraft] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<Record<string, { ok: boolean; text: string }>>({});
 
   const applyProviderConfig = useCallback(async (name: string, draft: { model: string; effort: string }) => {
     setBusy("provider-config");
@@ -136,6 +137,28 @@ export default function App() {
       setProviders(next);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
+  const testProvider = useCallback(async (name: string) => {
+    setBusy(`test-${name}`);
+    setError(null);
+    setTestResult((current) => ({ ...current, [name]: { ok: false, text: "测试中…" } }));
+    try {
+      const result = await api<{ ok: boolean; model: string | null; action?: string; duration_ms: number; detail?: string }>(
+        "/api/providers/test",
+        { method: "POST", body: JSON.stringify({ name }) },
+      );
+      const seconds = (result.duration_ms / 1000).toFixed(1);
+      const text = result.ok
+        ? `✓ ${result.model ?? "默认模型"} · ${seconds}s · ${result.action}`
+        : `✗ ${result.detail ?? "调用失败"}`;
+      setTestResult((current) => ({ ...current, [name]: { ok: result.ok, text } }));
+    } catch (reason) {
+      const detail = reason instanceof Error ? reason.message : String(reason);
+      setTestResult((current) => ({ ...current, [name]: { ok: false, text: `✗ ${detail}` } }));
     } finally {
       setBusy(null);
     }
@@ -572,6 +595,17 @@ export default function App() {
                       disabled={status.running || busy !== null || !dirty}
                       onClick={() => applyProviderConfig(provider.provider, { model, effort })}
                     >应用</button>
+                    <button
+                      className="text-button"
+                      disabled={status.running || busy !== null || dirty || !provider.authenticated}
+                      title={dirty ? "请先应用配置再测试" : "用当前配置发起一次真实调用"}
+                      onClick={() => testProvider(provider.provider)}
+                    >{busy === `test-${provider.provider}` ? "测试中…" : "测试"}</button>
+                    {testResult[provider.provider] && (
+                      <span className={`config-test-result ${testResult[provider.provider].ok ? "ok" : "err"}`}>
+                        {testResult[provider.provider].text}
+                      </span>
+                    )}
                   </div>
                 );
               })}

@@ -37,6 +37,16 @@ class ConfigurableProvider(ApiProvider):
     reasoning_effort_options = ("low", "medium", "high")
 
 
+class BrokenProvider(LLMProvider):
+    name = "broken-fixture"
+
+    async def health_check(self):
+        return ProviderHealth(provider=self.name, available=True, authenticated=True)
+
+    async def generate_trade_intent(self, snapshot, portfolio):
+        raise RuntimeError("model 'bogus' is not available")
+
+
 class ApiMarket:
     async def candidate_inputs(self):
         return [
@@ -560,6 +570,40 @@ def test_provider_config_sets_model_and_reasoning_effort(tmp_path: Path) -> None
         assert client.post(
             "/api/providers/config", json={"name": "api-fixture", "model": "y"}
         ).status_code == 409
+    asyncio.run(database.close())
+
+
+def test_provider_test_endpoint_reports_success_and_failure(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'test-provider.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.PAPER,
+        providers=ProviderRegistry([ApiProvider(), BrokenProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        ok = client.post("/api/providers/test", json={"name": "api-fixture"})
+        assert ok.status_code == 200, ok.text
+        body = ok.json()
+        assert body["ok"] is True
+        assert body["action"] == "HOLD"
+        assert "duration_ms" in body
+
+        broken = client.post("/api/providers/test", json={"name": "broken-fixture"}).json()
+        assert broken["ok"] is False
+        assert "bogus" in broken["detail"]
+
+        assert client.post("/api/providers/test", json={"name": "missing"}).status_code == 404
+
+        # The test call is not audited, so it leaves no inference/decision behind.
+        assert client.get("/api/signals").json() == []
+
+        # Locked while the engine runs.
+        client.post("/api/providers/select", json={"name": "api-fixture"})
+        client.post("/api/engine/start")
+        assert client.post("/api/providers/test", json={"name": "api-fixture"}).status_code == 409
     asyncio.run(database.close())
 
 
