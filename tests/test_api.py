@@ -446,6 +446,37 @@ def test_provider_config_sets_model_and_reasoning_effort(tmp_path: Path) -> None
     asyncio.run(database.close())
 
 
+def test_model_options_curated_from_catalog() -> None:
+    from candlepilot.api import _model_options
+    from candlepilot.providers.pricing import parse_models_dev
+
+    catalog = parse_models_dev(
+        {
+            "openai": {
+                "models": {
+                    "gpt-5.6-sol": {"cost": {"input": 5, "output": 30}},
+                    "gpt-5-codex": {"cost": {"input": 1, "output": 2}},
+                    "gpt-4o": {"cost": {"input": 1, "output": 2}},
+                }
+            },
+            "anthropic": {"models": {"claude-sonnet-5": {"cost": {"input": 3, "output": 15}}}},
+        }
+    )
+    codex = _model_options("codex-auth", catalog, None)
+    assert "gpt-5.6-sol" in codex and "gpt-5-codex" in codex
+    assert "gpt-4o" not in codex  # filtered to the gpt-5 family
+
+    claude = _model_options("claude-code-auth", catalog, None)
+    assert claude[:4] == ["sonnet", "opus", "haiku", "fable"]  # aliases first
+    assert "claude-sonnet-5" in claude
+
+    # A current custom model is always included so it stays selectable.
+    assert "gpt-9-custom" in _model_options("codex-auth", catalog, "gpt-9-custom")
+    # Offline (no catalog): only curated aliases / current remain.
+    assert _model_options("codex-auth", None, None) == []
+    assert _model_options("claude-code-auth", None, "opus") == ["sonnet", "opus", "haiku", "fable"]
+
+
 def test_unknown_provider_is_404(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'api.db'}")
     market = ApiMarket()

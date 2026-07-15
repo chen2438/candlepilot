@@ -32,7 +32,7 @@ from candlepilot.market.binance import BinancePublicClient
 from candlepilot.market.cache import HistoricalMarketCache
 from candlepilot.market.history import build_backtest_candles
 from candlepilot.observability import AlertNotifier, OperationalMetrics, evaluate_alerts
-from candlepilot.providers.pricing import ModelPricingCatalog
+from candlepilot.providers.pricing import PROVIDER_IDS, ModelPricingCatalog
 from candlepilot.providers.pricing import load_catalog as load_pricing_catalog
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.provenance import BACKTEST_DATA_SCHEMA_VERSION, content_fingerprint
@@ -122,6 +122,33 @@ class PortfolioBacktestLeg(ApiModel):
 class PortfolioBacktestRequest(ApiModel):
     legs: list[PortfolioBacktestLeg] = Field(min_length=2, max_length=20)
     config: BacktestConfigInput = Field(default_factory=BacktestConfigInput)
+
+
+# CLI-accepted aliases that are not published as models.dev ids.
+_CURATED_MODEL_ALIASES: dict[str, tuple[str, ...]] = {
+    "claude-code-auth": ("sonnet", "opus", "haiku", "fable"),
+}
+_MODEL_ID_PREFIX: dict[str, str] = {"openai": "gpt-5", "anthropic": "claude-"}
+
+
+def _model_options(
+    provider_name: str, catalog: ModelPricingCatalog | None, current: str | None
+) -> list[str]:
+    options: list[str] = list(_CURATED_MODEL_ALIASES.get(provider_name, ()))
+    provider_id = PROVIDER_IDS.get(provider_name)
+    if catalog is not None and provider_id is not None:
+        prefix = _MODEL_ID_PREFIX.get(provider_id, "")
+        catalog_ids = sorted(
+            {
+                model
+                for (pid, model) in catalog.prices
+                if pid == provider_id and model.startswith(prefix)
+            }
+        )
+        options.extend(model for model in catalog_ids if model not in options)
+    if current and current not in options:
+        options.append(current)
+    return options
 
 
 def _json_value(value: Any) -> Any:
@@ -438,18 +465,21 @@ def create_app(
     @app.get("/api/providers")
     async def get_providers() -> list[dict[str, Any]]:
         health = await engine.provider_health()
-        return [
-            {
-                **item.model_dump(mode="json"),
-                "capabilities": asdict(engine.providers.get(item.provider).capabilities),
-                "model": engine.providers.get(item.provider).model,
-                "reasoning_effort": engine.providers.get(item.provider).reasoning_effort,
-                "reasoning_effort_options": list(
-                    engine.providers.get(item.provider).reasoning_effort_options
-                ),
-            }
-            for item in health
-        ]
+        catalog = await pricing_catalog()
+        result = []
+        for item in health:
+            provider = engine.providers.get(item.provider)
+            result.append(
+                {
+                    **item.model_dump(mode="json"),
+                    "capabilities": asdict(provider.capabilities),
+                    "model": provider.model,
+                    "reasoning_effort": provider.reasoning_effort,
+                    "reasoning_effort_options": list(provider.reasoning_effort_options),
+                    "model_options": _model_options(item.provider, catalog, provider.model),
+                }
+            )
+        return result
 
     @app.post("/api/providers/config")
     async def set_provider_config(config: ProviderConfig) -> list[dict[str, Any]]:

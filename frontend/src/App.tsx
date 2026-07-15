@@ -94,7 +94,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [socketOnline, setSocketOnline] = useState(false);
   const [replayForm, setReplayForm] = useState(initialReplayForm);
-  const [configDraft, setConfigDraft] = useState<Record<string, { model: string; effort: string }>>({});
+  const [configDraft, setConfigDraft] = useState<Record<string, { model: string; effort: string; custom: boolean }>>({});
 
   const applyProviderConfig = useCallback(async (name: string, draft: { model: string; effort: string }) => {
     setBusy("provider-config");
@@ -331,25 +331,43 @@ export default function App() {
             <div className="provider-config">
               <div className="provider-config-title"><span>模型与推理强度</span><small>{status.running ? "运行时锁定" : "留空=CLI 默认"}</small></div>
               {providers.map((provider) => {
-                const draft = configDraft[provider.provider] ?? {
-                  model: provider.model ?? "",
-                  effort: provider.reasoning_effort ?? "",
-                };
-                const dirty = draft.model !== (provider.model ?? "") || draft.effort !== (provider.reasoning_effort ?? "");
+                const options = provider.model_options ?? [];
+                const model = configDraft[provider.provider]?.model ?? provider.model ?? "";
+                const effort = configDraft[provider.provider]?.effort ?? provider.reasoning_effort ?? "";
+                const custom = configDraft[provider.provider]?.custom ?? (model !== "" && !options.includes(model));
+                const draft = { model, effort, custom };
+                const dirty = model !== (provider.model ?? "") || effort !== (provider.reasoning_effort ?? "");
+                const update = (next: Partial<typeof draft>) =>
+                  setConfigDraft((current) => ({ ...current, [provider.provider]: { ...draft, ...next } }));
                 return (
                   <div className="provider-config-row" key={provider.provider}>
                     <span className="config-name">{provider.provider.startsWith("codex") ? "CX" : "CC"}</span>
-                    <input
-                      className="config-model"
-                      placeholder="默认模型"
-                      value={draft.model}
-                      disabled={status.running}
-                      onChange={(event) => setConfigDraft((current) => ({ ...current, [provider.provider]: { model: event.target.value, effort: draft.effort } }))}
-                    />
+                    <div className="config-model-cell">
+                      <select
+                        value={custom ? "__custom__" : model}
+                        disabled={status.running}
+                        onChange={(event) => event.target.value === "__custom__" ? update({ custom: true }) : update({ model: event.target.value, custom: false })}
+                      >
+                        <option value="">默认模型</option>
+                        {options.map((option) => (
+                          <option key={option} value={option}>{option}</option>
+                        ))}
+                        <option value="__custom__">自定义…</option>
+                      </select>
+                      {custom && (
+                        <input
+                          className="config-model-custom"
+                          placeholder="输入模型名"
+                          value={model}
+                          disabled={status.running}
+                          onChange={(event) => update({ model: event.target.value })}
+                        />
+                      )}
+                    </div>
                     <select
-                      value={draft.effort}
+                      value={effort}
                       disabled={status.running}
-                      onChange={(event) => setConfigDraft((current) => ({ ...current, [provider.provider]: { model: draft.model, effort: event.target.value } }))}
+                      onChange={(event) => update({ effort: event.target.value })}
                     >
                       <option value="">默认强度</option>
                       {provider.reasoning_effort_options.map((option) => (
@@ -359,7 +377,7 @@ export default function App() {
                     <button
                       className="text-button"
                       disabled={status.running || busy !== null || !dirty}
-                      onClick={() => applyProviderConfig(provider.provider, draft)}
+                      onClick={() => applyProviderConfig(provider.provider, { model, effort })}
                     >应用</button>
                   </div>
                 );
