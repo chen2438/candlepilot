@@ -26,6 +26,10 @@ class Settings:
     max_margin_fraction: Decimal = Decimal("0.60")
     daily_loss_fraction: Decimal = Decimal("0.08")
     inference_timeout_seconds: float = 45.0
+    codex_model: str | None = None
+    codex_reasoning_effort: str | None = None
+    claude_model: str | None = None
+    claude_effort: str | None = None
     binance_testnet_api_key: SecretStr | None = None
     binance_testnet_api_secret: SecretStr | None = None
 
@@ -38,6 +42,10 @@ class Settings:
             bind_host=os.getenv("CANDLEPILOT_HOST", "127.0.0.1"),
             bind_port=int(os.getenv("CANDLEPILOT_PORT", "8000")),
             inference_timeout_seconds=float(os.getenv("CANDLEPILOT_LLM_TIMEOUT", "45")),
+            codex_model=os.getenv("CANDLEPILOT_CODEX_MODEL") or None,
+            codex_reasoning_effort=os.getenv("CANDLEPILOT_CODEX_REASONING_EFFORT") or None,
+            claude_model=os.getenv("CANDLEPILOT_CLAUDE_MODEL") or None,
+            claude_effort=os.getenv("CANDLEPILOT_CLAUDE_EFFORT") or None,
             binance_testnet_api_key=SecretStr(os.environ["BINANCE_TESTNET_API_KEY"])
             if os.getenv("BINANCE_TESTNET_API_KEY")
             else None,

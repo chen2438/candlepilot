@@ -279,6 +279,7 @@ def trade_intent_output_schema() -> dict[str, Any]:
 
 class CodexAuthProvider(LLMProvider):
     name = "codex-auth"
+    reasoning_effort_options = ("minimal", "low", "medium", "high")
 
     def __init__(
         self,
@@ -286,10 +287,14 @@ class CodexAuthProvider(LLMProvider):
         executable: Path | None = None,
         timeout: float = 45,
         config_path: Path | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         self.executable = executable or find_codex_executable()
         self.timeout = timeout
         self.config_path = config_path
+        self.model = model
+        self.reasoning_effort = reasoning_effort
         self._semaphore = asyncio.Semaphore(1)
         self._active_task: asyncio.Task[Any] | None = None
         self._provider_version: str | None = None
@@ -356,21 +361,24 @@ class CodexAuthProvider(LLMProvider):
                         json.dumps(trade_intent_output_schema(), separators=(",", ":")),
                         encoding="utf-8",
                     )
+                    argv = [
+                        str(self.executable),
+                        "exec",
+                        "--ephemeral",
+                        "--ignore-user-config",
+                        "--ignore-rules",
+                        "--sandbox",
+                        "read-only",
+                        "--skip-git-repo-check",
+                        "--json",
+                    ]
+                    if self.model:
+                        argv += ["-m", self.model]
+                    if self.reasoning_effort:
+                        argv += ["-c", f"model_reasoning_effort={self.reasoning_effort}"]
+                    argv += ["--output-schema", str(schema_path), "-"]
                     stdout, _ = await _run_process(
-                        [
-                            str(self.executable),
-                            "exec",
-                            "--ephemeral",
-                            "--ignore-user-config",
-                            "--ignore-rules",
-                            "--sandbox",
-                            "read-only",
-                            "--skip-git-repo-check",
-                            "--json",
-                            "--output-schema",
-                            str(schema_path),
-                            "-",
-                        ],
+                        argv,
                         cwd=root,
                         stdin=_decision_prompt(snapshot, portfolio),
                         timeout=self.timeout,
@@ -387,7 +395,7 @@ class CodexAuthProvider(LLMProvider):
         return ProviderResult(
             intent=intent,
             provider=self.name,
-            model=find_codex_model(self.config_path),
+            model=self.model or find_codex_model(self.config_path),
             duration=timedelta(seconds=time.monotonic() - started),
             raw_output=result_text,
             usage=usage,
@@ -402,10 +410,20 @@ class CodexAuthProvider(LLMProvider):
 
 class ClaudeCodeAuthProvider(LLMProvider):
     name = "claude-code-auth"
+    reasoning_effort_options = ("low", "medium", "high", "xhigh", "max")
 
-    def __init__(self, *, executable: Path | None = None, timeout: float = 45) -> None:
+    def __init__(
+        self,
+        *,
+        executable: Path | None = None,
+        timeout: float = 45,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> None:
         self.executable = executable or find_claude_executable()
         self.timeout = timeout
+        self.model = model
+        self.reasoning_effort = reasoning_effort
         self._semaphore = asyncio.Semaphore(1)
         self._active_task: asyncio.Task[Any] | None = None
         self._provider_version: str | None = None
@@ -466,20 +484,25 @@ class ClaudeCodeAuthProvider(LLMProvider):
         try:
             async with self._semaphore:
                 with tempfile.TemporaryDirectory(prefix="candlepilot-claude-") as directory:
+                    argv = [
+                        str(self.executable),
+                        "-p",
+                        "--output-format",
+                        "json",
+                        "--permission-mode",
+                        "plan",
+                        "--max-turns",
+                        "1",
+                        "--disallowedTools",
+                        "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit",
+                    ]
+                    if self.model:
+                        argv += ["--model", self.model]
+                    if self.reasoning_effort:
+                        argv += ["--effort", self.reasoning_effort]
+                    argv.append(_decision_prompt(snapshot, portfolio))
                     stdout, _ = await _run_process(
-                        [
-                            str(self.executable),
-                            "-p",
-                            "--output-format",
-                            "json",
-                            "--permission-mode",
-                            "plan",
-                            "--max-turns",
-                            "1",
-                            "--disallowedTools",
-                            "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit",
-                            _decision_prompt(snapshot, portfolio),
-                        ],
+                        argv,
                         cwd=Path(directory),
                         timeout=self.timeout,
                     )

@@ -1,14 +1,36 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from candlepilot.domain.models import ProviderHealth
 from candlepilot.providers.base import LLMProvider
 from candlepilot.providers.cli import ClaudeCodeAuthProvider, CodexAuthProvider
+
+if TYPE_CHECKING:
+    from candlepilot.config import Settings
 
 
 class ProviderRegistry:
     def __init__(self, providers: list[LLMProvider] | None = None) -> None:
         configured = providers or [CodexAuthProvider(), ClaudeCodeAuthProvider()]
         self._providers = {provider.name: provider for provider in configured}
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> ProviderRegistry:
+        return cls(
+            [
+                CodexAuthProvider(
+                    timeout=settings.inference_timeout_seconds,
+                    model=settings.codex_model,
+                    reasoning_effort=settings.codex_reasoning_effort,
+                ),
+                ClaudeCodeAuthProvider(
+                    timeout=settings.inference_timeout_seconds,
+                    model=settings.claude_model,
+                    reasoning_effort=settings.claude_effort,
+                ),
+            ]
+        )
 
     def get(self, name: str) -> LLMProvider:
         try:

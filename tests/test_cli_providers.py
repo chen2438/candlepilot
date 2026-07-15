@@ -242,6 +242,81 @@ def test_claude_provider_unwraps_result(tmp_path: Path) -> None:
     assert result.usage["num_turns"] == 1
 
 
+def _minimal_intent() -> dict:
+    return {
+        "symbol": "BTCUSDT",
+        "cadence": "5m",
+        "action": "HOLD",
+        "confidence": 0,
+        "leverage": 1,
+        "risk_fraction": "0",
+        "order_type": "MARKET",
+        "entry_price": None,
+        "stop_loss": None,
+        "take_profit": None,
+        "ttl_seconds": 60,
+        "rationale": "no edge",
+    }
+
+
+def test_codex_provider_passes_model_and_reasoning_effort(tmp_path: Path) -> None:
+    jsonl = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": json.dumps(_minimal_intent())},
+                }
+            ),
+            json.dumps({"type": "turn.completed", "usage": {"input_tokens": 5, "output_tokens": 1}}),
+        ]
+    )
+    body = 'echo "$@" > "$(dirname "$0")/args.txt"\n' + "cat <<'CODEXEOF'\n" + jsonl + "\nCODEXEOF\n"
+    executable = _write_fake_cli(tmp_path / "codex", body)
+    result = asyncio.run(
+        CodexAuthProvider(
+            executable=executable, model="gpt-5.2-codex", reasoning_effort="high"
+        ).generate_trade_intent(_market(), _portfolio())
+    )
+    args = (tmp_path / "args.txt").read_text()
+    assert "-m gpt-5.2-codex" in args
+    assert "model_reasoning_effort=high" in args
+    # An explicit model is used for cost attribution without reading config.toml.
+    assert result.model == "gpt-5.2-codex"
+
+
+def test_claude_provider_passes_model_and_effort(tmp_path: Path) -> None:
+    envelope = json.dumps({"result": json.dumps(_minimal_intent()), "num_turns": 1})
+    body = 'echo "$@" > "$(dirname "$0")/args.txt"\n' + f"printf '%s\\n' '{envelope}'\n"
+    executable = _write_fake_cli(tmp_path / "claude", body)
+    asyncio.run(
+        ClaudeCodeAuthProvider(
+            executable=executable, model="sonnet", reasoning_effort="xhigh"
+        ).generate_trade_intent(_market(), _portfolio())
+    )
+    args = (tmp_path / "args.txt").read_text()
+    assert "--model sonnet" in args
+    assert "--effort xhigh" in args
+
+
+def test_registry_from_settings_applies_model_and_effort() -> None:
+    from candlepilot.config import Settings
+    from candlepilot.providers.registry import ProviderRegistry
+
+    registry = ProviderRegistry.from_settings(
+        Settings(
+            codex_model="gpt-5.2-codex",
+            codex_reasoning_effort="high",
+            claude_model="opus",
+            claude_effort="xhigh",
+        )
+    )
+    assert registry.get("codex-auth").model == "gpt-5.2-codex"
+    assert registry.get("codex-auth").reasoning_effort == "high"
+    assert registry.get("claude-code-auth").model == "opus"
+    assert registry.get("claude-code-auth").reasoning_effort == "xhigh"
+
+
 def test_cli_providers_declare_subscription_capabilities(tmp_path: Path) -> None:
     executable = _write_fake_cli(tmp_path / "provider", "exit 0\n")
 

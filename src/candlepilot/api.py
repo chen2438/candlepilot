@@ -49,6 +49,12 @@ class ProviderSelection(ApiModel):
     backup: str | None = None
 
 
+class ProviderConfig(ApiModel):
+    name: str
+    model: str | None = None
+    reasoning_effort: str | None = None
+
+
 class SymbolRulesInput(ApiModel):
     quantity_step: Annotated[Decimal, Field(gt=0)]
     min_quantity: Annotated[Decimal, Field(gt=0)]
@@ -237,7 +243,7 @@ def create_app(
             testnet_stream = BinanceTestnetUserStream(credentials)
     engine = engine or TradingEngine(
         mode=settings.mode,
-        providers=ProviderRegistry(),
+        providers=ProviderRegistry.from_settings(settings),
         audit=AuditRepository(database.sessions),
         market=market,
         testnet_broker=testnet_broker,
@@ -436,9 +442,35 @@ def create_app(
             {
                 **item.model_dump(mode="json"),
                 "capabilities": asdict(engine.providers.get(item.provider).capabilities),
+                "model": engine.providers.get(item.provider).model,
+                "reasoning_effort": engine.providers.get(item.provider).reasoning_effort,
+                "reasoning_effort_options": list(
+                    engine.providers.get(item.provider).reasoning_effort_options
+                ),
             }
             for item in health
         ]
+
+    @app.post("/api/providers/config")
+    async def set_provider_config(config: ProviderConfig) -> list[dict[str, Any]]:
+        try:
+            provider = engine.providers.get(config.name)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if engine.running:
+            raise HTTPException(
+                status_code=409, detail="cannot change model settings while the engine runs"
+            )
+        model = (config.model or "").strip() or None
+        effort = (config.reasoning_effort or "").strip() or None
+        if effort is not None and effort not in provider.reasoning_effort_options:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unsupported reasoning effort for {config.name}: {effort}",
+            )
+        provider.model = model
+        provider.reasoning_effort = effort
+        return await get_providers()
 
     @app.get("/api/metrics/providers")
     async def get_provider_metrics(hours: int = 24) -> dict[str, Any]:

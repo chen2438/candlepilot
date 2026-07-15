@@ -32,6 +32,11 @@ class ApiProvider(LLMProvider):
         return ProviderResult(intent, self.name, None, timedelta(0), intent.model_dump_json(), {})
 
 
+class ConfigurableProvider(ApiProvider):
+    name = "api-fixture"
+    reasoning_effort_options = ("low", "medium", "high")
+
+
 class ApiMarket:
     async def candidate_inputs(self):
         return [
@@ -391,6 +396,53 @@ def test_provider_metrics_prices_codex_via_injected_catalog(tmp_path: Path) -> N
         assert codex["provider"] == "codex-auth"
         expected = 600 * 5e-6 + 400 * 5e-7 + 200 * 3e-5
         assert abs(float(codex["cost_usd_total"]) - expected) < 1e-9
+    asyncio.run(database.close())
+
+
+def test_provider_config_sets_model_and_reasoning_effort(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'config-api.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.PAPER,
+        providers=ProviderRegistry([ConfigurableProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        listed = client.get("/api/providers").json()[0]
+        assert listed["model"] is None
+        assert listed["reasoning_effort"] is None
+        assert listed["reasoning_effort_options"] == ["low", "medium", "high"]
+
+        updated = client.post(
+            "/api/providers/config",
+            json={"name": "api-fixture", "model": "gpt-x", "reasoning_effort": "high"},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()[0]["model"] == "gpt-x"
+        assert updated.json()[0]["reasoning_effort"] == "high"
+
+        # Clearing sends empty strings back to null.
+        cleared = client.post(
+            "/api/providers/config", json={"name": "api-fixture", "model": "", "reasoning_effort": ""}
+        ).json()[0]
+        assert cleared["model"] is None
+        assert cleared["reasoning_effort"] is None
+
+        assert client.post(
+            "/api/providers/config", json={"name": "api-fixture", "reasoning_effort": "bogus"}
+        ).status_code == 422
+        assert client.post(
+            "/api/providers/config", json={"name": "missing", "model": "x"}
+        ).status_code == 404
+
+        # Locked while the engine runs.
+        client.post("/api/providers/select", json={"name": "api-fixture"})
+        client.post("/api/engine/start")
+        assert client.post(
+            "/api/providers/config", json={"name": "api-fixture", "model": "y"}
+        ).status_code == 409
     asyncio.run(database.close())
 
 

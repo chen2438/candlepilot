@@ -32,6 +32,9 @@ class ProviderCapabilities:
 
 class LLMProvider(ABC):
     name: str
+    model: str | None = None
+    reasoning_effort: str | None = None
+    reasoning_effort_options: tuple[str, ...] = ()
 
     @property
     def capabilities(self) -> ProviderCapabilities:
