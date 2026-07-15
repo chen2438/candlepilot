@@ -191,7 +191,13 @@ class BinanceTestnetBroker:
             "POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": leverage}
         )
 
-    async def execute_with_stop(self, order: OrderPlan, *, leverage: int) -> ExecutionReport:
+    async def execute_with_stop(
+        self,
+        order: OrderPlan,
+        *,
+        leverage: int,
+        replace_existing_protection: bool = False,
+    ) -> ExecutionReport:
         if order.reduce_only:
             return await self._place_order(order)
         if order.stop_price is None:
@@ -199,23 +205,75 @@ class BinanceTestnetBroker:
         if order.take_profit_price is None:
             raise ValueError("testnet opening orders require a take profit")
         await self.sync_time()
+        stale_protection = (
+            await self._candlepilot_protective_orders(order.symbol)
+            if replace_existing_protection
+            else ()
+        )
         await self.configure_symbol(order.symbol, leverage)
         entry = await self._place_order(order)
         if entry.status not in {"NEW", "PARTIALLY_FILLED", "FILLED"}:
             return entry
         exit_side = "SELL" if order.side == "BUY" else "BUY"
+        fresh_protection: list[str] = []
         try:
-            await self._place_protective(order, exit_side, "STOP_MARKET", order.stop_price, "sl")
-            await self._place_protective(
-                order, exit_side, "TAKE_PROFIT_MARKET", order.take_profit_price, "tp"
+            fresh_protection.append(
+                await self._place_protective(
+                    order, exit_side, "STOP_MARKET", order.stop_price, "sl"
+                )
+            )
+            fresh_protection.append(
+                await self._place_protective(
+                    order,
+                    exit_side,
+                    "TAKE_PROFIT_MARKET",
+                    order.take_profit_price,
+                    "tp",
+                )
             )
         except Exception as exc:
+            for client_order_id in fresh_protection:
+                try:
+                    await self._cancel_client_order(order.symbol, client_order_id)
+                except Exception:
+                    pass
             await self._emergency_reduce(order, exit_side)
             raise ProtectiveStopError(
                 "entry succeeded but protective bracket failed; "
                 "emergency reduce-only order submitted"
             ) from exc
+        try:
+            for client_order_id in stale_protection:
+                await self._cancel_client_order(order.symbol, client_order_id)
+        except Exception as exc:
+            raise ProtectiveStopError(
+                "replacement bracket is active but stale protection could not be removed"
+            ) from exc
         return entry
+
+    async def _candlepilot_protective_orders(self, symbol: str) -> tuple[str, ...]:
+        orders = await self._signed_request(
+            "GET", "/fapi/v1/openOrders", {"symbol": symbol}
+        )
+        return tuple(
+            str(item["clientOrderId"])
+            for item in orders
+            if item.get("type") in {"STOP", "STOP_MARKET", "TAKE_PROFIT_MARKET"}
+            and item.get("closePosition") in {True, "true", "TRUE"}
+            and str(item.get("clientOrderId", "")).startswith("cp-")
+            and str(item["clientOrderId"]).endswith(("-sl", "-tp"))
+        )
+
+    async def _cancel_client_order(self, symbol: str, client_order_id: str) -> None:
+        try:
+            await self._signed_request(
+                "DELETE",
+                "/fapi/v1/order",
+                {"symbol": symbol, "origClientOrderId": client_order_id},
+            )
+        except BinanceApiError as exc:
+            if exc.code != -2011:
+                raise
 
     async def _place_protective(
         self,
@@ -224,7 +282,7 @@ class BinanceTestnetBroker:
         order_type: str,
         trigger_price: Decimal,
         suffix: str,
-    ) -> None:
+    ) -> str:
         """Place a close-position protective trigger (stop loss or take profit).
 
         Both legs use ``closePosition`` with mark-price triggering so a filled
@@ -232,6 +290,7 @@ class BinanceTestnetBroker:
         ``TAKE_PROFIT_MARKET`` both read ``stopPrice`` as the trigger.
         """
 
+        client_order_id = f"{order.client_order_id}-{suffix}"
         await self._signed_request(
             "POST",
             "/fapi/v1/order",
@@ -242,9 +301,10 @@ class BinanceTestnetBroker:
                 "stopPrice": trigger_price,
                 "closePosition": True,
                 "workingType": "MARK_PRICE",
-                "newClientOrderId": f"{order.client_order_id}-{suffix}",
+                "newClientOrderId": client_order_id,
             },
         )
+        return client_order_id
 
     async def _place_order(self, order: OrderPlan) -> ExecutionReport:
         params: dict[str, Any] = {

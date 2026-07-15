@@ -125,6 +125,102 @@ def test_testnet_opening_requires_take_profit() -> None:
     asyncio.run(scenario())
 
 
+def test_add_replaces_existing_candlepilot_bracket_after_new_pair_is_active() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/fapi/v1/time":
+            return httpx.Response(200, json={"serverTime": 1784040000000})
+        if request.url.path == "/fapi/v1/openOrders":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "symbol": "BTCUSDT",
+                        "type": "STOP_MARKET",
+                        "closePosition": True,
+                        "clientOrderId": "cp-old-sl",
+                    },
+                    {
+                        "symbol": "BTCUSDT",
+                        "type": "TAKE_PROFIT_MARKET",
+                        "closePosition": True,
+                        "clientOrderId": "cp-old-tp",
+                    },
+                    {
+                        "symbol": "BTCUSDT",
+                        "type": "STOP_MARKET",
+                        "closePosition": True,
+                        "clientOrderId": "manual-stop",
+                    },
+                ],
+            )
+        if request.url.path == "/fapi/v1/marginType":
+            return httpx.Response(400, json={"code": -4046, "msg": "No need to change"})
+        if request.url.path == "/fapi/v1/leverage":
+            return httpx.Response(200, json={"leverage": 3})
+        query = parse_qs(request.url.query.decode())
+        if request.method == "DELETE":
+            return httpx.Response(200, json={"status": "CANCELED"})
+        if query.get("type") in (["STOP_MARKET"], ["TAKE_PROFIT_MARKET"]):
+            return httpx.Response(200, json={"status": "NEW"})
+        return httpx.Response(
+            200,
+            json={
+                "clientOrderId": "cp-add",
+                "status": "FILLED",
+                "executedQty": "0.5",
+                "avgPrice": "101",
+            },
+        )
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        report = await broker.execute_with_stop(
+            OrderPlan(
+                client_order_id="cp-add",
+                symbol="BTCUSDT",
+                side="BUY",
+                quantity=Decimal("0.5"),
+                order_type=OrderType.MARKET,
+                stop_price=Decimal("97"),
+                take_profit_price=Decimal("106"),
+            ),
+            leverage=3,
+            replace_existing_protection=True,
+        )
+        await client.aclose()
+        return report
+
+    assert asyncio.run(scenario()).status == "FILLED"
+    lifecycle = [
+        (
+            request.method,
+            request.url.path,
+            parse_qs(request.url.query.decode()).get("newClientOrderId", [None])[0],
+            parse_qs(request.url.query.decode()).get("origClientOrderId", [None])[0],
+        )
+        for request in requests
+        if request.url.path not in {
+            "/fapi/v1/time",
+            "/fapi/v1/marginType",
+            "/fapi/v1/leverage",
+        }
+    ]
+    assert lifecycle == [
+        ("GET", "/fapi/v1/openOrders", None, None),
+        ("POST", "/fapi/v1/order", "cp-add", None),
+        ("POST", "/fapi/v1/order", "cp-add-sl", None),
+        ("POST", "/fapi/v1/order", "cp-add-tp", None),
+        ("DELETE", "/fapi/v1/order", None, "cp-old-sl"),
+        ("DELETE", "/fapi/v1/order", None, "cp-old-tp"),
+    ]
+
+
 def test_take_profit_failure_triggers_emergency_reduce() -> None:
     from candlepilot.broker.binance_testnet import ProtectiveStopError
 

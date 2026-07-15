@@ -14,6 +14,7 @@ from candlepilot.domain.models import (
     PortfolioState,
     ProviderHealth,
     RiskDecision,
+    TradeAction,
     TradeIntent,
     TradingMode,
 )
@@ -220,7 +221,9 @@ class TradingEngine:
                 if self.testnet_broker is None:
                     raise RuntimeError("Binance testnet broker is unavailable")
                 execution = await self.testnet_broker.execute_with_stop(
-                    evaluation.order, leverage=result.intent.leverage
+                    evaluation.order,
+                    leverage=result.intent.leverage,
+                    replace_existing_protection=result.intent.action == TradeAction.ADD,
                 )
             else:
                 execution = await self.paper_executor.execute(

@@ -170,6 +170,82 @@ def test_testnet_mode_refuses_to_start_without_credentials(tmp_path: Path) -> No
     asyncio.run(scenario())
 
 
+def test_testnet_add_requests_protective_bracket_replacement(tmp_path: Path) -> None:
+    from candlepilot.broker.binance_testnet import ReconciliationReport
+    from candlepilot.domain.models import ExecutionReport
+
+    class AddProvider(FakeProvider):
+        async def generate_trade_intent(self, snapshot, portfolio) -> ProviderResult:
+            intent = TradeIntent(
+                symbol=snapshot.symbol,
+                cadence=snapshot.cadence,
+                action=TradeAction.ADD,
+                confidence=0.8,
+                leverage=3,
+                risk_fraction="0.01",
+                stop_loss="98",
+                take_profit="104",
+                rationale="add fixture",
+            )
+            return ProviderResult(intent, self.name, None, timedelta(0), "{}", {})
+
+    class CapturingBroker:
+        replace_existing_protection: bool | None = None
+
+        async def reconcile_account(self):
+            return ReconciliationReport(("BTCUSDT",), 2, ())
+
+        async def execute_with_stop(
+            self, order, *, leverage, replace_existing_protection=False
+        ):
+            self.replace_existing_protection = replace_existing_protection
+            return ExecutionReport(
+                client_order_id=order.client_order_id,
+                status="FILLED",
+                filled_quantity=order.quantity,
+                average_price=Decimal("100"),
+            )
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'testnet-add.db'}")
+        await database.initialize()
+        broker = CapturingBroker()
+        engine = TradingEngine(
+            mode=TradingMode.TESTNET,
+            providers=ProviderRegistry([AddProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=FakeMarket(),  # type: ignore[arg-type]
+            testnet_broker=broker,  # type: ignore[arg-type]
+        )
+        engine.select_provider("fake-auth")
+        await engine.start()
+        outcome = await engine.evaluate(
+            MarketSnapshot(
+                symbol="BTCUSDT",
+                cadence="5m",
+                timestamp=datetime.now(UTC),
+                mark_price="100",
+                bid="99.9",
+                ask="100.1",
+                quote_volume_24h="1000000",
+            ),
+            PortfolioState(
+                equity="10000",
+                available_balance="8000",
+                open_positions=1,
+                symbol_sides={"BTCUSDT": "LONG"},
+                symbol_quantities={"BTCUSDT": "1"},
+            ),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+        )
+        await database.close()
+        return outcome, broker.replace_existing_protection
+
+    outcome, replacement = asyncio.run(scenario())
+    assert outcome.execution is not None
+    assert replacement is True
+
+
 def test_engine_fails_over_once_to_explicit_backup_provider(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'fallback.db'}")
