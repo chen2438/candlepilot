@@ -159,8 +159,23 @@ def _decision_payload(
     }
 
 
-def _decision_prompt(snapshot: MarketSnapshot, portfolio: PortfolioState) -> str:
+def _decision_prompt(
+    snapshot: MarketSnapshot,
+    portfolio: PortfolioState,
+    *,
+    include_schema: bool = False,
+) -> str:
     payload = _decision_payload(snapshot, portfolio)
+    # Codex is constrained by --output-schema; providers without a structured-output
+    # flag (Claude) must be given the schema inline or they invent field names.
+    schema_clause = ""
+    if include_schema:
+        schema_clause = (
+            " The reply must be exactly one JSON object (no markdown fences, no prose) "
+            "conforming to this JSON Schema, using these field names and no others: "
+            + json.dumps(trade_intent_output_schema(), separators=(",", ":"))
+            + "."
+        )
     return (
         f"Prompt version: {DECISION_PROMPT_VERSION}. "
         "You are the decision component of a testnet-only intraday futures system. "
@@ -168,7 +183,7 @@ def _decision_prompt(snapshot: MarketSnapshot, portfolio: PortfolioState) -> str
         "Analyze only the JSON supplied below. Return exactly one object matching the "
         "provided TradeIntent schema. Use HOLD when evidence is weak or data is unsuitable. "
         "Opening and ADD decisions require both a stop loss and a take profit. "
-        "Never exceed leverage 10 or risk 0.02.\n"
+        "Never exceed leverage 10 or risk 0.02." + schema_clause + "\n"
         + json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     )
 
@@ -507,20 +522,25 @@ class ClaudeCodeAuthProvider(LLMProvider):
             raise ProviderUnavailable("Claude Code CLI was not found")
         started = time.monotonic()
         input_payload = _decision_payload(snapshot, portfolio)
-        prompt = _decision_prompt(snapshot, portfolio)
+        prompt = _decision_prompt(snapshot, portfolio, include_schema=True)
         self._active_task = asyncio.current_task()
         try:
             async with self._semaphore:
                 with tempfile.TemporaryDirectory(prefix="candlepilot-claude-") as directory:
+                    # Not plan mode: plan mode makes Claude call ExitPlanMode (or
+                    # explain the plan workflow) instead of answering, which burns
+                    # the single turn and yields error_max_turns. A small turn
+                    # budget tolerates a stray disallowed-tool attempt while the
+                    # empty cwd, tool blocklist and sanitized env keep it inert.
                     argv = [
                         str(self.executable),
                         "-p",
                         "--output-format",
                         "json",
                         "--permission-mode",
-                        "plan",
+                        "default",
                         "--max-turns",
-                        "1",
+                        "4",
                         "--disallowedTools",
                         "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit",
                     ]
@@ -528,9 +548,13 @@ class ClaudeCodeAuthProvider(LLMProvider):
                         argv += ["--model", self.model]
                     if self.reasoning_effort:
                         argv += ["--effort", self.reasoning_effort]
-                    argv.append(prompt)
+                    # Prompt goes on stdin, not as a trailing arg: --disallowedTools
+                    # greedily consumes the following positional token, so an
+                    # arg-passed prompt gets word-split into bogus "deny rules"
+                    # whenever no --model/--effort flag separates them.
                     stdout, _ = await _run_process(
                         argv,
+                        stdin=prompt,
                         cwd=Path(directory),
                         timeout=self.timeout,
                     )

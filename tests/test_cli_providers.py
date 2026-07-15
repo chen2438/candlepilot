@@ -330,6 +330,30 @@ def test_claude_provider_passes_model_and_effort(tmp_path: Path) -> None:
     assert "--effort xhigh" in args
 
 
+def test_claude_provider_sends_prompt_on_stdin_with_schema(tmp_path: Path) -> None:
+    # The prompt must arrive on stdin, never as a trailing arg: --disallowedTools
+    # greedily eats the next positional token and would word-split the prompt into
+    # bogus deny rules. Plan mode is avoided (it triggers ExitPlanMode/prose), and
+    # the schema is embedded so Claude uses the exact TradeIntent field names.
+    envelope = json.dumps({"result": json.dumps(_minimal_intent()), "num_turns": 1})
+    body = (
+        'echo "$@" > "$(dirname "$0")/args.txt"\n'
+        'cat > "$(dirname "$0")/stdin.txt"\n'
+        + f"printf '%s\\n' '{envelope}'\n"
+    )
+    executable = _write_fake_cli(tmp_path / "claude", body)
+    asyncio.run(
+        ClaudeCodeAuthProvider(executable=executable).generate_trade_intent(_market(), _portfolio())
+    )
+    args = (tmp_path / "args.txt").read_text()
+    stdin = (tmp_path / "stdin.txt").read_text()
+    assert "--permission-mode default" in args
+    assert "plan" not in args
+    assert '"portfolio"' not in args  # prompt is not passed as an argument
+    assert '"portfolio"' in stdin  # ...it is on stdin
+    assert '"additionalProperties":false' in stdin  # schema is embedded for Claude
+
+
 def test_registry_from_settings_applies_model_and_effort() -> None:
     from candlepilot.config import Settings
     from candlepilot.providers.registry import ProviderRegistry

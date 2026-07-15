@@ -2,7 +2,7 @@
 
 > 本文件是 CandlePilot 的**唯一权威功能文档**，记录系统当前的全部能力、接口与边界。
 > `STATUS.md` 与 `PLAN.md` 已弃用，后续变更只同步更新本文件。
-> 最后更新：2026-07-15（Provider 配置连通性测试）
+> 最后更新：2026-07-15（修复 Claude Provider 调用）
 
 ---
 
@@ -51,8 +51,11 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
   `PATH` 和 `~/.local/bin` 中的独立 `codex` CLI。用 `codex exec --json --output-schema`
   复用 ChatGPT/Codex 登录态。
 - **Claude Code Auth**：依次检测 `PATH` 与 `~/.local/bin` 中的独立 `claude` CLI，
-  复用 Claude.ai Pro/Max 登录态
-  （`claude -p --output-format json --permission-mode plan --max-turns 1`）。
+  复用 Claude.ai Pro/Max 登录态（`claude -p --output-format json --permission-mode default
+  --max-turns 4 --disallowedTools …`，Prompt 走 stdin）。**不使用 plan 模式**（plan 模式会让
+  模型调用 `ExitPlanMode` 或改为解释计划流程而非直接作答，耗尽单轮导致 `error_max_turns`）；
+  Prompt 内联完整 `TradeIntent` JSON Schema（Claude 无 `--output-schema`，否则会臆造字段名）；
+  Prompt 经 stdin 传入而非命令行参数（`--disallowedTools` 会贪婪吞掉后随的位置参数）。
 - **隔离与安全**：LLM 子进程运行在独立空临时目录，环境变量白名单
   （含 `USER`/`LOGNAME` 以支持 macOS 钥匙串读取 Claude 登录态），移除所有币安/API Key
   变量；禁用工具、MCP、网络；45 秒硬超时、单 Provider 并发 1、统一取消。
