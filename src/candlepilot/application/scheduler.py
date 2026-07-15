@@ -133,18 +133,24 @@ class TradingScheduler:
         if not self.engine.candidates:
             await self.engine.refresh_universe()
         contracts = await self.market.exchange_info()
+        portfolio = await self._portfolio()
+        symbols = [
+            candidate.symbol
+            for candidate in self.engine.candidates[: self.candidates_per_cycle]
+        ]
+        symbols.extend(portfolio.symbol_sides)
         outcomes = []
-        for candidate in self.engine.candidates[: self.candidates_per_cycle]:
-            contract = contracts.get(candidate.symbol)
+        for symbol in dict.fromkeys(symbols):
+            contract = contracts.get(symbol)
             if contract is None:
                 continue
-            lock = self._symbol_locks.setdefault(candidate.symbol, asyncio.Lock())
+            lock = self._symbol_locks.setdefault(symbol, asyncio.Lock())
             async with lock:
-                snapshot = await self.market.market_snapshot(candidate.symbol, cadence)
+                snapshot = await self.market.market_snapshot(symbol, cadence)
                 if self.engine.mode in {TradingMode.PAPER, TradingMode.BACKTEST}:
                     protective_reports = await self.engine.paper_executor.mark_to_market(snapshot)
                     for report in protective_reports:
-                        await self.engine.audit.record_execution(candidate.symbol, report)
+                        await self.engine.audit.record_execution(symbol, report)
                 portfolio = await self._portfolio()
                 outcomes.append(
                     await self.engine.evaluate(snapshot, portfolio, contract.rules)

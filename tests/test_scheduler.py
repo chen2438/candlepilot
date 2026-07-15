@@ -236,6 +236,55 @@ def test_scheduler_limits_cycle_to_candidates_per_cycle(tmp_path: Path) -> None:
     assert len(outcomes) == 2
 
 
+def test_scheduler_always_analyzes_open_positions_outside_candidate_limit(
+    tmp_path: Path,
+) -> None:
+    from candlepilot.domain.models import OrderPlan, OrderType
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'held-symbol.db'}")
+        await database.initialize()
+
+        class HeldSymbolMarket(SchedulerMarket):
+            async def exchange_info(self):
+                rules = SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"))
+                return {
+                    symbol: ContractInfo(
+                        symbol,
+                        datetime(2020, 1, 1, tzinfo=UTC),
+                        rules,
+                    )
+                    for symbol in ("BTCUSDT", "ETHUSDT")
+                }
+
+        market = HeldSymbolMarket()
+        engine = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([HoldProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        await engine.paper_executor.execute(
+            OrderPlan(
+                client_order_id="held-eth",
+                symbol="ETHUSDT",
+                side="BUY",
+                quantity=Decimal("1"),
+                order_type=OrderType.MARKET,
+                stop_price=Decimal("90"),
+            ),
+            await market.market_snapshot("ETHUSDT", "5m"),
+        )
+        engine.select_provider("hold")
+        await engine.start()
+        scheduler = TradingScheduler(engine, market, candidates_per_cycle=1)  # type: ignore[arg-type]
+        outcomes = await scheduler.run_cycle("5m")
+        await database.close()
+        return [outcome.intent.symbol for outcome in outcomes]
+
+    assert asyncio.run(scenario()) == ["BTCUSDT", "ETHUSDT"]
+
+
 def test_concurrent_cadences_cannot_open_opposing_positions(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'conflict.db'}")
