@@ -3,11 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import shutil
 import signal
 import tempfile
 import time
+import tomllib
 from collections.abc import Sequence
 from datetime import timedelta
 from pathlib import Path
@@ -151,25 +151,62 @@ def _decision_prompt(snapshot: MarketSnapshot, portfolio: PortfolioState) -> str
     )
 
 
-_CODEX_MODEL_RE = re.compile(r"^model:\s*(\S+)", re.MULTILINE)
-_CODEX_TOKENS_RE = re.compile(r"tokens used[:\s]+([\d,]+)")
+CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
 
 
-def parse_codex_stderr(stderr: str) -> tuple[str | None, dict[str, Any]]:
-    """Best-effort extraction of the model and token count from codex stderr.
+def find_codex_model(config_path: Path | None = None) -> str | None:
+    """Read the configured Codex model for cost attribution.
 
-    Codex prints ``model: <name>`` and a trailing ``tokens used\\n<count>`` to
-    stderr in a human-readable form. Parsing is defensive: if the format is
-    absent or changes, the model stays ``None`` and usage stays empty rather
-    than raising, so a decision is never lost over telemetry.
+    Codex's JSONL event stream does not name the model, so fall back to the
+    user's ``~/.codex/config.toml``. Missing or malformed config yields ``None``
+    (cost then stays unknown) rather than raising.
     """
 
-    model_match = _CODEX_MODEL_RE.search(stderr)
-    tokens_match = _CODEX_TOKENS_RE.search(stderr)
+    path = config_path or CODEX_CONFIG_PATH
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    model = data.get("model")
+    return model if isinstance(model, str) and model else None
+
+
+def parse_codex_events(stdout: str) -> tuple[str | None, dict[str, Any]]:
+    """Extract the final agent message and token usage from codex ``--json`` output.
+
+    Codex emits JSONL events: the schema-conforming answer arrives as the text of
+    an ``agent_message`` ``item.completed`` event, and per-turn token counts as a
+    ``turn.completed`` ``usage`` object (where cached reads are a subset of input,
+    per the OpenAI convention). Unparseable lines are skipped defensively.
+    """
+
+    result_text: str | None = None
     usage: dict[str, Any] = {}
-    if tokens_match:
-        usage["total_tokens"] = int(tokens_match.group(1).replace(",", ""))
-    return (model_match.group(1) if model_match else None), usage
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        event_type = event.get("type")
+        if event_type == "item.completed":
+            item = event.get("item") or {}
+            if item.get("type") == "agent_message" and isinstance(item.get("text"), str):
+                result_text = item["text"]
+        elif event_type == "turn.completed":
+            raw = event.get("usage") or {}
+            input_tokens = int(raw.get("input_tokens") or 0)
+            cached_input_tokens = int(raw.get("cached_input_tokens") or 0)
+            output_tokens = int(raw.get("output_tokens") or 0)
+            usage = {
+                "input_tokens": input_tokens,
+                "cached_input_tokens": cached_input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+            }
+    return result_text, usage
 
 
 def parse_claude_usage(envelope: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
@@ -243,9 +280,16 @@ def trade_intent_output_schema() -> dict[str, Any]:
 class CodexAuthProvider(LLMProvider):
     name = "codex-auth"
 
-    def __init__(self, *, executable: Path | None = None, timeout: float = 45) -> None:
+    def __init__(
+        self,
+        *,
+        executable: Path | None = None,
+        timeout: float = 45,
+        config_path: Path | None = None,
+    ) -> None:
         self.executable = executable or find_codex_executable()
         self.timeout = timeout
+        self.config_path = config_path
         self._semaphore = asyncio.Semaphore(1)
         self._active_task: asyncio.Task[Any] | None = None
         self._provider_version: str | None = None
@@ -312,7 +356,7 @@ class CodexAuthProvider(LLMProvider):
                         json.dumps(trade_intent_output_schema(), separators=(",", ":")),
                         encoding="utf-8",
                     )
-                    stdout, stderr = await _run_process(
+                    stdout, _ = await _run_process(
                         [
                             str(self.executable),
                             "exec",
@@ -322,6 +366,7 @@ class CodexAuthProvider(LLMProvider):
                             "--sandbox",
                             "read-only",
                             "--skip-git-repo-check",
+                            "--json",
                             "--output-schema",
                             str(schema_path),
                             "-",
@@ -332,17 +377,19 @@ class CodexAuthProvider(LLMProvider):
                     )
         finally:
             self._active_task = None
+        result_text, usage = parse_codex_events(stdout)
+        if result_text is None:
+            raise ProviderError("Codex did not return an agent message")
         try:
-            intent = _parse_intent(stdout)
+            intent = _parse_intent(result_text)
         except (json.JSONDecodeError, ValidationError) as exc:
             raise ProviderError(f"Codex returned an invalid TradeIntent: {exc}") from exc
-        model, usage = parse_codex_stderr(stderr)
         return ProviderResult(
             intent=intent,
             provider=self.name,
-            model=model,
+            model=find_codex_model(self.config_path),
             duration=timedelta(seconds=time.monotonic() - started),
-            raw_output=stdout,
+            raw_output=result_text,
             usage=usage,
             prompt_version=DECISION_PROMPT_VERSION,
             data_version=content_fingerprint(

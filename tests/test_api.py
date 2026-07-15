@@ -139,6 +139,7 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         assert client.get("/api/testnet/account-status").json()["enabled"] is False
         assert client.get("/api/metrics/providers").json() == {
             "window_hours": 24,
+            "pricing_source": None,
             "providers": [],
         }
         assert client.get("/api/metrics/providers?hours=0").status_code == 422
@@ -337,6 +338,59 @@ def test_alert_transitions_are_logged_and_persisted(tmp_path: Path) -> None:
         assert [t["transition"] for t in resolved["transitions"]] == ["resolved"]
         assert client.get("/api/alerts/history").json()["events"][0]["transition"] == "resolved"
         assert client.get("/api/alerts/history?limit=0").status_code == 422
+    asyncio.run(database.close())
+
+
+def test_provider_metrics_prices_codex_via_injected_catalog(tmp_path: Path) -> None:
+    from candlepilot.providers.base import ProviderResult
+    from candlepilot.providers.pricing import parse_models_dev
+
+    catalog = parse_models_dev(
+        {"openai": {"models": {"gpt-5.6-sol": {"cost": {"input": 5, "output": 30, "cache_read": 0.5}}}}}
+    )
+
+    async def loader(_cache_dir):
+        return catalog
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'pricing-api.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.PAPER,
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(
+        database=database,
+        market=market,  # type: ignore[arg-type]
+        engine=engine,
+        pricing_loader=loader,
+    )
+    intent = TradeIntent.hold("BTCUSDT", "5m", "seed")
+    with TestClient(app) as client:
+        asyncio.run(
+            engine.audit.record_inference(
+                ProviderResult(
+                    intent=intent,
+                    provider="codex-auth",
+                    model="gpt-5.6-sol",
+                    duration=timedelta(milliseconds=100),
+                    raw_output=intent.model_dump_json(),
+                    usage={
+                        "input_tokens": 1000,
+                        "cached_input_tokens": 400,
+                        "output_tokens": 200,
+                        "total_tokens": 1200,
+                    },
+                )
+            )
+        )
+        body = client.get("/api/metrics/providers").json()
+        assert body["pricing_source"] == "models.dev"
+        codex = body["providers"][0]
+        assert codex["provider"] == "codex-auth"
+        expected = 600 * 5e-6 + 400 * 5e-7 + 200 * 3e-5
+        assert abs(float(codex["cost_usd_total"]) - expected) < 1e-9
     asyncio.run(database.close())
 
 

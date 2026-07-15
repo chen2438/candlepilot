@@ -10,8 +10,9 @@ from candlepilot.providers.cli import (
     ClaudeCodeAuthProvider,
     CodexAuthProvider,
     find_codex_executable,
+    find_codex_model,
     parse_claude_usage,
-    parse_codex_stderr,
+    parse_codex_events,
     sanitized_subprocess_env,
     trade_intent_output_schema,
 )
@@ -63,23 +64,52 @@ def test_sensitive_environment_is_removed() -> None:
     assert "UNRELATED_SECRET" not in clean
 
 
-def test_parse_codex_stderr_extracts_model_and_tokens() -> None:
-    stderr = (
-        "workdir: /tmp\n"
-        "model: gpt-5.6-sol\n"
-        "provider: openai\n"
-        "codex\nok\n"
-        "tokens used\n6,903\n"
+def test_parse_codex_events_extracts_message_and_usage() -> None:
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "thread.started", "thread_id": "t"}),
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": json.dumps({"a": 1})},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "turn.completed",
+                    "usage": {
+                        "input_tokens": 11917,
+                        "cached_input_tokens": 8960,
+                        "output_tokens": 5,
+                    },
+                }
+            ),
+        ]
     )
-    model, usage = parse_codex_stderr(stderr)
-    assert model == "gpt-5.6-sol"
-    assert usage == {"total_tokens": 6903}
+    text, usage = parse_codex_events(stdout)
+    assert text == json.dumps({"a": 1})
+    assert usage == {
+        "input_tokens": 11917,
+        "cached_input_tokens": 8960,
+        "output_tokens": 5,
+        "total_tokens": 11922,
+    }
 
 
-def test_parse_codex_stderr_is_defensive_when_absent() -> None:
-    model, usage = parse_codex_stderr("no telemetry here")
-    assert model is None
+def test_parse_codex_events_is_defensive_on_garbage() -> None:
+    text, usage = parse_codex_events("not json\n\n")
+    assert text is None
     assert usage == {}
+
+
+def test_find_codex_model_reads_config(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text('model = "gpt-5.6-sol"\nmodel_reasoning_effort = "medium"\n')
+    assert find_codex_model(config) == "gpt-5.6-sol"
+
+
+def test_find_codex_model_missing_config_returns_none(tmp_path: Path) -> None:
+    assert find_codex_model(tmp_path / "absent.toml") is None
 
 
 def test_parse_claude_usage_sums_tokens_and_reads_cost_and_model() -> None:
@@ -146,14 +176,43 @@ def test_codex_provider_parses_schema_output(tmp_path: Path) -> None:
         "ttl_seconds": 60,
         "rationale": "trend confirmation",
     }
-    executable = _write_fake_cli(
-        tmp_path / "codex", f"printf '%s\\n' '{json.dumps(intent)}'\n"
+    jsonl = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": json.dumps(intent)},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "turn.completed",
+                    "usage": {
+                        "input_tokens": 1200,
+                        "cached_input_tokens": 800,
+                        "output_tokens": 50,
+                        "reasoning_output_tokens": 10,
+                    },
+                }
+            ),
+        ]
     )
+    executable = _write_fake_cli(
+        tmp_path / "codex", "cat <<'CODEXEOF'\n" + jsonl + "\nCODEXEOF\n"
+    )
+    config = tmp_path / "config.toml"
+    config.write_text('model = "gpt-5.6-sol"\n')
     result = asyncio.run(
-        CodexAuthProvider(executable=executable).generate_trade_intent(_market(), _portfolio())
+        CodexAuthProvider(executable=executable, config_path=config).generate_trade_intent(
+            _market(), _portfolio()
+        )
     )
     assert result.intent.action == TradeAction.OPEN_LONG
     assert result.intent.risk_fraction == Decimal("0.01")
+    assert result.model == "gpt-5.6-sol"
+    assert result.usage["input_tokens"] == 1200
+    assert result.usage["cached_input_tokens"] == 800
+    assert result.usage["total_tokens"] == 1250
     assert result.prompt_version == "trade-intent-v1"
     assert result.data_version is not None
     assert result.data_version.startswith("market-snapshot-v1:sha256:")

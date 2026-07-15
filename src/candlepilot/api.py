@@ -4,10 +4,10 @@ import asyncio
 import logging
 import time
 from uuid import uuid4
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -32,6 +32,8 @@ from candlepilot.market.binance import BinancePublicClient
 from candlepilot.market.cache import HistoricalMarketCache
 from candlepilot.market.history import build_backtest_candles
 from candlepilot.observability import AlertNotifier, OperationalMetrics, evaluate_alerts
+from candlepilot.providers.pricing import ModelPricingCatalog
+from candlepilot.providers.pricing import load_catalog as load_pricing_catalog
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.provenance import BACKTEST_DATA_SCHEMA_VERSION, content_fingerprint
 from candlepilot.risk.engine import SymbolRules
@@ -215,8 +217,10 @@ def create_app(
     database: Database | None = None,
     market: BinancePublicClient | None = None,
     engine: TradingEngine | None = None,
+    pricing_loader: Callable[[Path], Awaitable[ModelPricingCatalog | None]] | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
+    pricing_loader = pricing_loader or load_pricing_catalog
     owns_database = database is None
     owns_market = market is None
     database = database or Database(settings.database_url)
@@ -275,12 +279,30 @@ def create_app(
     alert_notifier = AlertNotifier()
     alert_lock = asyncio.Lock()
     request_logger = logging.getLogger("candlepilot.http")
+    pricing_cache_dir = settings.data_dir / "pricing"
+    pricing_lock = asyncio.Lock()
+    pricing_memo: dict[str, Any] = {"catalog": None, "expires_at": None}
+
+    async def pricing_catalog() -> ModelPricingCatalog | None:
+        now = datetime.now(UTC)
+        async with pricing_lock:
+            expires_at = pricing_memo["expires_at"]
+            if expires_at is not None and now < expires_at:
+                return pricing_memo["catalog"]
+            catalog = await pricing_loader(pricing_cache_dir)
+            pricing_memo["catalog"] = catalog
+            pricing_memo["expires_at"] = now + timedelta(hours=1)
+            return catalog
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await database.initialize()
         await engine.restore_runtime_state()
+        # Warm the models.dev pricing cache without blocking startup.
+        warm_pricing = asyncio.create_task(pricing_catalog())
         yield
+        warm_pricing.cancel()
+        await asyncio.gather(warm_pricing, return_exceptions=True)
         await scheduler.stop()
         if owns_market:
             await market.close()
@@ -422,9 +444,11 @@ def create_app(
     async def get_provider_metrics(hours: int = 24) -> dict[str, Any]:
         if not 1 <= hours <= 720:
             raise HTTPException(status_code=422, detail="hours must be between 1 and 720")
+        catalog = await pricing_catalog()
         return {
             "window_hours": hours,
-            "providers": await engine.audit.provider_metrics(hours),
+            "pricing_source": "models.dev" if catalog is not None else None,
+            "providers": await engine.audit.provider_metrics(hours, catalog=catalog),
         }
 
     @app.get("/api/metrics/runtime")

@@ -164,6 +164,44 @@ def test_provider_metrics_aggregate_tokens_and_equivalent_cost(tmp_path: Path) -
     assert codex["models"] == {"gpt-5.6-sol": 1}
 
 
+def test_provider_metrics_price_codex_via_catalog(tmp_path: Path) -> None:
+    from candlepilot.providers.pricing import parse_models_dev
+
+    catalog = parse_models_dev(
+        {"openai": {"models": {"gpt-5.6-sol": {"cost": {"input": 5, "output": 30, "cache_read": 0.5}}}}}
+    )
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'codexcost.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        intent = TradeIntent.hold("BTCUSDT", "5m", "test")
+        await repository.record_inference(
+            ProviderResult(
+                intent=intent,
+                provider="codex-auth",
+                model="gpt-5.6-sol",
+                duration=timedelta(milliseconds=100),
+                raw_output=intent.model_dump_json(),
+                usage={
+                    "input_tokens": 1000,
+                    "cached_input_tokens": 400,
+                    "output_tokens": 200,
+                    "total_tokens": 1200,
+                },
+            )
+        )
+        metrics = await repository.provider_metrics(24, catalog=catalog)
+        await database.close()
+        return metrics[0]
+
+    codex = asyncio.run(scenario())
+    # 600 non-cached input * 5e-6 + 400 cached * 5e-7 + 200 output * 3e-5
+    expected = 600 * 5e-6 + 400 * 5e-7 + 200 * 3e-5
+    assert abs(codex["cost_usd_total"] - expected) < 1e-12
+    assert codex["tokens_total"] == 1200
+
+
 def test_database_migrations_are_versioned_and_idempotent(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'migrations.db'}")

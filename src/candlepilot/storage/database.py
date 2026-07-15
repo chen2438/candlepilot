@@ -19,6 +19,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from candlepilot.broker.user_stream import UserStreamEvent
 from candlepilot.domain.models import ExecutionReport, RiskDecision, TradeIntent
 from candlepilot.providers.base import ProviderResult
+from candlepilot.providers.pricing import PROVIDER_IDS, ModelPricingCatalog
 
 
 class Base(DeclarativeBase):
@@ -469,7 +470,9 @@ class AuditRepository:
             })
         return results
 
-    async def provider_metrics(self, hours: int = 24) -> list[dict[str, Any]]:
+    async def provider_metrics(
+        self, hours: int = 24, *, catalog: ModelPricingCatalog | None = None
+    ) -> list[dict[str, Any]]:
         cutoff = datetime.now(UTC) - timedelta(hours=hours)
         async with self.sessions() as session:
             rows = (
@@ -491,14 +494,24 @@ class AuditRepository:
             tokens_total = 0
             cost_total = 0.0
             cost_present = False
+            provider_id = PROVIDER_IDS.get(provider)
             for row in provider_rows:
                 usage = json.loads(row.usage_json)
                 if "error" in usage:
                     error_count += 1
                 tokens_total += int(usage.get("total_tokens") or 0)
-                if usage.get("cost_usd") is not None:
+                cost = usage.get("cost_usd")
+                if cost is None and catalog is not None and provider_id is not None:
+                    cost = catalog.cost_usd(
+                        provider_id,
+                        row.model,
+                        input_tokens=int(usage.get("input_tokens") or 0),
+                        cached_input_tokens=int(usage.get("cached_input_tokens") or 0),
+                        output_tokens=int(usage.get("output_tokens") or 0),
+                    )
+                if cost is not None:
                     cost_present = True
-                    cost_total += float(usage["cost_usd"])
+                    cost_total += float(cost)
             model_counts = Counter(row.model or "unknown" for row in provider_rows)
             call_count = len(provider_rows)
             p95_index = max(0, math.ceil(call_count * 0.95) - 1)

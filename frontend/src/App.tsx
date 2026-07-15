@@ -568,7 +568,7 @@ function OperationsPanel({
           </div>
           {providerMetrics.length > 0 && (
             <small className="usage-note">
-              等效成本为按 API 标准计价折算的估算；订阅计划（Codex/Claude Pro）不按次计费，Codex 不提供折算价故显示「—」。
+              等效成本为按 API 标准计价的折算估算（Claude 用 CLI 自带成本，Codex 用 models.dev 逐 token 折算）；订阅计划实际不按次计费。无法定价的模型显示「—」。
             </small>
           )}
         </section>
