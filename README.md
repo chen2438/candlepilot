@@ -13,9 +13,10 @@ USDⓈ-M USDT 永续合约。首版只支持历史回测、生产行情模拟成
 - 动态扫描币安全市场 USDT 永续，按成交额、价差、波动和趋势选出候选池。
 - 同时支持 1m、5m、15m 决策周期，统一生成 EMA、RSI、ATR、收益率、成交量以及基差、
   持仓量、盘口与近期成交失衡等微观结构特征。
-- Codex App Auth：优先检测 `/Applications/Codex.app/Contents/Resources/codex`，
-  不可用时回退到 `PATH` 中的 `codex`。
-- Claude Code Auth：检测独立 `claude` CLI；不读取或复制 OAuth 凭证。
+- Codex App Auth：优先检测 ChatGPT App 与旧版 Codex App 的内置 `codex`，
+  不可用时回退到 `PATH` 或 `~/.local/bin` 中的独立 CLI。
+- Claude Code Auth：检测 `PATH` 或 `~/.local/bin` 中的独立 `claude` CLI；不读取或复制
+  OAuth 凭证。
 - LLM 输出严格 `TradeIntent`，随后经过不可绕过的仓位、止损、杠杆和账户级风控。
 - Provider 显式主备切换、统一取消、超时和单并发限制；币安密钥永不进入 LLM 子进程。
 
@@ -60,7 +61,10 @@ pip install -e . --no-deps
 Codex App 已安装时通常不需要单独安装 Codex CLI。运行以下命令确认：
 
 ```bash
-/Applications/Codex.app/Contents/Resources/codex --version 2>/dev/null || codex --version
+/Applications/ChatGPT.app/Contents/Resources/codex --version 2>/dev/null \
+  || /Applications/Codex.app/Contents/Resources/codex --version 2>/dev/null \
+  || ~/.local/bin/codex --version 2>/dev/null \
+  || codex --version
 ```
 
 Claude Desktop App 不提供本项目所需的无人值守结构化接口；若要使用 Claude Code

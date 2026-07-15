@@ -24,7 +24,11 @@ from candlepilot.provenance import (
 )
 
 
-CODEX_APP_BINARY = Path("/Applications/Codex.app/Contents/Resources/codex")
+CODEX_APP_BINARIES = (
+    Path("/Applications/ChatGPT.app/Contents/Resources/codex"),
+    Path("/Applications/Codex.app/Contents/Resources/codex"),
+)
+USER_CLI_DIRECTORY = Path.home() / ".local" / "bin"
 MAX_OUTPUT_BYTES = 1_000_000
 SENSITIVE_ENV_PREFIXES = (
     "BINANCE_",
@@ -81,15 +85,26 @@ def sanitized_subprocess_env(source: dict[str, str] | None = None) -> dict[str, 
 
 
 def find_codex_executable() -> Path | None:
-    if CODEX_APP_BINARY.is_file() and os.access(CODEX_APP_BINARY, os.X_OK):
-        return CODEX_APP_BINARY
+    for app_binary in CODEX_APP_BINARIES:
+        if app_binary.is_file() and os.access(app_binary, os.X_OK):
+            return app_binary
     candidate = shutil.which("codex")
-    return Path(candidate).resolve() if candidate else None
+    if candidate:
+        return Path(candidate).resolve()
+    user_binary = USER_CLI_DIRECTORY / "codex"
+    return (
+        user_binary.resolve()
+        if user_binary.is_file() and os.access(user_binary, os.X_OK)
+        else None
+    )
 
 
 def find_claude_executable() -> Path | None:
     candidate = shutil.which("claude")
-    return Path(candidate).resolve() if candidate else None
+    if candidate:
+        return Path(candidate).resolve()
+    user_binary = USER_CLI_DIRECTORY / "claude"
+    return user_binary.resolve() if user_binary.is_file() and os.access(user_binary, os.X_OK) else None
 
 
 async def _run_process(
@@ -317,7 +332,7 @@ class CodexAuthProvider(LLMProvider):
                 provider=self.name,
                 available=False,
                 authenticated=False,
-                detail="Codex App binary and codex CLI were not found",
+                detail="ChatGPT/Codex App binary and codex CLI were not found",
             )
         try:
             with tempfile.TemporaryDirectory(prefix="candlepilot-health-") as directory:
@@ -446,7 +461,7 @@ class ClaudeCodeAuthProvider(LLMProvider):
                 provider=self.name,
                 available=False,
                 authenticated=False,
-                detail="The independent claude CLI was not found in PATH",
+                detail="The independent claude CLI was not found in PATH or ~/.local/bin",
             )
         try:
             with tempfile.TemporaryDirectory(prefix="candlepilot-health-") as directory:

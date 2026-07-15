@@ -10,15 +10,18 @@ from candlepilot.providers.cli import (
     ClaudeCodeAuthProvider,
     CodexAuthProvider,
     find_codex_executable,
+    find_claude_executable,
     find_codex_model,
     parse_claude_usage,
     parse_codex_events,
     sanitized_subprocess_env,
     trade_intent_output_schema,
 )
+from candlepilot.providers import cli as cli_module
 
 
 def _write_fake_cli(path: Path, body: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("#!/bin/sh\n" + body, encoding="utf-8")
     path.chmod(0o755)
     return path
@@ -154,11 +157,34 @@ def test_codex_output_schema_requires_every_property() -> None:
     assert '"pattern"' not in json.dumps(schema)
 
 
+def test_codex_detection_prefers_current_app_binary(monkeypatch, tmp_path: Path) -> None:
+    app_binary = _write_fake_cli(tmp_path / "app" / "codex", "exit 0\n")
+    path_binary = _write_fake_cli(tmp_path / "path" / "codex", "exit 0\n")
+    monkeypatch.setattr(cli_module, "CODEX_APP_BINARIES", (app_binary,))
+    monkeypatch.setenv("PATH", str(path_binary.parent))
+    assert find_codex_executable() == app_binary
+
+
 def test_codex_detection_falls_back_to_path(monkeypatch, tmp_path: Path) -> None:
     executable = _write_fake_cli(tmp_path / "codex", "exit 0\n")
+    monkeypatch.setattr(cli_module, "CODEX_APP_BINARIES", ())
+    monkeypatch.setattr(cli_module, "USER_CLI_DIRECTORY", tmp_path / "user-bin")
     monkeypatch.setenv("PATH", str(tmp_path))
     detected = find_codex_executable()
     assert detected == executable.resolve()
+
+
+def test_provider_detection_falls_back_to_user_cli_directory(
+    monkeypatch, tmp_path: Path
+) -> None:
+    user_bin = tmp_path / ".local" / "bin"
+    codex = _write_fake_cli(user_bin / "codex", "exit 0\n")
+    claude = _write_fake_cli(user_bin / "claude", "exit 0\n")
+    monkeypatch.setattr(cli_module, "CODEX_APP_BINARIES", ())
+    monkeypatch.setattr(cli_module, "USER_CLI_DIRECTORY", user_bin)
+    monkeypatch.setenv("PATH", "")
+    assert find_codex_executable() == codex.resolve()
+    assert find_claude_executable() == claude.resolve()
 
 
 def test_codex_provider_parses_schema_output(tmp_path: Path) -> None:

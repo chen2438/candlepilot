@@ -46,10 +46,12 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 
 ### 4.1 LLM 接入（订阅认证，无 API Key）
 
-- **Codex Auth**：优先检测 Codex App 内置二进制（`/Applications/Codex.app/...`），
-  不可用时回退到 `PATH` 中的独立 `codex` CLI。用 `codex exec --json --output-schema`
+- **Codex Auth**：优先检测当前 ChatGPT App 与旧版 Codex App 的内置二进制
+  （`/Applications/ChatGPT.app/...`、`/Applications/Codex.app/...`），不可用时依次回退到
+  `PATH` 和 `~/.local/bin` 中的独立 `codex` CLI。用 `codex exec --json --output-schema`
   复用 ChatGPT/Codex 登录态。
-- **Claude Code Auth**：检测独立 `claude` CLI，复用 Claude.ai Pro/Max 登录态
+- **Claude Code Auth**：依次检测 `PATH` 与 `~/.local/bin` 中的独立 `claude` CLI，
+  复用 Claude.ai Pro/Max 登录态
   （`claude -p --output-format json --permission-mode plan --max-turns 1`）。
 - **隔离与安全**：LLM 子进程运行在独立空临时目录，环境变量白名单
   （含 `USER`/`LOGNAME` 以支持 macOS 钥匙串读取 Claude 登录态），移除所有币安/API Key
