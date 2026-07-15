@@ -161,7 +161,8 @@ def _decision_prompt(snapshot: MarketSnapshot, portfolio: PortfolioState) -> str
         "Do not use tools, files, shell commands, web search, or external context. "
         "Analyze only the JSON supplied below. Return exactly one object matching the "
         "provided TradeIntent schema. Use HOLD when evidence is weak or data is unsuitable. "
-        "Opening and ADD decisions require a stop loss. Never exceed leverage 10 or risk 0.02.\n"
+        "Opening and ADD decisions require both a stop loss and a take profit. "
+        "Never exceed leverage 10 or risk 0.02.\n"
         + json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     )
 

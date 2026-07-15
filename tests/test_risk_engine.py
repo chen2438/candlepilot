@@ -38,7 +38,7 @@ def _intent(action: TradeAction = TradeAction.OPEN_LONG) -> TradeIntent:
         leverage=5,
         risk_fraction="0.02",
         stop_loss="98" if action != TradeAction.OPEN_SHORT else "102",
-        take_profit="104",
+        take_profit="104" if action != TradeAction.OPEN_SHORT else "96",
         rationale="test signal",
     )
 
@@ -62,6 +62,28 @@ def test_sizes_position_from_stop_distance_and_rounds_down() -> None:
     assert result.order.quantity == Decimal("95.238")
     assert result.order.stop_price == Decimal("98")
     assert result.order.take_profit_price == Decimal("104")
+
+
+def test_testnet_policy_requires_take_profit_on_open() -> None:
+    intent = _intent().model_copy(update={"take_profit": None})
+    policy = AggressiveRiskPolicy(require_take_profit=True)
+    result = policy.evaluate(intent, _snapshot(), _portfolio(), RULES)
+    assert not result.decision.accepted
+    assert "take profit" in result.decision.reason
+    # The same intent is accepted when a take profit is not mandated.
+    assert AggressiveRiskPolicy().evaluate(intent, _snapshot(), _portfolio(), RULES).decision.accepted
+
+
+def test_rejects_take_profit_on_wrong_side_of_entry() -> None:
+    long_bad = _intent().model_copy(update={"take_profit": Decimal("99")})  # below entry
+    long_result = AggressiveRiskPolicy().evaluate(long_bad, _snapshot(), _portfolio(), RULES)
+    assert not long_result.decision.accepted
+    assert "long take profit must be above entry" in long_result.decision.reason
+
+    short_bad = _intent(TradeAction.OPEN_SHORT).model_copy(update={"take_profit": Decimal("101")})
+    short_result = AggressiveRiskPolicy().evaluate(short_bad, _snapshot(), _portfolio(), RULES)
+    assert not short_result.decision.accepted
+    assert "short take profit must be below entry" in short_result.decision.reason
 
 
 def test_rejects_stale_market_data() -> None:

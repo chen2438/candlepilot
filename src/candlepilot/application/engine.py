@@ -57,7 +57,9 @@ class TradingEngine:
         self.audit = audit
         self.market = market
         self.scanner = scanner or MarketScanner()
-        self.risk = risk or AggressiveRiskPolicy()
+        self.risk = risk or AggressiveRiskPolicy(
+            require_take_profit=mode == TradingMode.TESTNET
+        )
         self.paper_executor = paper_executor or PaperExecutor(state_store=audit)
         self.testnet_broker = testnet_broker
         self.selected_provider: str | None = None

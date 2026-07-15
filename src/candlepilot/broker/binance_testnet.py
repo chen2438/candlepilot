@@ -196,32 +196,55 @@ class BinanceTestnetBroker:
             return await self._place_order(order)
         if order.stop_price is None:
             raise ValueError("testnet opening orders require a protective stop")
+        if order.take_profit_price is None:
+            raise ValueError("testnet opening orders require a take profit")
         await self.sync_time()
         await self.configure_symbol(order.symbol, leverage)
         entry = await self._place_order(order)
         if entry.status not in {"NEW", "PARTIALLY_FILLED", "FILLED"}:
             return entry
-        stop_side = "SELL" if order.side == "BUY" else "BUY"
+        exit_side = "SELL" if order.side == "BUY" else "BUY"
         try:
-            await self._signed_request(
-                "POST",
-                "/fapi/v1/order",
-                {
-                    "symbol": order.symbol,
-                    "side": stop_side,
-                    "type": "STOP_MARKET",
-                    "stopPrice": order.stop_price,
-                    "closePosition": True,
-                    "workingType": "MARK_PRICE",
-                    "newClientOrderId": f"{order.client_order_id}-sl",
-                },
+            await self._place_protective(order, exit_side, "STOP_MARKET", order.stop_price, "sl")
+            await self._place_protective(
+                order, exit_side, "TAKE_PROFIT_MARKET", order.take_profit_price, "tp"
             )
         except Exception as exc:
-            await self._emergency_reduce(order, stop_side)
+            await self._emergency_reduce(order, exit_side)
             raise ProtectiveStopError(
-                "entry succeeded but protective stop failed; emergency reduce-only order submitted"
+                "entry succeeded but protective bracket failed; "
+                "emergency reduce-only order submitted"
             ) from exc
         return entry
+
+    async def _place_protective(
+        self,
+        order: OrderPlan,
+        side: str,
+        order_type: str,
+        trigger_price: Decimal,
+        suffix: str,
+    ) -> None:
+        """Place a close-position protective trigger (stop loss or take profit).
+
+        Both legs use ``closePosition`` with mark-price triggering so a filled
+        entry is bracketed on the exchange itself; ``STOP_MARKET`` and
+        ``TAKE_PROFIT_MARKET`` both read ``stopPrice`` as the trigger.
+        """
+
+        await self._signed_request(
+            "POST",
+            "/fapi/v1/order",
+            {
+                "symbol": order.symbol,
+                "side": side,
+                "type": order_type,
+                "stopPrice": trigger_price,
+                "closePosition": True,
+                "workingType": "MARK_PRICE",
+                "newClientOrderId": f"{order.client_order_id}-{suffix}",
+            },
+        )
 
     async def _place_order(self, order: OrderPlan) -> ExecutionReport:
         params: dict[str, Any] = {
@@ -294,7 +317,7 @@ class BinanceTestnetBroker:
         if (
             order.get("X") != "PARTIALLY_FILLED"
             or not client_order_id.startswith("cp-")
-            or client_order_id.endswith(("-sl", "-rescue"))
+            or client_order_id.endswith(("-sl", "-tp", "-rescue"))
             or order.get("R") in {True, "true", "TRUE"}
         ):
             return

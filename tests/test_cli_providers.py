@@ -239,7 +239,7 @@ def test_codex_provider_parses_schema_output(tmp_path: Path) -> None:
     assert result.usage["input_tokens"] == 1200
     assert result.usage["cached_input_tokens"] == 800
     assert result.usage["total_tokens"] == 1250
-    assert result.prompt_version == "trade-intent-v1"
+    assert result.prompt_version == "trade-intent-v2"
     assert result.data_version is not None
     assert result.data_version.startswith("market-snapshot-v1:sha256:")
 

@@ -47,6 +47,7 @@ class AggressiveRiskPolicy:
         daily_loss_fraction: Decimal = Decimal("0.08"),
         slippage_fraction: Decimal = Decimal("0.001"),
         max_snapshot_age_seconds: int = 15,
+        require_take_profit: bool = False,
     ) -> None:
         self.max_leverage = max_leverage
         self.max_risk_fraction = max_risk_fraction
@@ -55,6 +56,7 @@ class AggressiveRiskPolicy:
         self.daily_loss_fraction = daily_loss_fraction
         self.slippage_fraction = slippage_fraction
         self.max_snapshot_age_seconds = max_snapshot_age_seconds
+        self.require_take_profit = require_take_profit
 
     def evaluate(
         self,
@@ -122,6 +124,15 @@ class AggressiveRiskPolicy:
             return self._reject("long stop loss must be below entry")
         if requested_side == "SHORT" and stop <= entry:
             return self._reject("short stop loss must be above entry")
+
+        take_profit = intent.take_profit
+        if self.require_take_profit and take_profit is None:
+            return self._reject("opening intent has no take profit")
+        if take_profit is not None:
+            if requested_side == "LONG" and take_profit <= entry:
+                return self._reject("long take profit must be above entry")
+            if requested_side == "SHORT" and take_profit >= entry:
+                return self._reject("short take profit must be below entry")
 
         per_unit_loss = abs(entry - stop) + (entry * self.slippage_fraction)
         risk_budget = portfolio.equity * min(intent.risk_fraction, self.max_risk_fraction)
