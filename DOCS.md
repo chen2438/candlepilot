@@ -254,9 +254,14 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 .venv/bin/ruff check .
 .venv/bin/pytest -q
 cd frontend && pnpm run build
+python scripts/check_commit_messages.py --commit HEAD
 ```
 
-GitHub Actions CI（`.github/workflows/ci.yml`）在每次 push/PR 上运行相同检查。
+首次克隆后执行 `git config core.hooksPath .githooks`，启用版本化 `commit-msg` hook。该 hook
+会在提交创建前要求 Conventional Commit 标题、空行后的 description，以及位于最后一行且
+可被 GitHub 识别的 Codex 或 Claude Code 共同作者 trailer；包含字面量 `\\n` 的错误消息会被
+拒绝。GitHub Actions CI（`.github/workflows/ci.yml`）会对每次 push/PR 的所有新增提交重复
+执行同一校验，即使本地 hook 被绕过也会失败；其余 CI 检查同样运行上述 Ruff、Pytest 和构建。
 Python 依赖锁定于 `requirements.lock`，前端锁定于 `frontend/pnpm-lock.yaml`。
 
 ## 9. 尚未实施 / 路线图

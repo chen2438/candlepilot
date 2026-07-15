@@ -9,6 +9,9 @@
   3. 实现该变更的 Agent 共同作者 trailer。
 - Codex 提交必须以 `Co-authored-by: Codex <noreply@openai.com>` 结尾。
 - Claude Code 提交必须以其当前适用的 Anthropic 共同作者 trailer 结尾。
+- 本地仓库必须使用 `git config core.hooksPath .githooks` 启用版本化 `commit-msg` hook；提交后、
+  推送前必须执行 `python scripts/check_commit_messages.py --commit HEAD` 再次验证 Git 实际解析的
+  message。不得用字面量 `\\n` 拼接提交正文或 trailer。
 - 禁止只有标题、没有正文的提交。当安全行为、兼容性影响或验证结果对后续维护有实际帮助时，
   必须在 description 中记录。
 - 提交前执行 `DOCS.md` 要求的检查；控制台变更还必须完成浏览器验证。
