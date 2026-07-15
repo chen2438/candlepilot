@@ -124,6 +124,7 @@ export default function App() {
   const [historySelected, setHistorySelected] = useState<Record<string, boolean>>({});
   const [historyConfirm, setHistoryConfirm] = useState(false);
   const [historyResult, setHistoryResult] = useState<string | null>(null);
+  const [candidateDraft, setCandidateDraft] = useState<number | null>(null);
 
   const applyProviderConfig = useCallback(async (name: string, draft: { model: string; effort: string }) => {
     setBusy("provider-config");
@@ -173,6 +174,24 @@ export default function App() {
       setBusy(null);
     }
   }, []);
+
+  // Slider drag updates candidateDraft locally; only the release (pointer/key
+  // up) commits one request, so dragging across values does not spam the API.
+  const commitCandidates = useCallback(() => {
+    setCandidateDraft((draft) => {
+      if (draft !== null && draft !== status.candidates_per_cycle) {
+        changeCandidatesPerCycle(draft, status.max_candidates_per_cycle);
+      }
+      return draft;
+    });
+  }, [status.candidates_per_cycle, status.max_candidates_per_cycle, changeCandidatesPerCycle]);
+
+  // Clear the draft once the server confirms it, avoiding a value flicker.
+  useEffect(() => {
+    if (candidateDraft !== null && candidateDraft === status.candidates_per_cycle) {
+      setCandidateDraft(null);
+    }
+  }, [candidateDraft, status.candidates_per_cycle]);
 
   const refresh = useCallback(async () => {
     const [nextStatus, nextProviders, nextCandidates, nextSignals, nextBacktests] = await Promise.all([
@@ -404,18 +423,22 @@ export default function App() {
                 ))}
               </div>
             </div>
-            <div className="cadence-select" title={status.running ? "运行时锁定" : "每个周期分析候选池前 N 个标的"}>
-              <span>每周期标的数</span>
-              <div className="stepper">
-                <button
-                  disabled={busy !== null || status.running || (status.candidates_per_cycle ?? 5) <= 1}
-                  onClick={() => changeCandidatesPerCycle((status.candidates_per_cycle ?? 5) - 1, status.max_candidates_per_cycle)}
-                >−</button>
-                <span className="stepper-value">{status.candidates_per_cycle ?? 5}</span>
-                <button
-                  disabled={busy !== null || status.running || (status.candidates_per_cycle ?? 5) >= status.max_candidates_per_cycle}
-                  onClick={() => changeCandidatesPerCycle((status.candidates_per_cycle ?? 5) + 1, status.max_candidates_per_cycle)}
-                >+</button>
+            <div className="cadence-select" title={status.running ? "运行时锁定" : "拖动选择每个周期分析候选池前 N 个标的"}>
+              <span>每周期标的数<b>{candidateDraft ?? status.candidates_per_cycle ?? 5}</b></span>
+              <div className="range-row">
+                <input
+                  type="range"
+                  className="range"
+                  min={1}
+                  max={status.max_candidates_per_cycle}
+                  step={1}
+                  value={candidateDraft ?? status.candidates_per_cycle ?? 5}
+                  disabled={busy !== null || status.running}
+                  onChange={(event) => setCandidateDraft(Number(event.target.value))}
+                  onPointerUp={commitCandidates}
+                  onKeyUp={commitCandidates}
+                />
+                <div className="range-scale"><span>1</span><span>{status.max_candidates_per_cycle}</span></div>
               </div>
             </div>
             <button
