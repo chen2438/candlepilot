@@ -82,11 +82,13 @@ export interface DecisionEvent {
 
 export interface AccountPortfolio {
   mode: string;
-  initial_equity: string;
+  source: "paper" | "binance-testnet";
+  initial_equity: string | null;
   cash: string;
   equity: string;
   available_balance: string;
-  daily_pnl: string;
+  daily_pnl: string | null;
+  unrealized_pnl: string;
   open_positions: number;
   margin_used: string;
 }
@@ -103,6 +105,7 @@ export interface AccountPosition {
   margin_used: string;
   stop_loss: string | null;
   take_profit: string | null;
+  protection_source?: "exchange" | "missing" | "unknown";
 }
 
 export interface OrderRecord {

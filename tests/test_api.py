@@ -84,7 +84,11 @@ class LLMReplayMarket(ApiMarket):
 
 
 class ApiTestnetBroker:
+    def __init__(self) -> None:
+        self.account_calls = 0
+
     async def account(self):
+        self.account_calls += 1
         # Mirrors the real /fapi/v3/account futures response, which has no
         # canTrade field; margin readiness is derived from availableBalance.
         return {
@@ -102,6 +106,7 @@ class ApiTestnetBroker:
                     "unrealizedProfit": "25",
                     "leverage": "3",
                     "isolated": True,
+                    "positionInitialMargin": "1000",
                 },
                 {"symbol": "ETHUSDT", "positionAmt": "0"},
             ],
@@ -220,12 +225,13 @@ def test_testnet_account_status_is_sanitized_and_includes_reconciliation(
 ) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'testnet-account-api.db'}")
     market = ApiMarket()
+    broker = ApiTestnetBroker()
     engine = TradingEngine(
         mode=TradingMode.TESTNET,
         providers=ProviderRegistry([ApiProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
-        testnet_broker=ApiTestnetBroker(),  # type: ignore[arg-type]
+        testnet_broker=broker,  # type: ignore[arg-type]
     )
     engine.testnet_reconciliation = ReconciliationReport(
         position_symbols=("BTCUSDT",),
@@ -266,6 +272,46 @@ def test_testnet_account_status_is_sanitized_and_includes_reconciliation(
             "open_order_count": 1,
             "unprotected_symbols": [],
         }
+
+        portfolio = client.get("/api/account/portfolio").json()
+        assert portfolio == {
+            "mode": "binance-testnet",
+            "source": "binance-testnet",
+            "initial_equity": None,
+            "cash": "10000.5",
+            "equity": "10025.5",
+            "available_balance": "9000",
+            "daily_pnl": None,
+            "unrealized_pnl": "25",
+            "open_positions": 1,
+            "margin_used": "1000",
+        }
+        positions = client.get("/api/account/positions").json()
+        assert positions == [
+            {
+                "symbol": "BTCUSDT",
+                "side": "LONG",
+                "quantity": "0.25",
+                "average_price": "60000",
+                "mark_price": "60100",
+                "leverage": 3,
+                "unrealized_pnl": "25",
+                "notional": "15025.00",
+                "margin_used": "1000",
+                "stop_loss": None,
+                "take_profit": None,
+                "protection_source": "exchange",
+            }
+        ]
+        assert broker.account_calls == 1
+
+        engine.testnet_reconciliation = ReconciliationReport(
+            position_symbols=("BTCUSDT",),
+            open_order_count=0,
+            unprotected_symbols=("BTCUSDT",),
+        )
+        assert client.get("/api/account/positions").json()[0]["protection_source"] == "missing"
+        assert broker.account_calls == 1
     asyncio.run(database.close())
 
 
@@ -290,6 +336,7 @@ def test_account_and_risk_query_endpoints(tmp_path: Path) -> None:
         assert client.get("/api/risk-events").json() == []
         portfolio = client.get("/api/account/portfolio").json()
         assert portfolio["mode"] == "paper-production-data"
+        assert portfolio["source"] == "paper"
         assert portfolio["equity"] == "10000"
         assert portfolio["open_positions"] == 0
 

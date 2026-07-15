@@ -351,6 +351,8 @@ def create_app(
     pricing_cache_dir = settings.data_dir / "pricing"
     pricing_lock = asyncio.Lock()
     pricing_memo: dict[str, Any] = {"catalog": None, "expires_at": None}
+    testnet_account_lock = asyncio.Lock()
+    testnet_account_memo: dict[str, Any] = {"account": None, "expires_at": 0.0}
 
     async def pricing_catalog() -> ModelPricingCatalog | None:
         now = datetime.now(UTC)
@@ -362,6 +364,24 @@ def create_app(
             pricing_memo["catalog"] = catalog
             pricing_memo["expires_at"] = now + timedelta(hours=1)
             return catalog
+
+    async def testnet_account() -> dict[str, Any]:
+        broker = engine.testnet_broker
+        if broker is None:
+            raise RuntimeError("testnet broker is not configured")
+        now = time.monotonic()
+        if testnet_account_memo["account"] is not None:
+            if now < testnet_account_memo["expires_at"]:
+                return testnet_account_memo["account"]
+        async with testnet_account_lock:
+            now = time.monotonic()
+            if testnet_account_memo["account"] is not None:
+                if now < testnet_account_memo["expires_at"]:
+                    return testnet_account_memo["account"]
+            account = await broker.account()
+            testnet_account_memo["account"] = account
+            testnet_account_memo["expires_at"] = time.monotonic() + 1.0
+            return account
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -807,7 +827,7 @@ def create_app(
                 "fetched_at": None,
             }
         try:
-            account = await broker.account()
+            account = await testnet_account()
             positions = [
                 {
                     "symbol": item.get("symbol"),
@@ -848,16 +868,53 @@ def create_app(
 
     @app.get("/api/account/portfolio")
     async def get_account_portfolio() -> dict[str, Any]:
+        if engine.mode == TradingMode.TESTNET:
+            broker = engine.testnet_broker
+            if broker is None:
+                raise HTTPException(status_code=503, detail="testnet broker is not configured")
+            try:
+                account = await testnet_account()
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=502, detail=f"testnet account query failed: {exc}"
+                ) from exc
+            positions = [
+                item
+                for item in account.get("positions", [])
+                if Decimal(str(item.get("positionAmt", "0"))) != 0
+            ]
+            return _json_value(
+                {
+                    "mode": engine.mode.value,
+                    "source": "binance-testnet",
+                    "initial_equity": None,
+                    "cash": str(account.get("totalWalletBalance", "0")),
+                    "equity": str(
+                        account.get(
+                            "totalMarginBalance",
+                            account.get("totalWalletBalance", "0"),
+                        )
+                    ),
+                    "available_balance": str(account.get("availableBalance", "0")),
+                    "daily_pnl": None,
+                    "unrealized_pnl": str(account.get("totalUnrealizedProfit", "0")),
+                    "open_positions": len(positions),
+                    "margin_used": str(account.get("totalInitialMargin", "0")),
+                }
+            )
+
         executor = engine.paper_executor
         state = executor.portfolio_state()
         return _json_value(
             {
                 "mode": engine.mode.value,
+                "source": "paper",
                 "initial_equity": executor.initial_equity,
                 "cash": executor.cash,
                 "equity": state.equity,
                 "available_balance": state.available_balance,
                 "daily_pnl": state.daily_pnl,
+                "unrealized_pnl": state.equity - executor.cash,
                 "open_positions": state.open_positions,
                 "margin_used": state.margin_used,
             }
@@ -865,6 +922,61 @@ def create_app(
 
     @app.get("/api/account/positions")
     async def get_account_positions() -> list[dict[str, Any]]:
+        if engine.mode == TradingMode.TESTNET:
+            broker = engine.testnet_broker
+            if broker is None:
+                raise HTTPException(status_code=503, detail="testnet broker is not configured")
+            try:
+                account = await testnet_account()
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=502, detail=f"testnet account query failed: {exc}"
+                ) from exc
+
+            positions: list[dict[str, Any]] = []
+            reconciliation = engine.testnet_reconciliation
+            unprotected = (
+                set(reconciliation.unprotected_symbols)
+                if reconciliation is not None
+                else None
+            )
+            for item in account.get("positions", []):
+                amount = Decimal(str(item.get("positionAmt", "0")))
+                if amount == 0:
+                    continue
+                quantity = abs(amount)
+                mark_price = Decimal(str(item.get("markPrice", "0")))
+                leverage = int(item.get("leverage", 1))
+                notional = quantity * mark_price
+                margin = item.get("positionInitialMargin", item.get("initialMargin"))
+                if margin is None:
+                    margin = notional / leverage if leverage > 0 else Decimal("0")
+                symbol = str(item.get("symbol", ""))
+                protection_status = (
+                    "unknown"
+                    if unprotected is None
+                    else "missing"
+                    if symbol in unprotected
+                    else "exchange"
+                )
+                positions.append(
+                    {
+                        "symbol": symbol,
+                        "side": "LONG" if amount > 0 else "SHORT",
+                        "quantity": str(quantity),
+                        "average_price": str(item.get("entryPrice", "0")),
+                        "mark_price": str(mark_price),
+                        "leverage": leverage,
+                        "unrealized_pnl": str(item.get("unrealizedProfit", "0")),
+                        "notional": str(notional),
+                        "margin_used": str(margin),
+                        "stop_loss": None,
+                        "take_profit": None,
+                        "protection_source": protection_status,
+                    }
+                )
+            return [_json_value(item) for item in positions]
+
         return [_json_value(item) for item in engine.paper_executor.position_snapshots()]
 
     @app.get("/api/orders")

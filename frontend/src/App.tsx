@@ -816,14 +816,21 @@ function AccountPanel({
   positions: AccountPosition[];
   orders: OrderRecord[];
 }) {
-  const dailyPnl = portfolio ? Number(portfolio.daily_pnl) : 0;
+  const isTestnet = portfolio?.source === "binance-testnet";
+  const displayedPnl = portfolio
+    ? isTestnet ? portfolio.unrealized_pnl : portfolio.daily_pnl
+    : null;
   return (
     <article className="panel account-panel">
-      <PanelTitle code="06" title="账户与订单" meta="模拟账户 · 只读" />
+      <PanelTitle
+        code="06"
+        title="账户与订单"
+        meta={`${isTestnet ? "币安测试网账户" : "模拟账户"} · 只读`}
+      />
       <div className="account-metrics">
         <Metric label="权益" value={portfolio ? money(portfolio.equity) : "—"} suffix="" />
         <Metric label="可用余额" value={portfolio ? money(portfolio.available_balance) : "—"} suffix="" />
-        <div className="metric"><span>当日盈亏</span><strong className={dailyPnl >= 0 ? "positive" : "negative"}>{portfolio ? money(portfolio.daily_pnl) : "—"}</strong></div>
+        <div className="metric"><span>{isTestnet ? "未实现盈亏" : "当日盈亏"}</span><strong className={Number(displayedPnl ?? 0) >= 0 ? "positive" : "negative"}>{displayedPnl === null ? "—" : money(displayedPnl)}</strong></div>
         <Metric label="占用保证金" value={portfolio ? money(portfolio.margin_used) : "—"} suffix="" />
         <Metric label="持仓数" value={portfolio ? String(portfolio.open_positions) : "—"} suffix="" />
       </div>
@@ -831,7 +838,7 @@ function AccountPanel({
       <h4 className="account-subhead">持仓</h4>
       <div className="table-wrap account-table">
         <table>
-          <thead><tr><th>标的</th><th>方向</th><th>数量</th><th>均价</th><th>标记价</th><th>杠杆</th><th>未实现盈亏</th><th>止损</th></tr></thead>
+          <thead><tr><th>标的</th><th>方向</th><th>数量</th><th>均价</th><th>标记价</th><th>杠杆</th><th>未实现盈亏</th><th>保护</th></tr></thead>
           <tbody>
             {positions.map((position) => (
               <tr key={position.symbol}>
@@ -842,7 +849,11 @@ function AccountPanel({
                 <td>{Number(position.mark_price).toFixed(4)}</td>
                 <td>{position.leverage}×</td>
                 <td className={Number(position.unrealized_pnl) >= 0 ? "positive" : "negative"}>{money(position.unrealized_pnl)}</td>
-                <td>{position.stop_loss === null ? "—" : Number(position.stop_loss).toFixed(4)}</td>
+                <td>{position.stop_loss === null
+                  ? position.protection_source === "exchange" ? "交易所侧"
+                    : position.protection_source === "missing" ? "缺失"
+                      : position.protection_source === "unknown" ? "待确认" : "—"
+                  : Number(position.stop_loss).toFixed(4)}</td>
               </tr>
             ))}
             {!positions.length && <tr><td colSpan={8} className="empty">当前无持仓。</td></tr>}
