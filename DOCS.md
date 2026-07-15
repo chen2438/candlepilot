@@ -161,8 +161,8 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 | 总览 | 01 模型认证 | Provider 选择、登录状态、模型与推理强度选择器 |
 | 总览 | 02 硬风控边界 | 只读展示不可修改的风控参数 |
 | 总览 | 03 动态候选池 | 全市场扫描结果，可手动刷新 |
-| 总览 | 04 最近决策 | 结构化交易意图审计流 |
-| 账户 | 06 账户与风险 | 权益、持仓、订单成交、风控决策，每 5 秒刷新 |
+| 总览 | 04 决策与风控 | 将 LLM 意图与对应硬风控结果合并为一条审计事件；可按放行、否决、HOLD、仅推理筛选并展开参数与原因 |
+| 账户 | 06 账户与订单 | 权益、持仓、订单成交，每 5 秒刷新 |
 | 回测 | 05 回测运行 | 重放表单、回测列表、详情（权益曲线、交易明细、分组统计）|
 | 运维 | 07 模型与测试网 | Provider 延迟/调用量/错误率/Token/等效成本、脱敏测试网账户状态 |
 | 数据 | 08 数据管理 | 按类别删除历史数据（见 4.11）|
@@ -213,7 +213,10 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 `GET /api/market/klines`、`GET /api/market/funding-rates`、
 `GET /api/market/backtest-candles`。
 
-**决策与信号**：`POST /api/decisions/evaluate`、`GET /api/signals`。
+**决策与信号**：`POST /api/decisions/evaluate`、`GET /api/decision-events`、
+`GET /api/signals`。`decision-events` 以模型推理为主记录，关联对应硬风控结果并给出
+`approved` / `rejected` / `hold` / `analysis_only` 展示状态；`signals` 保留为原始推理查询，
+二者均不推断订单是否成交。
 
 **账户与风险**：`GET /api/account/portfolio`、`GET /api/account/positions`、
 `GET /api/orders`、`GET /api/fills`、`GET /api/risk-events`。

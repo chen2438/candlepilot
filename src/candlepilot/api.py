@@ -772,6 +772,12 @@ def create_app(
             raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
         return await engine.audit.recent_intents(limit)
 
+    @app.get("/api/decision-events")
+    async def get_decision_events(limit: int = 100) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 500:
+            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+        return await engine.audit.recent_decision_events(limit)
+
     @app.get("/api/testnet/events")
     async def get_testnet_events(limit: int = 100) -> list[dict[str, Any]]:
         if not 1 <= limit <= 500:

@@ -493,6 +493,51 @@ class AuditRepository:
             })
         return results
 
+    async def recent_decision_events(self, limit: int = 100) -> list[dict[str, Any]]:
+        async with self.sessions() as session:
+            rows = (
+                await session.execute(
+                    select(InferenceRow, RiskRow)
+                    .outerjoin(RiskRow, RiskRow.inference_id == InferenceRow.id)
+                    .order_by(InferenceRow.id.desc())
+                    .limit(limit)
+                )
+            ).all()
+        events = []
+        for inference, risk in rows:
+            usage = json.loads(inference.usage_json)
+            intent = TradeIntent.model_validate_json(inference.intent_json)
+            if intent.action.value == "HOLD":
+                outcome = "hold"
+            elif risk is None:
+                outcome = "analysis_only"
+            elif risk.accepted:
+                outcome = "approved"
+            else:
+                outcome = "rejected"
+            events.append(
+                {
+                    "id": inference.id,
+                    "provider": inference.provider,
+                    "model": inference.model,
+                    "provenance": usage.get("_provenance", {}),
+                    "intent": intent.model_dump(mode="json"),
+                    "duration_ms": inference.duration_ms,
+                    "outcome": outcome,
+                    "risk": {
+                        "id": risk.id,
+                        "accepted": bool(risk.accepted),
+                        "reason": risk.reason,
+                        "decision": json.loads(risk.decision_json),
+                        "created_at": self._utc(risk.created_at),
+                    }
+                    if risk is not None
+                    else None,
+                    "created_at": self._utc(inference.created_at),
+                }
+            )
+        return events
+
     async def provider_metrics(
         self, hours: int = 24, *, catalog: ModelPricingCatalog | None = None
     ) -> list[dict[str, Any]]:

@@ -51,7 +51,7 @@ export interface Candidate {
   trend_strength: string;
 }
 
-export interface Signal {
+export interface DecisionEvent {
   id: number;
   provider: string;
   model: string | null;
@@ -61,9 +61,22 @@ export interface Signal {
     action: string;
     confidence: number;
     leverage: number;
+    risk_fraction: string;
+    order_type: string;
+    entry_price: string | null;
+    stop_loss: string | null;
+    take_profit: string | null;
     rationale: string;
   };
   duration_ms: number;
+  outcome: "hold" | "approved" | "rejected" | "analysis_only";
+  risk: null | {
+    id: number;
+    accepted: boolean;
+    reason: string;
+    decision: { max_quantity: string | null };
+    created_at: string;
+  };
   created_at: string;
 }
 
@@ -102,16 +115,6 @@ export interface OrderRecord {
     average_price: string | null;
     message: string;
   };
-  created_at: string;
-}
-
-export interface RiskEvent {
-  id: number;
-  inference_id: number | null;
-  symbol: string;
-  accepted: boolean;
-  reason: string;
-  decision: { max_quantity: string | null };
   created_at: string;
 }
 

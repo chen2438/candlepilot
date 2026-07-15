@@ -4,13 +4,12 @@ import type {
   AccountPosition,
   BacktestRun,
   Candidate,
+  DecisionEvent,
   EngineStatus,
   OrderRecord,
   ProviderHealth,
   ProviderMetric,
   ProviderMetricsResponse,
-  RiskEvent,
-  Signal,
   TestnetAccountStatus,
 } from "./types";
 
@@ -65,7 +64,7 @@ type TabKey = "overview" | "account" | "backtest" | "operations" | "data";
 
 const TABS: Array<{ key: TabKey; label: string; meta: string }> = [
   { key: "overview", label: "总览", meta: "引擎 · 认证 · 候选 · 决策" },
-  { key: "account", label: "账户", meta: "持仓 · 订单 · 风险" },
+  { key: "account", label: "账户", meta: "持仓 · 订单" },
   { key: "backtest", label: "回测", meta: "重放已审计决策" },
   { key: "operations", label: "运维", meta: "模型 · 测试网" },
   { key: "data", label: "数据", meta: "删除历史数据" },
@@ -106,13 +105,12 @@ export default function App() {
   const [status, setStatus] = useState<EngineStatus>(emptyStatus);
   const [providers, setProviders] = useState<ProviderHealth[]>([]);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
-  const [signals, setSignals] = useState<Signal[]>([]);
+  const [decisions, setDecisions] = useState<DecisionEvent[]>([]);
   const [backtests, setBacktests] = useState<BacktestRun[]>([]);
   const [selectedBacktest, setSelectedBacktest] = useState<BacktestRun | null>(null);
   const [portfolio, setPortfolio] = useState<AccountPortfolio | null>(null);
   const [positions, setPositions] = useState<AccountPosition[]>([]);
   const [orders, setOrders] = useState<OrderRecord[]>([]);
-  const [riskEvents, setRiskEvents] = useState<RiskEvent[]>([]);
   const [providerMetrics, setProviderMetrics] = useState<ProviderMetric[]>([]);
   const [testnetStatus, setTestnetStatus] = useState<TestnetAccountStatus | null>(null);
   const [operationsError, setOperationsError] = useState<string | null>(null);
@@ -200,31 +198,29 @@ export default function App() {
   }, [candidateDraft, status.candidates_per_cycle]);
 
   const refresh = useCallback(async () => {
-    const [nextStatus, nextProviders, nextCandidates, nextSignals, nextBacktests] = await Promise.all([
+    const [nextStatus, nextProviders, nextCandidates, nextDecisions, nextBacktests] = await Promise.all([
       api<EngineStatus>("/api/status"),
       api<ProviderHealth[]>("/api/providers"),
       api<Candidate[]>("/api/universe"),
-      api<Signal[]>("/api/signals?limit=20"),
+      api<DecisionEvent[]>("/api/decision-events?limit=50"),
       api<BacktestRun[]>("/api/backtests?limit=10"),
     ]);
     setStatus(nextStatus);
     setProviders(nextProviders);
     setCandidates(nextCandidates);
-    setSignals(nextSignals);
+    setDecisions(nextDecisions);
     setBacktests(nextBacktests);
   }, []);
 
   const refreshAccount = useCallback(async () => {
-    const [nextPortfolio, nextPositions, nextOrders, nextRisk] = await Promise.all([
+    const [nextPortfolio, nextPositions, nextOrders] = await Promise.all([
       api<AccountPortfolio>("/api/account/portfolio"),
       api<AccountPosition[]>("/api/account/positions"),
       api<OrderRecord[]>("/api/orders?limit=25"),
-      api<RiskEvent[]>("/api/risk-events?limit=25"),
     ]);
     setPortfolio(nextPortfolio);
     setPositions(nextPositions);
     setOrders(nextOrders);
-    setRiskEvents(nextRisk);
   }, []);
 
   const refreshOperations = useCallback(async () => {
@@ -591,20 +587,7 @@ export default function App() {
             </div>
           </article>
 
-          <article className="panel signals-panel">
-            <PanelTitle code="04" title="最近决策" meta="完整审计" />
-            <div className="signal-list">
-              {signals.map((signal) => (
-                <div className="signal" key={signal.id}>
-                  <span className={`action ${signal.intent.action.toLowerCase()}`}>{signal.intent.action}</span>
-                  <span className="signal-symbol"><strong>{signal.intent.symbol}</strong><small>{signal.intent.cadence} · {providerLabel(signal.provider)}</small></span>
-                  <span className="signal-confidence">{Math.round(signal.intent.confidence * 100)}<small>% CONF</small></span>
-                  <span className="signal-time">{new Date(signal.created_at).toLocaleTimeString("zh-CN", { hour12: false })}</span>
-                </div>
-              ))}
-              {!signals.length && <div className="empty cards">启动引擎后，结构化交易意图会显示在这里。</div>}
-            </div>
-          </article>
+          <DecisionPanel decisions={decisions} />
         </section>
         </>)}
 
@@ -657,7 +640,6 @@ export default function App() {
             portfolio={portfolio}
             positions={positions}
             orders={orders}
-            riskEvents={riskEvents}
           />
         </section>
         )}
@@ -729,21 +711,98 @@ function money(value: string): string {
   return Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+const DECISION_FILTERS: Array<{ key: "all" | DecisionEvent["outcome"]; label: string }> = [
+  { key: "all", label: "全部" },
+  { key: "approved", label: "风控放行" },
+  { key: "rejected", label: "风控否决" },
+  { key: "hold", label: "HOLD" },
+  { key: "analysis_only", label: "仅推理" },
+];
+
+const OUTCOME_LABELS: Record<DecisionEvent["outcome"], string> = {
+  approved: "风控放行",
+  rejected: "风控否决",
+  hold: "无需下单",
+  analysis_only: "仅推理",
+};
+
+function intentPrice(value: string | null): string {
+  return value === null ? "—" : Number(value).toFixed(4);
+}
+
+function DecisionPanel({ decisions }: { decisions: DecisionEvent[] }) {
+  const [filter, setFilter] = useState<"all" | DecisionEvent["outcome"]>("all");
+  const [expanded, setExpanded] = useState<number | null>(null);
+  const visible = filter === "all"
+    ? decisions
+    : decisions.filter((decision) => decision.outcome === filter);
+  return (
+    <article className="panel signals-panel">
+      <PanelTitle code="04" title="决策与风控" meta="LLM 意图 → 硬风控" />
+      <div className="decision-filters" aria-label="决策筛选">
+        {DECISION_FILTERS.map((item) => (
+          <button
+            className={filter === item.key ? "active" : ""}
+            key={item.key}
+            onClick={() => setFilter(item.key)}
+          >{item.label}</button>
+        ))}
+      </div>
+      <div className="signal-list">
+        {visible.map((decision) => (
+          <div className={`decision-event ${expanded === decision.id ? "expanded" : ""}`} key={decision.id}>
+            <button
+              className="signal decision-row"
+              aria-expanded={expanded === decision.id}
+              onClick={() => setExpanded(expanded === decision.id ? null : decision.id)}
+            >
+              <span className={`action ${decision.intent.action.toLowerCase()}`}>{decision.intent.action}</span>
+              <span className="signal-symbol"><strong>{decision.intent.symbol}</strong><small>{decision.intent.cadence} · {providerLabel(decision.provider)}</small></span>
+              <span className="signal-confidence">{Math.round(decision.intent.confidence * 100)}<small>% CONF</small></span>
+              <span className={`decision-outcome ${decision.outcome}`}>{OUTCOME_LABELS[decision.outcome]}</span>
+              <span className="signal-time">{new Date(decision.created_at).toLocaleTimeString("zh-CN", { hour12: false })}</span>
+              <span className="decision-chevron">{expanded === decision.id ? "−" : "+"}</span>
+            </button>
+            {expanded === decision.id && (
+              <div className="decision-detail">
+                <p>{decision.intent.rationale}</p>
+                <div className="decision-detail-grid">
+                  <span>模型<strong>{decision.model ?? "CLI 默认"}</strong></span>
+                  <span>杠杆<strong>{decision.intent.leverage}×</strong></span>
+                  <span>风险比例<strong>{percent(decision.intent.risk_fraction)}</strong></span>
+                  <span>订单类型<strong>{decision.intent.order_type}</strong></span>
+                  <span>入场价<strong>{intentPrice(decision.intent.entry_price)}</strong></span>
+                  <span>止损<strong>{intentPrice(decision.intent.stop_loss)}</strong></span>
+                  <span>止盈<strong>{intentPrice(decision.intent.take_profit)}</strong></span>
+                  <span>风控数量<strong>{decision.risk?.decision.max_quantity ?? "—"}</strong></span>
+                </div>
+                <div className={`decision-reason ${decision.outcome}`}>
+                  <strong>{OUTCOME_LABELS[decision.outcome]}</strong>
+                  <span>{decision.risk?.reason ?? "该记录只有模型推理，未进入实时硬风控流程。"}</span>
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+        {!visible.length && <div className="empty cards">当前筛选条件下没有决策记录。</div>}
+      </div>
+    </article>
+  );
+}
+
 function AccountPanel({
   portfolio,
   positions,
   orders,
-  riskEvents,
 }: {
   portfolio: AccountPortfolio | null;
   positions: AccountPosition[];
   orders: OrderRecord[];
-  riskEvents: RiskEvent[];
 }) {
   const dailyPnl = portfolio ? Number(portfolio.daily_pnl) : 0;
   return (
     <article className="panel account-panel">
-      <PanelTitle code="06" title="账户与风险" meta="模拟账户 · 只读" />
+      <PanelTitle code="06" title="账户与订单" meta="模拟账户 · 只读" />
       <div className="account-metrics">
         <Metric label="权益" value={portfolio ? money(portfolio.equity) : "—"} suffix="" />
         <Metric label="可用余额" value={portfolio ? money(portfolio.available_balance) : "—"} suffix="" />
@@ -794,17 +853,6 @@ function AccountPanel({
         </table>
       </div>
 
-      <h4 className="account-subhead">风险事件</h4>
-      <div className="risk-events">
-        {riskEvents.map((event) => (
-          <div className="risk-event" key={event.id}>
-            <span className={`status-pill ${event.accepted ? "ok" : "off"}`}>{event.accepted ? "放行" : "否决"}</span>
-            <span className="risk-event-symbol"><strong>{event.symbol}</strong><small>{new Date(event.created_at).toLocaleString("zh-CN", { hour12: false })}</small></span>
-            <span className="risk-event-reason">{event.reason}</span>
-          </div>
-        ))}
-        {!riskEvents.length && <div className="empty cards">尚无风控决策记录。</div>}
-      </div>
     </article>
   );
 }

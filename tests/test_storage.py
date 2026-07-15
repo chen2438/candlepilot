@@ -84,6 +84,83 @@ def test_execution_and_risk_queries_filter_and_order(tmp_path: Path) -> None:
     assert rejections[0]["inference_id"] == 7
 
 
+def test_decision_events_join_inference_and_risk_outcomes(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'decision-events.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        opening = TradeIntent(
+            symbol="BTCUSDT",
+            cadence="5m",
+            action="OPEN_LONG",
+            confidence=0.8,
+            leverage=3,
+            risk_fraction="0.01",
+            stop_loss="95",
+            take_profit="110",
+            rationale="trend",
+        )
+        opening_id = await repository.record_inference(
+            ProviderResult(opening, "codex-auth", "gpt-test", timedelta(milliseconds=80), "{}", {})
+        )
+        await repository.record_risk(
+            "BTCUSDT",
+            RiskDecision(accepted=False, reason="margin limit"),
+            inference_id=opening_id,
+        )
+        hold = TradeIntent.hold("ETHUSDT", "1m", "no setup")
+        hold_id = await repository.record_inference(
+            ProviderResult(hold, "claude-code-auth", None, timedelta(milliseconds=20), "{}", {})
+        )
+        await repository.record_risk(
+            "ETHUSDT",
+            RiskDecision(accepted=True, reason="hold: no order required"),
+            inference_id=hold_id,
+        )
+        approved_id = await repository.record_inference(
+            ProviderResult(
+                opening.model_copy(update={"symbol": "SOLUSDT"}),
+                "codex-auth",
+                "gpt-test",
+                timedelta(milliseconds=60),
+                "{}",
+                {},
+            )
+        )
+        await repository.record_risk(
+            "SOLUSDT",
+            RiskDecision(accepted=True, reason="within limits", max_quantity="2.5"),
+            inference_id=approved_id,
+        )
+        await repository.record_inference(
+            ProviderResult(
+                opening.model_copy(update={"symbol": "XRPUSDT"}),
+                "codex-auth",
+                "gpt-test",
+                timedelta(milliseconds=40),
+                "{}",
+                {},
+            )
+        )
+        events = await repository.recent_decision_events()
+        await database.close()
+        return events
+
+    events = asyncio.run(scenario())
+    assert [event["outcome"] for event in events] == [
+        "analysis_only",
+        "approved",
+        "hold",
+        "rejected",
+    ]
+    assert events[0]["risk"] is None
+    assert events[1]["risk"]["decision"]["max_quantity"] == "2.5"
+    assert events[2]["intent"]["symbol"] == "ETHUSDT"
+    assert events[2]["risk"]["accepted"] is True
+    assert events[3]["model"] == "gpt-test"
+    assert events[3]["risk"]["reason"] == "margin limit"
+
+
 def test_provider_metrics_aggregate_latency_errors_and_models(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'provider-metrics.db'}")
