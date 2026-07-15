@@ -122,6 +122,31 @@ def test_scheduler_runs_ranked_candidate_cycle(tmp_path: Path) -> None:
     assert outcomes[0].intent.action.value == "HOLD"
 
 
+def test_scheduler_only_runs_selected_cadences(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'cadences.db'}")
+        await database.initialize()
+        market = SchedulerMarket()
+        engine = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([HoldProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider("hold")
+        engine.select_cadences(["15m", "1m"])  # order-insensitive input
+        await engine.start()
+        scheduler = TradingScheduler(engine, market)  # type: ignore[arg-type]
+        scheduler.start()
+        names = sorted(task.get_name() for task in scheduler._tasks)
+        await scheduler.stop()
+        await database.close()
+        return names
+
+    names = asyncio.run(scenario())
+    assert names == ["candlepilot-15m", "candlepilot-1m", "candlepilot-universe"]
+
+
 def test_concurrent_cadences_cannot_open_opposing_positions(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'conflict.db'}")

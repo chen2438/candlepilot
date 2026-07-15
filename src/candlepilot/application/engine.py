@@ -27,6 +27,9 @@ from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
 from candlepilot.storage.database import AuditRepository
 
 
+SUPPORTED_CADENCES: tuple[str, ...] = ("1m", "5m", "15m")
+
+
 @dataclass(frozen=True, slots=True)
 class DecisionOutcome:
     intent: TradeIntent
@@ -47,6 +50,7 @@ class TradingEngine:
         risk: AggressiveRiskPolicy | None = None,
         paper_executor: PaperExecutor | None = None,
         testnet_broker: BinanceTestnetBroker | None = None,
+        cadences: tuple[str, ...] | None = None,
     ) -> None:
         self.mode = mode
         self.providers = providers
@@ -58,6 +62,9 @@ class TradingEngine:
         self.testnet_broker = testnet_broker
         self.selected_provider: str | None = None
         self.backup_provider: str | None = None
+        self.active_cadences: tuple[str, ...] = self._normalize_cadences(
+            cadences if cadences is not None else SUPPORTED_CADENCES
+        )
         self.running = False
         self.emergency_locked = False
         self.emergency_locked_until: datetime | None = None
@@ -76,6 +83,22 @@ class TradingEngine:
                 raise ValueError("backup provider must differ from primary provider")
         self.selected_provider = name
         self.backup_provider = backup
+
+    @staticmethod
+    def _normalize_cadences(cadences: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+        requested = set(cadences)
+        invalid = requested - set(SUPPORTED_CADENCES)
+        if invalid:
+            raise ValueError(f"unsupported cadences: {', '.join(sorted(invalid))}")
+        chosen = tuple(cadence for cadence in SUPPORTED_CADENCES if cadence in requested)
+        if not chosen:
+            raise ValueError("at least one cadence must be selected")
+        return chosen
+
+    def select_cadences(self, cadences: tuple[str, ...] | list[str]) -> None:
+        if self.running:
+            raise RuntimeError("cannot change cadences while running")
+        self.active_cadences = self._normalize_cadences(cadences)
 
     async def start(self) -> None:
         await self.restore_runtime_state()

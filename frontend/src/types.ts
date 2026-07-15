@@ -5,6 +5,8 @@ export interface EngineStatus {
   emergency_locked_until: string | null;
   selected_provider: string | null;
   backup_provider: string | null;
+  active_cadences: string[];
+  supported_cadences: string[];
   candidate_count: number;
   universe_refreshed_at: string | null;
   market_stream: {

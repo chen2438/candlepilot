@@ -21,6 +21,8 @@ const emptyStatus: EngineStatus = {
   emergency_locked_until: null,
   selected_provider: null,
   backup_provider: null,
+  active_cadences: ["1m", "5m", "15m"],
+  supported_cadences: ["1m", "5m", "15m"],
   candidate_count: 0,
   universe_refreshed_at: null,
   market_stream: {
@@ -119,6 +121,21 @@ export default function App() {
         body: JSON.stringify({ name, model: draft.model, reasoning_effort: draft.effort || null }),
       });
       setProviders(next);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
+  const toggleCadence = useCallback(async (cadence: string, active: string[], supported: string[]) => {
+    const next = active.includes(cadence) ? active.filter((c) => c !== cadence) : [...active, cadence];
+    if (!next.length) return; // keep at least one cadence
+    const ordered = supported.filter((c) => next.includes(c));
+    setBusy("cadences");
+    setError(null);
+    try {
+      setStatus(await api<EngineStatus>("/api/cadences", { method: "POST", body: JSON.stringify({ cadences: ordered }) }));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -324,6 +341,19 @@ export default function App() {
             <Metric label="日亏熔断" value="8.0" suffix="%" />
           </div>
           <div className="controls">
+            <div className="cadence-select" title={status.running ? "运行时锁定" : "选择要分析的决策周期"}>
+              <span>分析周期</span>
+              <div className="cadence-chips">
+                {status.supported_cadences.map((cadence) => (
+                  <button
+                    key={cadence}
+                    className={`cadence-chip ${status.active_cadences.includes(cadence) ? "on" : ""}`}
+                    disabled={busy !== null || status.running}
+                    onClick={() => toggleCadence(cadence, status.active_cadences, status.supported_cadences)}
+                  >{cadence}</button>
+                ))}
+              </div>
+            </div>
             <button
               className="primary"
               disabled={busy !== null || status.running || status.emergency_locked}

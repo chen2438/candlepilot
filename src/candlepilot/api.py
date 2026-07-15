@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from candlepilot.application.engine import TradingEngine
+from candlepilot.application.engine import SUPPORTED_CADENCES, TradingEngine
 from candlepilot.application.paper_feed import PaperMarketFeed
 from candlepilot.application.scheduler import TradingScheduler
 from candlepilot.application.testnet_feed import TestnetUserFeed
@@ -60,6 +60,10 @@ class ProviderConfig(ApiModel):
 
 class HistoryClearRequest(ApiModel):
     categories: list[str] = Field(min_length=1, max_length=16)
+
+
+class CadenceSelection(ApiModel):
+    cadences: list[str] = Field(min_length=1, max_length=8)
 
 
 class SymbolRulesInput(ApiModel):
@@ -222,6 +226,8 @@ def _status(
         else None,
         "selected_provider": engine.selected_provider,
         "backup_provider": engine.backup_provider,
+        "active_cadences": list(engine.active_cadences),
+        "supported_cadences": list(SUPPORTED_CADENCES),
         "candidate_count": len(engine.candidates),
         "universe_refreshed_at": engine.universe_refreshed_at.isoformat()
         if engine.universe_refreshed_at
@@ -289,6 +295,7 @@ def create_app(
         audit=AuditRepository(database.sessions),
         market=market,
         testnet_broker=testnet_broker,
+        cadences=settings.cadences,
     )
 
     async def load_paper_backfill(symbols: list[str]) -> list[MarketSnapshot]:
@@ -603,6 +610,16 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return _status(engine, scheduler)
+
+    @app.post("/api/cadences")
+    async def select_cadences(selection: CadenceSelection) -> dict[str, Any]:
+        try:
+            engine.select_cadences(selection.cadences)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _status(engine, scheduler)
 
     @app.post("/api/engine/start")

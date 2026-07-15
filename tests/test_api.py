@@ -525,6 +525,35 @@ def test_history_clear_removes_selected_categories(tmp_path: Path) -> None:
     asyncio.run(database.close())
 
 
+def test_cadence_selection_endpoint(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'cadence-api.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.PAPER,
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        status = client.get("/api/status").json()
+        assert status["active_cadences"] == ["1m", "5m", "15m"]
+        assert status["supported_cadences"] == ["1m", "5m", "15m"]
+
+        updated = client.post("/api/cadences", json={"cadences": ["15m", "1m"]})
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["active_cadences"] == ["1m", "15m"]  # canonical order
+
+        assert client.post("/api/cadences", json={"cadences": ["30m"]}).status_code == 422
+        assert client.post("/api/cadences", json={"cadences": []}).status_code == 422
+
+        # Locked while the engine runs.
+        client.post("/api/providers/select", json={"name": "api-fixture"})
+        client.post("/api/engine/start")
+        assert client.post("/api/cadences", json={"cadences": ["1m"]}).status_code == 409
+    asyncio.run(database.close())
+
+
 def test_unknown_provider_is_404(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'api.db'}")
     market = ApiMarket()

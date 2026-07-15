@@ -42,6 +42,13 @@ def load_dotenv(path: Path | None = None) -> None:
             os.environ[key] = value
 
 
+def _parse_cadences(raw: str | None) -> tuple[str, ...]:
+    if not raw:
+        return ("1m", "5m", "15m")
+    parsed = tuple(item.strip() for item in raw.split(",") if item.strip())
+    return parsed or ("1m", "5m", "15m")
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     mode: TradingMode = TradingMode.PAPER
@@ -55,6 +62,7 @@ class Settings:
     max_margin_fraction: Decimal = Decimal("0.60")
     daily_loss_fraction: Decimal = Decimal("0.08")
     inference_timeout_seconds: float = 45.0
+    cadences: tuple[str, ...] = ("1m", "5m", "15m")
     codex_model: str | None = None
     codex_reasoning_effort: str | None = None
     claude_model: str | None = None
@@ -71,6 +79,7 @@ class Settings:
             bind_host=os.getenv("CANDLEPILOT_HOST", "127.0.0.1"),
             bind_port=int(os.getenv("CANDLEPILOT_PORT", "8000")),
             inference_timeout_seconds=float(os.getenv("CANDLEPILOT_LLM_TIMEOUT", "45")),
+            cadences=_parse_cadences(os.getenv("CANDLEPILOT_CADENCES")),
             codex_model=os.getenv("CANDLEPILOT_CODEX_MODEL") or None,
             codex_reasoning_effort=os.getenv("CANDLEPILOT_CODEX_REASONING_EFFORT") or None,
             claude_model=os.getenv("CANDLEPILOT_CLAUDE_MODEL") or None,

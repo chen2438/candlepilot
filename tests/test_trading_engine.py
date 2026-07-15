@@ -110,6 +110,45 @@ def test_engine_requires_provider_and_audits_paper_fill(tmp_path: Path) -> None:
     assert intents[0]["intent"]["action"] == "OPEN_LONG"
 
 
+def test_engine_cadence_selection_validates_and_locks_when_running(tmp_path: Path) -> None:
+    from candlepilot.application.engine import SUPPORTED_CADENCES
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'cadence-engine.db'}")
+        await database.initialize()
+        engine = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=FakeMarket(),  # type: ignore[arg-type]
+        )
+        default = engine.active_cadences
+        engine.select_cadences(["15m", "1m"])  # unordered input
+        normalized = engine.active_cadences
+
+        errors = {}
+        for label, cadences in (("invalid", ["30m"]), ("empty", [])):
+            try:
+                engine.select_cadences(cadences)
+            except ValueError:
+                errors[label] = True
+
+        engine.select_provider("fake-auth")
+        await engine.start()
+        try:
+            engine.select_cadences(["1m"])
+            errors["locked"] = False
+        except RuntimeError:
+            errors["locked"] = True
+        await database.close()
+        return default, normalized, errors
+
+    default, normalized, errors = asyncio.run(scenario())
+    assert default == SUPPORTED_CADENCES
+    assert normalized == ("1m", "15m")  # normalized to canonical order
+    assert errors == {"invalid": True, "empty": True, "locked": True}
+
+
 def test_testnet_mode_refuses_to_start_without_credentials(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'testnet.db'}")

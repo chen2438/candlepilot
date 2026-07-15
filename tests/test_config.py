@@ -34,6 +34,13 @@ def test_load_dotenv_missing_file_is_noop(tmp_path: Path) -> None:
     load_dotenv(tmp_path / "absent.env")  # must not raise
 
 
+def test_cadences_default_and_env_override(monkeypatch) -> None:
+    monkeypatch.delenv("CANDLEPILOT_CADENCES", raising=False)
+    assert Settings.from_env().cadences == ("1m", "5m", "15m")
+    monkeypatch.setenv("CANDLEPILOT_CADENCES", "5m, 15m")
+    assert Settings.from_env().cadences == ("5m", "15m")
+
+
 def test_from_env_reads_loaded_dotenv(tmp_path: Path, monkeypatch) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text("CANDLEPILOT_PORT=9001\nCANDLEPILOT_CODEX_MODEL=gpt-x\n")

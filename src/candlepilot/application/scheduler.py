@@ -44,9 +44,10 @@ class TradingScheduler:
         self._stop.clear()
         if self.testnet_feed is not None:
             self.testnet_feed.start()
+        active = [cadence for cadence in CADENCE_SECONDS if cadence in self.engine.active_cadences]
         self._tasks = [
             asyncio.create_task(self._run_cadence(cadence), name=f"candlepilot-{cadence}")
-            for cadence in CADENCE_SECONDS
+            for cadence in active
         ]
         self._tasks.append(
             asyncio.create_task(self._run_universe(), name="candlepilot-universe")
