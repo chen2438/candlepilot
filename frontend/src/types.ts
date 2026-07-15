@@ -25,6 +25,9 @@ export interface ProviderHealth {
   executable: string | null;
   version: string | null;
   detail: string;
+  model: string | null;
+  reasoning_effort: string | null;
+  reasoning_effort_options: string[];
   capabilities: {
     subscription_auth: boolean;
     structured_output: boolean;

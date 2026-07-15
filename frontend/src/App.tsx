@@ -94,6 +94,23 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [socketOnline, setSocketOnline] = useState(false);
   const [replayForm, setReplayForm] = useState(initialReplayForm);
+  const [configDraft, setConfigDraft] = useState<Record<string, { model: string; effort: string }>>({});
+
+  const applyProviderConfig = useCallback(async (name: string, draft: { model: string; effort: string }) => {
+    setBusy("provider-config");
+    setError(null);
+    try {
+      const next = await api<ProviderHealth[]>("/api/providers/config", {
+        method: "POST",
+        body: JSON.stringify({ name, model: draft.model, reasoning_effort: draft.effort || null }),
+      });
+      setProviders(next);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     const [nextStatus, nextProviders, nextCandidates, nextSignals, nextBacktests] = await Promise.all([
@@ -310,6 +327,43 @@ export default function App() {
             </div>
             <div className="provider-foot">
               <span>当前路由</span><strong>{activeProvider ? providerLabel(activeProvider.provider) : "未选择"}</strong>
+            </div>
+            <div className="provider-config">
+              <div className="provider-config-title"><span>模型与推理强度</span><small>{status.running ? "运行时锁定" : "留空=CLI 默认"}</small></div>
+              {providers.map((provider) => {
+                const draft = configDraft[provider.provider] ?? {
+                  model: provider.model ?? "",
+                  effort: provider.reasoning_effort ?? "",
+                };
+                const dirty = draft.model !== (provider.model ?? "") || draft.effort !== (provider.reasoning_effort ?? "");
+                return (
+                  <div className="provider-config-row" key={provider.provider}>
+                    <span className="config-name">{provider.provider.startsWith("codex") ? "CX" : "CC"}</span>
+                    <input
+                      className="config-model"
+                      placeholder="默认模型"
+                      value={draft.model}
+                      disabled={status.running}
+                      onChange={(event) => setConfigDraft((current) => ({ ...current, [provider.provider]: { model: event.target.value, effort: draft.effort } }))}
+                    />
+                    <select
+                      value={draft.effort}
+                      disabled={status.running}
+                      onChange={(event) => setConfigDraft((current) => ({ ...current, [provider.provider]: { model: draft.model, effort: event.target.value } }))}
+                    >
+                      <option value="">默认强度</option>
+                      {provider.reasoning_effort_options.map((option) => (
+                        <option key={option} value={option}>{option}</option>
+                      ))}
+                    </select>
+                    <button
+                      className="text-button"
+                      disabled={status.running || busy !== null || !dirty}
+                      onClick={() => applyProviderConfig(provider.provider, draft)}
+                    >应用</button>
+                  </div>
+                );
+              })}
             </div>
           </article>
 
