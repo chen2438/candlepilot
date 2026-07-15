@@ -158,29 +158,4 @@ class TradingScheduler:
         return outcomes
 
     async def _portfolio(self) -> PortfolioState:
-        if self.engine.mode in {TradingMode.PAPER, TradingMode.BACKTEST}:
-            return self.engine.paper_executor.portfolio_state()
-        broker = self.engine.testnet_broker
-        if broker is None:
-            raise RuntimeError("testnet broker is unavailable")
-        account = await broker.account()
-        equity = account.get("totalMarginBalance", account.get("totalWalletBalance", "0"))
-        available = account.get("availableBalance", "0")
-        positions = {
-            item["symbol"]: item
-            for item in account.get("positions", [])
-            if float(item.get("positionAmt", 0)) != 0
-        }
-        return PortfolioState(
-            equity=equity,
-            available_balance=available,
-            open_positions=len(positions),
-            margin_used=account.get("totalInitialMargin", "0"),
-            symbol_sides={
-                symbol: "LONG" if float(item["positionAmt"]) > 0 else "SHORT"
-                for symbol, item in positions.items()
-            },
-            symbol_quantities={
-                symbol: abs(float(item["positionAmt"])) for symbol, item in positions.items()
-            },
-        )
+        return await self.engine.current_portfolio()

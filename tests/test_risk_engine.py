@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from candlepilot.domain.models import (
     MarketSnapshot,
+    OrderType,
     PortfolioState,
     TradeAction,
     TradeIntent,
@@ -88,10 +89,65 @@ def test_rejects_take_profit_on_wrong_side_of_entry() -> None:
 
 def test_rejects_stale_market_data() -> None:
     result = AggressiveRiskPolicy().evaluate(
-        _intent(), _snapshot(age_seconds=30), _portfolio(), RULES
+        _intent(), _snapshot(age_seconds=31), _portfolio(), RULES
     )
     assert not result.decision.accepted
     assert "stale" in result.decision.reason
+
+
+def test_stale_hold_is_accepted_without_an_order() -> None:
+    result = AggressiveRiskPolicy().evaluate(
+        TradeIntent.hold("BTCUSDT", "5m", "no setup"),
+        _snapshot(age_seconds=300),
+        _portfolio(),
+        RULES,
+    )
+
+    assert result.decision.accepted
+    assert result.order is None
+
+
+def test_market_order_uses_latest_mark_instead_of_suggested_entry() -> None:
+    intent = _intent().model_copy(update={"entry_price": Decimal("90")})
+
+    result = AggressiveRiskPolicy().evaluate(intent, _snapshot(), _portfolio(), RULES)
+
+    assert result.decision.accepted
+    assert result.order is not None and result.order.price is None
+
+
+def test_rejects_crossed_protection_and_marketable_limit_after_refresh() -> None:
+    crossed_take_profit = _intent().model_copy(
+        update={"order_type": OrderType.LIMIT, "entry_price": Decimal("99")}
+    )
+    moved = _snapshot().model_copy(
+        update={
+            "mark_price": Decimal("105"),
+            "bid": Decimal("104.9"),
+            "ask": Decimal("105.1"),
+        }
+    )
+    crossed = AggressiveRiskPolicy().evaluate(
+        crossed_take_profit, moved, _portfolio(), RULES
+    )
+    assert not crossed.decision.accepted
+    assert "crossed the long take profit" in crossed.decision.reason
+
+    marketable = _intent().model_copy(
+        update={"order_type": OrderType.LIMIT, "entry_price": Decimal("101")}
+    )
+    immediate = AggressiveRiskPolicy().evaluate(
+        marketable, _snapshot(), _portfolio(), RULES
+    )
+    assert not immediate.decision.accepted
+    assert "already marketable" in immediate.decision.reason
+
+
+def test_snapshot_age_must_be_positive() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="must be positive"):
+        AggressiveRiskPolicy(max_snapshot_age_seconds=0)
 
 
 def test_daily_loss_circuit_breaker() -> None:

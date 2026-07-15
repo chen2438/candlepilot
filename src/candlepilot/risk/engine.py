@@ -8,6 +8,7 @@ from uuid import uuid4
 from candlepilot.domain.models import (
     MarketSnapshot,
     OrderPlan,
+    OrderType,
     PortfolioState,
     RiskDecision,
     TradeAction,
@@ -46,9 +47,11 @@ class AggressiveRiskPolicy:
         max_margin_fraction: Decimal = Decimal("0.60"),
         daily_loss_fraction: Decimal = Decimal("0.08"),
         slippage_fraction: Decimal = Decimal("0.001"),
-        max_snapshot_age_seconds: int = 15,
+        max_snapshot_age_seconds: int = 30,
         require_take_profit: bool = False,
     ) -> None:
+        if max_snapshot_age_seconds <= 0:
+            raise ValueError("max_snapshot_age_seconds must be positive")
         self.max_leverage = max_leverage
         self.max_risk_fraction = max_risk_fraction
         self.max_positions = max_positions
@@ -72,11 +75,11 @@ class AggressiveRiskPolicy:
             raise ValueError("now must be timezone-aware")
         if intent.symbol != snapshot.symbol or intent.cadence != snapshot.cadence:
             return self._reject("intent does not match its market snapshot")
+        if intent.action == TradeAction.HOLD:
+            return RiskEvaluation(RiskDecision(accepted=True, reason="hold: no order required"))
         age = (now - snapshot.timestamp).total_seconds()
         if age < -2 or age > self.max_snapshot_age_seconds:
             return self._reject("market snapshot is stale")
-        if intent.action == TradeAction.HOLD:
-            return RiskEvaluation(RiskDecision(accepted=True, reason="hold: no order required"))
 
         start_equity = portfolio.equity - portfolio.daily_pnl
         if start_equity > 0 and portfolio.daily_pnl <= -(start_equity * self.daily_loss_fraction):
@@ -116,7 +119,11 @@ class AggressiveRiskPolicy:
                 return self._reject("position quantity is unavailable for reduce-only exit")
             return self._close_order(intent, existing_side, position_quantity, rules)
 
-        entry = intent.entry_price or snapshot.mark_price
+        entry = (
+            intent.entry_price
+            if intent.order_type == OrderType.LIMIT
+            else snapshot.mark_price
+        )
         stop = intent.stop_loss
         if stop is None:
             return self._reject("opening intent has no stop loss")
@@ -124,6 +131,10 @@ class AggressiveRiskPolicy:
             return self._reject("long stop loss must be below entry")
         if requested_side == "SHORT" and stop <= entry:
             return self._reject("short stop loss must be above entry")
+        if requested_side == "LONG" and snapshot.mark_price <= stop:
+            return self._reject("latest market price has crossed the long stop loss")
+        if requested_side == "SHORT" and snapshot.mark_price >= stop:
+            return self._reject("latest market price has crossed the short stop loss")
 
         take_profit = intent.take_profit
         if self.require_take_profit and take_profit is None:
@@ -133,6 +144,16 @@ class AggressiveRiskPolicy:
                 return self._reject("long take profit must be above entry")
             if requested_side == "SHORT" and take_profit >= entry:
                 return self._reject("short take profit must be below entry")
+            if requested_side == "LONG" and snapshot.mark_price >= take_profit:
+                return self._reject("latest market price has crossed the long take profit")
+            if requested_side == "SHORT" and snapshot.mark_price <= take_profit:
+                return self._reject("latest market price has crossed the short take profit")
+
+        if intent.order_type == OrderType.LIMIT and intent.entry_price is not None:
+            if requested_side == "LONG" and snapshot.ask <= intent.entry_price:
+                return self._reject("long limit entry is already marketable after refresh")
+            if requested_side == "SHORT" and snapshot.bid >= intent.entry_price:
+                return self._reject("short limit entry is already marketable after refresh")
 
         per_unit_loss = abs(entry - stop) + (entry * self.slippage_fraction)
         risk_budget = portfolio.equity * min(intent.risk_fraction, self.max_risk_fraction)
@@ -154,7 +175,7 @@ class AggressiveRiskPolicy:
             side="BUY" if requested_side == "LONG" else "SELL",
             quantity=quantity,
             order_type=intent.order_type,
-            price=intent.entry_price,
+            price=intent.entry_price if intent.order_type == OrderType.LIMIT else None,
             stop_price=stop,
             take_profit_price=intent.take_profit,
             reduce_only=False,

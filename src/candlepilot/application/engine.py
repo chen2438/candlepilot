@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
+from decimal import Decimal
 
 from candlepilot.broker.binance_testnet import (
     AccountReconciliationError,
@@ -175,6 +176,37 @@ class TradingEngine:
         self.universe_refreshed_at = datetime.now(UTC)
         return self.candidates
 
+    async def current_portfolio(self) -> PortfolioState:
+        if self.mode in {TradingMode.PAPER, TradingMode.BACKTEST}:
+            return self.paper_executor.portfolio_state()
+        broker = self.testnet_broker
+        if broker is None:
+            raise RuntimeError("testnet broker is unavailable")
+        account = await broker.account()
+        positions = {
+            str(item["symbol"]): item
+            for item in account.get("positions", [])
+            if Decimal(str(item.get("positionAmt", "0"))) != 0
+        }
+        return PortfolioState(
+            equity=account.get(
+                "totalMarginBalance", account.get("totalWalletBalance", "0")
+            ),
+            available_balance=account.get("availableBalance", "0"),
+            open_positions=len(positions),
+            margin_used=account.get("totalInitialMargin", "0"),
+            symbol_sides={
+                symbol: "LONG"
+                if Decimal(str(item["positionAmt"])) > 0
+                else "SHORT"
+                for symbol, item in positions.items()
+            },
+            symbol_quantities={
+                symbol: abs(Decimal(str(item["positionAmt"])))
+                for symbol, item in positions.items()
+            },
+        )
+
     async def evaluate(
         self,
         snapshot: MarketSnapshot,
@@ -211,7 +243,60 @@ class TradingEngine:
                     usage={"error": type(primary_exc).__name__},
                 )
         inference_id = await self.audit.record_inference(result)
-        evaluation = self.risk.evaluate(result.intent, snapshot, portfolio, rules)
+        evaluation_snapshot = snapshot
+        evaluation_portfolio = portfolio
+        intent_matches_snapshot = (
+            result.intent.symbol == snapshot.symbol
+            and result.intent.cadence == snapshot.cadence
+        )
+        if intent_matches_snapshot and result.intent.action != TradeAction.HOLD:
+            analysis_age = (datetime.now(UTC) - snapshot.timestamp).total_seconds()
+            if analysis_age < -2 or analysis_age > self.risk.max_snapshot_age_seconds:
+                rejection = RiskDecision(
+                    accepted=False,
+                    reason="analysis snapshot expired before pre-trade refresh",
+                )
+                await self.audit.record_risk(
+                    snapshot.symbol, rejection, inference_id=inference_id
+                )
+                return DecisionOutcome(
+                    intent=result.intent,
+                    risk=rejection,
+                    execution=None,
+                    provider=result.provider,
+                )
+            try:
+                evaluation_snapshot = await self.market.market_snapshot(
+                    snapshot.symbol, snapshot.cadence
+                )
+                if self.mode in {TradingMode.PAPER, TradingMode.BACKTEST}:
+                    protective_reports = await self.paper_executor.mark_to_market(
+                        evaluation_snapshot
+                    )
+                    for report in protective_reports:
+                        await self.audit.record_execution(snapshot.symbol, report)
+                evaluation_portfolio = await self.current_portfolio()
+            except Exception as exc:
+                rejection = RiskDecision(
+                    accepted=False,
+                    reason=f"pre-trade refresh failed: {type(exc).__name__}",
+                )
+                await self.audit.record_risk(
+                    snapshot.symbol, rejection, inference_id=inference_id
+                )
+                return DecisionOutcome(
+                    intent=result.intent,
+                    risk=rejection,
+                    execution=None,
+                    provider=result.provider,
+                )
+
+        evaluation = self.risk.evaluate(
+            result.intent,
+            evaluation_snapshot,
+            evaluation_portfolio,
+            rules,
+        )
         await self.audit.record_risk(
             snapshot.symbol, evaluation.decision, inference_id=inference_id
         )
@@ -227,7 +312,9 @@ class TradingEngine:
                 )
             else:
                 execution = await self.paper_executor.execute(
-                    evaluation.order, snapshot, leverage=result.intent.leverage
+                    evaluation.order,
+                    evaluation_snapshot,
+                    leverage=result.intent.leverage,
                 )
             await self.audit.record_execution(snapshot.symbol, execution)
         return DecisionOutcome(

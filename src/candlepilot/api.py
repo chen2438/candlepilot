@@ -42,7 +42,7 @@ from candlepilot.providers.pricing import PROVIDER_IDS, ModelPricingCatalog
 from candlepilot.providers.pricing import load_catalog as load_pricing_catalog
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.provenance import BACKTEST_DATA_SCHEMA_VERSION, content_fingerprint
-from candlepilot.risk.engine import SymbolRules
+from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
 from candlepilot.storage.database import AuditRepository, CURRENT_SCHEMA_VERSION, Database
 
 
@@ -305,6 +305,15 @@ def create_app(
         providers=ProviderRegistry.from_settings(settings),
         audit=AuditRepository(database.sessions),
         market=market,
+        risk=AggressiveRiskPolicy(
+            max_leverage=settings.max_leverage,
+            max_risk_fraction=settings.max_risk_fraction,
+            max_positions=settings.max_positions,
+            max_margin_fraction=settings.max_margin_fraction,
+            daily_loss_fraction=settings.daily_loss_fraction,
+            max_snapshot_age_seconds=settings.max_snapshot_age_seconds,
+            require_take_profit=settings.mode == TradingMode.TESTNET,
+        ),
         testnet_broker=testnet_broker,
         cadences=settings.cadences,
     )

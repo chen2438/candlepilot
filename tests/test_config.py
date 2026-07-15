@@ -52,6 +52,19 @@ def test_candidates_per_cycle_default_and_env_override(monkeypatch) -> None:
     assert Settings.from_env().candidates_per_cycle == 5
 
 
+def test_snapshot_age_default_override_and_validation(monkeypatch) -> None:
+    monkeypatch.delenv("CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS", raising=False)
+    assert Settings.from_env().max_snapshot_age_seconds == 30
+    monkeypatch.setenv("CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS", "20")
+    assert Settings.from_env().max_snapshot_age_seconds == 20
+    monkeypatch.setenv("CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS", "0")
+    with pytest.raises(ValueError, match="must be positive"):
+        Settings.from_env()
+    monkeypatch.setenv("CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS", "slow")
+    with pytest.raises(ValueError, match="must be an integer"):
+        Settings.from_env()
+
+
 @pytest.mark.parametrize(
     ("configured", "expected"),
     [

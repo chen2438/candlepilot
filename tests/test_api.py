@@ -211,6 +211,19 @@ def test_default_provider_is_selected_from_settings(tmp_path: Path) -> None:
     asyncio.run(database.close())
 
 
+def test_application_wires_snapshot_age_into_risk_policy(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'risk-settings-api.db'}")
+    market = ApiMarket()
+    application = create_app(
+        settings=Settings(max_snapshot_age_seconds=22),
+        database=database,
+        market=market,  # type: ignore[arg-type]
+    )
+
+    assert application.state.engine.risk.max_snapshot_age_seconds == 22
+    asyncio.run(database.close())
+
+
 def test_readiness_rejects_testnet_mode_without_broker(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'not-ready-api.db'}")
     market = ApiMarket()

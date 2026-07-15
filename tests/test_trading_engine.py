@@ -52,6 +52,10 @@ class FailedProvider(LLMProvider):
 
 
 class FakeMarket:
+    def __init__(self, mark_price: Decimal = Decimal("100")) -> None:
+        self.mark_price = mark_price
+        self.snapshot_calls = 0
+
     async def candidate_inputs(self):
         return [
             MarketCandidateInput(
@@ -64,6 +68,18 @@ class FakeMarket:
                 listing_age_days=1000,
             )
         ]
+
+    async def market_snapshot(self, symbol, cadence):
+        self.snapshot_calls += 1
+        return MarketSnapshot(
+            symbol=symbol,
+            cadence=cadence,
+            timestamp=datetime.now(UTC),
+            mark_price=self.mark_price,
+            bid=self.mark_price - Decimal("0.1"),
+            ask=self.mark_price + Decimal("0.1"),
+            quote_volume_24h="1000000",
+        )
 
 
 def test_engine_requires_provider_and_audits_paper_fill(tmp_path: Path) -> None:
@@ -108,6 +124,161 @@ def test_engine_requires_provider_and_audits_paper_fill(tmp_path: Path) -> None:
     assert outcome.risk.accepted
     assert outcome.execution is not None and outcome.execution.status == "FILLED"
     assert intents[0]["intent"]["action"] == "OPEN_LONG"
+
+
+def test_engine_refreshes_market_and_rejects_crossed_price_before_execution(
+    tmp_path: Path,
+) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'fresh-market.db'}")
+        await database.initialize()
+        audit = AuditRepository(database.sessions)
+        market = FakeMarket(mark_price=Decimal("105"))
+        engine = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=audit,
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider("fake-auth")
+        await engine.start()
+        outcome = await engine.evaluate(
+            MarketSnapshot(
+                symbol="BTCUSDT",
+                cadence="5m",
+                timestamp=datetime.now(UTC) - timedelta(seconds=20),
+                mark_price="100",
+                bid="99.9",
+                ask="100.1",
+                quote_volume_24h="1000000",
+            ),
+            PortfolioState(equity="10000", available_balance="8000"),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+        )
+        risk_events = await audit.recent_risk_decisions()
+        executions = await audit.recent_executions()
+        await database.close()
+        return outcome, market.snapshot_calls, risk_events, executions
+
+    outcome, snapshot_calls, risk_events, executions = asyncio.run(scenario())
+    assert snapshot_calls == 1
+    assert not outcome.risk.accepted and outcome.execution is None
+    assert "take profit" in outcome.risk.reason
+    assert risk_events[0]["reason"] == outcome.risk.reason
+    assert executions == []
+
+
+def test_engine_executes_against_refreshed_market_after_slow_analysis(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'fresh-execution.db'}")
+        await database.initialize()
+        market = FakeMarket(mark_price=Decimal("101"))
+        engine = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider("fake-auth")
+        await engine.start()
+        outcome = await engine.evaluate(
+            MarketSnapshot(
+                symbol="BTCUSDT",
+                cadence="5m",
+                timestamp=datetime.now(UTC) - timedelta(seconds=20),
+                mark_price="100",
+                bid="99.9",
+                ask="100.1",
+                quote_volume_24h="1000000",
+            ),
+            PortfolioState(equity="10000", available_balance="8000"),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+        )
+        await database.close()
+        return outcome, market.snapshot_calls
+
+    outcome, snapshot_calls = asyncio.run(scenario())
+    assert outcome.risk.accepted and outcome.execution is not None
+    assert outcome.execution.average_price == Decimal("101.15055")
+    assert snapshot_calls == 1
+
+
+def test_engine_rejects_expired_analysis_before_market_refresh(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'expired-analysis.db'}")
+        await database.initialize()
+        market = FakeMarket()
+        engine = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider("fake-auth")
+        await engine.start()
+        outcome = await engine.evaluate(
+            MarketSnapshot(
+                symbol="BTCUSDT",
+                cadence="5m",
+                timestamp=datetime.now(UTC) - timedelta(seconds=31),
+                mark_price="100",
+                bid="99.9",
+                ask="100.1",
+                quote_volume_24h="1000000",
+            ),
+            PortfolioState(equity="10000", available_balance="8000"),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+        )
+        await database.close()
+        return outcome, market.snapshot_calls
+
+    outcome, snapshot_calls = asyncio.run(scenario())
+    assert not outcome.risk.accepted
+    assert "analysis snapshot expired" in outcome.risk.reason
+    assert snapshot_calls == 0
+
+
+def test_engine_audits_market_refresh_failure_without_execution(tmp_path: Path) -> None:
+    class FailingMarket(FakeMarket):
+        async def market_snapshot(self, symbol, cadence):
+            self.snapshot_calls += 1
+            raise TimeoutError("fixture")
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'refresh-failure.db'}")
+        await database.initialize()
+        audit = AuditRepository(database.sessions)
+        market = FailingMarket()
+        engine = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=audit,
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider("fake-auth")
+        await engine.start()
+        outcome = await engine.evaluate(
+            MarketSnapshot(
+                symbol="BTCUSDT",
+                cadence="5m",
+                timestamp=datetime.now(UTC),
+                mark_price="100",
+                bid="99.9",
+                ask="100.1",
+                quote_volume_24h="1000000",
+            ),
+            PortfolioState(equity="10000", available_balance="8000"),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+        )
+        risk_events = await audit.recent_risk_decisions()
+        executions = await audit.recent_executions()
+        await database.close()
+        return outcome, risk_events, executions
+
+    outcome, risk_events, executions = asyncio.run(scenario())
+    assert outcome.risk.reason == "pre-trade refresh failed: TimeoutError"
+    assert risk_events[0]["reason"] == outcome.risk.reason
+    assert executions == []
 
 
 def test_engine_cadence_selection_validates_and_locks_when_running(tmp_path: Path) -> None:
@@ -194,6 +365,16 @@ def test_testnet_add_requests_protective_bracket_replacement(tmp_path: Path) -> 
 
         async def reconcile_account(self):
             return ReconciliationReport(("BTCUSDT",), 2, ())
+
+        async def account(self):
+            return {
+                "totalMarginBalance": "10000",
+                "availableBalance": "8000",
+                "totalInitialMargin": "100",
+                "positions": [
+                    {"symbol": "BTCUSDT", "positionAmt": "1"},
+                ],
+            }
 
         async def execute_with_stop(
             self, order, *, leverage, replace_existing_protection=False

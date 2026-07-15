@@ -66,6 +66,18 @@ def _parse_candidates_per_cycle(raw: str | None) -> int:
         return 5
 
 
+def _parse_snapshot_age(raw: str | None) -> int:
+    if not raw:
+        return 30
+    try:
+        value = int(raw.strip())
+    except ValueError as exc:
+        raise ValueError("CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS must be an integer") from exc
+    if value <= 0:
+        raise ValueError("CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS must be positive")
+    return value
+
+
 def _parse_default_provider(raw: str | None) -> str | None:
     if not raw or not raw.strip():
         return None
@@ -92,6 +104,7 @@ class Settings:
     max_margin_fraction: Decimal = Decimal("0.60")
     daily_loss_fraction: Decimal = Decimal("0.08")
     inference_timeout_seconds: float = 45.0
+    max_snapshot_age_seconds: int = 30
     cadences: tuple[str, ...] = ("1m", "5m", "15m")
     candidates_per_cycle: int = 5
     default_provider: str | None = None
@@ -111,6 +124,9 @@ class Settings:
             bind_host=os.getenv("CANDLEPILOT_HOST", "127.0.0.1"),
             bind_port=int(os.getenv("CANDLEPILOT_PORT", "8000")),
             inference_timeout_seconds=float(os.getenv("CANDLEPILOT_LLM_TIMEOUT", "45")),
+            max_snapshot_age_seconds=_parse_snapshot_age(
+                os.getenv("CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS")
+            ),
             cadences=_parse_cadences(os.getenv("CANDLEPILOT_CADENCES")),
             candidates_per_cycle=_parse_candidates_per_cycle(
                 os.getenv("CANDLEPILOT_CANDIDATES_PER_CYCLE")
