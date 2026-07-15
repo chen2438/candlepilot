@@ -359,6 +359,9 @@ export default function App() {
     () => providers.find((provider) => provider.provider === status.selected_provider),
     [providers, status.selected_provider],
   );
+  const allHistorySelected = HISTORY_CATEGORIES.every(
+    (category) => historySelected[category.key],
+  );
 
   return (
     <div className="shell">
@@ -671,6 +674,20 @@ export default function App() {
               ))}
             </div>
             <div className="history-actions">
+              <button
+                className="history-select-all"
+                disabled={busy !== null}
+                onClick={() => {
+                  setHistoryConfirm(false);
+                  setHistorySelected(
+                    allHistorySelected
+                      ? {}
+                      : Object.fromEntries(
+                          HISTORY_CATEGORIES.map((category) => [category.key, true]),
+                        ),
+                  );
+                }}
+              >{allHistorySelected ? "取消全选" : "全选"}</button>
               {!historyConfirm ? (
                 <button
                   className="danger"
