@@ -170,6 +170,26 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
     asyncio.run(database.close())
 
 
+def test_default_provider_is_selected_from_settings(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'default-provider.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.PAPER,
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    application = create_app(
+        settings=Settings(default_provider="api-fixture"),
+        database=database,
+        market=market,  # type: ignore[arg-type]
+        engine=engine,
+    )
+
+    assert application.state.engine.selected_provider == "api-fixture"
+    asyncio.run(database.close())
+
+
 def test_readiness_rejects_testnet_mode_without_broker(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'not-ready-api.db'}")
     market = ApiMarket()

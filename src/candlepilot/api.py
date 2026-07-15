@@ -308,6 +308,8 @@ def create_app(
         testnet_broker=testnet_broker,
         cadences=settings.cadences,
     )
+    if settings.default_provider is not None and engine.selected_provider is None:
+        engine.select_provider(settings.default_provider)
 
     async def load_paper_backfill(symbols: list[str]) -> list[MarketSnapshot]:
         results = await asyncio.gather(

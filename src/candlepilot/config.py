@@ -11,6 +11,14 @@ from candlepilot.domain.models import TradingMode
 
 
 DEFAULT_DATABASE_URL = "sqlite+aiosqlite:///./candlepilot.db"
+DEFAULT_PROVIDER_ALIASES = {
+    "codex": "codex-auth",
+    "codex-auth": "codex-auth",
+    "claude": "claude-code-auth",
+    "claude code": "claude-code-auth",
+    "claude-code": "claude-code-auth",
+    "claude-code-auth": "claude-code-auth",
+}
 
 
 def load_dotenv(path: Path | None = None) -> None:
@@ -58,6 +66,19 @@ def _parse_candidates_per_cycle(raw: str | None) -> int:
         return 5
 
 
+def _parse_default_provider(raw: str | None) -> str | None:
+    if not raw or not raw.strip():
+        return None
+    alias = raw.strip().lower()
+    try:
+        return DEFAULT_PROVIDER_ALIASES[alias]
+    except KeyError as exc:
+        choices = ", ".join(DEFAULT_PROVIDER_ALIASES)
+        raise ValueError(
+            f"unsupported CANDLEPILOT_DEFAULT_PROVIDER: {raw!r}; choose one of {choices}"
+        ) from exc
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     mode: TradingMode = TradingMode.PAPER
@@ -73,6 +94,7 @@ class Settings:
     inference_timeout_seconds: float = 45.0
     cadences: tuple[str, ...] = ("1m", "5m", "15m")
     candidates_per_cycle: int = 5
+    default_provider: str | None = None
     codex_model: str | None = None
     codex_reasoning_effort: str | None = None
     claude_model: str | None = None
@@ -92,6 +114,9 @@ class Settings:
             cadences=_parse_cadences(os.getenv("CANDLEPILOT_CADENCES")),
             candidates_per_cycle=_parse_candidates_per_cycle(
                 os.getenv("CANDLEPILOT_CANDIDATES_PER_CYCLE")
+            ),
+            default_provider=_parse_default_provider(
+                os.getenv("CANDLEPILOT_DEFAULT_PROVIDER")
             ),
             codex_model=os.getenv("CANDLEPILOT_CODEX_MODEL") or None,
             codex_reasoning_effort=os.getenv("CANDLEPILOT_CODEX_REASONING_EFFORT") or None,

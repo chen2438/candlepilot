@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+import pytest
+
 from candlepilot.config import DEFAULT_DATABASE_URL, Settings, load_dotenv
 
 
@@ -48,6 +50,32 @@ def test_candidates_per_cycle_default_and_env_override(monkeypatch) -> None:
     assert Settings.from_env().candidates_per_cycle == 8
     monkeypatch.setenv("CANDLEPILOT_CANDIDATES_PER_CYCLE", "not-a-number")
     assert Settings.from_env().candidates_per_cycle == 5
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        ("codex", "codex-auth"),
+        ("codex-auth", "codex-auth"),
+        ("claude", "claude-code-auth"),
+        ("Claude Code", "claude-code-auth"),
+        ("claude-code-auth", "claude-code-auth"),
+    ],
+)
+def test_default_provider_aliases(monkeypatch, configured, expected) -> None:
+    monkeypatch.setenv("CANDLEPILOT_DEFAULT_PROVIDER", configured)
+    assert Settings.from_env().default_provider == expected
+
+
+def test_default_provider_is_optional(monkeypatch) -> None:
+    monkeypatch.delenv("CANDLEPILOT_DEFAULT_PROVIDER", raising=False)
+    assert Settings.from_env().default_provider is None
+
+
+def test_default_provider_rejects_unknown_value(monkeypatch) -> None:
+    monkeypatch.setenv("CANDLEPILOT_DEFAULT_PROVIDER", "openai-api")
+    with pytest.raises(ValueError, match="unsupported CANDLEPILOT_DEFAULT_PROVIDER"):
+        Settings.from_env()
 
 
 def test_from_env_reads_loaded_dotenv(tmp_path: Path, monkeypatch) -> None:
