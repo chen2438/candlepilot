@@ -240,3 +240,8 @@ Python 依赖锁定于 `requirements.lock`，前端锁定于 `frontend/pnpm-lock
 3. 只有测试通过并完成必要实际检查，才在文档中描述为已实现。
 4. 控制台改动必须执行 TypeScript/Vite 构建并在浏览器验证。
 5. 不以盈利为验收标准，以无前视偏差、可审计、风险边界、故障恢复为准。
+6. 每个 Git 提交必须使用清晰的 Conventional Commit 风格标题，并在空行后提供有意义的
+   description，说明改了什么、为什么改；不得只提交标题。
+7. AI 实现的提交必须追加 GitHub 可识别的共同作者 trailer，以显示共同作者及头像：
+   Codex 使用 `Co-authored-by: Codex <noreply@openai.com>`；Claude Code 使用当前对应的
+   Anthropic 共同作者身份。具体执行规则同时记录在根目录 `AGENTS.md`。
