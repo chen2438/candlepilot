@@ -149,11 +149,10 @@ class AggressiveRiskPolicy:
             if requested_side == "SHORT" and snapshot.mark_price <= take_profit:
                 return self._reject("latest market price has crossed the short take profit")
 
-        if intent.order_type == OrderType.LIMIT and intent.entry_price is not None:
-            if requested_side == "LONG" and snapshot.ask <= intent.entry_price:
-                return self._reject("long limit entry is already marketable after refresh")
-            if requested_side == "SHORT" and snapshot.bid >= intent.entry_price:
-                return self._reject("short limit entry is already marketable after refresh")
+        immediately_marketable = intent.order_type == OrderType.LIMIT and (
+            (requested_side == "LONG" and snapshot.ask <= entry)
+            or (requested_side == "SHORT" and snapshot.bid >= entry)
+        )
 
         per_unit_loss = abs(entry - stop) + (entry * self.slippage_fraction)
         risk_budget = portfolio.equity * min(intent.risk_fraction, self.max_risk_fraction)
@@ -162,7 +161,14 @@ class AggressiveRiskPolicy:
             Decimal("0"),
             (portfolio.equity * self.max_margin_fraction) - portfolio.margin_used,
         )
-        margin_quantity = (min(remaining_margin, portfolio.available_balance) * intent.leverage) / entry
+        margin_price = (
+            max(entry, snapshot.ask if requested_side == "LONG" else snapshot.bid)
+            if intent.order_type == OrderType.LIMIT
+            else entry
+        )
+        margin_quantity = (
+            min(remaining_margin, portfolio.available_balance) * intent.leverage
+        ) / margin_price
         quantity = _round_down(min(risk_quantity, margin_quantity), rules.quantity_step)
         if quantity < rules.min_quantity:
             return self._reject("risk-sized quantity is below the exchange minimum")
@@ -183,7 +189,12 @@ class AggressiveRiskPolicy:
         return RiskEvaluation(
             decision=RiskDecision(
                 accepted=True,
-                reason="accepted within hard risk limits",
+                reason=(
+                    "accepted within hard risk limits; "
+                    "limit entry is immediately marketable after refresh"
+                    if immediately_marketable
+                    else "accepted within hard risk limits"
+                ),
                 max_quantity=quantity,
             ),
             order=order,

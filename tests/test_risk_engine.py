@@ -116,7 +116,7 @@ def test_market_order_uses_latest_mark_instead_of_suggested_entry() -> None:
     assert result.order is not None and result.order.price is None
 
 
-def test_rejects_crossed_protection_and_marketable_limit_after_refresh() -> None:
+def test_rejects_crossed_protection_after_refresh() -> None:
     crossed_take_profit = _intent().model_copy(
         update={"order_type": OrderType.LIMIT, "entry_price": Decimal("99")}
     )
@@ -133,14 +133,36 @@ def test_rejects_crossed_protection_and_marketable_limit_after_refresh() -> None
     assert not crossed.decision.accepted
     assert "crossed the long take profit" in crossed.decision.reason
 
+
+
+def test_allows_and_marks_immediately_marketable_limit_after_refresh() -> None:
     marketable = _intent().model_copy(
         update={"order_type": OrderType.LIMIT, "entry_price": Decimal("101")}
     )
-    immediate = AggressiveRiskPolicy().evaluate(
+    result = AggressiveRiskPolicy().evaluate(
         marketable, _snapshot(), _portfolio(), RULES
     )
-    assert not immediate.decision.accepted
-    assert "already marketable" in immediate.decision.reason
+
+    assert result.decision.accepted and result.order is not None
+    assert "immediately marketable after refresh" in result.decision.reason
+    assert result.order.price == Decimal("101")
+
+
+def test_marketable_short_limit_uses_fresh_bid_for_margin_sizing() -> None:
+    intent = _intent(TradeAction.OPEN_SHORT).model_copy(
+        update={"order_type": OrderType.LIMIT, "entry_price": Decimal("99")}
+    )
+
+    result = AggressiveRiskPolicy().evaluate(
+        intent,
+        _snapshot(),
+        _portfolio(available_balance="10"),
+        RULES,
+    )
+
+    assert result.decision.accepted and result.order is not None
+    assert result.order.quantity == Decimal("0.500")
+    assert "immediately marketable after refresh" in result.decision.reason
 
 
 def test_snapshot_age_must_be_positive() -> None:

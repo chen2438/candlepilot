@@ -6,6 +6,7 @@ from pathlib import Path
 from candlepilot.application.engine import TradingEngine
 from candlepilot.domain.models import (
     MarketSnapshot,
+    OrderType,
     PortfolioState,
     ProviderHealth,
     TradeAction,
@@ -49,6 +50,24 @@ class FailedProvider(LLMProvider):
 
     async def generate_trade_intent(self, snapshot, portfolio) -> ProviderResult:
         raise ProviderError("fixture failure")
+
+
+class MarketableLimitProvider(FakeProvider):
+    async def generate_trade_intent(self, snapshot, portfolio) -> ProviderResult:
+        intent = TradeIntent(
+            symbol=snapshot.symbol,
+            cadence=snapshot.cadence,
+            action=TradeAction.OPEN_LONG,
+            confidence=0.8,
+            leverage=3,
+            risk_fraction="0.01",
+            order_type=OrderType.LIMIT,
+            entry_price="101",
+            stop_loss="98",
+            take_profit="104",
+            rationale="marketable limit fixture",
+        )
+        return ProviderResult(intent, self.name, "fixture", timedelta(0), "{}", {})
 
 
 class FakeMarket:
@@ -201,6 +220,45 @@ def test_engine_executes_against_refreshed_market_after_slow_analysis(tmp_path: 
     assert outcome.risk.accepted and outcome.execution is not None
     assert outcome.execution.average_price == Decimal("101.15055")
     assert snapshot_calls == 1
+
+
+def test_engine_executes_and_audits_marketable_limit_after_refresh(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'marketable-limit.db'}")
+        await database.initialize()
+        audit = AuditRepository(database.sessions)
+        engine = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([MarketableLimitProvider()]),
+            audit=audit,
+            market=FakeMarket(),  # type: ignore[arg-type]
+        )
+        engine.select_provider("fake-auth")
+        await engine.start()
+        outcome = await engine.evaluate(
+            MarketSnapshot(
+                symbol="BTCUSDT",
+                cadence="5m",
+                timestamp=datetime.now(UTC) - timedelta(seconds=20),
+                mark_price="100",
+                bid="99.9",
+                ask="100.1",
+                quote_volume_24h="1000000",
+            ),
+            PortfolioState(equity="10000", available_balance="8000"),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+        )
+        risk_events = await audit.recent_risk_decisions()
+        executions = await audit.recent_executions()
+        await database.close()
+        return outcome, risk_events, executions
+
+    outcome, risk_events, executions = asyncio.run(scenario())
+    assert outcome.risk.accepted
+    assert outcome.execution is not None and outcome.execution.status == "FILLED"
+    assert "immediately marketable after refresh" in outcome.risk.reason
+    assert risk_events[0]["reason"] == outcome.risk.reason
+    assert len(executions) == 1
 
 
 def test_engine_rejects_expired_analysis_before_market_refresh(tmp_path: Path) -> None:
