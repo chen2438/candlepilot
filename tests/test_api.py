@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -728,6 +729,94 @@ def test_settings_endpoint_reads_masked_and_writes_env(tmp_path: Path, monkeypat
         assert client.post(
             "/api/settings", json={"values": {"CANDLEPILOT_PORT": "1\n2"}}
         ).status_code == 422
+    asyncio.run(database.close())
+
+
+def test_custom_providers_editor_endpoint(tmp_path: Path, monkeypatch) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        'CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON=[{"id":"main","base_url":"https://a.example/v1",'
+        '"api_key":"sk-existing","model":"m1","extra_headers":{"x-team":"desk"}}]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CANDLEPILOT_ENV_FILE", str(env_path))
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'cp.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.PAPER,
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        listed = client.get("/api/custom-providers")
+        assert listed.status_code == 200, listed.text
+        body = listed.json()
+        assert body["max_providers"] == 8
+        assert body["wire_apis"] == ["chat-completions", "responses"]
+        entry = body["providers"][0]
+        # Every field is editable in the clear except the key...
+        assert entry["id"] == "main"
+        assert entry["base_url"] == "https://a.example/v1"
+        assert entry["model"] == "m1"
+        # ...which is only ever reported as configured + masked.
+        assert entry["api_key_configured"] is True
+        assert "sk-existing" not in listed.text
+        # Header values are secrets too: only names are exposed.
+        assert entry["extra_header_names"] == ["x-team"]
+        assert "desk" not in listed.text
+
+        # Editing without resending the key keeps it, and keeps unsent headers.
+        saved = client.post(
+            "/api/custom-providers",
+            json={"providers": [{"id": "main", "base_url": "https://b.example/v1", "model": "m2"}]},
+        )
+        assert saved.status_code == 200, saved.text
+        stored = json.loads(read_env_file(env_path)["CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON"])
+        assert stored[0]["api_key"] == "sk-existing"
+        assert stored[0]["base_url"] == "https://b.example/v1"
+        assert stored[0]["model"] == "m2"
+        assert stored[0]["extra_headers"] == {"x-team": "desk"}
+
+        # A supplied key replaces it; an empty string clears it.
+        client.post(
+            "/api/custom-providers",
+            json={"providers": [{"id": "main", "base_url": "https://b.example/v1",
+                                 "api_key": "sk-new"}]},
+        )
+        stored = json.loads(read_env_file(env_path)["CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON"])
+        assert stored[0]["api_key"] == "sk-new"
+        client.post(
+            "/api/custom-providers",
+            json={"providers": [{"id": "main", "base_url": "https://b.example/v1",
+                                 "api_key": "", "require_api_key": False}]},
+        )
+        stored = json.loads(read_env_file(env_path)["CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON"])
+        assert "api_key" not in stored[0]
+
+        # Adding a second endpoint, then removing all of them.
+        client.post(
+            "/api/custom-providers",
+            json={"providers": [
+                {"id": "main", "base_url": "https://b.example/v1", "require_api_key": False},
+                {"id": "local", "base_url": "http://127.0.0.1:1234/v1", "require_api_key": False},
+            ]},
+        )
+        assert len(client.get("/api/custom-providers").json()["providers"]) == 2
+        client.post("/api/custom-providers", json={"providers": []})
+        assert client.get("/api/custom-providers").json()["providers"] == []
+        assert read_env_file(env_path)["CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON"] == ""
+
+        # Invalid definitions are rejected by the startup parser.
+        for bad in (
+            {"id": "BAD", "base_url": "https://x/v1"},
+            {"id": "a", "base_url": "https://x/v1", "wire_api": "grpc"},
+            {"id": "a", "base_url": "ftp://x/v1"},
+        ):
+            assert client.post(
+                "/api/custom-providers", json={"providers": [bad]}
+            ).status_code == 422, bad
     asyncio.run(database.close())
 
 

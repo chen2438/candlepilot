@@ -121,9 +121,9 @@ def test_describe_settings_masks_secrets_and_exposes_plain_values(tmp_path: Path
     assert secret["value"] is None  # never returned in full
     assert "super-secret-key" not in str(payload)
 
-    # The providers array embeds api_key values, so it is masked too.
-    providers = fields["CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON"]
-    assert providers["secret"] is True
+    # Custom endpoints are edited through their own form, not this raw JSON key,
+    # so the blob never reaches the generic settings payload at all.
+    assert "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON" not in fields
     assert "gsk_secret" not in str(payload)
 
     unset = fields["CANDLEPILOT_CLAUDE_MODEL"]

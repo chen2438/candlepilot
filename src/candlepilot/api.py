@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -30,7 +31,12 @@ from candlepilot.backtest.portfolio import PortfolioBacktestEngine
 from candlepilot.backtest.replay import align_cached_intents, generate_fresh_intents
 from candlepilot.broker.binance_testnet import BinanceTestnetBroker, BinanceTestnetCredentials
 from candlepilot.broker.user_stream import BinanceTestnetUserStream
-from candlepilot.config import ENV_FILE_VARIABLE, Settings
+from candlepilot.config import (
+    CUSTOM_LLM_WIRE_APIS,
+    ENV_FILE_VARIABLE,
+    MAX_CUSTOM_LLM_PROVIDERS,
+    Settings,
+)
 from candlepilot.domain.models import MarketSnapshot, PortfolioState, TradeIntent, TradingMode
 from candlepilot.market.binance import BinancePublicClient
 from candlepilot.market.cache import HistoricalMarketCache
@@ -41,12 +47,15 @@ from candlepilot.providers.pricing import (
 )
 from candlepilot.providers.pricing import PROVIDER_IDS, ModelPricingCatalog
 from candlepilot.providers.pricing import load_catalog as load_pricing_catalog
+from candlepilot.providers.openai_compatible import validate_base_url
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.provenance import BACKTEST_DATA_SCHEMA_VERSION, content_fingerprint
 from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
 from candlepilot.settings_file import (
+    CUSTOM_PROVIDERS_ENV,
     ENV_FIELDS,
     describe_settings,
+    mask_secret,
     read_env_file,
     write_env_file,
 )
@@ -71,6 +80,23 @@ class ProviderConfig(ApiModel):
 
 class ProviderTestRequest(ApiModel):
     name: str
+
+
+class CustomProviderInput(ApiModel):
+    id: str
+    base_url: str
+    model: str | None = None
+    reasoning_effort: str | None = None
+    wire_api: str = "chat-completions"
+    require_api_key: bool = True
+    # None keeps the stored key, "" clears it, any other value replaces it — the
+    # console never receives the current key, so it cannot send it back.
+    api_key: str | None = None
+    extra_headers: dict[str, str] | None = None
+
+
+class CustomProvidersUpdate(ApiModel):
+    providers: list[CustomProviderInput] = Field(max_length=MAX_CUSTOM_LLM_PROVIDERS)
 
 
 class SettingsUpdate(ApiModel):
@@ -832,6 +858,96 @@ def create_app(
     async def get_settings() -> dict[str, Any]:
         async with settings_file_lock:
             return describe_settings(env_path, read_env_file(env_path))
+
+    def _stored_custom_providers() -> list[dict[str, Any]]:
+        raw = read_env_file(env_path).get(CUSTOM_PROVIDERS_ENV, "").strip()
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        return parsed if isinstance(parsed, list) else []
+
+    @app.get("/api/custom-providers")
+    async def get_custom_providers() -> dict[str, Any]:
+        async with settings_file_lock:
+            stored = _stored_custom_providers()
+        providers = []
+        for entry in stored:
+            key = entry.get("api_key") or ""
+            headers = entry.get("extra_headers") or {}
+            providers.append(
+                {
+                    "id": entry.get("id", ""),
+                    "base_url": entry.get("base_url", ""),
+                    "model": entry.get("model") or "",
+                    "reasoning_effort": entry.get("reasoning_effort") or "",
+                    "wire_api": entry.get("wire_api") or "chat-completions",
+                    "require_api_key": entry.get("require_api_key", True),
+                    # Header values are secrets too: expose only their names.
+                    "extra_header_names": sorted(headers) if isinstance(headers, dict) else [],
+                    "api_key_configured": bool(key),
+                    "api_key_masked": mask_secret(key) if key else "",
+                }
+            )
+        return {
+            "providers": providers,
+            "max_providers": MAX_CUSTOM_LLM_PROVIDERS,
+            "wire_apis": sorted(CUSTOM_LLM_WIRE_APIS),
+        }
+
+    @app.post("/api/custom-providers")
+    async def save_custom_providers(update: CustomProvidersUpdate) -> dict[str, Any]:
+        async with settings_file_lock:
+            stored = {
+                entry.get("id"): entry for entry in _stored_custom_providers()
+            }
+            entries: list[dict[str, Any]] = []
+            for provider in update.providers:
+                previous = stored.get(provider.id, {})
+                # The provider constructor only records a bad URL as a config
+                # error, so validate here to fail the form instead of saving an
+                # endpoint that silently reports itself unavailable later.
+                try:
+                    base_url = validate_base_url(provider.base_url)
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=422, detail=f"{provider.id}: {exc}"
+                    ) from exc
+                entry: dict[str, Any] = {"id": provider.id, "base_url": base_url}
+                # Omitted key means "unchanged", so carry the stored one over.
+                key = provider.api_key if provider.api_key is not None else previous.get("api_key")
+                if key:
+                    entry["api_key"] = key
+                for field, value in (
+                    ("model", provider.model),
+                    ("reasoning_effort", provider.reasoning_effort),
+                ):
+                    if value and value.strip():
+                        entry[field] = value.strip()
+                entry["wire_api"] = provider.wire_api
+                if not provider.require_api_key:
+                    entry["require_api_key"] = False
+                headers = (
+                    provider.extra_headers
+                    if provider.extra_headers is not None
+                    else previous.get("extra_headers")
+                )
+                if headers:
+                    entry["extra_headers"] = headers
+                entries.append(entry)
+
+            serialized = json.dumps(entries, separators=(",", ":")) if entries else ""
+            candidate = {**read_env_file(env_path), CUSTOM_PROVIDERS_ENV: serialized}
+            try:
+                # Reuse the startup parser so the console cannot save a list the
+                # next start would reject.
+                Settings.from_mapping(candidate)
+            except (ValueError, TypeError) as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            write_env_file(env_path, {CUSTOM_PROVIDERS_ENV: serialized})
+        return await get_custom_providers()
 
     @app.post("/api/settings")
     async def save_settings(update: SettingsUpdate) -> dict[str, Any]:

@@ -1,3 +1,21 @@
+export interface CustomProvider {
+  id: string;
+  base_url: string;
+  model: string;
+  reasoning_effort: string;
+  wire_api: string;
+  require_api_key: boolean;
+  extra_header_names: string[];
+  api_key_configured: boolean;
+  api_key_masked: string;
+}
+
+export interface CustomProvidersPayload {
+  providers: CustomProvider[];
+  max_providers: number;
+  wire_apis: string[];
+}
+
 export interface SettingsField {
   key: string;
   label: string;

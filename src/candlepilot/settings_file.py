@@ -84,22 +84,6 @@ ENV_SECTIONS: tuple[EnvSection, ...] = (
         ),
     ),
     EnvSection(
-        "Custom API",
-        (
-            EnvField(
-                "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON",
-                "端点 JSON 数组",
-                "json",
-                placeholder='[{"id":"main","base_url":"https://api.example/v1","api_key":"sk-...","model":"gpt-4o"}]',
-                description=(
-                    "最多 8 个端点，每项需唯一小写 id 与 base_url，可选 api_key / model / "
-                    "reasoning_effort / wire_api / require_api_key / extra_headers。"
-                    "含 api_key，保存后只回显掩码；留空保持不变。"
-                ),
-            ),
-        ),
-    ),
-    EnvSection(
         "币安测试网",
         (
             EnvField("BINANCE_TESTNET_API_KEY", "API Key", "secret"),
@@ -116,7 +100,8 @@ ENV_FIELDS: dict[str, EnvField] = {
 
 # The providers array embeds api_key values, so it is masked like a secret even
 # though it is edited as JSON.
-MASKED_JSON_KEYS = frozenset({"CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON"})
+CUSTOM_PROVIDERS_ENV = "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON"
+MASKED_JSON_KEYS = frozenset({CUSTOM_PROVIDERS_ENV})
 
 
 def mask_secret(value: str) -> str:

@@ -11,6 +11,8 @@ import type {
   ProviderHealth,
   ProviderMetric,
   ProviderMetricsResponse,
+  CustomProvider,
+  CustomProvidersPayload,
   RunSessionMetrics,
   SettingsField,
   SettingsPayload,
@@ -1030,6 +1032,162 @@ export default function App() {
   );
 }
 
+type ProviderDraft = CustomProvider & { api_key: string | null };
+
+function CustomProvidersPanel({
+  busy,
+  setBusy,
+  setError,
+}: {
+  busy: string | null;
+  setBusy: (value: string | null) => void;
+  setError: (value: string | null) => void;
+}) {
+  const [payload, setPayload] = useState<CustomProvidersPayload | null>(null);
+  const [drafts, setDrafts] = useState<ProviderDraft[] | null>(null);
+  const [saved, setSaved] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const next = await api<CustomProvidersPayload>("/api/custom-providers");
+      setPayload(next);
+      setDrafts(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }, [setError]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // api_key null means "leave the stored key alone" — the console never holds it.
+  const rows: ProviderDraft[] =
+    drafts ?? (payload?.providers ?? []).map((p) => ({ ...p, api_key: null }));
+  const dirty = drafts !== null;
+
+  const update = (index: number, patch: Partial<ProviderDraft>) =>
+    setDrafts(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+
+  const save = useCallback(async () => {
+    setBusy("custom-providers");
+    setError(null);
+    setSaved(null);
+    try {
+      const next = await api<CustomProvidersPayload>("/api/custom-providers", {
+        method: "POST",
+        body: JSON.stringify({
+          providers: rows.map((row) => ({
+            id: row.id.trim(),
+            base_url: row.base_url.trim(),
+            model: row.model.trim() || null,
+            reasoning_effort: row.reasoning_effort.trim() || null,
+            wire_api: row.wire_api,
+            require_api_key: row.require_api_key,
+            ...(row.api_key === null ? {} : { api_key: row.api_key }),
+          })),
+        }),
+      });
+      setPayload(next);
+      setDrafts(null);
+      setSaved(`已保存 ${next.providers.length} 个端点，重启后生效`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }, [rows, setBusy, setError]);
+
+  if (!payload) return null;
+  const full = rows.length >= payload.max_providers;
+
+  return (
+    <div className="settings-section">
+      <h4 className="account-subhead">Custom API 端点（{rows.length}/{payload.max_providers}）</h4>
+      {!rows.length && <div className="empty cards">还没有自定义端点。点「新增端点」接入任意 OpenAI 兼容服务。</div>}
+      {rows.map((row, index) => (
+        <div className="endpoint-card" key={index}>
+          <div className="endpoint-grid">
+            <label><span>ID</span>
+              <input value={row.id} placeholder="main" disabled={busy !== null}
+                onChange={(e) => update(index, { id: e.target.value })} />
+            </label>
+            <label className="endpoint-wide"><span>Base URL</span>
+              <input value={row.base_url} placeholder="https://api.example/v1" disabled={busy !== null}
+                onChange={(e) => update(index, { base_url: e.target.value })} />
+            </label>
+            <label><span>模型</span>
+              <input value={row.model} placeholder="gpt-4o" disabled={busy !== null}
+                onChange={(e) => update(index, { model: e.target.value })} />
+            </label>
+            <label><span>API Key</span>
+              <input
+                type="password"
+                value={row.api_key ?? ""}
+                placeholder={row.api_key_configured ? `已配置（${row.api_key_masked}）· 留空不变` : "未配置"}
+                disabled={busy !== null}
+                onChange={(e) => update(index, { api_key: e.target.value })}
+              />
+            </label>
+            <label><span>协议</span>
+              <select value={row.wire_api} disabled={busy !== null}
+                onChange={(e) => update(index, { wire_api: e.target.value })}>
+                {payload.wire_apis.map((w) => <option key={w} value={w}>{w}</option>)}
+              </select>
+            </label>
+            <label><span>推理强度</span>
+              <select value={row.reasoning_effort} disabled={busy !== null}
+                onChange={(e) => update(index, { reasoning_effort: e.target.value })}>
+                {["", "low", "medium", "high", "xhigh"].map((o) => (
+                  <option key={o} value={o}>{o || "（默认）"}</option>
+                ))}
+              </select>
+            </label>
+            <label className="endpoint-check">
+              <input type="checkbox" checked={row.require_api_key} disabled={busy !== null}
+                onChange={(e) => update(index, { require_api_key: e.target.checked })} />
+              <span>需要 API Key</span>
+            </label>
+            <div className="endpoint-actions">
+              {row.api_key_configured && row.api_key === null && (
+                <button className="text-button" disabled={busy !== null}
+                  onClick={() => update(index, { api_key: "" })}>清除密钥</button>
+              )}
+              {row.api_key !== null && (
+                <button className="text-button" disabled={busy !== null}
+                  onClick={() => update(index, { api_key: null })}>取消改密钥</button>
+              )}
+              <button className="text-button danger-text" disabled={busy !== null}
+                onClick={() => setDrafts(rows.filter((_, i) => i !== index))}>删除端点</button>
+            </div>
+          </div>
+          {row.extra_header_names.length > 0 && (
+            <small className="settings-hint">
+              自定义请求头（保留不变）：{row.extra_header_names.join("、")}
+            </small>
+          )}
+        </div>
+      ))}
+      <div className="settings-actions">
+        <button
+          className="compact"
+          disabled={busy !== null || full}
+          title={full ? `最多 ${payload.max_providers} 个` : ""}
+          onClick={() => setDrafts([...rows, {
+            id: "", base_url: "", model: "", reasoning_effort: "", wire_api: "chat-completions",
+            require_api_key: true, extra_header_names: [], api_key_configured: false,
+            api_key_masked: "", api_key: "",
+          }])}
+        >新增端点</button>
+        <button className="compact" disabled={busy !== null || !dirty} onClick={save}>
+          {busy === "custom-providers" ? "保存中…" : "保存端点"}
+        </button>
+        <button className="text-button" disabled={busy !== null || !dirty}
+          onClick={() => { setDrafts(null); setSaved(null); }}>放弃改动</button>
+        {saved && <span className="settings-saved">{saved}</span>}
+      </div>
+    </div>
+  );
+}
+
 function SettingsPanel({
   busy,
   setBusy,
@@ -1088,6 +1246,7 @@ function SettingsPanel({
         保存只写入 <code>{payload.path}</code>，<strong>不会改变正在运行的进程</strong>；重启后生效。
         密钥只写不读：现有值仅显示掩码尾号，留空表示保持不变。shell 里 export 的同名变量在运行时优先级更高。
       </p>
+      <CustomProvidersPanel busy={busy} setBusy={setBusy} setError={setError} />
       {payload.sections.map((section) => (
         <div className="settings-section" key={section.title}>
           <h4 className="account-subhead">{section.title}</h4>
