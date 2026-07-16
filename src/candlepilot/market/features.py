@@ -179,7 +179,13 @@ class FeaturePipeline:
             else:
                 buy_notional += notional
         trade_total = buy_notional + sell_notional
+        # How much time the trade tape actually covers. The count is fixed, so
+        # the window is not: on a busy symbol it can be seconds. Without this
+        # the model cannot tell real flow from a noisy blink.
+        stamps = [int(trade["T"]) for trade in trades if trade.get("T") is not None]
+        trade_seconds = (max(stamps) - min(stamps)) / 1000 if len(stamps) >= 2 else 0.0
         return {
+            "recent_trade_seconds": trade_seconds,
             "basis_bps": float(
                 ((mark_price / index_price) - 1) * Decimal("10000")
                 if index_price

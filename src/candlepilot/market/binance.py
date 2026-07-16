@@ -259,7 +259,7 @@ class BinancePublicClient:
             self._get("/fapi/v1/premiumIndex", symbol=symbol),
             self._get("/fapi/v1/depth", symbol=symbol, limit=20),
             self._get("/fapi/v1/openInterest", symbol=symbol),
-            self._get("/fapi/v1/aggTrades", symbol=symbol, limit=100),
+            self._get("/fapi/v1/aggTrades", symbol=symbol, limit=1000),
         )
         rows_by_interval = dict(
             zip(feature_intervals, results[: len(feature_intervals)], strict=True)

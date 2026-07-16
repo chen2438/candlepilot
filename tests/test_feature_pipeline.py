@@ -122,3 +122,39 @@ def _flat_rows(count: int = 60) -> list[list[object]]:
         open_ms = int((start + timedelta(minutes=index)).timestamp() * 1000)
         rows.append([open_ms, "100", "100", "100", "100", "10", open_ms + 59_999, "1000"])
     return rows
+
+
+def test_trade_imbalance_reports_the_window_it_covers() -> None:
+    """A fixed trade count spans a variable amount of time.
+
+    The same imbalance means very different things over four minutes and over
+    a fifth of a second, and only the tape's span tells the two apart.
+    """
+
+    minutes = FeaturePipeline.microstructure(
+        mark_price=Decimal("100"),
+        index_price=Decimal("100"),
+        open_interest=Decimal("1"),
+        bids=[["100", "1"]],
+        asks=[["101", "1"]],
+        trades=[
+            {"p": "100", "q": "1", "m": False, "T": 1_784_040_000_000},
+            {"p": "100", "q": "1", "m": True, "T": 1_784_040_240_000},
+        ],
+    )
+    assert minutes["recent_trade_seconds"] == 240.0
+
+    blink = FeaturePipeline.microstructure(
+        mark_price=Decimal("100"),
+        index_price=Decimal("100"),
+        open_interest=Decimal("1"),
+        bids=[["100", "1"]],
+        asks=[["101", "1"]],
+        trades=[
+            {"p": "100", "q": "1", "m": False, "T": 1_784_040_000_000},
+            {"p": "100", "q": "1", "m": False, "T": 1_784_040_000_200},
+        ],
+    )
+    # Same one-sided imbalance, but over a window worth nothing.
+    assert blink["recent_trade_imbalance"] == 1.0
+    assert blink["recent_trade_seconds"] == 0.2
