@@ -131,6 +131,8 @@ const CANDIDATE_DEFINITIONS = {
   trend: "币安 24h 价格涨跌幅；正值表示上涨，负值表示下跌。",
 };
 
+const UNIVERSE_COLLAPSED_ROWS = 5;
+
 function providerLabel(name: string): string {
   if (name === "codex-auth") return "Codex Auth";
   if (name === "claude-code-auth") return "Claude Code Auth";
@@ -210,6 +212,7 @@ export default function App() {
   const [historyResult, setHistoryResult] = useState<string | null>(null);
   const [candidateDraft, setCandidateDraft] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<Record<string, { ok: boolean; text: string }>>({});
+  const [universeExpanded, setUniverseExpanded] = useState(false);
 
   const applyProviderConfig = useCallback(async (name: string, draft: { model: string; effort: string }) => {
     setBusy("provider-config");
@@ -778,7 +781,7 @@ export default function App() {
               <table>
                 <thead><tr><th>标的</th><th data-tooltip={CANDIDATE_DEFINITIONS.score}>评分</th><th data-tooltip={CANDIDATE_DEFINITIONS.volumeRank}>成交额排名</th><th data-tooltip={CANDIDATE_DEFINITIONS.spread}>价差</th><th data-tooltip={CANDIDATE_DEFINITIONS.volatility}>24h 波动</th><th data-tooltip={CANDIDATE_DEFINITIONS.trend}>趋势</th></tr></thead>
                 <tbody>
-                  {candidates.map((candidate) => (
+                  {(universeExpanded ? candidates : candidates.slice(0, UNIVERSE_COLLAPSED_ROWS)).map((candidate) => (
                     <tr key={candidate.symbol}>
                       <td><strong>{candidate.symbol.replace("USDT", "")}</strong><small>/USDT PERP</small></td>
                       <td className="accent">{Number(candidate.score).toFixed(3)}</td>
@@ -792,6 +795,17 @@ export default function App() {
                 </tbody>
               </table>
             </div>
+            {candidates.length > UNIVERSE_COLLAPSED_ROWS && (
+              <button
+                className="universe-toggle"
+                aria-expanded={universeExpanded}
+                onClick={() => setUniverseExpanded((current) => !current)}
+              >
+                {universeExpanded
+                  ? `收起，只看前 ${UNIVERSE_COLLAPSED_ROWS} 个`
+                  : `展开全部 ${candidates.length} 个（还有 ${candidates.length - UNIVERSE_COLLAPSED_ROWS} 个）`}
+              </button>
+            )}
           </article>
 
           <DecisionPanel decisions={decisions} />
