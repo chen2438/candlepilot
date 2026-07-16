@@ -4,7 +4,12 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
-from candlepilot.domain.models import MarketSnapshot, TradeAction, TradeIntent
+from candlepilot.domain.models import (
+    RATIONALE_MAX_LENGTH,
+    MarketSnapshot,
+    TradeAction,
+    TradeIntent,
+)
 
 
 def test_open_intent_requires_stop_loss() -> None:
@@ -24,6 +29,16 @@ def test_hold_factory_is_safe() -> None:
     intent = TradeIntent.hold("ETHUSDT", "1m", "provider unavailable")
     assert intent.action == TradeAction.HOLD
     assert intent.risk_fraction == Decimal("0")
+
+
+def test_trade_intent_allows_rationale_up_to_one_thousand_characters() -> None:
+    intent = TradeIntent.hold("ETHUSDT", "5m", "x" * RATIONALE_MAX_LENGTH)
+    assert len(intent.rationale) == 1_000
+
+
+def test_hold_factory_bounds_oversized_error_reason() -> None:
+    intent = TradeIntent.hold("ETHUSDT", "5m", "x" * (RATIONALE_MAX_LENGTH + 1))
+    assert len(intent.rationale) == RATIONALE_MAX_LENGTH
 
 
 def test_market_snapshot_rejects_crossed_quote() -> None:

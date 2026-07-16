@@ -273,6 +273,26 @@ def test_claude_provider_unwraps_result(tmp_path: Path) -> None:
     assert result.prompt is not None and '"portfolio"' in result.prompt
 
 
+def test_claude_provider_truncates_only_oversized_rationale_and_marks_usage(
+    tmp_path: Path,
+) -> None:
+    intent = _minimal_intent()
+    intent["rationale"] = "r" * 1_200
+    envelope = json.dumps({"result": json.dumps(intent), "duration_ms": 12})
+    executable = _write_fake_cli(tmp_path / "claude", f"printf '%s\\n' '{envelope}'\n")
+
+    result = asyncio.run(
+        ClaudeCodeAuthProvider(executable=executable).generate_trade_intent(
+            _market(), _portfolio()
+        )
+    )
+
+    assert len(result.intent.rationale) == 1_000
+    assert result.usage["rationale_truncated"] is True
+    assert "r" * 1_200 in result.raw_output
+    assert result.prompt is not None and "at most 800 characters" in result.prompt
+
+
 def _minimal_intent() -> dict:
     return {
         "symbol": "BTCUSDT",

@@ -158,6 +158,34 @@ def test_custom_provider_calls_responses_with_optional_auth_and_headers() -> Non
     }
 
 
+def test_custom_provider_truncates_oversized_rationale_but_keeps_raw_output() -> None:
+    oversized = _intent()
+    oversized["rationale"] = "r" * 1_200
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "output_text": json.dumps(oversized),
+                "usage": {},
+            },
+        )
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://llm.example/v1",
+        api_key=SecretStr("secret"),
+        model="vendor-model",
+        wire_api="responses",
+        transport=httpx.MockTransport(handler),
+    )
+    result = asyncio.run(provider.generate_trade_intent(_market(), _portfolio()))
+
+    assert len(result.intent.rationale) == 1_000
+    assert result.usage["rationale_truncated"] is True
+    assert "r" * 1_200 in result.raw_output
+
+
 @pytest.mark.parametrize(
     "value",
     [

@@ -15,7 +15,13 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from candlepilot.domain.models import MarketSnapshot, PortfolioState, ProviderHealth, TradeIntent
+from candlepilot.domain.models import (
+    RATIONALE_MAX_LENGTH,
+    MarketSnapshot,
+    PortfolioState,
+    ProviderHealth,
+    TradeIntent,
+)
 from candlepilot.providers.base import LLMProvider, ProviderCapabilities, ProviderResult
 from candlepilot.provenance import (
     DECISION_PROMPT_VERSION,
@@ -30,6 +36,7 @@ CODEX_APP_BINARIES = (
 )
 USER_CLI_DIRECTORY = Path.home() / ".local" / "bin"
 MAX_OUTPUT_BYTES = 1_000_000
+RATIONALE_TARGET_LENGTH = 800
 SENSITIVE_ENV_PREFIXES = (
     "BINANCE_",
     "OPENAI_",
@@ -183,7 +190,10 @@ def _decision_prompt(
         "Analyze only the JSON supplied below. Return exactly one object matching the "
         "provided TradeIntent schema. Use HOLD when evidence is weak or data is unsuitable. "
         "Opening and ADD decisions require both a stop loss and a take profit. "
-        "Never exceed leverage 10 or risk 0.02." + schema_clause + "\n"
+        "Never exceed leverage 10 or risk 0.02. "
+        f"Keep rationale concise and at most {RATIONALE_TARGET_LENGTH} characters."
+        + schema_clause
+        + "\n"
         + json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     )
 
@@ -284,14 +294,21 @@ def parse_claude_usage(envelope: dict[str, Any]) -> tuple[str | None, dict[str, 
     return model, usage
 
 
-def _parse_intent(value: str | dict[str, Any]) -> TradeIntent:
+def _parse_intent(value: str | dict[str, Any]) -> tuple[TradeIntent, bool]:
     data: Any = value
     if isinstance(value, str):
         text = value.strip()
         if text.startswith("```"):
             text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         data = json.loads(text)
-    return TradeIntent.model_validate(data)
+    rationale_truncated = False
+    if isinstance(data, dict):
+        rationale = data.get("rationale")
+        if isinstance(rationale, str) and len(rationale) > RATIONALE_MAX_LENGTH:
+            data = dict(data)
+            data["rationale"] = rationale[:RATIONALE_MAX_LENGTH]
+            rationale_truncated = True
+    return TradeIntent.model_validate(data), rationale_truncated
 
 
 def trade_intent_output_schema() -> dict[str, Any]:
@@ -428,9 +445,11 @@ class CodexAuthProvider(LLMProvider):
         if result_text is None:
             raise ProviderError("Codex did not return an agent message")
         try:
-            intent = _parse_intent(result_text)
+            intent, rationale_truncated = _parse_intent(result_text)
         except (json.JSONDecodeError, ValidationError) as exc:
             raise ProviderError(f"Codex returned an invalid TradeIntent: {exc}") from exc
+        if rationale_truncated:
+            usage["rationale_truncated"] = True
         return ProviderResult(
             intent=intent,
             provider=self.name,
@@ -562,10 +581,12 @@ class ClaudeCodeAuthProvider(LLMProvider):
             self._active_task = None
         try:
             envelope = json.loads(stdout)
-            intent = _parse_intent(envelope["result"])
+            intent, rationale_truncated = _parse_intent(envelope["result"])
         except (KeyError, TypeError, json.JSONDecodeError, ValidationError) as exc:
             raise ProviderError(f"Claude Code returned an invalid TradeIntent: {exc}") from exc
         model, usage = parse_claude_usage(envelope)
+        if rationale_truncated:
+            usage["rationale_truncated"] = True
         return ProviderResult(
             intent=intent,
             provider=self.name,

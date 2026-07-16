@@ -74,6 +74,10 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
   作为用户显式配置的外部接收方会收到行情特征、组合状态和 Prompt，但不会收到币安凭据或
   其他环境变量。
 - **严格 Schema**：输出必须通过统一 `TradeIntent` Pydantic 校验，否则降级为 `HOLD`。
+  `rationale` 是非交易关键解释字段，模型被要求尽量控制在 800 字符内，数据模型硬上限为
+  1000 字符；若模型只违反该长度限制，Provider 会确定性截断到 1000 字符并在 usage 中写入
+  `rationale_truncated=true`，同时完整原始输出仍留在本地审计。方向、杠杆、风险、价格与保护单
+  等交易关键字段不做自动修正，任何不合规仍安全降级。
 - **主备切换**：控制台手动选择当前 Provider；可显式配置单次主备故障切换（默认关闭）。
 - **可选模型与推理强度**：Codex 传 `-m` / `-c model_reasoning_effort`，Claude 传
   `--model` / `--effort`。默认取自环境变量，也可在控制台运行前经 `/api/providers/config`

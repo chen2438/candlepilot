@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 PositiveDecimal = Annotated[Decimal, Field(gt=0)]
 NonNegativeDecimal = Annotated[Decimal, Field(ge=0)]
+RATIONALE_MAX_LENGTH = 1_000
 
 
 class StrictModel(BaseModel):
@@ -78,7 +79,7 @@ class TradeIntent(StrictModel):
     stop_loss: Decimal | None = Field(default=None, gt=0)
     take_profit: Decimal | None = Field(default=None, gt=0)
     ttl_seconds: int = Field(default=60, ge=5, le=900)
-    rationale: str = Field(min_length=1, max_length=500)
+    rationale: str = Field(min_length=1, max_length=RATIONALE_MAX_LENGTH)
 
     @field_validator("risk_fraction", mode="before")
     @classmethod
@@ -114,7 +115,7 @@ class TradeIntent(StrictModel):
             confidence=0,
             leverage=1,
             risk_fraction=Decimal("0"),
-            rationale=reason,
+            rationale=reason[:RATIONALE_MAX_LENGTH],
         )
 
 

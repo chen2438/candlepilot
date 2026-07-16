@@ -301,12 +301,14 @@ class OpenAICompatibleProvider(LLMProvider):
                 result_text, response_model, usage = parse_responses_response(envelope)
             else:
                 result_text, response_model, usage = parse_chat_completion(envelope)
-            intent = _parse_intent(result_text)
+            intent, rationale_truncated = _parse_intent(result_text)
         except (json.JSONDecodeError, TypeError, ValidationError) as exc:
             raise ProviderError(
                 "OpenAI-compatible endpoint returned an invalid TradeIntent"
             ) from exc
 
+        if rationale_truncated:
+            usage["rationale_truncated"] = True
         return ProviderResult(
             intent=intent,
             provider=self.name,
