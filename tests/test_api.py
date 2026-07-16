@@ -258,10 +258,17 @@ def test_default_provider_is_selected_from_settings(tmp_path: Path) -> None:
 
 
 def test_custom_provider_status_never_returns_endpoint_or_key(tmp_path: Path) -> None:
+    from candlepilot.config import CustomLlmProvider
+
     settings = Settings(
-        custom_llm_base_url="https://private.example/v1",
-        custom_llm_api_key=SecretStr("private-api-key"),
-        custom_llm_model="vendor-model",
+        custom_llm_providers=(
+            CustomLlmProvider(
+                id="private",
+                base_url="https://private.example/v1",
+                api_key=SecretStr("private-api-key"),
+                model="vendor-model",
+            ),
+        )
     )
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'custom-provider.db'}")
     market = ApiMarket()
@@ -286,7 +293,9 @@ def test_custom_provider_status_never_returns_endpoint_or_key(tmp_path: Path) ->
         response = client.get("/api/providers")
         assert response.status_code == 200
         rendered = response.text
-        custom = next(item for item in response.json() if item["provider"] == "openai-compatible")
+        custom = next(
+            item for item in response.json() if item["provider"] == "openai-compatible:private"
+        )
         assert custom["available"] is True
         assert custom["authenticated"] is True
         assert custom["model"] == "vendor-model"

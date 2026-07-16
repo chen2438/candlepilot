@@ -1,4 +1,22 @@
+import os
+
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolated_env(monkeypatch, tmp_path):
+    """Detach every test from the developer's own environment and ``.env``.
+
+    ``cli.serve`` calls ``load_dotenv()`` with no argument, which reads the repo
+    root ``.env`` into ``os.environ`` — so without this the suite silently
+    depends on whatever the machine happens to have configured.
+    """
+
+    for key in list(os.environ):
+        if key.startswith(("CANDLEPILOT_", "BINANCE_")):
+            monkeypatch.delenv(key, raising=False)
+    # load_dotenv() would otherwise fall back to the repo root .env.
+    monkeypatch.setenv("CANDLEPILOT_ENV_FILE", str(tmp_path / "absent.env"))
 
 
 @pytest.fixture(autouse=True)

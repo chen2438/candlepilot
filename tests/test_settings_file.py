@@ -64,29 +64,20 @@ def test_written_json_survives_the_real_startup_loader(tmp_path: Path, monkeypat
 
     providers = '[{"id":"groq","base_url":"https://api.groq.example/v1","api_key":"gsk_x"}]'
     path = tmp_path / ".env"
-    write_env_file(
-        path,
-        {
-            "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON": providers,
-            "CANDLEPILOT_CUSTOM_LLM_EXTRA_HEADERS_JSON": '{"x-team":"desk"}',
-        },
-    )
+    write_env_file(path, {"CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON": providers})
     assert path.stat().st_mode & 0o777 == 0o600
     assert read_env_file(path)["CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON"] == providers
 
-    for key in ("CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON", "CANDLEPILOT_CUSTOM_LLM_EXTRA_HEADERS_JSON"):
-        monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv("CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON", raising=False)
     try:
         load_dotenv(path)
         settings = Settings.from_env()
-        assert [p.id for p in settings.custom_llm_providers] == ["groq"]
-        assert settings.custom_llm_extra_headers["x-team"].get_secret_value() == "desk"
+        loaded = settings.custom_llm_providers
+        assert [p.id for p in loaded] == ["groq"]
+        assert loaded[0].api_key.get_secret_value() == "gsk_x"
+        assert loaded[0].base_url == "https://api.groq.example/v1"
     finally:
-        for key in (
-            "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON",
-            "CANDLEPILOT_CUSTOM_LLM_EXTRA_HEADERS_JSON",
-        ):
-            os.environ.pop(key, None)
+        os.environ.pop("CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON", None)
 
 
 def test_write_env_file_creates_missing_file(tmp_path: Path) -> None:

@@ -29,18 +29,6 @@ class ProviderRegistry:
                 model=settings.claude_model,
                 reasoning_effort=settings.claude_effort,
             ),
-            # The unsuffixed endpoint from the flat CANDLEPILOT_CUSTOM_LLM_* vars is
-            # always present, so an unconfigured install still reports it as such.
-            OpenAICompatibleProvider(
-                timeout=settings.inference_timeout_seconds,
-                base_url=settings.custom_llm_base_url,
-                api_key=settings.custom_llm_api_key,
-                model=settings.custom_llm_model,
-                reasoning_effort=settings.custom_llm_reasoning_effort,
-                wire_api=settings.custom_llm_wire_api,
-                require_api_key=settings.custom_llm_require_api_key,
-                extra_headers=settings.custom_llm_extra_headers,
-            ),
         ]
         providers.extend(
             OpenAICompatibleProvider(

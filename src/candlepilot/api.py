@@ -30,7 +30,7 @@ from candlepilot.backtest.portfolio import PortfolioBacktestEngine
 from candlepilot.backtest.replay import align_cached_intents, generate_fresh_intents
 from candlepilot.broker.binance_testnet import BinanceTestnetBroker, BinanceTestnetCredentials
 from candlepilot.broker.user_stream import BinanceTestnetUserStream
-from candlepilot.config import Settings
+from candlepilot.config import ENV_FILE_VARIABLE, Settings
 from candlepilot.domain.models import MarketSnapshot, PortfolioState, TradeIntent, TradingMode
 from candlepilot.market.binance import BinancePublicClient
 from candlepilot.market.cache import HistoricalMarketCache
@@ -431,7 +431,7 @@ def create_app(
     pricing_lock = asyncio.Lock()
     pricing_memo: dict[str, Any] = {"catalog": None, "expires_at": None}
     testnet_account_lock = asyncio.Lock()
-    env_path = Path(os.environ.get("CANDLEPILOT_ENV_FILE", ".env")).resolve()
+    env_path = Path(os.environ.get(ENV_FILE_VARIABLE, ".env")).resolve()
     settings_file_lock = asyncio.Lock()
     testnet_account_memo: dict[str, Any] = {"account": None, "expires_at": 0.0}
 

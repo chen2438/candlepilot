@@ -14,6 +14,8 @@ from candlepilot.domain.models import TradingMode
 
 
 DEFAULT_DATABASE_URL = "sqlite+aiosqlite:///./candlepilot.db"
+# Single source of truth for the .env location, shared with the console editor.
+ENV_FILE_VARIABLE = "CANDLEPILOT_ENV_FILE"
 DEFAULT_PROVIDER_ALIASES = {
     "codex": "codex-auth",
     "codex-auth": "codex-auth",
@@ -21,9 +23,6 @@ DEFAULT_PROVIDER_ALIASES = {
     "claude code": "claude-code-auth",
     "claude-code": "claude-code-auth",
     "claude-code-auth": "claude-code-auth",
-    "custom": "openai-compatible",
-    "custom-api": "openai-compatible",
-    "openai-compatible": "openai-compatible",
 }
 CUSTOM_LLM_WIRE_APIS = {"chat-completions", "responses"}
 CUSTOM_PROVIDER_PREFIX = "openai-compatible:"
@@ -57,7 +56,7 @@ def load_dotenv(path: Path | None = None) -> None:
     a silent no-op.
     """
 
-    path = path or Path(".env")
+    path = path or Path(os.environ.get(ENV_FILE_VARIABLE, ".env"))
     if not path.is_file():
         return
     for raw in path.read_text(encoding="utf-8").splitlines():
@@ -174,16 +173,6 @@ def _parse_boolean(raw: str | None, *, name: str, default: bool) -> bool:
     raise ValueError(f"{name} must be true or false")
 
 
-def _parse_custom_llm_headers(raw: str | None) -> dict[str, SecretStr]:
-    if raw is None or not raw.strip():
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValueError("CANDLEPILOT_CUSTOM_LLM_EXTRA_HEADERS_JSON must be JSON") from exc
-    return _validate_custom_llm_headers(parsed)
-
-
 def _validate_custom_llm_headers(parsed: object) -> dict[str, SecretStr]:
     if not isinstance(parsed, dict) or len(parsed) > 16:
         raise ValueError("custom LLM extra headers must be a JSON object with at most 16 entries")
@@ -217,6 +206,35 @@ class CustomLlmProvider:
     @property
     def provider_name(self) -> str:
         return f"{CUSTOM_PROVIDER_PREFIX}{self.id}"
+
+
+LEGACY_CUSTOM_LLM_ENV = (
+    "CANDLEPILOT_CUSTOM_LLM_BASE_URL",
+    "CANDLEPILOT_CUSTOM_LLM_API_KEY",
+    "CANDLEPILOT_CUSTOM_LLM_MODEL",
+    "CANDLEPILOT_CUSTOM_LLM_REASONING_EFFORT",
+    "CANDLEPILOT_CUSTOM_LLM_WIRE_API",
+    "CANDLEPILOT_CUSTOM_LLM_REQUIRE_API_KEY",
+    "CANDLEPILOT_CUSTOM_LLM_EXTRA_HEADERS_JSON",
+)
+
+
+def _reject_legacy_custom_llm_env(env: Mapping[str, str]) -> None:
+    """Fail loudly on the removed single-endpoint variables.
+
+    Ignoring them would silently drop a configured provider, so point at the
+    replacement instead of starting with a Custom API the user still expects.
+    """
+
+    present = sorted(key for key in LEGACY_CUSTOM_LLM_ENV if env.get(key, "").strip())
+    if not present:
+        return
+    raise ValueError(
+        "these single-endpoint Custom API variables were removed: "
+        + ", ".join(present)
+        + ". Define every endpoint in CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON instead, e.g. "
+        '[{"id":"main","base_url":"https://api.example/v1","api_key":"...","model":"..."}]'
+    )
 
 
 def _parse_custom_llm_providers(raw: str | None) -> tuple[CustomLlmProvider, ...]:
@@ -315,13 +333,6 @@ class Settings:
     codex_reasoning_effort: str | None = None
     claude_model: str | None = None
     claude_effort: str | None = None
-    custom_llm_base_url: str | None = None
-    custom_llm_api_key: SecretStr | None = None
-    custom_llm_model: str | None = None
-    custom_llm_reasoning_effort: str | None = None
-    custom_llm_wire_api: str = "chat-completions"
-    custom_llm_require_api_key: bool = True
-    custom_llm_extra_headers: dict[str, SecretStr] | None = None
     custom_llm_providers: tuple[CustomLlmProvider, ...] = ()
     binance_testnet_api_key: SecretStr | None = None
     binance_testnet_api_secret: SecretStr | None = None
@@ -343,6 +354,7 @@ class Settings:
             value = env.get(key, default)
             return value if value is not None else None
 
+        _reject_legacy_custom_llm_env(env)
         return cls(
             mode=TradingMode(get("CANDLEPILOT_MODE", TradingMode.PAPER.value)),
             database_url=get("CANDLEPILOT_DATABASE_URL", DEFAULT_DATABASE_URL),
@@ -371,28 +383,8 @@ class Settings:
             codex_reasoning_effort=get("CANDLEPILOT_CODEX_REASONING_EFFORT") or None,
             claude_model=get("CANDLEPILOT_CLAUDE_MODEL") or None,
             claude_effort=get("CANDLEPILOT_CLAUDE_EFFORT") or None,
-            custom_llm_base_url=get("CANDLEPILOT_CUSTOM_LLM_BASE_URL") or None,
-            custom_llm_api_key=SecretStr(get("CANDLEPILOT_CUSTOM_LLM_API_KEY") or "")
-            if get("CANDLEPILOT_CUSTOM_LLM_API_KEY")
-            else None,
-            custom_llm_model=get("CANDLEPILOT_CUSTOM_LLM_MODEL") or None,
-            custom_llm_reasoning_effort=get(
-                "CANDLEPILOT_CUSTOM_LLM_REASONING_EFFORT"
-            )
-            or None,
-            custom_llm_wire_api=_parse_custom_llm_wire_api(
-                get("CANDLEPILOT_CUSTOM_LLM_WIRE_API")
-            ),
-            custom_llm_require_api_key=_parse_boolean(
-                get("CANDLEPILOT_CUSTOM_LLM_REQUIRE_API_KEY"),
-                name="CANDLEPILOT_CUSTOM_LLM_REQUIRE_API_KEY",
-                default=True,
-            ),
             custom_llm_providers=_parse_custom_llm_providers(
                 get("CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON")
-            ),
-            custom_llm_extra_headers=_parse_custom_llm_headers(
-                get("CANDLEPILOT_CUSTOM_LLM_EXTRA_HEADERS_JSON")
             ),
             binance_testnet_api_key=SecretStr(get("BINANCE_TESTNET_API_KEY") or "")
             if get("BINANCE_TESTNET_API_KEY")

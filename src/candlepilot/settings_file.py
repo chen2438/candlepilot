@@ -14,7 +14,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from candlepilot.config import CUSTOM_LLM_WIRE_APIS
 from candlepilot.domain.models import TradingMode
 
 
@@ -85,29 +84,18 @@ ENV_SECTIONS: tuple[EnvSection, ...] = (
         ),
     ),
     EnvSection(
-        "Custom API（单个）",
-        (
-            EnvField("CANDLEPILOT_CUSTOM_LLM_BASE_URL", "Base URL", placeholder="https://api.example/v1"),
-            EnvField("CANDLEPILOT_CUSTOM_LLM_API_KEY", "API Key", "secret"),
-            EnvField("CANDLEPILOT_CUSTOM_LLM_MODEL", "模型"),
-            EnvField("CANDLEPILOT_CUSTOM_LLM_REASONING_EFFORT", "推理强度", "enum",
-                     ("", "low", "medium", "high", "xhigh")),
-            EnvField("CANDLEPILOT_CUSTOM_LLM_WIRE_API", "协议", "enum",
-                     tuple(sorted(CUSTOM_LLM_WIRE_APIS))),
-            EnvField("CANDLEPILOT_CUSTOM_LLM_REQUIRE_API_KEY", "需要 API Key", "bool"),
-            EnvField("CANDLEPILOT_CUSTOM_LLM_EXTRA_HEADERS_JSON", "额外请求头 JSON", "json",
-                     placeholder='{"x-team":"desk"}', description="值按密钥保护。"),
-        ),
-    ),
-    EnvSection(
-        "Custom API（多个）",
+        "Custom API",
         (
             EnvField(
                 "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON",
-                "额外端点 JSON 数组",
+                "端点 JSON 数组",
                 "json",
-                placeholder='[{"id":"groq","base_url":"https://api.groq.com/openai/v1","api_key":"gsk_...","model":"llama-3.3-70b-versatile"}]',
-                description="最多 8 个；含 api_key，保存后此框只回显掩码。",
+                placeholder='[{"id":"main","base_url":"https://api.example/v1","api_key":"sk-...","model":"gpt-4o"}]',
+                description=(
+                    "最多 8 个端点，每项需唯一小写 id 与 base_url，可选 api_key / model / "
+                    "reasoning_effort / wire_api / require_api_key / extra_headers。"
+                    "含 api_key，保存后只回显掩码；留空保持不变。"
+                ),
             ),
         ),
     ),
@@ -128,8 +116,7 @@ ENV_FIELDS: dict[str, EnvField] = {
 
 # The providers array embeds api_key values, so it is masked like a secret even
 # though it is edited as JSON.
-MASKED_JSON_KEYS = frozenset({"CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON",
-                              "CANDLEPILOT_CUSTOM_LLM_EXTRA_HEADERS_JSON"})
+MASKED_JSON_KEYS = frozenset({"CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON"})
 
 
 def mask_secret(value: str) -> str:

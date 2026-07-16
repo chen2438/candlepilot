@@ -183,9 +183,9 @@ def test_snapshot_age_default_override_and_validation(monkeypatch) -> None:
         ("claude", "claude-code-auth"),
         ("Claude Code", "claude-code-auth"),
         ("claude-code-auth", "claude-code-auth"),
-        ("custom", "openai-compatible"),
-        ("custom-api", "openai-compatible"),
-        ("openai-compatible", "openai-compatible"),
+        ("custom:main", "openai-compatible:main"),
+        ("custom-api:main", "openai-compatible:main"),
+        ("openai-compatible:main", "openai-compatible:main"),
     ],
 )
 def test_default_provider_aliases(monkeypatch, configured, expected) -> None:
@@ -206,12 +206,12 @@ def test_default_provider_rejects_unknown_value(monkeypatch) -> None:
 
 def test_provider_chain_accepts_aliases_and_preserves_order(monkeypatch) -> None:
     monkeypatch.setenv(
-        "CANDLEPILOT_PROVIDER_CHAIN", "codex,claude-code,openai-compatible"
+        "CANDLEPILOT_PROVIDER_CHAIN", "codex,claude-code,custom:main"
     )
     assert Settings.from_env().provider_chain == (
         "codex-auth",
         "claude-code-auth",
-        "openai-compatible",
+        "openai-compatible:main",
     )
 
 
@@ -245,42 +245,21 @@ def test_testnet_secrets_are_wrapped(monkeypatch) -> None:
     assert "secret-value" not in repr(settings)
 
 
-def test_custom_llm_settings_wrap_key_and_read_endpoint(monkeypatch) -> None:
+def test_legacy_single_endpoint_env_is_rejected(monkeypatch) -> None:
+    # The flat CANDLEPILOT_CUSTOM_LLM_* configuration was removed. Ignoring it
+    # would silently drop a provider the user still expects, so it must fail.
     monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_BASE_URL", "https://llm.example/v1")
-    monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_API_KEY", "custom-secret")
-    monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_MODEL", "vendor-model")
-    monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_REASONING_EFFORT", "high")
-    monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_WIRE_API", "responses")
-    monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_REQUIRE_API_KEY", "false")
-    monkeypatch.setenv(
-        "CANDLEPILOT_CUSTOM_LLM_EXTRA_HEADERS_JSON",
-        '{"x-openai-actor-authorization":"header-secret"}',
-    )
-    settings = Settings.from_env()
-    assert settings.custom_llm_base_url == "https://llm.example/v1"
-    assert settings.custom_llm_api_key is not None
-    assert settings.custom_llm_api_key.get_secret_value() == "custom-secret"
-    assert settings.custom_llm_model == "vendor-model"
-    assert settings.custom_llm_reasoning_effort == "high"
-    assert settings.custom_llm_wire_api == "responses"
-    assert settings.custom_llm_require_api_key is False
-    assert settings.custom_llm_extra_headers is not None
-    assert (
-        settings.custom_llm_extra_headers["x-openai-actor-authorization"].get_secret_value()
-        == "header-secret"
-    )
-    assert "custom-secret" not in repr(settings)
-    assert "header-secret" not in repr(settings)
+    with pytest.raises(ValueError, match="were removed"):
+        Settings.from_env()
+    monkeypatch.delenv("CANDLEPILOT_CUSTOM_LLM_BASE_URL")
 
+    monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_API_KEY", "k")
+    with pytest.raises(ValueError, match="CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON"):
+        Settings.from_env()
 
-@pytest.mark.parametrize("value", ["completions", "response", ""])
-def test_custom_llm_settings_reject_invalid_wire_api(monkeypatch, value: str) -> None:
-    monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_WIRE_API", value)
-    if value:
-        with pytest.raises(ValueError, match="unsupported.*WIRE_API"):
-            Settings.from_env()
-    else:
-        assert Settings.from_env().custom_llm_wire_api == "chat-completions"
+    # An empty legacy value is inert and must not block startup.
+    monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_API_KEY", "")
+    assert Settings.from_env().custom_llm_providers == ()
 
 
 @pytest.mark.parametrize(

@@ -423,9 +423,6 @@ def test_registry_builds_one_provider_per_custom_endpoint() -> None:
 
     registry = ProviderRegistry.from_settings(
         Settings(
-            custom_llm_base_url="https://legacy.example/v1",
-            custom_llm_api_key=SecretStr("legacy"),
-            custom_llm_model="legacy-model",
             custom_llm_providers=(
                 CustomLlmProvider(
                     id="groq",
@@ -443,8 +440,6 @@ def test_registry_builds_one_provider_per_custom_endpoint() -> None:
             ),
         )
     )
-    # The legacy flat configuration keeps the unsuffixed name.
-    assert registry.get("openai-compatible").model == "legacy-model"
     groq = registry.get("openai-compatible:groq")
     assert groq.model == "llama-3.3-70b"
     assert groq.wire_api == "responses"
@@ -454,14 +449,12 @@ def test_registry_builds_one_provider_per_custom_endpoint() -> None:
     assert local.base_url == "http://127.0.0.1:1234/v1"
     # Each endpoint is a distinct instance with its own name.
     assert groq is not local
-    assert {"openai-compatible", "openai-compatible:groq", "openai-compatible:local"} <= set(
-        registry.names
-    )
+    assert {"openai-compatible:groq", "openai-compatible:local"} <= set(registry.names)
+    # There is no unsuffixed endpoint any more: every custom API is addressed by id.
+    assert "openai-compatible" not in registry.names
 
 
 def test_registry_from_settings_applies_model_and_effort() -> None:
-    from pydantic import SecretStr
-
     from candlepilot.config import Settings
     from candlepilot.providers.registry import ProviderRegistry
 
@@ -471,26 +464,12 @@ def test_registry_from_settings_applies_model_and_effort() -> None:
             codex_reasoning_effort="high",
             claude_model="opus",
             claude_effort="xhigh",
-            custom_llm_base_url="https://llm.example/v1",
-            custom_llm_api_key=SecretStr("secret"),
-            custom_llm_model="vendor-model",
-            custom_llm_reasoning_effort="medium",
-            custom_llm_wire_api="responses",
-            custom_llm_require_api_key=False,
-            custom_llm_extra_headers={"x-provider": SecretStr("header-secret")},
         )
     )
     assert registry.get("codex-auth").model == "gpt-5.2-codex"
     assert registry.get("codex-auth").reasoning_effort == "high"
     assert registry.get("claude-code-auth").model == "opus"
     assert registry.get("claude-code-auth").reasoning_effort == "xhigh"
-    assert registry.get("openai-compatible").model == "vendor-model"
-    assert registry.get("openai-compatible").reasoning_effort == "medium"
-    assert registry.get("openai-compatible").wire_api == "responses"
-    assert registry.get("openai-compatible").require_api_key is False
-    assert registry.get("openai-compatible").extra_headers["x-provider"].get_secret_value() == (
-        "header-secret"
-    )
 
 
 def test_cli_providers_declare_subscription_capabilities(tmp_path: Path) -> None:
