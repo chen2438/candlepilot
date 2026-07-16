@@ -72,6 +72,14 @@ def _atr(klines: list[Kline], period: int = 14) -> float:
     return sum(sample) / len(sample)
 
 
+def _range(klines: list[Kline], period: int) -> tuple[float, float]:
+    window = klines[-period:]
+    return (
+        max(float(item.high) for item in window),
+        min(float(item.low) for item in window),
+    )
+
+
 class FeaturePipeline:
     def calculate(self, rows: list[list[Any]]) -> dict[str, float]:
         klines = [Kline.from_binance(row) for row in rows]
@@ -85,7 +93,19 @@ class FeaturePipeline:
         ema_slow = _ema(closes[-100:], 50)
         atr = _atr(closed, 14)
         volume_mean = sum(volumes[-20:]) / 20
+        # Price structure: moving averages say which way, not where. Judging
+        # whether price is extended, or near a reference worth reclaiming or
+        # rejecting, needs the levels themselves.
+        near_high, near_low = _range(closed, 20)
+        far_high, far_low = _range(closed, 50)
+        far_span = far_high - far_low
         return {
+            "range_high_20": near_high,
+            "range_low_20": near_low,
+            "range_high_50": far_high,
+            "range_low_50": far_low,
+            # 0 at the range low, 1 at the range high.
+            "range_position_50": (last - far_low) / far_span if far_span else 0.5,
             "return_1": (last / closes[-2]) - 1,
             "return_5": (last / closes[-6]) - 1 if len(closes) >= 6 else 0.0,
             "ema_20": ema_fast,

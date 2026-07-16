@@ -29,6 +29,11 @@ def _rows(count: int = 60) -> list[list[object]]:
 def test_feature_pipeline_produces_finite_multiscale_features() -> None:
     features = FeaturePipeline().calculate(_rows())
     assert set(features) == {
+        "range_high_20",
+        "range_low_20",
+        "range_high_50",
+        "range_low_50",
+        "range_position_50",
         "return_1",
         "return_5",
         "ema_20",
@@ -83,7 +88,37 @@ def test_multitimeframe_features_are_namespaced() -> None:
         {"1m": _rows(), "5m": _rows(), "15m": _rows(), "30m": _rows()}
     )
 
-    assert len(features) == 36
+    assert len(features) == 4 * len(FeaturePipeline().calculate(_rows()))
     assert features["1m_ema_spread"] == features["5m_ema_spread"]
     assert "15m_rsi_14" in features
     assert "30m_rsi_14" in features
+
+
+def test_structure_features_locate_price_against_its_recent_range() -> None:
+    """The setup rules ask whether price is extended or near a reference.
+
+    Moving averages cannot answer that, so the range levels themselves are
+    what make the prompt's structure conditions decidable rather than guessed.
+    """
+
+    rising = FeaturePipeline().calculate(_rows())
+    # _rows climbs throughout, so the close sits near the top of its range --
+    # not at 1.0, because the range is drawn from wicks and the last close sits
+    # below its own bar's high.
+    assert 0.85 < rising["range_position_50"] < 1
+    assert rising["range_low_50"] < rising["range_low_20"]
+    assert rising["range_high_20"] == rising["range_high_50"]
+
+    flat = FeaturePipeline().calculate(_flat_rows())
+    assert flat["range_high_50"] == flat["range_high_20"]
+    # A range with no span reports the midpoint rather than dividing by zero.
+    assert flat["range_position_50"] == 0.5
+
+
+def _flat_rows(count: int = 60) -> list[list[object]]:
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    rows = []
+    for index in range(count):
+        open_ms = int((start + timedelta(minutes=index)).timestamp() * 1000)
+        rows.append([open_ms, "100", "100", "100", "100", "10", open_ms + 59_999, "1000"])
+    return rows
