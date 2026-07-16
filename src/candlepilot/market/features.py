@@ -138,6 +138,12 @@ class FeaturePipeline:
             "range_low_50": far_low,
             # 0 at the range low, 1 at the range high.
             "range_position_50": (last - far_low) / far_span if far_span else 0.5,
+            # How far price has run from its own mean, in units of its own
+            # volatility. This is what "extended" means: chasing a move that has
+            # already travelled. Range position is *not* -- a trend puts price at
+            # its range edge by definition, so reading the edge as "extended"
+            # bars every trend entry at exactly the moment the trend exists.
+            "ema20_distance_atr": (last - ema_fast) / atr if atr else 0.0,
             "return_1": (last / closes[-2]) - 1,
             "return_5": (last / closes[-6]) - 1 if len(closes) >= 6 else 0.0,
             "ema_20": ema_fast,

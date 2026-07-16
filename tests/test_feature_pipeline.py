@@ -40,6 +40,7 @@ def test_feature_pipeline_produces_finite_multiscale_features() -> None:
         "range_high_50",
         "range_low_50",
         "range_position_50",
+        "ema20_distance_atr",
         "return_1",
         "return_5",
         "ema_20",
@@ -251,3 +252,30 @@ def test_daily_structure_refuses_a_symbol_too_young_to_have_the_levels() -> None
 
     with pytest.raises(ValueError, match="20 closed daily klines"):
         FeaturePipeline().daily_structure(_daily_rows(10), mark_price=Decimal("100"))
+
+
+def test_extension_is_distance_from_the_mean_not_position_in_the_range() -> None:
+    """A trend sits at its own range edge; that is the trend, not extension.
+
+    Conflating the two bars every trend entry at exactly the moment a trend
+    exists, so the measure of "already run too far" has to be independent of
+    where price sits in its range.
+    """
+
+    rising = FeaturePipeline().calculate(_rows())
+
+    # _rows trends up the whole way: price is pinned at the range edge...
+    assert rising["range_position_50"] > 0.85
+    # ...while still tracking close to its own mean, so it is not chasing.
+    assert abs(rising["ema20_distance_atr"]) < 2.5
+
+    # A vertical finish leaves price at the same range edge but far from the mean.
+    spiked = _rows()
+    spiked[-1] = [*spiked[-1]]
+    last_close = float(spiked[-1][4])
+    spiked[-1][2] = str(last_close * 1.5)
+    spiked[-1][4] = str(last_close * 1.5)
+    chased = FeaturePipeline().calculate(spiked)
+
+    assert chased["range_position_50"] > 0.85
+    assert chased["ema20_distance_atr"] > 2.5
