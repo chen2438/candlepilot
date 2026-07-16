@@ -272,6 +272,7 @@ class TradingEngine:
                         "portfolio": portfolio.model_dump(mode="json"),
                     },
                     prompt=primary_diagnostics.prompt if primary_diagnostics else None,
+                    reasoning_effort=provider.reasoning_effort,
                 )
         inference_id = await self.audit.record_inference(result)
         evaluation_snapshot = snapshot

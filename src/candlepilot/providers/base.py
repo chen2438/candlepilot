@@ -21,6 +21,7 @@ class ProviderResult:
     provider_version: str | None = None
     input_payload: dict[str, Any] | None = None
     prompt: str | None = None
+    reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

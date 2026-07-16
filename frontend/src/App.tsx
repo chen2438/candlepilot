@@ -110,6 +110,15 @@ function providerConfigLabel(name: string): string {
   return name;
 }
 
+function inferenceConfigLabel(decision: DecisionEvent): string {
+  const model = decision.model ?? "默认模型";
+  const provenance = decision.provenance;
+  if (!Object.prototype.hasOwnProperty.call(provenance, "reasoning_effort")) {
+    return `${model} · 推理强度未记录`;
+  }
+  return `${model} · ${provenance.reasoning_effort ? `推理 ${provenance.reasoning_effort}` : "默认推理强度"}`;
+}
+
 function percent(value: string): string {
   return `${(Number(value) * 100).toFixed(2)}%`;
 }
@@ -964,7 +973,10 @@ function DecisionPanel({ decisions }: { decisions: DecisionEvent[] }) {
               onClick={() => void toggleDecision(decision)}
             >
               <span className={`action ${decision.intent.action.toLowerCase()}`}>{decision.intent.action}</span>
-              <span className="signal-symbol"><strong>{decision.intent.symbol}</strong><small>{decision.intent.cadence} · {providerLabel(decision.provider)}</small></span>
+              <span className="signal-symbol">
+                <strong>{decision.intent.symbol}</strong>
+                <small>{decision.intent.cadence} · {providerLabel(decision.provider)} · {inferenceConfigLabel(decision)}</small>
+              </span>
               <span
                 className={`signal-confidence ${decision.intent.action === "HOLD" ? "residual" : ""}`}
                 title={decision.intent.action === "HOLD" ? "没有可执行动作时的残余交易机会强度" : "模型对当前动作具备可执行交易优势的估计"}

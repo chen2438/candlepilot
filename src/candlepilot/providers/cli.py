@@ -548,6 +548,7 @@ class CodexAuthProvider(LLMProvider):
             provider_version=self._provider_version,
             input_payload=input_payload,
             prompt=prompt,
+            reasoning_effort=self.reasoning_effort,
         )
 
 
@@ -717,4 +718,5 @@ class ClaudeCodeAuthProvider(LLMProvider):
             provider_version=self._provider_version,
             input_payload=input_payload,
             prompt=prompt,
+            reasoning_effort=self.reasoning_effort,
         )

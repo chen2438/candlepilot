@@ -370,13 +370,14 @@ def test_codex_provider_passes_model_and_reasoning_effort(tmp_path: Path) -> Non
     assert "model_reasoning_effort=high" in args
     # An explicit model is used for cost attribution without reading config.toml.
     assert result.model == "gpt-5.2-codex"
+    assert result.reasoning_effort == "high"
 
 
 def test_claude_provider_passes_model_and_effort(tmp_path: Path) -> None:
     envelope = json.dumps({"result": json.dumps(_minimal_intent()), "num_turns": 1})
     body = 'echo "$@" > "$(dirname "$0")/args.txt"\n' + f"printf '%s\\n' '{envelope}'\n"
     executable = _write_fake_cli(tmp_path / "claude", body)
-    asyncio.run(
+    result = asyncio.run(
         ClaudeCodeAuthProvider(
             executable=executable, model="sonnet", reasoning_effort="xhigh"
         ).generate_trade_intent(_market(), _portfolio())
@@ -384,6 +385,7 @@ def test_claude_provider_passes_model_and_effort(tmp_path: Path) -> None:
     args = (tmp_path / "args.txt").read_text()
     assert "--model sonnet" in args
     assert "--effort xhigh" in args
+    assert result.reasoning_effort == "xhigh"
 
 
 def test_claude_provider_sends_prompt_on_stdin_with_schema(tmp_path: Path) -> None:

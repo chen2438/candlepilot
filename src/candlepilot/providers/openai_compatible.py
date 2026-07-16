@@ -355,4 +355,5 @@ class OpenAICompatibleProvider(LLMProvider):
             provider_version=provider_version,
             input_payload=input_payload,
             prompt=prompt,
+            reasoning_effort=self.reasoning_effort,
         )

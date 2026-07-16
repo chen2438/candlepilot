@@ -147,7 +147,15 @@ def test_decision_events_join_inference_and_risk_outcomes(tmp_path: Path) -> Non
             rationale="trend",
         )
         opening_id = await repository.record_inference(
-            ProviderResult(opening, "codex-auth", "gpt-test", timedelta(milliseconds=80), "{}", {})
+            ProviderResult(
+                opening,
+                "codex-auth",
+                "gpt-test",
+                timedelta(milliseconds=80),
+                "{}",
+                {},
+                reasoning_effort="high",
+            )
         )
         await repository.record_risk(
             "BTCUSDT",
@@ -204,6 +212,7 @@ def test_decision_events_join_inference_and_risk_outcomes(tmp_path: Path) -> Non
     assert events[2]["intent"]["symbol"] == "ETHUSDT"
     assert events[2]["risk"]["accepted"] is True
     assert events[3]["model"] == "gpt-test"
+    assert events[3]["provenance"]["reasoning_effort"] == "high"
     assert events[3]["risk"]["reason"] == "margin limit"
 
 

@@ -258,6 +258,7 @@ class AuditRepository:
             "prompt_version": result.prompt_version,
             "data_version": result.data_version,
             "provider_version": result.provider_version,
+            "reasoning_effort": result.reasoning_effort,
         }
         row = InferenceRow(
             provider=result.provider,

@@ -55,6 +55,10 @@ export interface DecisionEvent {
   id: number;
   provider: string;
   model: string | null;
+  provenance: {
+    reasoning_effort?: string | null;
+    [key: string]: unknown;
+  };
   intent: {
     symbol: string;
     cadence: string;
