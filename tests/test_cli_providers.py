@@ -242,7 +242,7 @@ def test_codex_provider_parses_schema_output(tmp_path: Path) -> None:
     assert result.usage["input_tokens"] == 1200
     assert result.usage["cached_input_tokens"] == 800
     assert result.usage["total_tokens"] == 1250
-    assert result.prompt_version == "trade-intent-v2"
+    assert result.prompt_version == "trade-intent-v3"
     assert result.data_version is not None
     assert result.data_version.startswith("market-snapshot-v1:sha256:")
     assert result.input_payload is not None
@@ -323,7 +323,7 @@ def test_claude_validation_failure_preserves_complete_audit_context(
     assert error.duration.total_seconds() > 0
     assert error.raw_output == envelope + "\n"
     assert error.usage["input_tokens"] == 25
-    assert error.prompt_version == "trade-intent-v2"
+    assert error.prompt_version == "trade-intent-v3"
     assert error.data_version.startswith("market-snapshot-v1:sha256:")
     assert error.input_payload["market"]["symbol"] == "BTCUSDT"
     assert '"portfolio"' in error.prompt
@@ -408,6 +408,9 @@ def test_claude_provider_sends_prompt_on_stdin_with_schema(tmp_path: Path) -> No
     assert '"portfolio"' not in args  # prompt is not passed as an argument
     assert '"portfolio"' in stdin  # ...it is on stdin
     assert '"additionalProperties":false' in stdin  # schema is embedded for Claude
+    assert "confidence is the estimated strength of an executable edge" in stdin
+    assert "HOLD must use leverage=1, risk_fraction=0" in stdin
+    assert "Overbought or oversold readings alone" in stdin
 
 
 def test_registry_from_settings_applies_model_and_effort() -> None:
