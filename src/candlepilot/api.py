@@ -30,7 +30,11 @@ from candlepilot.application.testnet_feed import TestnetUserFeed
 from candlepilot.backtest.engine import BacktestConfig, BacktestEngine, Candle, ReplayIntent
 from candlepilot.backtest.portfolio import PortfolioBacktestEngine
 from candlepilot.backtest.replay import align_cached_intents, generate_fresh_intents
-from candlepilot.broker.binance_testnet import BinanceTestnetBroker, BinanceTestnetCredentials
+from candlepilot.broker.binance_testnet import (
+    BinanceTestnetBroker,
+    BinanceTestnetCredentials,
+    ProtectiveLevels,
+)
 from candlepilot.broker.user_stream import BinanceTestnetUserStream
 from candlepilot.config import (
     CUSTOM_LLM_WIRE_APIS,
@@ -482,6 +486,8 @@ def create_app(
     env_path = Path(os.environ.get(ENV_FILE_VARIABLE, ".env")).resolve()
     settings_file_lock = asyncio.Lock()
     testnet_account_memo: dict[str, Any] = {"account": None, "expires_at": 0.0}
+    testnet_levels_lock = asyncio.Lock()
+    testnet_levels_memo: dict[str, Any] = {"levels": None, "expires_at": 0.0}
 
     async def pricing_catalog() -> ModelPricingCatalog | None:
         now = datetime.now(UTC)
@@ -511,6 +517,24 @@ def create_app(
             testnet_account_memo["account"] = account
             testnet_account_memo["expires_at"] = time.monotonic() + 1.0
             return account
+
+    async def testnet_protective_levels() -> dict[str, ProtectiveLevels]:
+        broker = engine.testnet_broker
+        if broker is None:
+            raise RuntimeError("testnet broker is not configured")
+        now = time.monotonic()
+        if testnet_levels_memo["levels"] is not None:
+            if now < testnet_levels_memo["expires_at"]:
+                return testnet_levels_memo["levels"]
+        async with testnet_levels_lock:
+            now = time.monotonic()
+            if testnet_levels_memo["levels"] is not None:
+                if now < testnet_levels_memo["expires_at"]:
+                    return testnet_levels_memo["levels"]
+            levels = await broker.protective_levels()
+            testnet_levels_memo["levels"] = levels
+            testnet_levels_memo["expires_at"] = time.monotonic() + 1.0
+            return levels
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -1304,7 +1328,9 @@ def create_app(
             if broker is None:
                 raise HTTPException(status_code=503, detail="testnet broker is not configured")
             try:
-                account = await testnet_account()
+                account, levels = await asyncio.gather(
+                    testnet_account(), testnet_protective_levels()
+                )
             except Exception as exc:
                 raise HTTPException(
                     status_code=502, detail=f"testnet account query failed: {exc}"
@@ -1334,6 +1360,10 @@ def create_app(
                     if symbol in unprotected
                     else "exchange"
                 )
+                # protection_status stays the reconciliation signal: it also
+                # counts reduce-only stops, which the level read deliberately
+                # ignores. The prices are the live triggers of our own brackets.
+                guard = levels.get(symbol, ProtectiveLevels())
                 positions.append(
                     {
                         "symbol": symbol,
@@ -1345,8 +1375,8 @@ def create_app(
                         "unrealized_pnl": str(item.get("unrealizedProfit", "0")),
                         "notional": str(notional),
                         "margin_used": str(margin),
-                        "stop_loss": None,
-                        "take_profit": None,
+                        "stop_loss": guard.stop_loss,
+                        "take_profit": guard.take_profit,
                         "protection_source": protection_status,
                     }
                 )

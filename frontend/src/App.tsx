@@ -1786,11 +1786,14 @@ function AccountPanel({
                 <td>{Number(position.mark_price).toFixed(4)}</td>
                 <td>{position.leverage}×</td>
                 <td className={Number(position.unrealized_pnl) >= 0 ? "positive" : "negative"}>{money(position.unrealized_pnl)}</td>
-                <td>{position.stop_loss === null
+                <td>{position.stop_loss === null && position.take_profit === null
                   ? position.protection_source === "exchange" ? "交易所侧"
                     : position.protection_source === "missing" ? "缺失"
                       : position.protection_source === "unknown" ? "待确认" : "—"
-                  : Number(position.stop_loss).toFixed(4)}</td>
+                  : <span className="protection">
+                      <span>止损 <strong>{position.stop_loss === null ? "缺失" : Number(position.stop_loss).toFixed(4)}</strong></span>
+                      <span>止盈 <strong>{position.take_profit === null ? "缺失" : Number(position.take_profit).toFixed(4)}</strong></span>
+                    </span>}</td>
               </tr>
             ))}
             {!positions.length && <tr><td colSpan={8} className="empty">当前无持仓。</td></tr>}

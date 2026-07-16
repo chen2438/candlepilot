@@ -9,7 +9,7 @@ from pydantic import SecretStr
 
 from candlepilot.api import create_app
 from candlepilot.application.engine import TradingEngine
-from candlepilot.broker.binance_testnet import ReconciliationReport
+from candlepilot.broker.binance_testnet import ProtectiveLevels, ReconciliationReport
 from candlepilot.config import Settings
 from candlepilot.domain.models import (
     MarketSnapshot,
@@ -99,6 +99,15 @@ class LLMReplayMarket(ApiMarket):
 class ApiTestnetBroker:
     def __init__(self) -> None:
         self.account_calls = 0
+        self.level_calls = 0
+
+    async def protective_levels(self):
+        self.level_calls += 1
+        return {
+            "BTCUSDT": ProtectiveLevels(
+                stop_loss=Decimal("58000"), take_profit=Decimal("63000")
+            )
+        }
 
     async def account(self):
         self.account_calls += 1
@@ -421,12 +430,16 @@ def test_testnet_account_status_is_sanitized_and_includes_reconciliation(
                 "unrealized_pnl": "25",
                 "notional": "15025.00",
                 "margin_used": "1000",
-                "stop_loss": None,
-                "take_profit": None,
+                # The live bracket triggers, not just the fact that one exists.
+                "stop_loss": "58000",
+                "take_profit": "63000",
                 "protection_source": "exchange",
             }
         ]
         assert broker.account_calls == 1
+        # The console refreshes several account panels together; the bracket read
+        # is a signed request and must be memoized like the account itself.
+        assert broker.level_calls == 1
 
         engine.testnet_reconciliation = ReconciliationReport(
             position_symbols=("BTCUSDT",),
@@ -435,6 +448,7 @@ def test_testnet_account_status_is_sanitized_and_includes_reconciliation(
         )
         assert client.get("/api/account/positions").json()[0]["protection_source"] == "missing"
         assert broker.account_calls == 1
+        assert broker.level_calls == 1
     asyncio.run(database.close())
 
 
