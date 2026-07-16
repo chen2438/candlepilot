@@ -1271,18 +1271,15 @@ function CustomProvidersPanel({
                 {payload.wire_apis.map((w) => <option key={w} value={w}>{w}</option>)}
               </select>
             </label>
-            <label><span>计费厂商</span>
+            <label data-tooltip="models.dev 的厂商 ID，决定按谁的价折算等效成本。同一模型常被多家转售且价格不同，无法从模型名或地址推断，只能指定。留空则成本显示「—」，且预算自动停止对该端点不生效。">
+              <span>计费厂商</span>
               <input
                 list="models-dev-providers"
                 value={row.pricing}
-                placeholder="留空 = 不计算成本"
+                placeholder="models.dev 厂商 ID，如 xai · 留空不计成本"
                 disabled={busy !== null}
                 onChange={(e) => update(index, { pricing: e.target.value })}
               />
-              <small>
-                models.dev 厂商 ID（如 <code>xai</code>、<code>openrouter</code>）。同一模型被多家转售且价格不同，
-                无法从模型名或地址推断，只能你来指定；留空则成本显示「—」而不是猜一个。
-              </small>
             </label>
             <label><span>推理强度</span>
               <select value={row.reasoning_effort} disabled={busy !== null}
