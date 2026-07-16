@@ -1,5 +1,6 @@
 import asyncio
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import httpx
 
@@ -25,6 +26,7 @@ def _response(request: httpx.Request) -> httpx.Response:
                                 "minQty": "0.001",
                             },
                             {"filterType": "MIN_NOTIONAL", "notional": "5"},
+                            {"filterType": "PRICE_FILTER", "tickSize": "0.10"},
                         ],
                     },
                     {
@@ -214,3 +216,22 @@ def test_market_snapshot_includes_microstructure() -> None:
     assert snapshot.features["recent_trade_imbalance"] == 1.0
     assert snapshot.features["open_interest"] == 42.0
     assert snapshot.features["1m_ema_spread"] == snapshot.features["30m_ema_spread"]
+
+
+def test_exchange_info_carries_the_price_tick_into_symbol_rules() -> None:
+    """The tick is what keeps model-proposed prices on the exchange grid."""
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(_response), base_url="https://example.test"
+        )
+        adapter = BinancePublicClient(client=client)
+        contracts = await adapter.exchange_info()
+        await client.aclose()
+        return contracts
+
+    contracts = asyncio.run(scenario())
+    rules = contracts["BTCUSDT"].rules
+    assert rules.tick_size == Decimal("0.10")
+    assert rules.quantity_step == Decimal("0.001")
+    assert rules.min_notional == Decimal("5")

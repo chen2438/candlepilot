@@ -101,6 +101,7 @@ class BinancePublicClient:
             filters = {entry["filterType"]: entry for entry in item.get("filters", [])}
             lot = filters.get("LOT_SIZE", {})
             notional = filters.get("MIN_NOTIONAL", {})
+            price = filters.get("PRICE_FILTER", {})
             contracts[item["symbol"]] = ContractInfo(
                 symbol=item["symbol"],
                 onboard_date=datetime.fromtimestamp(item["onboardDate"] / 1000, tz=UTC),
@@ -108,6 +109,7 @@ class BinancePublicClient:
                     quantity_step=Decimal(lot.get("stepSize", "1")),
                     min_quantity=Decimal(lot.get("minQty", "1")),
                     min_notional=Decimal(notional.get("notional", "5")),
+                    tick_size=Decimal(price.get("tickSize", "0.01")),
                 ),
             )
         return contracts

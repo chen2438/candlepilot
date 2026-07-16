@@ -128,6 +128,7 @@ class SymbolRulesInput(ApiModel):
     quantity_step: Annotated[Decimal, Field(gt=0)]
     min_quantity: Annotated[Decimal, Field(gt=0)]
     min_notional: Annotated[Decimal, Field(gt=0)]
+    tick_size: Annotated[Decimal, Field(gt=0)]
 
 
 class DecisionRequest(ApiModel):
@@ -1379,6 +1380,7 @@ def create_app(
             request.rules.quantity_step,
             request.rules.min_quantity,
             request.rules.min_notional,
+            request.rules.tick_size,
         )
         try:
             outcome = await engine.evaluate(request.snapshot, request.portfolio, rules)

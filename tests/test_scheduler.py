@@ -71,7 +71,7 @@ class SchedulerMarket:
             "BTCUSDT": ContractInfo(
                 "BTCUSDT",
                 datetime(2020, 1, 1, tzinfo=UTC),
-                SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+                SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")),
             )
         }
 
@@ -218,7 +218,7 @@ def test_scheduler_limits_cycle_to_candidates_per_cycle(tmp_path: Path) -> None:
                     symbol: ContractInfo(
                         symbol,
                         datetime(2020, 1, 1, tzinfo=UTC),
-                        SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+                        SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")),
                     )
                     for symbol in symbols
                 }
@@ -252,7 +252,7 @@ def test_scheduler_always_analyzes_open_positions_outside_candidate_limit(
 
         class HeldSymbolMarket(SchedulerMarket):
             async def exchange_info(self):
-                rules = SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"))
+                rules = SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01"))
                 return {
                     symbol: ContractInfo(
                         symbol,

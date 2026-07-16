@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from uuid import uuid4
 
 from candlepilot.domain.models import (
@@ -21,6 +21,7 @@ class SymbolRules:
     quantity_step: Decimal
     min_quantity: Decimal
     min_notional: Decimal
+    tick_size: Decimal
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +34,20 @@ def _round_down(value: Decimal, step: Decimal) -> Decimal:
     if step <= 0:
         raise ValueError("quantity step must be positive")
     return (value / step).to_integral_value(rounding=ROUND_DOWN) * step
+
+
+def _to_tick(value: Decimal, tick: Decimal, *, rounding: str) -> Decimal:
+    """Snap a model-proposed price onto the exchange price grid.
+
+    The model is given no tick size, so its prices are free-form and would be
+    rejected by PRICE_FILTER. Callers round protective levels *away* from the
+    entry, so snapping can never tighten a level through the price it was
+    validated against.
+    """
+
+    if tick <= 0:
+        raise ValueError("tick size must be positive")
+    return (value / tick).to_integral_value(rounding=rounding) * tick
 
 
 class AggressiveRiskPolicy:
@@ -117,14 +132,22 @@ class AggressiveRiskPolicy:
                 return self._reject("cannot reduce or close a missing position")
             return self._close_order(intent, existing.side, existing.quantity, rules)
 
-        entry = (
-            intent.entry_price
-            if intent.order_type == OrderType.LIMIT
-            else snapshot.mark_price
-        )
+        # A market entry fills at the book, so only a limit price reaches the
+        # exchange and needs the grid; snapping it toward our side never turns a
+        # marketable price into a worse fill.
+        entry_rounding = ROUND_DOWN if requested_side == "LONG" else ROUND_UP
+        if intent.order_type == OrderType.LIMIT and intent.entry_price is not None:
+            entry = _to_tick(intent.entry_price, rules.tick_size, rounding=entry_rounding)
+            if entry <= 0:
+                return self._reject("entry price rounds to zero at the exchange tick size")
+        else:
+            entry = snapshot.mark_price
         stop = intent.stop_loss
         if stop is None:
             return self._reject("opening intent has no stop loss")
+        stop = _to_tick(stop, rules.tick_size, rounding=entry_rounding)
+        if stop <= 0:
+            return self._reject("stop loss rounds to zero at the exchange tick size")
         if requested_side == "LONG" and stop >= entry:
             return self._reject("long stop loss must be below entry")
         if requested_side == "SHORT" and stop <= entry:
@@ -138,6 +161,13 @@ class AggressiveRiskPolicy:
         if self.require_take_profit and take_profit is None:
             return self._reject("opening intent has no take profit")
         if take_profit is not None:
+            take_profit = _to_tick(
+                take_profit,
+                rules.tick_size,
+                rounding=ROUND_UP if requested_side == "LONG" else ROUND_DOWN,
+            )
+            if take_profit <= 0:
+                return self._reject("take profit rounds to zero at the exchange tick size")
             if requested_side == "LONG" and take_profit <= entry:
                 return self._reject("long take profit must be above entry")
             if requested_side == "SHORT" and take_profit >= entry:
@@ -179,9 +209,9 @@ class AggressiveRiskPolicy:
             side="BUY" if requested_side == "LONG" else "SELL",
             quantity=quantity,
             order_type=intent.order_type,
-            price=intent.entry_price if intent.order_type == OrderType.LIMIT else None,
+            price=entry if intent.order_type == OrderType.LIMIT else None,
             stop_price=stop,
-            take_profit_price=intent.take_profit,
+            take_profit_price=take_profit,
             reduce_only=False,
         )
         return RiskEvaluation(
@@ -212,13 +242,25 @@ class AggressiveRiskPolicy:
         quantity = _round_down(position_quantity, rules.quantity_step)
         if intent.action == TradeAction.REDUCE:
             quantity = _round_down(quantity / 2, rules.quantity_step)
+        side = "SELL" if existing_side == "LONG" else "BUY"
+        price = intent.entry_price
+        if intent.order_type == OrderType.LIMIT and price is not None:
+            price = _to_tick(
+                price,
+                rules.tick_size,
+                rounding=ROUND_UP if side == "SELL" else ROUND_DOWN,
+            )
+            if price <= 0:
+                return AggressiveRiskPolicy._reject(
+                    "exit price rounds to zero at the exchange tick size"
+                )
         order = OrderPlan(
             client_order_id=f"cp-{uuid4().hex[:24]}",
             symbol=intent.symbol,
-            side="SELL" if existing_side == "LONG" else "BUY",
+            side=side,
             quantity=quantity,
             order_type=intent.order_type,
-            price=intent.entry_price,
+            price=price,
             reduce_only=True,
         )
         return RiskEvaluation(

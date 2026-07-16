@@ -195,7 +195,7 @@ def test_engine_requires_provider_and_audits_paper_fill(tmp_path: Path) -> None:
         outcome = await engine.evaluate(
             snapshot,
             PortfolioState(equity="10000", available_balance="8000"),
-            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")),
         )
         intents = await audit.recent_intents()
         await database.close()
@@ -235,7 +235,7 @@ def test_engine_refreshes_market_and_rejects_crossed_price_before_execution(
                 quote_volume_24h="1000000",
             ),
             PortfolioState(equity="10000", available_balance="8000"),
-            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")),
         )
         risk_events = await audit.recent_risk_decisions()
         executions = await audit.recent_executions()
@@ -274,7 +274,7 @@ def test_engine_executes_against_refreshed_market_after_slow_analysis(tmp_path: 
                 quote_volume_24h="1000000",
             ),
             PortfolioState(equity="10000", available_balance="8000"),
-            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")),
         )
         await database.close()
         return outcome, market.snapshot_calls
@@ -309,7 +309,7 @@ def test_engine_executes_and_audits_marketable_limit_after_refresh(tmp_path: Pat
                 quote_volume_24h="1000000",
             ),
             PortfolioState(equity="10000", available_balance="8000"),
-            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")),
         )
         risk_events = await audit.recent_risk_decisions()
         executions = await audit.recent_executions()
@@ -348,7 +348,7 @@ def test_engine_rejects_expired_analysis_before_market_refresh(tmp_path: Path) -
                 quote_volume_24h="1000000",
             ),
             PortfolioState(equity="10000", available_balance="8000"),
-            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")),
         )
         await database.close()
         return outcome, market.snapshot_calls
@@ -389,7 +389,7 @@ def test_engine_audits_market_refresh_failure_without_execution(tmp_path: Path) 
                 quote_volume_24h="1000000",
             ),
             PortfolioState(equity="10000", available_balance="8000"),
-            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")),
         )
         risk_events = await audit.recent_risk_decisions()
         executions = await audit.recent_executions()
@@ -530,7 +530,7 @@ def test_route_exhaustion_is_tracked_and_cleared(tmp_path: Path) -> None:
             ask="100.1",
             quote_volume_24h="1000000",
         )
-        rules = SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"))
+        rules = SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01"))
         portfolio = PortfolioState(equity="10000", available_balance="8000")
 
         # Only the failing provider is routed: the route becomes exhausted.
@@ -661,7 +661,7 @@ def test_testnet_add_requests_protective_bracket_replacement(tmp_path: Path) -> 
                     "BTCUSDT": PositionState(side="LONG", quantity="1", entry_price="99")
                 },
             ),
-            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")),
         )
         await database.close()
         return outcome, broker.replace_existing_protection
@@ -737,7 +737,7 @@ def test_testnet_execution_failure_is_audited_with_rescue_loss(tmp_path: Path) -
                 quote_volume_24h="1000000",
             ),
             PortfolioState(equity="10000", available_balance="8000"),
-            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")),
         )
         events = await audit.recent_decision_events()
         executions = await audit.recent_executions()
@@ -822,7 +822,7 @@ def test_unrescued_protection_failure_emergency_locks_engine(tmp_path: Path) -> 
                 quote_volume_24h="1000000",
             ),
             PortfolioState(equity="10000", available_balance="8000"),
-            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")),
         )
         events = await audit.recent_decision_events()
         result = (
@@ -866,7 +866,7 @@ def test_engine_fails_over_once_to_explicit_backup_provider(tmp_path: Path) -> N
         outcome = await engine.evaluate(
             snapshot,
             PortfolioState(equity="10000", available_balance="8000"),
-            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")),
         )
         await database.close()
         return outcome
@@ -900,7 +900,7 @@ def test_ordered_provider_route_cools_down_and_recovers_primary(tmp_path: Path) 
             quote_volume_24h="1000000",
         )
         portfolio = PortfolioState(equity="10000", available_balance="8000")
-        rules = SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"))
+        rules = SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01"))
 
         first = await engine.evaluate(snapshot, portfolio, rules)
         first_status = engine.provider_route_status()
@@ -967,7 +967,7 @@ def test_engine_starts_on_ready_fallback_when_primary_is_unavailable(tmp_path: P
                 quote_volume_24h="1000000",
             ),
             PortfolioState(equity="10000", available_balance="8000"),
-            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")),
         )
         await database.close()
         return engine.active_provider, unavailable.calls, outcome.provider
@@ -1002,7 +1002,7 @@ def test_engine_persists_failed_provider_audit_context(tmp_path: Path) -> None:
                 quote_volume_24h="1000000",
             ),
             PortfolioState(equity="10000", available_balance="8000"),
-            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")),
         )
         events = await audit.recent_intents()
         detail = await audit.decision_detail(events[0]["id"])

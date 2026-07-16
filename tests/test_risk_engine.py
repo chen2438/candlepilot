@@ -16,6 +16,7 @@ RULES = SymbolRules(
     quantity_step=Decimal("0.001"),
     min_quantity=Decimal("0.001"),
     min_notional=Decimal("5"),
+    tick_size=Decimal("0.01"),
 )
 
 
@@ -233,3 +234,72 @@ def test_close_is_always_reduce_only() -> None:
     assert result.order is not None and result.order.reduce_only
     assert result.order.side == "SELL"
     assert result.order.quantity == Decimal("1.234")
+
+
+def test_protective_prices_snap_to_the_tick_grid_away_from_entry() -> None:
+    """PRICE_FILTER rejects off-grid prices, and the model is told no tick size.
+
+    Rounding has to move each level away from the entry: pulling a stop toward
+    entry could snap it through the price it was just validated against, and a
+    rejected bracket leaves a filled entry unprotected.
+    """
+
+    rules = SymbolRules(
+        quantity_step=Decimal("0.001"),
+        min_quantity=Decimal("0.001"),
+        min_notional=Decimal("5"),
+        tick_size=Decimal("0.5"),
+    )
+    long_intent = _intent().model_copy(
+        update={"stop_loss": Decimal("98.4"), "take_profit": Decimal("104.2")}
+    )
+    long_result = AggressiveRiskPolicy().evaluate(long_intent, _snapshot(), _portfolio(), rules)
+    assert long_result.decision.accepted and long_result.order is not None
+    assert long_result.order.stop_price == Decimal("98.0")
+    assert long_result.order.take_profit_price == Decimal("104.5")
+
+    short_intent = _intent(TradeAction.OPEN_SHORT).model_copy(
+        update={"stop_loss": Decimal("101.6"), "take_profit": Decimal("95.8")}
+    )
+    short_result = AggressiveRiskPolicy().evaluate(short_intent, _snapshot(), _portfolio(), rules)
+    assert short_result.decision.accepted and short_result.order is not None
+    assert short_result.order.stop_price == Decimal("102.0")
+    assert short_result.order.take_profit_price == Decimal("95.5")
+
+
+def test_limit_entry_snaps_toward_our_own_side_of_the_book() -> None:
+    rules = SymbolRules(
+        quantity_step=Decimal("0.001"),
+        min_quantity=Decimal("0.001"),
+        min_notional=Decimal("5"),
+        tick_size=Decimal("0.5"),
+    )
+    intent = _intent().model_copy(
+        update={"order_type": OrderType.LIMIT, "entry_price": Decimal("99.7")}
+    )
+
+    result = AggressiveRiskPolicy().evaluate(intent, _snapshot(), _portfolio(), rules)
+
+    assert result.decision.accepted and result.order is not None
+    # A long never bids up to reach the grid.
+    assert result.order.price == Decimal("99.5")
+
+
+def test_stop_that_snaps_to_zero_is_rejected_rather_than_sent() -> None:
+    """A tick coarser than the stop distance rounds the stop off the bottom.
+
+    Zero is not a price the exchange will take, and it is certainly not the
+    invalidation the model asked for, so the trade is refused rather than sent
+    with a nonsense bracket.
+    """
+
+    coarse = SymbolRules(
+        quantity_step=Decimal("0.001"),
+        min_quantity=Decimal("0.001"),
+        min_notional=Decimal("5"),
+        tick_size=Decimal("200"),
+    )
+    result = AggressiveRiskPolicy().evaluate(_intent(), _snapshot(), _portfolio(), coarse)
+
+    assert not result.decision.accepted
+    assert "rounds to zero" in result.decision.reason
