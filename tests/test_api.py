@@ -198,6 +198,9 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         assert running_usage["call_count"] == 1
         assert running_usage["total_tokens"] == 150
         assert running_usage["equivalent_cost_usd"] == 0.004
+        assert running_usage["average_duration_ms"] == 1
+        assert running_usage["average_tokens"] == 150
+        assert running_usage["average_cost_usd"] == 0.004
         with client.websocket_connect("/ws/events") as socket:
             event = socket.receive_json()
             assert event["type"] == "status"
@@ -212,6 +215,9 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         completed_usage = client.get("/api/metrics/run-session").json()
         assert completed_usage["state"] == "completed"
         assert completed_usage["total_tokens"] == 150
+        assert completed_usage["average_duration_ms"] == 1
+        assert completed_usage["average_tokens"] == 150
+        assert completed_usage["average_cost_usd"] == 0.004
 
         # Inferences created after the stop boundary cannot change the last run.
         asyncio.run(

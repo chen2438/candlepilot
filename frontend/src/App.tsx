@@ -54,6 +54,9 @@ const emptyRunSession: RunSessionMetrics = {
   priced_call_count: 0,
   cost_complete: true,
   equivalent_cost_usd: 0,
+  average_duration_ms: 0,
+  average_tokens: 0,
+  average_cost_usd: 0,
 };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -843,6 +846,9 @@ function RunUsage({ session }: { session: RunSessionMetrics }) {
   const cost = session.equivalent_cost_usd === null
     ? "—"
     : `$${session.equivalent_cost_usd.toFixed(6)}`;
+  const averageCost = session.average_cost_usd === null
+    ? "—"
+    : `$${session.average_cost_usd.toFixed(6)}`;
   return (
     <section className={`run-usage panel ${active ? "active" : ""}`}>
       <div className="run-usage-heading">
@@ -867,6 +873,11 @@ function RunUsage({ session }: { session: RunSessionMetrics }) {
         <span title={session.cost_complete ? "按模型公开 API 单价折算" : `仅 ${session.priced_call_count}/${session.call_count} 次调用可定价`}>
           等效成本<strong>{cost}</strong>
           {!session.cost_complete && <small>{session.priced_call_count}/{session.call_count} 可定价</small>}
+        </span>
+        <span>平均调用耗时<strong>{(session.average_duration_ms / 1000).toFixed(2)}s</strong></span>
+        <span>平均 Token<strong>{session.average_tokens.toLocaleString("zh-CN", { maximumFractionDigits: 1 })}</strong></span>
+        <span title={session.cost_complete ? "本次运行完整等效成本除以调用次数" : "存在无法定价的调用，无法计算完整平均成本"}>
+          平均成本<strong>{averageCost}</strong>
         </span>
       </div>
       <p>等效成本按可用的 API 单价或 Provider 返回成本折算，订阅 Auth 的实际账单可能不同。</p>

@@ -388,12 +388,18 @@ def test_run_session_metrics_respect_id_boundaries_and_complete_cost(tmp_path: P
         "priced_call_count": 1,
         "cost_complete": True,
         "equivalent_cost_usd": 0.01,
+        "average_duration_ms": 100.0,
+        "average_tokens": 120.0,
+        "average_cost_usd": 0.01,
     }
     assert running["call_count"] == 2
     assert running["error_count"] == 1
     assert running["total_tokens"] == 175
     assert running["cost_complete"] is False
     assert running["equivalent_cost_usd"] is None
+    assert running["average_duration_ms"] == 100.0
+    assert running["average_tokens"] == 87.5
+    assert running["average_cost_usd"] is None
 
 
 def test_clear_history_is_selective_and_preserves_runtime_state(tmp_path: Path) -> None:

@@ -316,9 +316,11 @@ class AuditRepository:
             "total_tokens": 0,
         }
         error_count = 0
+        duration_total_ms = 0.0
         cost_total = 0.0
         priced_call_count = 0
         for row in rows:
+            duration_total_ms += row.duration_ms
             usage = json.loads(row.usage_json)
             input_tokens = int(usage.get("input_tokens") or 0)
             output_tokens = int(usage.get("output_tokens") or 0)
@@ -341,13 +343,23 @@ class AuditRepository:
 
         call_count = len(rows)
         cost_complete = priced_call_count == call_count
+        equivalent_cost_usd = cost_total if cost_complete else None
         return {
             "call_count": call_count,
             "error_count": error_count,
             **totals,
             "priced_call_count": priced_call_count,
             "cost_complete": cost_complete,
-            "equivalent_cost_usd": cost_total if cost_complete else None,
+            "equivalent_cost_usd": equivalent_cost_usd,
+            "average_duration_ms": duration_total_ms / call_count if call_count else 0.0,
+            "average_tokens": totals["total_tokens"] / call_count if call_count else 0.0,
+            "average_cost_usd": (
+                equivalent_cost_usd / call_count
+                if equivalent_cost_usd is not None and call_count
+                else 0.0
+                if not call_count
+                else None
+            ),
         }
 
     async def record_risk(

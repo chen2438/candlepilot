@@ -178,6 +178,9 @@ export interface RunSessionMetrics {
   priced_call_count: number;
   cost_complete: boolean;
   equivalent_cost_usd: number | null;
+  average_duration_ms: number;
+  average_tokens: number;
+  average_cost_usd: number | null;
 }
 
 export interface TestnetAccountStatus {

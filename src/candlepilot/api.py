@@ -633,6 +633,9 @@ def create_app(
                 "priced_call_count": 0,
                 "cost_complete": True,
                 "equivalent_cost_usd": 0.0,
+                "average_duration_ms": 0.0,
+                "average_tokens": 0.0,
+                "average_cost_usd": 0.0,
             }
         ended_at = None if engine.running else engine.run_ended_at
         measured_at = ended_at or datetime.now(UTC)
