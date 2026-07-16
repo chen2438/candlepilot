@@ -23,7 +23,7 @@ from candlepilot.execution.paper import PaperExecutor
 from candlepilot.market.binance import BinancePublicClient
 from candlepilot.market.scanner import Candidate, MarketScanner
 from candlepilot.providers.base import ProviderResult
-from candlepilot.providers.cli import ProviderError
+from candlepilot.providers.cli import ProviderError, ProviderInvocationError
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
 from candlepilot.storage.database import AuditRepository
@@ -219,6 +219,9 @@ class TradingEngine:
         try:
             result = await provider.generate_trade_intent(snapshot, portfolio)
         except ProviderError as primary_exc:
+            primary_diagnostics = (
+                primary_exc if isinstance(primary_exc, ProviderInvocationError) else None
+            )
             result = None
             if self.backup_provider is not None:
                 backup = self.providers.get(self.backup_provider)
@@ -229,6 +232,9 @@ class TradingEngine:
                         f"primary failed: {primary_exc}; backup failed: {backup_exc}"
                     )
             if result is None:
+                usage = dict(primary_diagnostics.usage) if primary_diagnostics else {}
+                usage["error"] = type(primary_exc).__name__
+                usage["error_message"] = str(primary_exc)
                 intent = TradeIntent.hold(
                     snapshot.symbol,
                     snapshot.cadence,
@@ -237,14 +243,30 @@ class TradingEngine:
                 result = ProviderResult(
                     intent=intent,
                     provider=self.selected_provider,
-                    model=None,
-                    duration=timedelta(0),
-                    raw_output=str(primary_exc),
-                    usage={"error": type(primary_exc).__name__},
-                    input_payload={
+                    model=primary_diagnostics.model if primary_diagnostics else provider.model,
+                    duration=primary_diagnostics.duration
+                    if primary_diagnostics
+                    else timedelta(0),
+                    raw_output=primary_diagnostics.raw_output
+                    if primary_diagnostics
+                    else str(primary_exc),
+                    usage=usage,
+                    prompt_version=primary_diagnostics.prompt_version
+                    if primary_diagnostics
+                    else None,
+                    data_version=primary_diagnostics.data_version
+                    if primary_diagnostics
+                    else None,
+                    provider_version=primary_diagnostics.provider_version
+                    if primary_diagnostics
+                    else None,
+                    input_payload=primary_diagnostics.input_payload
+                    if primary_diagnostics
+                    else {
                         "market": snapshot.model_dump(mode="json"),
                         "portfolio": portfolio.model_dump(mode="json"),
                     },
+                    prompt=primary_diagnostics.prompt if primary_diagnostics else None,
                 )
         inference_id = await self.audit.record_inference(result)
         evaluation_snapshot = snapshot

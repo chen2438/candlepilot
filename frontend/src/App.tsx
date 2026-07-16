@@ -973,8 +973,17 @@ function AnalysisDetail({
   const blocks = [
     { key: `input-${detail.id}`, title: "结构化输入", value: inputText },
     { key: `prompt-${detail.id}`, title: "实际 Prompt", value: detail.prompt },
-    { key: `output-${detail.id}`, title: "模型原始输出", value: detail.raw_output },
+    {
+      key: `output-${detail.id}`,
+      title: usage.error && detail.audit_status !== "complete"
+        ? "Provider 错误信息"
+        : "模型原始输出",
+      value: detail.raw_output,
+    },
   ];
+  const missingAuditMessage = detail.audit_status === "unavailable"
+    ? "该记录创建于输入审计启用前，无法补回当时的精确输入。"
+    : "该记录只保存了部分输入审计；缺失内容无法补回。";
 
   return (
     <section className="analysis-detail">
@@ -989,6 +998,9 @@ function AnalysisDetail({
         <span>总 Token<strong>{Number(usage.total_tokens ?? 0).toLocaleString("zh-CN")}</strong></span>
         <span>等效成本<strong>{detail.equivalent_cost_usd === null ? "—" : `$${detail.equivalent_cost_usd.toFixed(6)}`}</strong></span>
       </div>
+      {typeof usage.error_message === "string" && (
+        <div className="analysis-detail-state error">Provider 调用失败：{usage.error_message}</div>
+      )}
       <div className="analysis-blocks">
         {blocks.map((block) => (
           <div className="analysis-block" key={block.key}>
@@ -1001,7 +1013,7 @@ function AnalysisDetail({
               )}
             </div>
             {block.value === null
-              ? <p>该记录创建于输入审计启用前，无法补回当时的精确输入。</p>
+              ? <p>{missingAuditMessage}</p>
               : <pre>{block.value}</pre>}
           </div>
         ))}

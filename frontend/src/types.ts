@@ -81,6 +81,7 @@ export interface DecisionEvent {
 }
 
 export interface DecisionDetail extends DecisionEvent {
+  audit_status: "complete" | "partial" | "unavailable";
   input: {
     market: Record<string, unknown>;
     portfolio: Record<string, unknown>;

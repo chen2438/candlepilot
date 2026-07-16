@@ -15,7 +15,7 @@ from candlepilot.domain.models import (
 )
 from candlepilot.market.scanner import MarketCandidateInput
 from candlepilot.providers.base import LLMProvider, ProviderResult
-from candlepilot.providers.cli import ProviderError
+from candlepilot.providers.cli import ProviderError, ProviderInvocationError
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.risk.engine import SymbolRules
 from candlepilot.storage.database import AuditRepository, Database
@@ -50,6 +50,28 @@ class FailedProvider(LLMProvider):
 
     async def generate_trade_intent(self, snapshot, portfolio) -> ProviderResult:
         raise ProviderError("fixture failure")
+
+
+class AuditedFailedProvider(LLMProvider):
+    name = "audited-failure"
+    model = "fixture-model"
+
+    async def health_check(self) -> ProviderHealth:
+        return ProviderHealth(provider=self.name, available=True, authenticated=True)
+
+    async def generate_trade_intent(self, snapshot, portfolio) -> ProviderResult:
+        raise ProviderInvocationError(
+            "fixture validation failure",
+            model=self.model,
+            duration=timedelta(milliseconds=432),
+            raw_output='{"action":"INVALID"}',
+            usage={"input_tokens": 20, "output_tokens": 5, "total_tokens": 25},
+            prompt_version="trade-intent-v2",
+            data_version="market-snapshot-v1:sha256:fixture",
+            provider_version="fixture-provider-1",
+            input_payload={"market": {"symbol": snapshot.symbol}, "portfolio": {}},
+            prompt="fixture prompt",
+        )
 
 
 class MarketableLimitProvider(FakeProvider):
@@ -517,6 +539,51 @@ def test_engine_fails_over_once_to_explicit_backup_provider(tmp_path: Path) -> N
     outcome = asyncio.run(scenario())
     assert outcome.provider == "fake-auth"
     assert outcome.execution is not None
+
+
+def test_engine_persists_failed_provider_audit_context(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'failure-audit.db'}")
+        await database.initialize()
+        audit = AuditRepository(database.sessions)
+        engine = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([AuditedFailedProvider()]),
+            audit=audit,
+            market=FakeMarket(),  # type: ignore[arg-type]
+        )
+        engine.select_provider("audited-failure")
+        await engine.start()
+        outcome = await engine.evaluate(
+            MarketSnapshot(
+                symbol="BTCUSDT",
+                cadence="5m",
+                timestamp=datetime.now(UTC),
+                mark_price="100",
+                bid="99.9",
+                ask="100.1",
+                quote_volume_24h="1000000",
+            ),
+            PortfolioState(equity="10000", available_balance="8000"),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+        )
+        events = await audit.recent_intents()
+        detail = await audit.decision_detail(events[0]["id"])
+        await database.close()
+        return outcome, detail
+
+    outcome, detail = asyncio.run(scenario())
+    assert outcome.intent.action == TradeAction.HOLD
+    assert outcome.execution is None
+    assert detail is not None
+    assert detail["model"] == "fixture-model"
+    assert detail["duration_ms"] == 432
+    assert detail["raw_output"] == '{"action":"INVALID"}'
+    assert detail["prompt"] == "fixture prompt"
+    assert detail["audit_status"] == "complete"
+    assert detail["usage"]["input_tokens"] == 20
+    assert detail["usage"]["error_message"] == "fixture validation failure"
+    assert detail["provenance"]["provider_version"] == "fixture-provider-1"
 
 
 def test_emergency_lock_persists_and_expires_at_next_utc_day(tmp_path: Path) -> None:

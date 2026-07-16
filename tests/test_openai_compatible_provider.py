@@ -7,7 +7,7 @@ import pytest
 from pydantic import SecretStr
 
 from candlepilot.domain.models import MarketSnapshot, PortfolioState, TradeAction
-from candlepilot.providers.cli import ProviderError
+from candlepilot.providers.cli import ProviderError, ProviderInvocationError
 from candlepilot.providers.openai_compatible import (
     OpenAICompatibleProvider,
     parse_chat_completion,
@@ -255,6 +255,10 @@ def test_custom_provider_http_errors_do_not_expose_key_or_url() -> None:
     assert "HTTP 401" in message
     assert secret not in message
     assert "private.example" not in message
+    assert isinstance(caught.value, ProviderInvocationError)
+    assert caught.value.model == "vendor-model"
+    assert caught.value.prompt is not None
+    assert caught.value.input_payload["market"]["symbol"] == "BTCUSDT"
 
 
 def test_parse_chat_completion_rejects_missing_content() -> None:

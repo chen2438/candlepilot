@@ -5,10 +5,13 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from candlepilot.domain.models import MarketSnapshot, PortfolioState, TradeAction
 from candlepilot.providers.cli import (
     ClaudeCodeAuthProvider,
     CodexAuthProvider,
+    ProviderInvocationError,
     find_codex_executable,
     find_claude_executable,
     find_codex_model,
@@ -291,6 +294,39 @@ def test_claude_provider_truncates_only_oversized_rationale_and_marks_usage(
     assert result.usage["rationale_truncated"] is True
     assert "r" * 1_200 in result.raw_output
     assert result.prompt is not None and "at most 800 characters" in result.prompt
+
+
+def test_claude_validation_failure_preserves_complete_audit_context(
+    tmp_path: Path,
+) -> None:
+    intent = _minimal_intent()
+    intent["action"] = "NOT_AN_ACTION"
+    envelope = json.dumps(
+        {
+            "result": json.dumps(intent),
+            "duration_ms": 321,
+            "usage": {"input_tokens": 25, "output_tokens": 10},
+            "modelUsage": {"claude-test": {"outputTokens": 10}},
+        }
+    )
+    executable = _write_fake_cli(tmp_path / "claude", f"printf '%s\\n' '{envelope}'\n")
+
+    with pytest.raises(ProviderInvocationError) as caught:
+        asyncio.run(
+            ClaudeCodeAuthProvider(executable=executable).generate_trade_intent(
+                _market(), _portfolio()
+            )
+        )
+
+    error = caught.value
+    assert error.model == "claude-test"
+    assert error.duration.total_seconds() > 0
+    assert error.raw_output == envelope + "\n"
+    assert error.usage["input_tokens"] == 25
+    assert error.prompt_version == "trade-intent-v2"
+    assert error.data_version.startswith("market-snapshot-v1:sha256:")
+    assert error.input_payload["market"]["symbol"] == "BTCUSDT"
+    assert '"portfolio"' in error.prompt
 
 
 def _minimal_intent() -> dict:

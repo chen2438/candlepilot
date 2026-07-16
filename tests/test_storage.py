@@ -52,8 +52,48 @@ def test_inference_audit_round_trip(tmp_path: Path) -> None:
     assert detail is not None
     assert detail["input"]["market"]["symbol"] == "BTCUSDT"
     assert detail["prompt"] == "fixture prompt"
+    assert detail["audit_status"] == "complete"
     assert '"symbol":"BTCUSDT"' in detail["raw_output"]
     assert detail["usage"]["input_tokens"] == 10
+
+
+def test_inference_audit_distinguishes_partial_and_unavailable_details(
+    tmp_path: Path,
+) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'audit-status.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        intent = TradeIntent.hold("BTCUSDT", "5m", "test")
+        partial_id = await repository.record_inference(
+            ProviderResult(
+                intent,
+                "claude-code-auth",
+                None,
+                timedelta(0),
+                "error",
+                {"error": "ProviderError"},
+                input_payload={"market": {"symbol": "BTCUSDT"}},
+            )
+        )
+        unavailable_id = await repository.record_inference(
+            ProviderResult(
+                intent,
+                "claude-code-auth",
+                None,
+                timedelta(0),
+                "legacy",
+                {},
+            )
+        )
+        partial = await repository.decision_detail(partial_id)
+        unavailable = await repository.decision_detail(unavailable_id)
+        await database.close()
+        return partial, unavailable
+
+    partial, unavailable = asyncio.run(scenario())
+    assert partial is not None and partial["audit_status"] == "partial"
+    assert unavailable is not None and unavailable["audit_status"] == "unavailable"
 
 
 def test_execution_and_risk_queries_filter_and_order(tmp_path: Path) -> None:

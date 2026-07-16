@@ -16,6 +16,7 @@ from candlepilot.providers.base import LLMProvider, ProviderCapabilities, Provid
 from candlepilot.providers.cli import (
     MAX_OUTPUT_BYTES,
     ProviderError,
+    ProviderInvocationError,
     ProviderUnavailable,
     _decision_payload,
     _decision_prompt,
@@ -239,6 +240,31 @@ class OpenAICompatibleProvider(LLMProvider):
         started = time.monotonic()
         input_payload = _decision_payload(snapshot, portfolio)
         prompt = _decision_prompt(snapshot, portfolio, include_schema=True)
+        data_version = content_fingerprint(
+            snapshot.model_dump(mode="json"),
+            schema_version=MARKET_SNAPSHOT_SCHEMA_VERSION,
+        )
+        provider_version = f"openai-compatible-{self.wire_api}"
+
+        def invocation_error(
+            message: str,
+            *,
+            raw_output: str = "",
+            usage: dict[str, Any] | None = None,
+            model: str | None = None,
+        ) -> ProviderInvocationError:
+            return ProviderInvocationError(
+                message,
+                model=model or self.model,
+                duration=timedelta(seconds=time.monotonic() - started),
+                raw_output=raw_output,
+                usage=usage or {},
+                prompt_version=DECISION_PROMPT_VERSION,
+                data_version=data_version,
+                provider_version=provider_version,
+                input_payload=input_payload,
+                prompt=prompt,
+            )
         if self.wire_api == "responses":
             endpoint = f"{self.base_url}/responses"
             request: dict[str, Any] = {
@@ -279,20 +305,25 @@ class OpenAICompatibleProvider(LLMProvider):
                         json=request,
                     )
         except httpx.TimeoutException as exc:
-            raise ProviderError(f"OpenAI-compatible endpoint timed out after {self.timeout:g}s") from exc
+            raise invocation_error(
+                f"OpenAI-compatible endpoint timed out after {self.timeout:g}s"
+            ) from exc
         except httpx.HTTPError as exc:
-            raise ProviderError("OpenAI-compatible endpoint could not be reached") from exc
+            raise invocation_error("OpenAI-compatible endpoint could not be reached") from exc
         finally:
             self._active_task = None
 
         if response.is_redirect:
-            raise ProviderError("OpenAI-compatible endpoint redirects are not allowed")
+            raise invocation_error("OpenAI-compatible endpoint redirects are not allowed")
         if response.status_code >= 400:
-            raise ProviderError(
+            raise invocation_error(
                 f"OpenAI-compatible endpoint returned HTTP {response.status_code}"
             )
         if len(response.content) > MAX_OUTPUT_BYTES:
-            raise ProviderError("OpenAI-compatible endpoint response exceeded the size limit")
+            raise invocation_error("OpenAI-compatible endpoint response exceeded the size limit")
+        result_text = ""
+        response_model: str | None = None
+        usage: dict[str, Any] = {}
         try:
             envelope = response.json()
             if not isinstance(envelope, dict):
@@ -302,9 +333,12 @@ class OpenAICompatibleProvider(LLMProvider):
             else:
                 result_text, response_model, usage = parse_chat_completion(envelope)
             intent, rationale_truncated = _parse_intent(result_text)
-        except (json.JSONDecodeError, TypeError, ValidationError) as exc:
-            raise ProviderError(
-                "OpenAI-compatible endpoint returned an invalid TradeIntent"
+        except (ProviderError, json.JSONDecodeError, TypeError, ValidationError) as exc:
+            raise invocation_error(
+                "OpenAI-compatible endpoint returned an invalid TradeIntent",
+                raw_output=result_text,
+                usage=usage,
+                model=response_model,
             ) from exc
 
         if rationale_truncated:
@@ -317,11 +351,8 @@ class OpenAICompatibleProvider(LLMProvider):
             raw_output=result_text,
             usage=usage,
             prompt_version=DECISION_PROMPT_VERSION,
-            data_version=content_fingerprint(
-                snapshot.model_dump(mode="json"),
-                schema_version=MARKET_SNAPSHOT_SCHEMA_VERSION,
-            ),
-            provider_version=f"openai-compatible-{self.wire_api}",
+            data_version=data_version,
+            provider_version=provider_version,
             input_payload=input_payload,
             prompt=prompt,
         )

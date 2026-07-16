@@ -625,6 +625,13 @@ class AuditRepository:
         inference, risk, detail = row
         usage = json.loads(inference.usage_json)
         intent = TradeIntent.model_validate_json(inference.intent_json)
+        audit_status = "unavailable"
+        if detail is not None:
+            audit_status = (
+                "complete"
+                if detail.input_json is not None and detail.prompt_text is not None
+                else "partial"
+            )
         return {
             "id": inference.id,
             "provider": inference.provider,
@@ -646,6 +653,7 @@ class AuditRepository:
             if detail is not None and detail.input_json is not None
             else None,
             "prompt": detail.prompt_text if detail is not None else None,
+            "audit_status": audit_status,
             "raw_output": inference.raw_output,
             "usage": {key: value for key, value in usage.items() if key != "_provenance"},
             "equivalent_cost_usd": self._inference_cost(inference, usage, catalog),

@@ -70,6 +70,35 @@ class ProviderError(RuntimeError):
     pass
 
 
+class ProviderInvocationError(ProviderError):
+    """Provider failure carrying safe, local-only inference audit context."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        model: str | None,
+        duration: timedelta,
+        raw_output: str,
+        usage: dict[str, Any],
+        prompt_version: str,
+        data_version: str,
+        provider_version: str | None,
+        input_payload: dict[str, Any],
+        prompt: str,
+    ) -> None:
+        super().__init__(message)
+        self.model = model
+        self.duration = duration
+        self.raw_output = raw_output
+        self.usage = usage
+        self.prompt_version = prompt_version
+        self.data_version = data_version
+        self.provider_version = provider_version
+        self.input_payload = input_payload
+        self.prompt = prompt
+
+
 class ProviderUnavailable(ProviderError):
     pass
 
@@ -407,61 +436,101 @@ class CodexAuthProvider(LLMProvider):
         started = time.monotonic()
         input_payload = _decision_payload(snapshot, portfolio)
         prompt = _decision_prompt(snapshot, portfolio)
+        model = self.model or find_codex_model(self.config_path)
+        data_version = content_fingerprint(
+            snapshot.model_dump(mode="json"),
+            schema_version=MARKET_SNAPSHOT_SCHEMA_VERSION,
+        )
         self._active_task = asyncio.current_task()
         try:
-            async with self._semaphore:
-                with tempfile.TemporaryDirectory(prefix="candlepilot-codex-") as directory:
-                    root = Path(directory)
-                    schema_path = root / "trade-intent.schema.json"
-                    schema_path.write_text(
-                        json.dumps(trade_intent_output_schema(), separators=(",", ":")),
-                        encoding="utf-8",
-                    )
-                    argv = [
-                        str(self.executable),
-                        "exec",
-                        "--ephemeral",
-                        "--ignore-user-config",
-                        "--ignore-rules",
-                        "--sandbox",
-                        "read-only",
-                        "--skip-git-repo-check",
-                        "--json",
-                    ]
-                    if self.model:
-                        argv += ["-m", self.model]
-                    if self.reasoning_effort:
-                        argv += ["-c", f"model_reasoning_effort={self.reasoning_effort}"]
-                    argv += ["--output-schema", str(schema_path), "-"]
-                    stdout, _ = await _run_process(
-                        argv,
-                        cwd=root,
-                        stdin=prompt,
-                        timeout=self.timeout,
-                    )
+            try:
+                async with self._semaphore:
+                    with tempfile.TemporaryDirectory(
+                        prefix="candlepilot-codex-"
+                    ) as directory:
+                        root = Path(directory)
+                        schema_path = root / "trade-intent.schema.json"
+                        schema_path.write_text(
+                            json.dumps(trade_intent_output_schema(), separators=(",", ":")),
+                            encoding="utf-8",
+                        )
+                        argv = [
+                            str(self.executable),
+                            "exec",
+                            "--ephemeral",
+                            "--ignore-user-config",
+                            "--ignore-rules",
+                            "--sandbox",
+                            "read-only",
+                            "--skip-git-repo-check",
+                            "--json",
+                        ]
+                        if self.model:
+                            argv += ["-m", self.model]
+                        if self.reasoning_effort:
+                            argv += ["-c", f"model_reasoning_effort={self.reasoning_effort}"]
+                        argv += ["--output-schema", str(schema_path), "-"]
+                        stdout, _ = await _run_process(
+                            argv,
+                            cwd=root,
+                            stdin=prompt,
+                            timeout=self.timeout,
+                        )
+            except ProviderError as exc:
+                raise ProviderInvocationError(
+                    str(exc),
+                    model=model,
+                    duration=timedelta(seconds=time.monotonic() - started),
+                    raw_output="",
+                    usage={},
+                    prompt_version=DECISION_PROMPT_VERSION,
+                    data_version=data_version,
+                    provider_version=self._provider_version,
+                    input_payload=input_payload,
+                    prompt=prompt,
+                ) from exc
         finally:
             self._active_task = None
         result_text, usage = parse_codex_events(stdout)
         if result_text is None:
-            raise ProviderError("Codex did not return an agent message")
+            raise ProviderInvocationError(
+                "Codex did not return an agent message",
+                model=model,
+                duration=timedelta(seconds=time.monotonic() - started),
+                raw_output=stdout,
+                usage=usage,
+                prompt_version=DECISION_PROMPT_VERSION,
+                data_version=data_version,
+                provider_version=self._provider_version,
+                input_payload=input_payload,
+                prompt=prompt,
+            )
         try:
             intent, rationale_truncated = _parse_intent(result_text)
         except (json.JSONDecodeError, ValidationError) as exc:
-            raise ProviderError(f"Codex returned an invalid TradeIntent: {exc}") from exc
+            raise ProviderInvocationError(
+                f"Codex returned an invalid TradeIntent: {exc}",
+                model=model,
+                duration=timedelta(seconds=time.monotonic() - started),
+                raw_output=result_text,
+                usage=usage,
+                prompt_version=DECISION_PROMPT_VERSION,
+                data_version=data_version,
+                provider_version=self._provider_version,
+                input_payload=input_payload,
+                prompt=prompt,
+            ) from exc
         if rationale_truncated:
             usage["rationale_truncated"] = True
         return ProviderResult(
             intent=intent,
             provider=self.name,
-            model=self.model or find_codex_model(self.config_path),
+            model=model,
             duration=timedelta(seconds=time.monotonic() - started),
             raw_output=result_text,
             usage=usage,
             prompt_version=DECISION_PROMPT_VERSION,
-            data_version=content_fingerprint(
-                snapshot.model_dump(mode="json"),
-                schema_version=MARKET_SNAPSHOT_SCHEMA_VERSION,
-            ),
+            data_version=data_version,
             provider_version=self._provider_version,
             input_payload=input_payload,
             prompt=prompt,
@@ -542,49 +611,84 @@ class ClaudeCodeAuthProvider(LLMProvider):
         started = time.monotonic()
         input_payload = _decision_payload(snapshot, portfolio)
         prompt = _decision_prompt(snapshot, portfolio, include_schema=True)
+        data_version = content_fingerprint(
+            snapshot.model_dump(mode="json"),
+            schema_version=MARKET_SNAPSHOT_SCHEMA_VERSION,
+        )
         self._active_task = asyncio.current_task()
         try:
-            async with self._semaphore:
-                with tempfile.TemporaryDirectory(prefix="candlepilot-claude-") as directory:
-                    # Not plan mode: plan mode makes Claude call ExitPlanMode (or
-                    # explain the plan workflow) instead of answering, which burns
-                    # the single turn and yields error_max_turns. A small turn
-                    # budget tolerates a stray disallowed-tool attempt while the
-                    # empty cwd, tool blocklist and sanitized env keep it inert.
-                    argv = [
-                        str(self.executable),
-                        "-p",
-                        "--output-format",
-                        "json",
-                        "--permission-mode",
-                        "default",
-                        "--max-turns",
-                        "4",
-                        "--disallowedTools",
-                        "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit",
-                    ]
-                    if self.model:
-                        argv += ["--model", self.model]
-                    if self.reasoning_effort:
-                        argv += ["--effort", self.reasoning_effort]
-                    # Prompt goes on stdin, not as a trailing arg: --disallowedTools
-                    # greedily consumes the following positional token, so an
-                    # arg-passed prompt gets word-split into bogus "deny rules"
-                    # whenever no --model/--effort flag separates them.
-                    stdout, _ = await _run_process(
-                        argv,
-                        stdin=prompt,
-                        cwd=Path(directory),
-                        timeout=self.timeout,
-                    )
+            try:
+                async with self._semaphore:
+                    with tempfile.TemporaryDirectory(
+                        prefix="candlepilot-claude-"
+                    ) as directory:
+                        # Not plan mode: plan mode makes Claude call ExitPlanMode (or
+                        # explain the plan workflow) instead of answering, which burns
+                        # the single turn and yields error_max_turns. A small turn
+                        # budget tolerates a stray disallowed-tool attempt while the
+                        # empty cwd, tool blocklist and sanitized env keep it inert.
+                        argv = [
+                            str(self.executable),
+                            "-p",
+                            "--output-format",
+                            "json",
+                            "--permission-mode",
+                            "default",
+                            "--max-turns",
+                            "4",
+                            "--disallowedTools",
+                            "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit",
+                        ]
+                        if self.model:
+                            argv += ["--model", self.model]
+                        if self.reasoning_effort:
+                            argv += ["--effort", self.reasoning_effort]
+                        # Prompt goes on stdin, not as a trailing arg: --disallowedTools
+                        # greedily consumes the following positional token, so an
+                        # arg-passed prompt gets word-split into bogus "deny rules"
+                        # whenever no --model/--effort flag separates them.
+                        stdout, _ = await _run_process(
+                            argv,
+                            stdin=prompt,
+                            cwd=Path(directory),
+                            timeout=self.timeout,
+                        )
+            except ProviderError as exc:
+                raise ProviderInvocationError(
+                    str(exc),
+                    model=self.model,
+                    duration=timedelta(seconds=time.monotonic() - started),
+                    raw_output="",
+                    usage={},
+                    prompt_version=DECISION_PROMPT_VERSION,
+                    data_version=data_version,
+                    provider_version=self._provider_version,
+                    input_payload=input_payload,
+                    prompt=prompt,
+                ) from exc
         finally:
             self._active_task = None
+        model = self.model
+        usage: dict[str, Any] = {}
         try:
             envelope = json.loads(stdout)
+            if not isinstance(envelope, dict):
+                raise TypeError("Claude Code response envelope must be an object")
+            model, usage = parse_claude_usage(envelope)
             intent, rationale_truncated = _parse_intent(envelope["result"])
-        except (KeyError, TypeError, json.JSONDecodeError, ValidationError) as exc:
-            raise ProviderError(f"Claude Code returned an invalid TradeIntent: {exc}") from exc
-        model, usage = parse_claude_usage(envelope)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError, ValidationError) as exc:
+            raise ProviderInvocationError(
+                f"Claude Code returned an invalid TradeIntent: {exc}",
+                model=model,
+                duration=timedelta(seconds=time.monotonic() - started),
+                raw_output=stdout,
+                usage=usage,
+                prompt_version=DECISION_PROMPT_VERSION,
+                data_version=data_version,
+                provider_version=self._provider_version,
+                input_payload=input_payload,
+                prompt=prompt,
+            ) from exc
         if rationale_truncated:
             usage["rationale_truncated"] = True
         return ProviderResult(
@@ -595,10 +699,7 @@ class ClaudeCodeAuthProvider(LLMProvider):
             raw_output=stdout,
             usage=usage,
             prompt_version=DECISION_PROMPT_VERSION,
-            data_version=content_fingerprint(
-                snapshot.model_dump(mode="json"),
-                schema_version=MARKET_SNAPSHOT_SCHEMA_VERSION,
-            ),
+            data_version=data_version,
             provider_version=self._provider_version,
             input_payload=input_payload,
             prompt=prompt,
