@@ -92,6 +92,42 @@ const TABS: Array<{ key: TabKey; label: string; meta: string }> = [
   { key: "data", label: "数据", meta: "删除历史数据" },
 ];
 
+const METRIC_DEFINITIONS: Record<string, string> = {
+  "候选标的": "最近一次全市场扫描后进入动态候选池的 USDT 永续合约数量；候选池最多保留 20 个，不等于每个周期实际送入模型的数量。",
+  "最大杠杆": "硬风控允许模型请求的最高杠杆倍数；实际交易可以更低，不能由模型突破。",
+  "日亏熔断": "当日净亏损达到当日起始权益的 8% 时，硬风控拒绝新增风险仓位。",
+  "权益": "账户现金或钱包余额加上按最新标记价计算的未实现盈亏。",
+  "可用余额": "扣除当前保证金占用后，仍可用于新订单保证金的账户余额。",
+  "占用保证金": "当前非零持仓占用的保证金合计；模拟账户按名义价值除以杠杆估算。",
+  "持仓数": "当前数量非零的单向净仓标的数量。",
+  "调用量": "过去 24 小时写入本地推理审计的该 Provider 调用记录数，包括失败并降级的记录。",
+  "平均延迟": "过去 24 小时该 Provider 单次模型调用耗时的算术平均值。",
+  "P95 延迟": "过去 24 小时调用耗时的第 95 百分位；约 95% 的调用不超过该值。",
+  "错误率": "过去 24 小时带 Provider 错误标记的调用数除以调用总数。",
+  "钱包余额": "币安测试网账户的钱包余额，不包含当前未实现盈亏。",
+  "未实现盈亏": "全部未平仓头寸按最新标记价计算的浮动盈亏合计。",
+  "总收益": "回测结束权益相对初始权益的累计变化比例，包含模型交易产生的费用和资金费影响。",
+  "最大回撤": "回测权益曲线从任一历史峰值到后续低点的最大跌幅。",
+  "Sharpe": "回测周期收益的年化平均值除以样本标准差，未扣无风险利率；值越高代表单位总波动收益越高。",
+  "Sortino": "回测周期收益的年化平均值除以下行偏差；只惩罚负收益波动。",
+  "换手": "回测全部成交名义价值合计除以初始权益。",
+};
+
+const RISK_DEFINITIONS: Record<string, string> = {
+  "单笔风险": "单次开仓或加仓在止损触发时允许承担的计划亏损上限，为当前权益的 2%，并在定量时计入费用与保守滑点。",
+  "并发仓位": "整个组合同时允许持有的非零净仓标的上限为 8 个。",
+  "保证金占用": "全部仓位占用保证金不得超过账户权益的 60%。",
+  "持仓模式": "每个标的使用逐仓保证金并维持单向净仓，不同时持有双向仓位。",
+};
+
+const CANDIDATE_DEFINITIONS = {
+  score: "候选综合评分：24h 成交额 35% + 价差流动性 30% + 24h 波动 20% + 趋势绝对强度 15%，均在入选成交额池内归一化。",
+  volumeRank: "通过上市时间、数据完整性和价差过滤后，按 24h USDT 成交额排序的名次；评分池最多取前 50 名。",
+  spread: "最新卖一价与买一价之差除以中间价，以基点 bp 表示；1 bp = 0.01%。",
+  volatility: "币安 24h 最高价与最低价之差除以最新价。",
+  trend: "币安 24h 价格涨跌幅；正值表示上涨，负值表示下跌。",
+};
+
 function providerLabel(name: string): string {
   if (name === "codex-auth") return "Codex Auth";
   if (name === "claude-code-auth") return "Claude Code Auth";
@@ -687,7 +723,7 @@ export default function App() {
             <button className="compact" disabled={busy !== null} onClick={refreshUniverse}>{busy === "universe" ? "扫描中…" : "刷新全市场"}</button>
             <div className="table-wrap">
               <table>
-                <thead><tr><th>标的</th><th>评分</th><th>成交额排名</th><th>价差</th><th>24h 波动</th><th>趋势</th></tr></thead>
+                <thead><tr><th>标的</th><th title={CANDIDATE_DEFINITIONS.score}>评分</th><th title={CANDIDATE_DEFINITIONS.volumeRank}>成交额排名</th><th title={CANDIDATE_DEFINITIONS.spread}>价差</th><th title={CANDIDATE_DEFINITIONS.volatility}>24h 波动</th><th title={CANDIDATE_DEFINITIONS.trend}>趋势</th></tr></thead>
                 <tbody>
                   {candidates.map((candidate) => (
                     <tr key={candidate.symbol}>
@@ -828,7 +864,7 @@ export default function App() {
 }
 
 function Metric({ label, value, suffix }: { label: string; value: string; suffix: string }) {
-  return <div className="metric"><span>{label}</span><strong>{value}<small>{suffix}</small></strong></div>;
+  return <div className="metric" title={METRIC_DEFINITIONS[label]}><span>{label}</span><strong>{value}<small>{suffix}</small></strong></div>;
 }
 
 function formatDuration(seconds: number): string {
@@ -865,18 +901,18 @@ function RunUsage({ session }: { session: RunSessionMetrics }) {
         </small>
       </div>
       <div className="run-usage-metrics">
-        <span>输入 Token<strong>{session.input_tokens.toLocaleString()}</strong></span>
-        <span>缓存输入<strong>{session.cached_input_tokens.toLocaleString()}</strong></span>
-        <span>缓存写入<strong>{session.cache_creation_input_tokens.toLocaleString()}</strong></span>
-        <span>输出 Token<strong>{session.output_tokens.toLocaleString()}</strong></span>
-        <span>总 Token<strong>{session.total_tokens.toLocaleString()}</strong></span>
-        <span title={session.cost_complete ? "按模型公开 API 单价折算" : `仅 ${session.priced_call_count}/${session.call_count} 次调用可定价`}>
+        <span title="本次或上次引擎运行中，Provider 报告的非缓存输入 Token 合计。">输入 Token<strong>{session.input_tokens.toLocaleString()}</strong></span>
+        <span title="本次或上次运行中从 Provider 提示词缓存读取并复用的输入 Token 合计。">缓存输入<strong>{session.cached_input_tokens.toLocaleString()}</strong></span>
+        <span title="本次或上次运行中新写入 Provider 提示词缓存的输入 Token 合计；并非所有 Provider 都报告此项。">缓存写入<strong>{session.cache_creation_input_tokens.toLocaleString()}</strong></span>
+        <span title="本次或上次运行中 Provider 报告的输出 Token 合计；是否包含内部思考 Token 取决于 Provider 的计量口径。">输出 Token<strong>{session.output_tokens.toLocaleString()}</strong></span>
+        <span title="本次或上次运行中各调用经统一审计后的总 Token 合计，包含 Provider 报告的缓存相关用量。">总 Token<strong>{session.total_tokens.toLocaleString()}</strong></span>
+        <span title={session.cost_complete ? "按各模型公开 API 单价或 Provider 返回成本折算的本次运行总成本；订阅 Auth 的实际账单可能不同。" : `仅 ${session.priced_call_count}/${session.call_count} 次调用可定价，因此不展示不完整的总成本。`}>
           等效成本<strong>{cost}</strong>
           {!session.cost_complete && <small>{session.priced_call_count}/{session.call_count} 可定价</small>}
         </span>
-        <span>平均调用耗时<strong>{(session.average_duration_ms / 1000).toFixed(2)}s</strong></span>
-        <span>平均 Token<strong>{session.average_tokens.toLocaleString("zh-CN", { maximumFractionDigits: 1 })}</strong></span>
-        <span title={session.cost_complete ? "本次运行完整等效成本除以调用次数" : "存在无法定价的调用，无法计算完整平均成本"}>
+        <span title="本次或上次运行内所有模型调用耗时的算术平均值，不使用引擎总运行时长计算。">平均调用耗时<strong>{(session.average_duration_ms / 1000).toFixed(2)}s</strong></span>
+        <span title="本次或上次运行的总 Token 除以模型调用次数。">平均 Token<strong>{session.average_tokens.toLocaleString("zh-CN", { maximumFractionDigits: 1 })}</strong></span>
+        <span title={session.cost_complete ? "本次运行完整等效成本除以模型调用次数；订阅 Auth 的实际账单可能不同。" : "存在无法定价的调用，因此不计算可能误导的完整平均成本。"}>
           平均成本<strong>{averageCost}</strong>
         </span>
       </div>
@@ -890,7 +926,7 @@ function PanelTitle({ code, title, meta }: { code: string; title: string; meta: 
 }
 
 function RiskItem({ label, value, detail }: { label: string; value: string; detail: string }) {
-  return <div className="risk-item"><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;
+  return <div className="risk-item" title={RISK_DEFINITIONS[label]}><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;
 }
 
 function money(value: string): string {
@@ -990,7 +1026,9 @@ function DecisionPanel({ decisions }: { decisions: DecisionEvent[] }) {
               </span>
               <span
                 className={`signal-confidence ${decision.intent.action === "HOLD" ? "residual" : ""}`}
-                title={decision.intent.action === "HOLD" ? "没有可执行动作时的残余交易机会强度" : "模型对当前动作具备可执行交易优势的估计"}
+                title={decision.intent.action === "HOLD"
+                  ? "HOLD 时表示当前快照仍残留的交易机会强度，不是盈利概率，也不代表模型输出可靠性。"
+                  : "模型对该非 HOLD 方向在当前快照下具备可执行交易优势的估计；不是盈利概率，且不能绕过硬风控。"}
               >
                 {Math.round(decision.intent.confidence * 100)}%
                 <small>{decision.intent.action === "HOLD" ? "机会强度" : "执行置信度"}</small>
@@ -1151,7 +1189,12 @@ function AccountPanel({
       <div className="account-metrics">
         <Metric label="权益" value={portfolio ? money(portfolio.equity) : "—"} suffix="" />
         <Metric label="可用余额" value={portfolio ? money(portfolio.available_balance) : "—"} suffix="" />
-        <div className="metric"><span>{isTestnet ? "未实现盈亏" : "当日盈亏"}</span><strong className={Number(displayedPnl ?? 0) >= 0 ? "positive" : "negative"}>{displayedPnl === null ? "—" : money(displayedPnl)}</strong></div>
+        <div
+          className="metric"
+          title={isTestnet
+            ? METRIC_DEFINITIONS["未实现盈亏"]
+            : "模拟账户当前权益相对本次运行起始权益的变化额，用于判断日亏熔断。"}
+        ><span>{isTestnet ? "未实现盈亏" : "当日盈亏"}</span><strong className={Number(displayedPnl ?? 0) >= 0 ? "positive" : "negative"}>{displayedPnl === null ? "—" : money(displayedPnl)}</strong></div>
         <Metric label="占用保证金" value={portfolio ? money(portfolio.margin_used) : "—"} suffix="" />
         <Metric label="持仓数" value={portfolio ? String(portfolio.open_positions) : "—"} suffix="" />
       </div>
@@ -1242,8 +1285,8 @@ function OperationsPanel({
                   <Metric label="错误率" value={(metric.error_rate * 100).toFixed(1)} suffix="%" />
                 </div>
                 <div className="provider-metric-usage">
-                  <span>Token 用量<strong>{metric.tokens_total.toLocaleString("zh-CN")}</strong></span>
-                  <span>
+                  <span title="过去 24 小时该 Provider 全部审计调用的总 Token 合计。">Token 用量<strong>{metric.tokens_total.toLocaleString("zh-CN")}</strong></span>
+                  <span title="过去 24 小时可定价调用的等效成本合计；无法定价的调用不计入，订阅 Auth 的实际账单可能不同。">
                     等效成本
                     <strong>{metric.cost_usd_total === null ? "—" : `$${metric.cost_usd_total.toFixed(4)}`}</strong>
                   </span>
