@@ -145,8 +145,8 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         assert readiness.status_code == 200
         assert readiness.json()["checks"]["database"] == {
             "ready": True,
-            "schema_version": 2,
-            "expected_schema_version": 2,
+            "schema_version": 3,
+            "expected_schema_version": 3,
         }
         runtime_metrics = client.get("/api/metrics/runtime")
         assert runtime_metrics.status_code == 200

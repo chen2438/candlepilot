@@ -155,3 +155,16 @@ class ExecutionReport(StrictModel):
     average_price: Decimal | None = Field(default=None, gt=0)
     message: str = ""
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ExecutionAttempt(StrictModel):
+    inference_id: int = Field(gt=0)
+    client_order_id: str | None = None
+    status: Literal["SUCCEEDED", "FAILED", "RESCUED", "UNKNOWN"]
+    stage: Literal["ENTRY", "PROTECTION", "RESCUE", "COMPLETE"]
+    message: str
+    exchange_error_code: int | None = None
+    entry_report: ExecutionReport | None = None
+    rescue_report: ExecutionReport | None = None
+    estimated_loss_usdt: Decimal | None = Field(default=None, ge=0)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))

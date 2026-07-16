@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlencode
 
 import httpx
@@ -28,7 +28,24 @@ class BinanceApiError(RuntimeError):
 
 
 class ProtectiveStopError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        entry: ExecutionReport,
+        rescue: ExecutionReport | None,
+        exchange_error_code: int | None,
+        estimated_loss_usdt: Decimal | None,
+        failed_stage: Literal["PROTECTION", "RESCUE"],
+        requires_emergency_lock: bool,
+    ) -> None:
+        super().__init__(message)
+        self.entry = entry
+        self.rescue = rescue
+        self.exchange_error_code = exchange_error_code
+        self.estimated_loss_usdt = estimated_loss_usdt
+        self.failed_stage = failed_stage
+        self.requires_emergency_lock = requires_emergency_lock
 
 
 class AccountReconciliationError(RuntimeError):
@@ -152,9 +169,10 @@ class BinanceTestnetBroker:
 
     async def reconcile_account(self) -> ReconciliationReport:
         await self.sync_time()
-        account, open_orders = await asyncio.gather(
+        account, open_orders, open_algo_orders = await asyncio.gather(
             self.account(),
             self._signed_request("GET", "/fapi/v1/openOrders", {}),
+            self._signed_request("GET", "/fapi/v1/openAlgoOrders", {}),
         )
         positions = {
             item["symbol"]
@@ -163,8 +181,8 @@ class BinanceTestnetBroker:
         }
         protected = {
             item["symbol"]
-            for item in open_orders
-            if item.get("type") in {"STOP", "STOP_MARKET"}
+            for item in open_algo_orders
+            if item.get("orderType") in {"STOP", "STOP_MARKET"}
             and (
                 item.get("closePosition") in {True, "true", "TRUE"}
                 or item.get("reduceOnly") in {True, "true", "TRUE"}
@@ -173,7 +191,7 @@ class BinanceTestnetBroker:
         unprotected = tuple(sorted(positions - protected))
         return ReconciliationReport(
             position_symbols=tuple(sorted(positions)),
-            open_order_count=len(open_orders),
+            open_order_count=len(open_orders) + len(open_algo_orders),
             unprotected_symbols=unprotected,
         )
 
@@ -234,42 +252,67 @@ class BinanceTestnetBroker:
         except Exception as exc:
             for client_order_id in fresh_protection:
                 try:
-                    await self._cancel_client_order(order.symbol, client_order_id)
+                    await self._cancel_algo_order(client_order_id)
                 except Exception:
                     pass
-            await self._emergency_reduce(order, exit_side)
-            raise ProtectiveStopError(
+            rescue: ExecutionReport | None = None
+            rescue_error: Exception | None = None
+            try:
+                rescue = await self._emergency_reduce(order, exit_side)
+            except Exception as emergency_exc:
+                rescue_error = emergency_exc
+            error_code = exc.code if isinstance(exc, BinanceApiError) else None
+            message = (
                 "entry succeeded but protective bracket failed; "
                 "emergency reduce-only order submitted"
+                if rescue is not None
+                else "entry succeeded but protective bracket and emergency reduce failed"
+            )
+            if rescue_error is not None:
+                message = f"{message}: {type(rescue_error).__name__}"
+            raise ProtectiveStopError(
+                message,
+                entry=entry,
+                rescue=rescue,
+                exchange_error_code=error_code,
+                estimated_loss_usdt=self._estimated_rescue_loss(order, entry, rescue),
+                failed_stage="PROTECTION" if rescue is not None else "RESCUE",
+                requires_emergency_lock=rescue is None,
             ) from exc
         try:
             for client_order_id in stale_protection:
-                await self._cancel_client_order(order.symbol, client_order_id)
+                await self._cancel_algo_order(client_order_id)
         except Exception as exc:
             raise ProtectiveStopError(
-                "replacement bracket is active but stale protection could not be removed"
+                "replacement bracket is active but stale protection could not be removed",
+                entry=entry,
+                rescue=None,
+                exchange_error_code=exc.code if isinstance(exc, BinanceApiError) else None,
+                estimated_loss_usdt=None,
+                failed_stage="PROTECTION",
+                requires_emergency_lock=False,
             ) from exc
         return entry
 
     async def _candlepilot_protective_orders(self, symbol: str) -> tuple[str, ...]:
         orders = await self._signed_request(
-            "GET", "/fapi/v1/openOrders", {"symbol": symbol}
+            "GET", "/fapi/v1/openAlgoOrders", {"symbol": symbol}
         )
         return tuple(
-            str(item["clientOrderId"])
+            str(item["clientAlgoId"])
             for item in orders
-            if item.get("type") in {"STOP", "STOP_MARKET", "TAKE_PROFIT_MARKET"}
+            if item.get("orderType") in {"STOP", "STOP_MARKET", "TAKE_PROFIT_MARKET"}
             and item.get("closePosition") in {True, "true", "TRUE"}
-            and str(item.get("clientOrderId", "")).startswith("cp-")
-            and str(item["clientOrderId"]).endswith(("-sl", "-tp"))
+            and str(item.get("clientAlgoId", "")).startswith("cp-")
+            and str(item["clientAlgoId"]).endswith(("-sl", "-tp"))
         )
 
-    async def _cancel_client_order(self, symbol: str, client_order_id: str) -> None:
+    async def _cancel_algo_order(self, client_order_id: str) -> None:
         try:
             await self._signed_request(
                 "DELETE",
-                "/fapi/v1/order",
-                {"symbol": symbol, "origClientOrderId": client_order_id},
+                "/fapi/v1/algoOrder",
+                {"clientAlgoId": client_order_id},
             )
         except BinanceApiError as exc:
             if exc.code != -2011:
@@ -293,15 +336,16 @@ class BinanceTestnetBroker:
         client_order_id = f"{order.client_order_id}-{suffix}"
         await self._signed_request(
             "POST",
-            "/fapi/v1/order",
+            "/fapi/v1/algoOrder",
             {
+                "algoType": "CONDITIONAL",
                 "symbol": order.symbol,
                 "side": side,
                 "type": order_type,
-                "stopPrice": trigger_price,
+                "triggerPrice": trigger_price,
                 "closePosition": True,
                 "workingType": "MARK_PRICE",
-                "newClientOrderId": client_order_id,
+                "clientAlgoId": client_order_id,
             },
         )
         return client_order_id
@@ -317,6 +361,8 @@ class BinanceTestnetBroker:
         }
         if order.order_type == OrderType.LIMIT:
             params.update({"price": order.price, "timeInForce": "GTC"})
+        else:
+            params["newOrderRespType"] = "RESULT"
         try:
             payload = await self._signed_request("POST", "/fapi/v1/order", params)
         except TimeoutError:
@@ -350,22 +396,45 @@ class BinanceTestnetBroker:
                     raise
         raise OrderStatusUnknown(order.client_order_id)
 
-    async def _emergency_reduce(self, order: OrderPlan, side: str) -> None:
-        await self._signed_request(
-            "POST",
-            "/fapi/v1/order",
-            {
-                "symbol": order.symbol,
-                "side": side,
-                "type": "MARKET",
-                "quantity": order.quantity,
-                "reduceOnly": True,
-                "newClientOrderId": f"{order.client_order_id}-rescue",
-            },
+    async def _emergency_reduce(self, order: OrderPlan, side: str) -> ExecutionReport:
+        return await self._place_order(
+            OrderPlan(
+                client_order_id=f"{order.client_order_id}-rescue",
+                symbol=order.symbol,
+                side=side,
+                quantity=order.quantity,
+                order_type=OrderType.MARKET,
+                reduce_only=True,
+            )
         )
 
+    @staticmethod
+    def _estimated_rescue_loss(
+        order: OrderPlan,
+        entry: ExecutionReport,
+        rescue: ExecutionReport | None,
+    ) -> Decimal | None:
+        if (
+            rescue is None
+            or entry.average_price is None
+            or rescue.average_price is None
+            or entry.filled_quantity <= 0
+            or rescue.filled_quantity <= 0
+        ):
+            return None
+        quantity = min(entry.filled_quantity, rescue.filled_quantity)
+        pnl = (
+            (rescue.average_price - entry.average_price) * quantity
+            if order.side == "BUY"
+            else (entry.average_price - rescue.average_price) * quantity
+        )
+        return max(Decimal("0"), -pnl)
+
     async def cancel_all(self, symbol: str) -> None:
-        await self._signed_request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol})
+        await asyncio.gather(
+            self._signed_request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol}),
+            self._signed_request("DELETE", "/fapi/v1/algoOpenOrders", {"symbol": symbol}),
+        )
 
     async def handle_user_event(self, event: UserStreamEvent) -> None:
         """Freeze a partially-filled CandlePilot entry so it cannot reopen after its stop."""

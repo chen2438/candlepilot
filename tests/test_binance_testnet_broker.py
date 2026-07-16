@@ -94,9 +94,16 @@ def test_signed_testnet_entry_and_bracket() -> None:
     for query in protective.values():
         assert query["closePosition"] == ["true"]
         assert query["side"] == ["SELL"]
+        assert query["algoType"] == ["CONDITIONAL"]
         assert "quantity" not in query
-    assert protective["STOP_MARKET"]["stopPrice"] == ["98"]
-    assert protective["TAKE_PROFIT_MARKET"]["stopPrice"] == ["104"]
+    assert protective["STOP_MARKET"]["triggerPrice"] == ["98"]
+    assert protective["TAKE_PROFIT_MARKET"]["triggerPrice"] == ["104"]
+    assert all(
+        request.url.path == "/fapi/v1/algoOrder"
+        for request in signed
+        if parse_qs(request.url.query.decode()).get("type", [""])[0]
+        in {"STOP_MARKET", "TAKE_PROFIT_MARKET"}
+    )
 
 
 def test_testnet_opening_requires_take_profit() -> None:
@@ -132,27 +139,27 @@ def test_add_replaces_existing_candlepilot_bracket_after_new_pair_is_active() ->
         requests.append(request)
         if request.url.path == "/fapi/v1/time":
             return httpx.Response(200, json={"serverTime": 1784040000000})
-        if request.url.path == "/fapi/v1/openOrders":
+        if request.url.path == "/fapi/v1/openAlgoOrders":
             return httpx.Response(
                 200,
                 json=[
                     {
                         "symbol": "BTCUSDT",
-                        "type": "STOP_MARKET",
+                        "orderType": "STOP_MARKET",
                         "closePosition": True,
-                        "clientOrderId": "cp-old-sl",
+                        "clientAlgoId": "cp-old-sl",
                     },
                     {
                         "symbol": "BTCUSDT",
-                        "type": "TAKE_PROFIT_MARKET",
+                        "orderType": "TAKE_PROFIT_MARKET",
                         "closePosition": True,
-                        "clientOrderId": "cp-old-tp",
+                        "clientAlgoId": "cp-old-tp",
                     },
                     {
                         "symbol": "BTCUSDT",
-                        "type": "STOP_MARKET",
+                        "orderType": "STOP_MARKET",
                         "closePosition": True,
-                        "clientOrderId": "manual-stop",
+                        "clientAlgoId": "manual-stop",
                     },
                 ],
             )
@@ -197,13 +204,18 @@ def test_add_replaces_existing_candlepilot_bracket_after_new_pair_is_active() ->
         return report
 
     assert asyncio.run(scenario()).status == "FILLED"
-    lifecycle = [
-        (
-            request.method,
-            request.url.path,
-            parse_qs(request.url.query.decode()).get("newClientOrderId", [None])[0],
-            parse_qs(request.url.query.decode()).get("origClientOrderId", [None])[0],
+    def lifecycle_item(request: httpx.Request) -> tuple[str, str, str | None, str | None]:
+        query = parse_qs(request.url.query.decode())
+        client_id = query.get("newClientOrderId", query.get("clientAlgoId", [None]))[0]
+        canceled_id = (
+            query.get("origClientOrderId", query.get("clientAlgoId", [None]))[0]
+            if request.method == "DELETE"
+            else None
         )
+        return request.method, request.url.path, client_id, canceled_id
+
+    lifecycle = [
+        lifecycle_item(request)
         for request in requests
         if request.url.path not in {
             "/fapi/v1/time",
@@ -212,12 +224,12 @@ def test_add_replaces_existing_candlepilot_bracket_after_new_pair_is_active() ->
         }
     ]
     assert lifecycle == [
-        ("GET", "/fapi/v1/openOrders", None, None),
+        ("GET", "/fapi/v1/openAlgoOrders", None, None),
         ("POST", "/fapi/v1/order", "cp-add", None),
-        ("POST", "/fapi/v1/order", "cp-add-sl", None),
-        ("POST", "/fapi/v1/order", "cp-add-tp", None),
-        ("DELETE", "/fapi/v1/order", None, "cp-old-sl"),
-        ("DELETE", "/fapi/v1/order", None, "cp-old-tp"),
+        ("POST", "/fapi/v1/algoOrder", "cp-add-sl", None),
+        ("POST", "/fapi/v1/algoOrder", "cp-add-tp", None),
+        ("DELETE", "/fapi/v1/algoOrder", "cp-old-sl", "cp-old-sl"),
+        ("DELETE", "/fapi/v1/algoOrder", "cp-old-tp", "cp-old-tp"),
     ]
 
 
@@ -237,13 +249,14 @@ def test_take_profit_failure_triggers_emergency_reduce() -> None:
         query = parse_qs(request.url.query.decode())
         if query.get("type") == ["TAKE_PROFIT_MARKET"]:
             return httpx.Response(400, json={"code": -2021, "msg": "would immediately trigger"})
+        client_order_id = query.get("newClientOrderId", ["cp-tpfail"])[0]
         return httpx.Response(
             200,
             json={
-                "clientOrderId": "cp-tpfail",
+                "clientOrderId": client_order_id,
                 "status": "FILLED",
                 "executedQty": "1",
-                "avgPrice": "100",
+                "avgPrice": "98" if client_order_id.endswith("-rescue") else "100",
             },
         )
 
@@ -252,7 +265,7 @@ def test_take_profit_failure_triggers_emergency_reduce() -> None:
             transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
         )
         broker = BinanceTestnetBroker(_credentials(), client=client)
-        with pytest.raises(ProtectiveStopError):
+        with pytest.raises(ProtectiveStopError) as captured:
             await broker.execute_with_stop(
                 OrderPlan(
                     client_order_id="cp-tpfail",
@@ -266,14 +279,21 @@ def test_take_profit_failure_triggers_emergency_reduce() -> None:
                 leverage=3,
             )
         await client.aclose()
+        return captured.value
 
-    asyncio.run(scenario())
+    failure = asyncio.run(scenario())
+    assert failure.exchange_error_code == -2021
+    assert failure.entry.average_price == Decimal("100")
+    assert failure.rescue is not None
+    assert failure.rescue.average_price == Decimal("98")
+    assert failure.estimated_loss_usdt == Decimal("2")
     rescue = [
         parse_qs(request.url.query.decode())
         for request in requests
         if parse_qs(request.url.query.decode()).get("newClientOrderId") == ["cp-tpfail-rescue"]
     ]
     assert rescue and rescue[0]["reduceOnly"] == ["true"]
+    assert rescue[0]["newOrderRespType"] == ["RESULT"]
 
 
 @pytest.mark.parametrize(
@@ -284,7 +304,7 @@ def test_take_profit_failure_triggers_emergency_reduce() -> None:
             [
                 {
                     "symbol": "BTCUSDT",
-                    "type": "STOP_MARKET",
+                    "orderType": "STOP_MARKET",
                     "closePosition": True,
                 }
             ],
@@ -302,6 +322,8 @@ def test_reconciles_protective_stops(orders, unprotected) -> None:
                 json={"positions": [{"symbol": "BTCUSDT", "positionAmt": "1"}]},
             )
         if request.url.path == "/fapi/v1/openOrders":
+            return httpx.Response(200, json=[])
+        if request.url.path == "/fapi/v1/openAlgoOrders":
             return httpx.Response(200, json=orders)
         return httpx.Response(404, json={"code": -1, "msg": "not found"})
 

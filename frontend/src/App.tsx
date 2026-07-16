@@ -989,6 +989,8 @@ function money(value: string): string {
 const DECISION_FILTERS: Array<{ key: "all" | DecisionEvent["outcome"]; label: string }> = [
   { key: "all", label: "全部" },
   { key: "approved", label: "风控放行" },
+  { key: "executed", label: "下单成功" },
+  { key: "execution_failed", label: "下单失败" },
   { key: "rejected", label: "风控否决" },
   { key: "hold", label: "HOLD" },
   { key: "analysis_only", label: "仅推理" },
@@ -996,6 +998,8 @@ const DECISION_FILTERS: Array<{ key: "all" | DecisionEvent["outcome"]; label: st
 
 const OUTCOME_LABELS: Record<DecisionEvent["outcome"], string> = {
   approved: "风控放行",
+  executed: "下单成功",
+  execution_failed: "下单失败",
   rejected: "风控否决",
   hold: "无需下单",
   analysis_only: "仅推理",
@@ -1003,6 +1007,16 @@ const OUTCOME_LABELS: Record<DecisionEvent["outcome"], string> = {
 
 function intentPrice(value: string | null): string {
   return value === null ? "—" : Number(value).toFixed(4);
+}
+
+function executionPrice(value: string | null | undefined): string {
+  return value == null ? "—" : Number(value).toFixed(4);
+}
+
+function executionLoss(value: string | null | undefined): string {
+  return value == null
+    ? "—"
+    : `$${Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`;
 }
 
 function DecisionPanel({ decisions }: { decisions: DecisionEvent[] }) {
@@ -1090,7 +1104,12 @@ function DecisionPanel({ decisions }: { decisions: DecisionEvent[] }) {
                 {Math.round(decision.intent.confidence * 100)}%
                 <small>{decision.intent.action === "HOLD" ? "机会强度" : "执行置信度"}</small>
               </span>}
-              <span className={`decision-outcome ${decision.outcome}`}>{decision.failover ? "故障切换" : OUTCOME_LABELS[decision.outcome]}</span>
+              <span className={`decision-outcome ${decision.outcome}`}>
+                {decision.failover ? "故障切换" : OUTCOME_LABELS[decision.outcome]}
+                {decision.outcome === "execution_failed" && decision.execution?.estimated_loss_usdt != null
+                  ? <small>损失 {executionLoss(decision.execution.estimated_loss_usdt)}</small>
+                  : null}
+              </span>
               <span className="signal-time">{new Date(decision.created_at).toLocaleTimeString("zh-CN", { hour12: false })}</span>
               <span className="decision-chevron">{expanded === decision.id ? "−" : "+"}</span>
             </button>
@@ -1108,9 +1127,30 @@ function DecisionPanel({ decisions }: { decisions: DecisionEvent[] }) {
                   <span>风控数量<strong>{decision.risk?.decision.max_quantity ?? "—"}</strong></span>
                 </div>
                 <div className={`decision-reason ${decision.outcome}`}>
-                  <strong>{decision.failover ? "故障切换" : OUTCOME_LABELS[decision.outcome]}</strong>
+                  <strong>{decision.failover ? "故障切换" : decision.risk?.accepted ? "风控放行" : OUTCOME_LABELS[decision.outcome]}</strong>
                   <span>{decision.failover?.error ?? decision.risk?.reason ?? "该记录只有模型推理，未进入实时硬风控流程。"}</span>
                 </div>
+                {decision.execution && (
+                  <div className={`execution-result ${decision.outcome}`}>
+                    <div className="execution-result-heading">
+                      <strong>{OUTCOME_LABELS[decision.outcome]}</strong>
+                      <span>{decision.execution.message}</span>
+                    </div>
+                    <div className="execution-result-grid">
+                      <span>执行状态<strong>{decision.execution.status}</strong></span>
+                      <span>失败阶段<strong>{decision.execution.stage === "COMPLETE" ? "—" : decision.execution.stage}</strong></span>
+                      <span>交易所错误<strong>{decision.execution.exchange_error_code ?? "—"}</strong></span>
+                      <span>客户端订单号<strong>{decision.execution.client_order_id ?? "—"}</strong></span>
+                      <span>入场成交<strong>{decision.execution.entry_report
+                        ? `${decision.execution.entry_report.filled_quantity} @ ${executionPrice(decision.execution.entry_report.average_price)}`
+                        : "—"}</strong></span>
+                      <span>紧急回补<strong>{decision.execution.rescue_report
+                        ? `${decision.execution.rescue_report.filled_quantity} @ ${executionPrice(decision.execution.rescue_report.average_price)}`
+                        : "—"}</strong></span>
+                      <span data-tooltip="保护单或下单失败后，入场与紧急回补之间的不利价差乘以已回补数量；仅在成交价可确认时计算，不含手续费。">失败损失（估算）<strong>{executionLoss(decision.execution.estimated_loss_usdt)}</strong></span>
+                    </div>
+                  </div>
+                )}
                 <AnalysisDetail
                   copied={copied}
                   detail={details[decision.id]}

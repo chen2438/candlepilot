@@ -547,6 +547,171 @@ def test_testnet_add_requests_protective_bracket_replacement(tmp_path: Path) -> 
     assert replacement is True
 
 
+def test_testnet_execution_failure_is_audited_with_rescue_loss(tmp_path: Path) -> None:
+    from candlepilot.broker.binance_testnet import ProtectiveStopError, ReconciliationReport
+    from candlepilot.domain.models import ExecutionReport
+
+    class FailingProtectionBroker:
+        async def reconcile_account(self):
+            return ReconciliationReport((), 0, ())
+
+        async def account(self):
+            return {
+                "totalMarginBalance": "10000",
+                "availableBalance": "8000",
+                "totalInitialMargin": "0",
+                "positions": [],
+            }
+
+        async def execute_with_stop(self, order, **_):
+            entry = ExecutionReport(
+                client_order_id=order.client_order_id,
+                status="FILLED",
+                filled_quantity="1",
+                average_price="100",
+            )
+            rescue = ExecutionReport(
+                client_order_id=f"{order.client_order_id}-rescue",
+                status="FILLED",
+                filled_quantity="1",
+                average_price="98",
+            )
+            raise ProtectiveStopError(
+                "entry succeeded but protective bracket failed; rescued",
+                entry=entry,
+                rescue=rescue,
+                exchange_error_code=-4120,
+                estimated_loss_usdt=Decimal("2"),
+                failed_stage="PROTECTION",
+                requires_emergency_lock=False,
+            )
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'execution-failure.db'}")
+        await database.initialize()
+        audit = AuditRepository(database.sessions)
+        engine = TradingEngine(
+            mode=TradingMode.TESTNET,
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=audit,
+            market=FakeMarket(),  # type: ignore[arg-type]
+            testnet_broker=FailingProtectionBroker(),  # type: ignore[arg-type]
+        )
+        engine.select_provider("fake-auth")
+        await engine.start()
+        outcome = await engine.evaluate(
+            MarketSnapshot(
+                symbol="BTCUSDT",
+                cadence="5m",
+                timestamp=datetime.now(UTC),
+                mark_price="100",
+                bid="99.9",
+                ask="100.1",
+                quote_volume_24h="1000000",
+            ),
+            PortfolioState(equity="10000", available_balance="8000"),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+        )
+        events = await audit.recent_decision_events()
+        executions = await audit.recent_executions()
+        await database.close()
+        return outcome, events, executions
+
+    outcome, events, executions = asyncio.run(scenario())
+    assert outcome.risk.accepted is True
+    assert outcome.execution is None
+    assert events[0]["outcome"] == "execution_failed"
+    assert events[0]["execution"]["status"] == "RESCUED"
+    assert events[0]["execution"]["exchange_error_code"] == -4120
+    assert events[0]["execution"]["estimated_loss_usdt"] == "2"
+    assert {item["client_order_id"] for item in executions} == {
+        events[0]["execution"]["client_order_id"],
+        f"{events[0]['execution']['client_order_id']}-rescue",
+    }
+
+
+def test_unrescued_protection_failure_emergency_locks_engine(tmp_path: Path) -> None:
+    from candlepilot.broker.binance_testnet import ProtectiveStopError, ReconciliationReport
+    from candlepilot.domain.models import ExecutionReport
+
+    class UnrescuedProtectionBroker:
+        flattened = False
+
+        async def reconcile_account(self):
+            return ReconciliationReport((), 0, ())
+
+        async def account(self):
+            return {
+                "totalMarginBalance": "10000",
+                "availableBalance": "8000",
+                "totalInitialMargin": "0",
+                "positions": [],
+            }
+
+        async def execute_with_stop(self, order, **_):
+            raise ProtectiveStopError(
+                "entry succeeded but protection and rescue both failed",
+                entry=ExecutionReport(
+                    client_order_id=order.client_order_id,
+                    status="FILLED",
+                    filled_quantity="1",
+                    average_price="100",
+                ),
+                rescue=None,
+                exchange_error_code=-4120,
+                estimated_loss_usdt=None,
+                failed_stage="RESCUE",
+                requires_emergency_lock=True,
+            )
+
+        async def emergency_flatten(self):
+            self.flattened = True
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'unrescued-failure.db'}")
+        await database.initialize()
+        audit = AuditRepository(database.sessions)
+        broker = UnrescuedProtectionBroker()
+        engine = TradingEngine(
+            mode=TradingMode.TESTNET,
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=audit,
+            market=FakeMarket(),  # type: ignore[arg-type]
+            testnet_broker=broker,  # type: ignore[arg-type]
+        )
+        engine.select_provider("fake-auth")
+        await engine.start()
+        await engine.evaluate(
+            MarketSnapshot(
+                symbol="BTCUSDT",
+                cadence="5m",
+                timestamp=datetime.now(UTC),
+                mark_price="100",
+                bid="99.9",
+                ask="100.1",
+                quote_volume_24h="1000000",
+            ),
+            PortfolioState(equity="10000", available_balance="8000"),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
+        )
+        events = await audit.recent_decision_events()
+        result = (
+            engine.running,
+            engine.emergency_locked,
+            broker.flattened,
+            events[0]["execution"],
+        )
+        await database.close()
+        return result
+
+    running, locked, flattened, execution = asyncio.run(scenario())
+    assert running is False
+    assert locked is True
+    assert flattened is True
+    assert execution["status"] == "FAILED"
+    assert execution["stage"] == "RESCUE"
+
+
 def test_engine_fails_over_once_to_explicit_backup_provider(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'fallback.db'}")

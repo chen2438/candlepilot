@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from candlepilot.broker.user_stream import UserStreamEvent
-from candlepilot.domain.models import ExecutionReport, RiskDecision, TradeIntent
+from candlepilot.domain.models import ExecutionAttempt, ExecutionReport, RiskDecision, TradeIntent
 from candlepilot.providers.base import ProviderResult
 from candlepilot.providers.pricing import PROVIDER_IDS, ModelPricingCatalog
 
@@ -87,6 +87,23 @@ class ExecutionRow(Base):
     symbol: Mapped[str] = mapped_column(String(32), index=True)
     status: Mapped[str] = mapped_column(String(32), index=True)
     report_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
+    )
+
+
+class ExecutionAttemptRow(Base):
+    __tablename__ = "execution_attempts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    inference_id: Mapped[int] = mapped_column(
+        ForeignKey("inferences.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    client_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    stage: Mapped[str] = mapped_column(String(32))
+    attempt_json: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
     )
@@ -171,6 +188,28 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             "FOREIGN KEY(inference_id) REFERENCES inferences(id) ON DELETE CASCADE)",
         ),
     ),
+    (
+        3,
+        (
+            "CREATE TABLE IF NOT EXISTS execution_attempts ("
+            "id INTEGER NOT NULL PRIMARY KEY, "
+            "inference_id INTEGER NOT NULL, symbol VARCHAR(32) NOT NULL, "
+            "client_order_id VARCHAR(64), status VARCHAR(32) NOT NULL, "
+            "stage VARCHAR(32) NOT NULL, attempt_json TEXT NOT NULL, "
+            "created_at DATETIME NOT NULL, "
+            "FOREIGN KEY(inference_id) REFERENCES inferences(id) ON DELETE CASCADE)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_execution_attempts_inference_id "
+            "ON execution_attempts (inference_id)",
+            "CREATE INDEX IF NOT EXISTS ix_execution_attempts_symbol "
+            "ON execution_attempts (symbol)",
+            "CREATE INDEX IF NOT EXISTS ix_execution_attempts_client_order_id "
+            "ON execution_attempts (client_order_id)",
+            "CREATE INDEX IF NOT EXISTS ix_execution_attempts_status "
+            "ON execution_attempts (status)",
+            "CREATE INDEX IF NOT EXISTS ix_execution_attempts_created_at "
+            "ON execution_attempts (created_at)",
+        ),
+    ),
 )
 CURRENT_SCHEMA_VERSION = max(version for version, _ in MIGRATIONS)
 
@@ -245,6 +284,13 @@ class AuditRepository:
         counts: dict[str, int] = {}
         async with self.sessions.begin() as session:
             for category in categories:
+                if category == "executions":
+                    attempts = await session.execute(delete(ExecutionAttemptRow))
+                    executions = await session.execute(delete(ExecutionRow))
+                    counts[category] = int(attempts.rowcount or 0) + int(
+                        executions.rowcount or 0
+                    )
+                    continue
                 model = self.HISTORY_TABLES.get(category)
                 if model is None:
                     continue
@@ -382,6 +428,21 @@ class AuditRepository:
             symbol=symbol,
             status=report.status,
             report_json=report.model_dump_json(),
+        )
+        async with self.sessions.begin() as session:
+            session.add(row)
+        return row.id
+
+    async def record_execution_attempt(
+        self, symbol: str, attempt: ExecutionAttempt
+    ) -> int:
+        row = ExecutionAttemptRow(
+            inference_id=attempt.inference_id,
+            symbol=symbol,
+            client_order_id=attempt.client_order_id,
+            status=attempt.status,
+            stage=attempt.stage,
+            attempt_json=attempt.model_dump_json(),
         )
         async with self.sessions.begin() as session:
             session.add(row)
@@ -615,17 +676,21 @@ class AuditRepository:
         async with self.sessions() as session:
             rows = (
                 await session.execute(
-                    select(InferenceRow, RiskRow)
+                    select(InferenceRow, RiskRow, ExecutionAttemptRow)
                     .outerjoin(RiskRow, RiskRow.inference_id == InferenceRow.id)
+                    .outerjoin(
+                        ExecutionAttemptRow,
+                        ExecutionAttemptRow.inference_id == InferenceRow.id,
+                    )
                     .order_by(InferenceRow.id.desc())
                     .limit(limit)
                 )
             ).all()
         events = []
-        for inference, risk in rows:
+        for inference, risk, attempt in rows:
             usage = json.loads(inference.usage_json)
             intent = TradeIntent.model_validate_json(inference.intent_json)
-            outcome = self._decision_outcome(intent, risk)
+            outcome = self._decision_outcome(intent, risk, attempt)
             events.append(
                 {
                     "id": inference.id,
@@ -651,18 +716,39 @@ class AuditRepository:
                     }
                     if risk is not None
                     else None,
+                    "execution": self._execution_attempt_dict(attempt),
                     "created_at": self._utc(inference.created_at),
                 }
             )
         return events
 
     @staticmethod
-    def _decision_outcome(intent: TradeIntent, risk: RiskRow | None) -> str:
+    def _decision_outcome(
+        intent: TradeIntent,
+        risk: RiskRow | None,
+        attempt: ExecutionAttemptRow | None,
+    ) -> str:
         if intent.action.value == "HOLD":
             return "hold"
         if risk is None:
             return "analysis_only"
-        return "approved" if risk.accepted else "rejected"
+        if not risk.accepted:
+            return "rejected"
+        if attempt is None:
+            return "approved"
+        return "executed" if attempt.status == "SUCCEEDED" else "execution_failed"
+
+    def _execution_attempt_dict(
+        self, attempt: ExecutionAttemptRow | None
+    ) -> dict[str, Any] | None:
+        if attempt is None:
+            return None
+        payload = json.loads(attempt.attempt_json)
+        return {
+            "id": attempt.id,
+            **payload,
+            "created_at": self._utc(attempt.created_at),
+        }
 
     @staticmethod
     def _inference_cost(
@@ -692,18 +778,27 @@ class AuditRepository:
         async with self.sessions() as session:
             row = (
                 await session.execute(
-                    select(InferenceRow, RiskRow, InferenceDetailRow)
+                    select(
+                        InferenceRow,
+                        RiskRow,
+                        InferenceDetailRow,
+                        ExecutionAttemptRow,
+                    )
                     .outerjoin(RiskRow, RiskRow.inference_id == InferenceRow.id)
                     .outerjoin(
                         InferenceDetailRow,
                         InferenceDetailRow.inference_id == InferenceRow.id,
+                    )
+                    .outerjoin(
+                        ExecutionAttemptRow,
+                        ExecutionAttemptRow.inference_id == InferenceRow.id,
                     )
                     .where(InferenceRow.id == inference_id)
                 )
             ).one_or_none()
         if row is None:
             return None
-        inference, risk, detail = row
+        inference, risk, detail, attempt = row
         usage = json.loads(inference.usage_json)
         intent = TradeIntent.model_validate_json(inference.intent_json)
         audit_status = "unavailable"
@@ -720,7 +815,7 @@ class AuditRepository:
             "provenance": usage.get("_provenance", {}),
             "intent": intent.model_dump(mode="json"),
             "duration_ms": inference.duration_ms,
-            "outcome": self._decision_outcome(intent, risk),
+            "outcome": self._decision_outcome(intent, risk, attempt),
             "risk": {
                 "id": risk.id,
                 "accepted": bool(risk.accepted),
@@ -730,6 +825,7 @@ class AuditRepository:
             }
             if risk is not None
             else None,
+            "execution": self._execution_attempt_dict(attempt),
             "input": json.loads(detail.input_json)
             if detail is not None and detail.input_json is not None
             else None,

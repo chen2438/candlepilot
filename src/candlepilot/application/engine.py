@@ -7,10 +7,14 @@ from decimal import Decimal
 
 from candlepilot.broker.binance_testnet import (
     AccountReconciliationError,
+    BinanceApiError,
     BinanceTestnetBroker,
+    OrderStatusUnknown,
+    ProtectiveStopError,
     ReconciliationReport,
 )
 from candlepilot.domain.models import (
+    ExecutionAttempt,
     ExecutionReport,
     MarketSnapshot,
     PortfolioState,
@@ -418,21 +422,75 @@ class TradingEngine:
         )
         execution = None
         if evaluation.order is not None and evaluation.decision.accepted:
-            if self.mode == TradingMode.TESTNET:
-                if self.testnet_broker is None:
-                    raise RuntimeError("Binance testnet broker is unavailable")
-                execution = await self.testnet_broker.execute_with_stop(
-                    evaluation.order,
-                    leverage=result.intent.leverage,
-                    replace_existing_protection=result.intent.action == TradeAction.ADD,
+            try:
+                if self.mode == TradingMode.TESTNET:
+                    if self.testnet_broker is None:
+                        raise RuntimeError("Binance testnet broker is unavailable")
+                    execution = await self.testnet_broker.execute_with_stop(
+                        evaluation.order,
+                        leverage=result.intent.leverage,
+                        replace_existing_protection=result.intent.action == TradeAction.ADD,
+                    )
+                else:
+                    execution = await self.paper_executor.execute(
+                        evaluation.order,
+                        evaluation_snapshot,
+                        leverage=result.intent.leverage,
+                    )
+            except ProtectiveStopError as exc:
+                await self.audit.record_execution(snapshot.symbol, exc.entry)
+                if exc.rescue is not None:
+                    await self.audit.record_execution(snapshot.symbol, exc.rescue)
+                await self.audit.record_execution_attempt(
+                    snapshot.symbol,
+                    ExecutionAttempt(
+                        inference_id=inference_id,
+                        client_order_id=evaluation.order.client_order_id,
+                        status="RESCUED" if exc.rescue is not None else "FAILED",
+                        stage=exc.failed_stage,
+                        message=str(exc),
+                        exchange_error_code=exc.exchange_error_code,
+                        entry_report=exc.entry,
+                        rescue_report=exc.rescue,
+                        estimated_loss_usdt=exc.estimated_loss_usdt,
+                    ),
                 )
+                if exc.requires_emergency_lock:
+                    await self.emergency_stop()
+            except Exception as exc:
+                execution_status = (
+                    "UNKNOWN"
+                    if isinstance(exc, (TimeoutError, OrderStatusUnknown))
+                    else "FAILED"
+                )
+                await self.audit.record_execution_attempt(
+                    snapshot.symbol,
+                    ExecutionAttempt(
+                        inference_id=inference_id,
+                        client_order_id=evaluation.order.client_order_id,
+                        status=execution_status,
+                        stage="ENTRY",
+                        message=f"{type(exc).__name__}: {exc}",
+                        exchange_error_code=exc.code
+                        if isinstance(exc, BinanceApiError)
+                        else None,
+                    ),
+                )
+                if execution_status == "UNKNOWN":
+                    await self.emergency_stop()
             else:
-                execution = await self.paper_executor.execute(
-                    evaluation.order,
-                    evaluation_snapshot,
-                    leverage=result.intent.leverage,
+                await self.audit.record_execution(snapshot.symbol, execution)
+                await self.audit.record_execution_attempt(
+                    snapshot.symbol,
+                    ExecutionAttempt(
+                        inference_id=inference_id,
+                        client_order_id=evaluation.order.client_order_id,
+                        status="SUCCEEDED",
+                        stage="COMPLETE",
+                        message="entry accepted and required execution checks completed",
+                        entry_report=execution,
+                    ),
                 )
-            await self.audit.record_execution(snapshot.symbol, execution)
         return DecisionOutcome(
             intent=result.intent,
             risk=evaluation.decision,

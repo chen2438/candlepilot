@@ -4,7 +4,12 @@ from pathlib import Path
 
 from decimal import Decimal
 
-from candlepilot.domain.models import ExecutionReport, RiskDecision, TradeIntent
+from candlepilot.domain.models import (
+    ExecutionAttempt,
+    ExecutionReport,
+    RiskDecision,
+    TradeIntent,
+)
 from candlepilot.providers.base import ProviderResult
 from candlepilot.storage.database import AuditRepository, Database
 
@@ -186,6 +191,43 @@ def test_decision_events_join_inference_and_risk_outcomes(tmp_path: Path) -> Non
             RiskDecision(accepted=True, reason="within limits", max_quantity="2.5"),
             inference_id=approved_id,
         )
+        await repository.record_execution_attempt(
+            "SOLUSDT",
+            ExecutionAttempt(
+                inference_id=approved_id,
+                client_order_id="cp-sol",
+                status="SUCCEEDED",
+                stage="COMPLETE",
+                message="completed",
+            ),
+        )
+        failed_id = await repository.record_inference(
+            ProviderResult(
+                opening.model_copy(update={"symbol": "DOGEUSDT"}),
+                "codex-auth",
+                "gpt-test",
+                timedelta(milliseconds=55),
+                "{}",
+                {},
+            )
+        )
+        await repository.record_risk(
+            "DOGEUSDT",
+            RiskDecision(accepted=True, reason="within limits", max_quantity="100"),
+            inference_id=failed_id,
+        )
+        await repository.record_execution_attempt(
+            "DOGEUSDT",
+            ExecutionAttempt(
+                inference_id=failed_id,
+                client_order_id="cp-doge",
+                status="RESCUED",
+                stage="PROTECTION",
+                message="protective bracket failed; rescued",
+                exchange_error_code=-4120,
+                estimated_loss_usdt="1.25",
+            ),
+        )
         await repository.record_inference(
             ProviderResult(
                 opening.model_copy(update={"symbol": "XRPUSDT"}),
@@ -203,17 +245,21 @@ def test_decision_events_join_inference_and_risk_outcomes(tmp_path: Path) -> Non
     events = asyncio.run(scenario())
     assert [event["outcome"] for event in events] == [
         "analysis_only",
-        "approved",
+        "execution_failed",
+        "executed",
         "hold",
         "rejected",
     ]
     assert events[0]["risk"] is None
-    assert events[1]["risk"]["decision"]["max_quantity"] == "2.5"
-    assert events[2]["intent"]["symbol"] == "ETHUSDT"
-    assert events[2]["risk"]["accepted"] is True
-    assert events[3]["model"] == "gpt-test"
-    assert events[3]["provenance"]["reasoning_effort"] == "high"
-    assert events[3]["risk"]["reason"] == "margin limit"
+    assert events[1]["execution"]["status"] == "RESCUED"
+    assert events[1]["execution"]["estimated_loss_usdt"] == "1.25"
+    assert events[2]["risk"]["decision"]["max_quantity"] == "2.5"
+    assert events[2]["execution"]["status"] == "SUCCEEDED"
+    assert events[3]["intent"]["symbol"] == "ETHUSDT"
+    assert events[3]["risk"]["accepted"] is True
+    assert events[4]["model"] == "gpt-test"
+    assert events[4]["provenance"]["reasoning_effort"] == "high"
+    assert events[4]["risk"]["reason"] == "margin limit"
 
 
 def test_provider_metrics_aggregate_latency_errors_and_models(tmp_path: Path) -> None:
@@ -445,4 +491,4 @@ def test_database_migrations_are_versioned_and_idempotent(tmp_path: Path) -> Non
         await database.close()
         return first, second
 
-    assert asyncio.run(scenario()) == (2, 2)
+    assert asyncio.run(scenario()) == (3, 3)

@@ -92,12 +92,37 @@ export interface DecisionEvent {
     rationale: string;
   };
   duration_ms: number;
-  outcome: "hold" | "approved" | "rejected" | "analysis_only";
+  outcome: "hold" | "approved" | "rejected" | "analysis_only" | "executed" | "execution_failed";
   risk: null | {
     id: number;
     accepted: boolean;
     reason: string;
     decision: { max_quantity: string | null };
+    created_at: string;
+  };
+  execution: null | {
+    id: number;
+    inference_id: number;
+    client_order_id: string | null;
+    status: "SUCCEEDED" | "FAILED" | "RESCUED" | "UNKNOWN";
+    stage: "ENTRY" | "PROTECTION" | "RESCUE" | "COMPLETE";
+    message: string;
+    exchange_error_code: number | null;
+    estimated_loss_usdt: string | null;
+    entry_report: null | {
+      client_order_id: string;
+      status: string;
+      filled_quantity: string;
+      average_price: string | null;
+      message: string;
+    };
+    rescue_report: null | {
+      client_order_id: string;
+      status: string;
+      filled_quantity: string;
+      average_price: string | null;
+      message: string;
+    };
     created_at: string;
   };
   created_at: string;
