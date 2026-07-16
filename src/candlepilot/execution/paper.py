@@ -12,6 +12,7 @@ from candlepilot.domain.models import (
     OrderPlan,
     OrderType,
     PortfolioState,
+    PositionState,
 )
 
 
@@ -278,11 +279,22 @@ class PaperExecutor:
     def portfolio_state(self) -> PortfolioState:
         unrealized = Decimal("0")
         margin_used = Decimal("0")
+        positions: dict[str, PositionState] = {}
         for symbol, position in self._positions.items():
             mark = self._marks.get(symbol, position.average_price)
             direction = Decimal("1") if position.side == "LONG" else Decimal("-1")
-            unrealized += position.quantity * (mark - position.average_price) * direction
+            position_pnl = position.quantity * (mark - position.average_price) * direction
+            unrealized += position_pnl
             margin_used += position.quantity * mark / position.leverage
+            positions[symbol] = PositionState(
+                side=position.side,  # type: ignore[arg-type]
+                quantity=position.quantity,
+                entry_price=position.average_price,
+                unrealized_pnl=position_pnl,
+                leverage=position.leverage,
+                stop_loss=position.stop_loss,
+                take_profit=position.take_profit,
+            )
         equity = self.cash + unrealized
         return PortfolioState(
             equity=max(Decimal("0.00000001"), equity),
@@ -290,10 +302,7 @@ class PaperExecutor:
             daily_pnl=equity - self.initial_equity,
             open_positions=len(self._positions),
             margin_used=margin_used,
-            symbol_sides={symbol: position.side for symbol, position in self._positions.items()},
-            symbol_quantities={
-                symbol: position.quantity for symbol, position in self._positions.items()
-            },
+            positions=positions,
         )
 
     def position_snapshots(self) -> list[dict[str, Any]]:

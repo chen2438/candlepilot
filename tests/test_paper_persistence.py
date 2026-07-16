@@ -64,4 +64,4 @@ def test_paper_positions_and_pending_orders_survive_restart(tmp_path: Path) -> N
     assert loaded
     assert before_fill.open_positions == 1
     assert any(report.client_order_id == "persistent-limit" for report in fills)
-    assert after_fill.symbol_quantities["BTCUSDT"] == Decimal("1.5")
+    assert after_fill.positions["BTCUSDT"].quantity == Decimal("1.5")

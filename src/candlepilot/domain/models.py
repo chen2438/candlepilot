@@ -119,14 +119,30 @@ class TradeIntent(StrictModel):
         )
 
 
+class PositionState(StrictModel):
+    """An open position as the decision model sees it.
+
+    ``entry_price`` and the protective levels are what make ADD/REDUCE/CLOSE
+    answerable: without them the model is asked whether an invalidation was
+    reached while having no idea where the invalidation sits.
+    """
+
+    side: Literal["LONG", "SHORT"]
+    quantity: PositiveDecimal
+    entry_price: PositiveDecimal
+    unrealized_pnl: Decimal = Decimal("0")
+    leverage: int = Field(default=1, ge=1)
+    stop_loss: Decimal | None = Field(default=None, gt=0)
+    take_profit: Decimal | None = Field(default=None, gt=0)
+
+
 class PortfolioState(StrictModel):
     equity: PositiveDecimal
     available_balance: NonNegativeDecimal
     daily_pnl: Decimal = Decimal("0")
     open_positions: int = Field(default=0, ge=0)
     margin_used: NonNegativeDecimal = Decimal("0")
-    symbol_sides: dict[str, Literal["LONG", "SHORT"]] = Field(default_factory=dict)
-    symbol_quantities: dict[str, PositiveDecimal] = Field(default_factory=dict)
+    positions: dict[str, PositionState] = Field(default_factory=dict)
 
 
 class RiskDecision(StrictModel):

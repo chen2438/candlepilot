@@ -89,7 +89,8 @@ class AggressiveRiskPolicy:
         if intent.risk_fraction > self.max_risk_fraction:
             return self._reject("requested risk exceeds the hard limit")
 
-        existing_side = portfolio.symbol_sides.get(intent.symbol)
+        existing = portfolio.positions.get(intent.symbol)
+        existing_side = existing.side if existing is not None else None
         opening = intent.action in {TradeAction.OPEN_LONG, TradeAction.OPEN_SHORT, TradeAction.ADD}
         if opening and existing_side is None and portfolio.open_positions >= self.max_positions:
             return self._reject("maximum open position count reached")
@@ -112,12 +113,9 @@ class AggressiveRiskPolicy:
             return self._reject("opposing position must be closed before opening short")
 
         if intent.action in {TradeAction.REDUCE, TradeAction.CLOSE}:
-            if existing_side is None:
+            if existing is None:
                 return self._reject("cannot reduce or close a missing position")
-            position_quantity = portfolio.symbol_quantities.get(intent.symbol)
-            if position_quantity is None:
-                return self._reject("position quantity is unavailable for reduce-only exit")
-            return self._close_order(intent, existing_side, position_quantity, rules)
+            return self._close_order(intent, existing.side, existing.quantity, rules)
 
         entry = (
             intent.entry_price

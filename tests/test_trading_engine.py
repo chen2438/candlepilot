@@ -8,6 +8,7 @@ from candlepilot.domain.models import (
     MarketSnapshot,
     OrderType,
     PortfolioState,
+    PositionState,
     ProviderHealth,
     TradeAction,
     TradeIntent,
@@ -575,7 +576,7 @@ def test_testnet_mode_refuses_to_start_without_credentials(tmp_path: Path) -> No
 
 
 def test_testnet_add_requests_protective_bracket_replacement(tmp_path: Path) -> None:
-    from candlepilot.broker.binance_testnet import ReconciliationReport
+    from candlepilot.broker.binance_testnet import ProtectiveLevels, ReconciliationReport
     from candlepilot.domain.models import ExecutionReport
 
     class AddProvider(FakeProvider):
@@ -605,9 +606,18 @@ def test_testnet_add_requests_protective_bracket_replacement(tmp_path: Path) -> 
                 "availableBalance": "8000",
                 "totalInitialMargin": "100",
                 "positions": [
-                    {"symbol": "BTCUSDT", "positionAmt": "1"},
+                    {
+                        "symbol": "BTCUSDT",
+                        "positionAmt": "1",
+                        "entryPrice": "99",
+                        "unrealizedProfit": "1",
+                        "leverage": "5",
+                    },
                 ],
             }
+
+        async def protective_levels(self):
+            return {"BTCUSDT": ProtectiveLevels(stop_loss=Decimal("95"))}
 
         async def execute_with_stop(
             self, order, *, leverage, replace_existing_protection=False
@@ -647,8 +657,9 @@ def test_testnet_add_requests_protective_bracket_replacement(tmp_path: Path) -> 
                 equity="10000",
                 available_balance="8000",
                 open_positions=1,
-                symbol_sides={"BTCUSDT": "LONG"},
-                symbol_quantities={"BTCUSDT": "1"},
+                positions={
+                    "BTCUSDT": PositionState(side="LONG", quantity="1", entry_price="99")
+                },
             ),
             SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5")),
         )
@@ -675,6 +686,9 @@ def test_testnet_execution_failure_is_audited_with_rescue_loss(tmp_path: Path) -
                 "totalInitialMargin": "0",
                 "positions": [],
             }
+
+        async def protective_levels(self):
+            return {}
 
         async def execute_with_stop(self, order, **_):
             entry = ExecutionReport(
@@ -760,6 +774,9 @@ def test_unrescued_protection_failure_emergency_locks_engine(tmp_path: Path) -> 
                 "totalInitialMargin": "0",
                 "positions": [],
             }
+
+        async def protective_levels(self):
+            return {}
 
         async def execute_with_stop(self, order, **_):
             raise ProtectiveStopError(
@@ -1038,3 +1055,66 @@ def test_emergency_lock_persists_and_expires_at_next_utc_day(tmp_path: Path) -> 
     assert before_midnight == (True, datetime(2026, 1, 2, tzinfo=UTC))
     assert after_midnight == (False, None)
     assert stored is None
+
+
+def test_testnet_portfolio_carries_entry_price_and_live_bracket(tmp_path: Path) -> None:
+    """The decision model cannot judge an invalidation it cannot see.
+
+    ``current_portfolio`` is the only thing the prompt gets about open
+    positions, so entry price, unrealized PnL and the exchange-side bracket
+    have to survive the trip from the account payload into ``PositionState``.
+    """
+
+    from candlepilot.broker.binance_testnet import ProtectiveLevels, ReconciliationReport
+
+    class PositionBroker:
+        async def reconcile_account(self):
+            return ReconciliationReport(("BTCUSDT",), 2, ())
+
+        async def account(self):
+            return {
+                "totalMarginBalance": "10000",
+                "availableBalance": "8000",
+                "totalInitialMargin": "100",
+                "positions": [
+                    {
+                        "symbol": "BTCUSDT",
+                        "positionAmt": "-1.5",
+                        "entryPrice": "101.25",
+                        "unrealizedProfit": "-3.75",
+                        "leverage": "5",
+                    },
+                    {"symbol": "ETHUSDT", "positionAmt": "0", "entryPrice": "0"},
+                ],
+            }
+
+        async def protective_levels(self):
+            return {"BTCUSDT": ProtectiveLevels(stop_loss=Decimal("104"))}
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'testnet-portfolio.db'}")
+        await database.initialize()
+        engine = TradingEngine(
+            mode=TradingMode.TESTNET,
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=FakeMarket(),  # type: ignore[arg-type]
+            testnet_broker=PositionBroker(),  # type: ignore[arg-type]
+        )
+        portfolio = await engine.current_portfolio()
+        await database.close()
+        return portfolio
+
+    portfolio = asyncio.run(scenario())
+    assert portfolio.open_positions == 1
+    position = portfolio.positions["BTCUSDT"]
+    assert position.side == "SHORT"
+    assert position.quantity == Decimal("1.5")
+    assert position.entry_price == Decimal("101.25")
+    assert position.unrealized_pnl == Decimal("-3.75")
+    assert position.leverage == 5
+    assert position.stop_loss == Decimal("104")
+    # No take-profit leg on the exchange must read as absent, not as invented.
+    assert position.take_profit is None
+    # A flat symbol is not a position.
+    assert "ETHUSDT" not in portfolio.positions

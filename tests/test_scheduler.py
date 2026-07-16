@@ -433,7 +433,7 @@ def test_paper_account_tracks_open_position() -> None:
 
     portfolio = asyncio.run(scenario())
     assert portfolio.open_positions == 1
-    assert portfolio.symbol_sides["BTCUSDT"] == "LONG"
+    assert portfolio.positions["BTCUSDT"].side == "LONG"
     assert portfolio.margin_used > 0
 
 

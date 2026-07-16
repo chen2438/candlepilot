@@ -10,6 +10,7 @@ from candlepilot.broker.binance_testnet import (
     BinanceApiError,
     BinanceTestnetBroker,
     OrderStatusUnknown,
+    ProtectiveLevels,
     ProtectiveStopError,
     ReconciliationReport,
 )
@@ -18,6 +19,7 @@ from candlepilot.domain.models import (
     ExecutionReport,
     MarketSnapshot,
     PortfolioState,
+    PositionState,
     ProviderHealth,
     RiskDecision,
     TradeAction,
@@ -340,24 +342,31 @@ class TradingEngine:
         broker = self.testnet_broker
         if broker is None:
             raise RuntimeError("testnet broker is unavailable")
-        account = await broker.account()
-        positions = {
+        account, levels = await asyncio.gather(broker.account(), broker.protective_levels())
+        raw_positions = {
             str(item["symbol"]): item
             for item in account.get("positions", [])
             if Decimal(str(item.get("positionAmt", "0"))) != 0
         }
+        positions: dict[str, PositionState] = {}
+        for symbol, item in raw_positions.items():
+            amount = Decimal(str(item["positionAmt"]))
+            guard = levels.get(symbol, ProtectiveLevels())
+            positions[symbol] = PositionState(
+                side="LONG" if amount > 0 else "SHORT",
+                quantity=abs(amount),
+                entry_price=Decimal(str(item["entryPrice"])),
+                unrealized_pnl=Decimal(str(item.get("unrealizedProfit", "0"))),
+                leverage=int(item.get("leverage", 1)),
+                stop_loss=guard.stop_loss,
+                take_profit=guard.take_profit,
+            )
         return PortfolioState(
             equity=account.get("totalMarginBalance", account.get("totalWalletBalance", "0")),
             available_balance=account.get("availableBalance", "0"),
             open_positions=len(positions),
             margin_used=account.get("totalInitialMargin", "0"),
-            symbol_sides={
-                symbol: "LONG" if Decimal(str(item["positionAmt"])) > 0 else "SHORT"
-                for symbol, item in positions.items()
-            },
-            symbol_quantities={
-                symbol: abs(Decimal(str(item["positionAmt"]))) for symbol, item in positions.items()
-            },
+            positions=positions,
         )
 
     async def evaluate(

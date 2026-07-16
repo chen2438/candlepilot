@@ -488,3 +488,56 @@ def test_partial_entry_event_cancels_remainder_while_close_position_stop_protect
     assert requests[0].method == "DELETE"
     query = parse_qs(requests[0].url.query.decode())
     assert query["origClientOrderId"] == ["cp-partial-entry"]
+
+
+def test_protective_levels_reads_live_brackets_from_the_exchange() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fapi/v1/time":
+            return httpx.Response(200, json={"serverTime": 1784040000000})
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "symbol": "BTCUSDT",
+                    "orderType": "STOP_MARKET",
+                    "triggerPrice": "98",
+                    "closePosition": "true",
+                },
+                {
+                    "symbol": "BTCUSDT",
+                    "orderType": "TAKE_PROFIT_MARKET",
+                    "triggerPrice": "104",
+                    "closePosition": "true",
+                },
+                {
+                    "symbol": "ETHUSDT",
+                    "orderType": "STOP_MARKET",
+                    "triggerPrice": "3000",
+                    "closePosition": "true",
+                },
+                # Reduce-only scale-outs are not the position's invalidation.
+                {
+                    "symbol": "SOLUSDT",
+                    "orderType": "TAKE_PROFIT_MARKET",
+                    "triggerPrice": "220",
+                    "closePosition": "false",
+                },
+            ],
+        )
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        levels = await broker.protective_levels()
+        await client.aclose()
+        return levels
+
+    levels = asyncio.run(scenario())
+    assert levels["BTCUSDT"].stop_loss == Decimal("98")
+    assert levels["BTCUSDT"].take_profit == Decimal("104")
+    # A position guarded on one side only reports that side rather than vanishing.
+    assert levels["ETHUSDT"].stop_loss == Decimal("3000")
+    assert levels["ETHUSDT"].take_profit is None
+    assert "SOLUSDT" not in levels

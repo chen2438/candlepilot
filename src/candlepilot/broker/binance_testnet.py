@@ -65,6 +65,12 @@ class BinanceTestnetCredentials:
 
 
 @dataclass(frozen=True, slots=True)
+class ProtectiveLevels:
+    stop_loss: Decimal | None = None
+    take_profit: Decimal | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ReconciliationReport:
     position_symbols: tuple[str, ...]
     open_order_count: int
@@ -194,6 +200,37 @@ class BinanceTestnetBroker:
             open_order_count=len(open_orders) + len(open_algo_orders),
             unprotected_symbols=unprotected,
         )
+
+    async def protective_levels(self) -> dict[str, ProtectiveLevels]:
+        """Read the live stop/take-profit triggers guarding each position.
+
+        The exchange is the only authority here: a bracket can be filled,
+        cancelled, or amended outside this process, so the levels are read back
+        rather than remembered from whatever was placed at entry.
+        """
+
+        orders = await self._signed_request("GET", "/fapi/v1/openAlgoOrders", {})
+        stops: dict[str, Decimal] = {}
+        targets: dict[str, Decimal] = {}
+        for item in orders:
+            if item.get("closePosition") not in {True, "true", "TRUE"}:
+                continue
+            raw_price = item.get("triggerPrice", item.get("stopPrice"))
+            if raw_price is None:
+                continue
+            price = Decimal(str(raw_price))
+            if price <= 0:
+                continue
+            symbol = str(item.get("symbol", ""))
+            order_type = item.get("orderType")
+            if order_type in {"STOP", "STOP_MARKET"}:
+                stops[symbol] = price
+            elif order_type in {"TAKE_PROFIT", "TAKE_PROFIT_MARKET"}:
+                targets[symbol] = price
+        return {
+            symbol: ProtectiveLevels(stop_loss=stops.get(symbol), take_profit=targets.get(symbol))
+            for symbol in stops.keys() | targets.keys()
+        }
 
     async def configure_symbol(self, symbol: str, leverage: int) -> None:
         if not 1 <= leverage <= 10:

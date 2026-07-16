@@ -5,6 +5,7 @@ from candlepilot.domain.models import (
     MarketSnapshot,
     OrderType,
     PortfolioState,
+    PositionState,
     TradeAction,
     TradeIntent,
 )
@@ -54,6 +55,14 @@ def _portfolio(**changes) -> PortfolioState:
     }
     values.update(changes)
     return PortfolioState(**values)
+
+
+def _position(side: str, quantity: str = "1", **changes) -> dict[str, PositionState]:
+    return {
+        "BTCUSDT": PositionState(
+            side=side, quantity=quantity, entry_price="100", **changes
+        )
+    }
 
 
 def test_sizes_position_from_stop_distance_and_rounds_down() -> None:
@@ -184,7 +193,7 @@ def test_opposing_position_must_close_first() -> None:
     result = AggressiveRiskPolicy().evaluate(
         _intent(TradeAction.OPEN_LONG),
         _snapshot(),
-        _portfolio(open_positions=1, symbol_sides={"BTCUSDT": "SHORT"}),
+        _portfolio(open_positions=1, positions=_position("SHORT")),
         RULES,
     )
     assert not result.decision.accepted
@@ -195,7 +204,7 @@ def test_same_side_open_requires_explicit_add() -> None:
     result = AggressiveRiskPolicy().evaluate(
         _intent(TradeAction.OPEN_LONG),
         _snapshot(),
-        _portfolio(open_positions=1, symbol_sides={"BTCUSDT": "LONG"}),
+        _portfolio(open_positions=1, positions=_position("LONG")),
         RULES,
     )
     assert not result.decision.accepted
@@ -206,7 +215,7 @@ def test_add_uses_existing_position_direction() -> None:
     result = AggressiveRiskPolicy().evaluate(
         _intent(TradeAction.ADD),
         _snapshot(),
-        _portfolio(open_positions=1, symbol_sides={"BTCUSDT": "LONG"}),
+        _portfolio(open_positions=1, positions=_position("LONG")),
         RULES,
     )
     assert result.decision.accepted
@@ -217,11 +226,7 @@ def test_close_is_always_reduce_only() -> None:
     result = AggressiveRiskPolicy().evaluate(
         _intent(TradeAction.CLOSE),
         _snapshot(),
-        _portfolio(
-            open_positions=1,
-            symbol_sides={"BTCUSDT": "LONG"},
-            symbol_quantities={"BTCUSDT": "1.2345"},
-        ),
+        _portfolio(open_positions=1, positions=_position("LONG", "1.2345")),
         RULES,
     )
     assert result.decision.accepted

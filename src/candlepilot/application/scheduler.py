@@ -200,7 +200,7 @@ class TradingScheduler:
             candidate.symbol
             for candidate in self.engine.candidates[: self.candidates_per_cycle]
         ]
-        symbols.extend(portfolio.symbol_sides)
+        symbols.extend(portfolio.positions)
         outcomes = []
         for symbol in dict.fromkeys(symbols):
             contract = contracts.get(symbol)
