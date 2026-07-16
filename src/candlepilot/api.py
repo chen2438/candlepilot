@@ -65,7 +65,12 @@ from candlepilot.settings_file import (
     read_env_file,
     write_env_file,
 )
-from candlepilot.storage.database import AuditRepository, CURRENT_SCHEMA_VERSION, Database
+from candlepilot.storage.database import (
+    AuditRepository,
+    CURRENT_SCHEMA_VERSION,
+    DECISION_OUTCOMES,
+    Database,
+)
 
 
 class ApiModel(BaseModel):
@@ -1184,10 +1189,38 @@ def create_app(
         return await engine.audit.recent_intents(limit)
 
     @app.get("/api/decision-events")
-    async def get_decision_events(limit: int = 100) -> list[dict[str, Any]]:
+    async def get_decision_events(
+        limit: int = 100,
+        before_id: int | None = None,
+        symbol: str | None = None,
+        cadence: str | None = None,
+        provider: str | None = None,
+        outcome: str | None = None,
+    ) -> list[dict[str, Any]]:
         if not 1 <= limit <= 500:
             raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
-        return await engine.audit.recent_decision_events(limit)
+        if before_id is not None and before_id < 1:
+            raise HTTPException(status_code=422, detail="before_id must be positive")
+        # An unknown filter value would otherwise return an empty page, which
+        # reads as "no such decisions" rather than "you asked for nonsense".
+        if outcome is not None and outcome not in DECISION_OUTCOMES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"outcome must be one of {', '.join(sorted(DECISION_OUTCOMES))}",
+            )
+        if cadence is not None and cadence not in SUPPORTED_CADENCES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"cadence must be one of {', '.join(SUPPORTED_CADENCES)}",
+            )
+        return await engine.audit.recent_decision_events(
+            limit,
+            before_id=before_id,
+            symbol=symbol,
+            cadence=cadence,
+            provider=provider,
+            outcome=outcome,
+        )
 
     @app.get("/api/decision-events/{inference_id}")
     async def get_decision_detail(inference_id: int) -> dict[str, Any]:

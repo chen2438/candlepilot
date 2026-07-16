@@ -8,10 +8,11 @@ from candlepilot.domain.models import (
     ExecutionAttempt,
     ExecutionReport,
     RiskDecision,
+    TradeAction,
     TradeIntent,
 )
 from candlepilot.providers.base import ProviderResult
-from candlepilot.storage.database import AuditRepository, Database
+from candlepilot.storage.database import DECISION_OUTCOMES, AuditRepository, Database
 
 
 def test_inference_audit_round_trip(tmp_path: Path) -> None:
@@ -492,3 +493,149 @@ def test_database_migrations_are_versioned_and_idempotent(tmp_path: Path) -> Non
         return first, second
 
     assert asyncio.run(scenario()) == (3, 3)
+
+
+async def _seed_decisions(repository: AuditRepository) -> None:
+    """One decision of every outcome the classifier can produce."""
+
+    async def infer(symbol: str, cadence: str, provider: str, intent: TradeIntent) -> int:
+        return await repository.record_inference(
+            ProviderResult(
+                intent=intent,
+                provider=provider,
+                model="m",
+                duration=timedelta(milliseconds=1),
+                raw_output=intent.model_dump_json(),
+                usage={},
+            )
+        )
+
+    def opening(symbol: str, cadence: str) -> TradeIntent:
+        return TradeIntent(
+            symbol=symbol,
+            cadence=cadence,
+            action=TradeAction.OPEN_LONG,
+            confidence=0.8,
+            leverage=2,
+            risk_fraction="0.01",
+            stop_loss="90",
+            take_profit="110",
+            rationale="seed",
+        )
+
+    # hold
+    await infer("BTCUSDT", "5m", "codex-auth", TradeIntent.hold("BTCUSDT", "5m", "no setup"))
+    # analysis_only: an intent that never reached the risk policy.
+    await infer("ETHUSDT", "5m", "codex-auth", opening("ETHUSDT", "5m"))
+    # rejected
+    rejected = await infer("BTCUSDT", "15m", "claude-code-auth", opening("BTCUSDT", "15m"))
+    await repository.record_risk(
+        "BTCUSDT", RiskDecision(accepted=False, reason="no"), inference_id=rejected
+    )
+    # approved: risk passed, nothing executed.
+    approved = await infer("BTCUSDT", "30m", "codex-auth", opening("BTCUSDT", "30m"))
+    await repository.record_risk(
+        "BTCUSDT", RiskDecision(accepted=True, reason="ok"), inference_id=approved
+    )
+    # executed
+    executed = await infer("SOLUSDT", "5m", "codex-auth", opening("SOLUSDT", "5m"))
+    await repository.record_risk(
+        "SOLUSDT", RiskDecision(accepted=True, reason="ok"), inference_id=executed
+    )
+    await repository.record_execution_attempt(
+        "SOLUSDT",
+        ExecutionAttempt(
+            inference_id=executed, status="SUCCEEDED", stage="COMPLETE", message="filled"
+        ),
+    )
+    # execution_failed
+    failed = await infer("SOLUSDT", "15m", "codex-auth", opening("SOLUSDT", "15m"))
+    await repository.record_risk(
+        "SOLUSDT", RiskDecision(accepted=True, reason="ok"), inference_id=failed
+    )
+    await repository.record_execution_attempt(
+        "SOLUSDT",
+        ExecutionAttempt(
+            inference_id=failed, status="FAILED", stage="ENTRY", message="rejected"
+        ),
+    )
+
+
+def test_outcome_filter_agrees_with_the_python_classifier(tmp_path: Path) -> None:
+    """The SQL filter reproduces _decision_outcome and must not drift from it.
+
+    A filter that classifies differently from the column the console displays
+    would answer "show me every rejection" with the wrong set, and nothing in
+    the response would admit it.
+    """
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'outcomes.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        await _seed_decisions(repository)
+        everything = await repository.recent_decision_events(500)
+        by_outcome = {
+            outcome: await repository.recent_decision_events(500, outcome=outcome)
+            for outcome in DECISION_OUTCOMES
+        }
+        await database.close()
+        return everything, by_outcome
+
+    everything, by_outcome = asyncio.run(scenario())
+
+    # The seed covers every outcome, so this test fails if a new one is added
+    # without a filter branch to match.
+    assert {event["outcome"] for event in everything} == set(DECISION_OUTCOMES)
+    for outcome in DECISION_OUTCOMES:
+        expected = [event["id"] for event in everything if event["outcome"] == outcome]
+        assert [event["id"] for event in by_outcome[outcome]] == expected, outcome
+        assert expected, outcome
+
+
+def test_decision_events_page_backwards_without_skipping_or_repeating(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'paging.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        await _seed_decisions(repository)
+
+        pages: list[list[int]] = []
+        cursor: int | None = None
+        while True:
+            page = await repository.recent_decision_events(2, before_id=cursor)
+            if not page:
+                break
+            pages.append([event["id"] for event in page])
+            cursor = page[-1]["id"]
+        everything = await repository.recent_decision_events(500)
+        await database.close()
+        return pages, [event["id"] for event in everything]
+
+    pages, everything = asyncio.run(scenario())
+
+    walked = [identifier for page in pages for identifier in page]
+    assert walked == everything
+    assert len(walked) == len(set(walked))
+
+
+def test_paging_and_filtering_compose(tmp_path: Path) -> None:
+    """A cursor must stay inside the filtered result, not the whole table."""
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'compose.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        await _seed_decisions(repository)
+        first = await repository.recent_decision_events(1, symbol="SOLUSDT")
+        second = await repository.recent_decision_events(
+            1, symbol="SOLUSDT", before_id=first[0]["id"]
+        )
+        both = await repository.recent_decision_events(500, symbol="SOLUSDT")
+        await database.close()
+        return first, second, both
+
+    first, second, both = asyncio.run(scenario())
+
+    assert [event["id"] for event in first + second] == [event["id"] for event in both]
+    assert all(event["intent"]["symbol"] == "SOLUSDT" for event in both)

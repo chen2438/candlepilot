@@ -13,9 +13,12 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    and_,
     delete,
     event,
+    func,
     insert,
+    not_,
     select,
     text,
 )
@@ -262,6 +265,21 @@ class Database:
 
     async def close(self) -> None:
         await self.engine.dispose()
+
+
+#: Every value ``AuditRepository._decision_outcome`` can return.
+#:
+#: Kept beside it, and beside ``_outcome_filter`` which has to reproduce the
+#: same classification in SQL: the three drift apart silently otherwise, and the
+#: symptom would be a filter that quietly returns the wrong decisions.
+DECISION_OUTCOMES = (
+    "hold",
+    "analysis_only",
+    "rejected",
+    "approved",
+    "executed",
+    "execution_failed",
+)
 
 
 class AuditRepository:
@@ -672,19 +690,77 @@ class AuditRepository:
             )
         return results
 
-    async def recent_decision_events(self, limit: int = 100) -> list[dict[str, Any]]:
+    @staticmethod
+    def _outcome_filter(outcome: str) -> Any:
+        """Rebuild ``_decision_outcome`` as SQL.
+
+        The action lives in ``intent_json`` rather than a column, so HOLD is
+        matched with json_extract. That is unindexed, but the id index still
+        drives the ordering and the walk stops at ``limit``; the alternative --
+        a denormalised action column -- would put the same fact in two places
+        for a table this size to gain nothing.
+
+        This must agree with ``_decision_outcome``; the two are pinned together
+        by a test that filters on every outcome it can produce.
+        """
+
+        action = func.json_extract(InferenceRow.intent_json, "$.action")
+        is_hold = action == "HOLD"
+        succeeded = ExecutionAttemptRow.status == "SUCCEEDED"
+        return {
+            "hold": is_hold,
+            "analysis_only": and_(not_(is_hold), RiskRow.id.is_(None)),
+            "rejected": and_(not_(is_hold), RiskRow.id.is_not(None), ~RiskRow.accepted),
+            "approved": and_(
+                not_(is_hold),
+                RiskRow.accepted,
+                ExecutionAttemptRow.id.is_(None),
+            ),
+            "executed": and_(
+                not_(is_hold), RiskRow.accepted, ExecutionAttemptRow.id.is_not(None), succeeded
+            ),
+            "execution_failed": and_(
+                not_(is_hold),
+                RiskRow.accepted,
+                ExecutionAttemptRow.id.is_not(None),
+                not_(succeeded),
+            ),
+        }[outcome]
+
+    async def recent_decision_events(
+        self,
+        limit: int = 100,
+        *,
+        before_id: int | None = None,
+        symbol: str | None = None,
+        cadence: str | None = None,
+        provider: str | None = None,
+        outcome: str | None = None,
+    ) -> list[dict[str, Any]]:
+        query = (
+            select(InferenceRow, RiskRow, ExecutionAttemptRow)
+            .outerjoin(RiskRow, RiskRow.inference_id == InferenceRow.id)
+            .outerjoin(
+                ExecutionAttemptRow,
+                ExecutionAttemptRow.inference_id == InferenceRow.id,
+            )
+        )
+        # Keyset paging on the primary key: ids are monotonic with no ties, so a
+        # page cannot skip or repeat a row when new decisions land mid-read, the
+        # way an OFFSET would.
+        if before_id is not None:
+            query = query.where(InferenceRow.id < before_id)
+        if symbol is not None:
+            query = query.where(InferenceRow.symbol == symbol)
+        if cadence is not None:
+            query = query.where(InferenceRow.cadence == cadence)
+        if provider is not None:
+            query = query.where(InferenceRow.provider == provider)
+        if outcome is not None:
+            query = query.where(self._outcome_filter(outcome))
         async with self.sessions() as session:
             rows = (
-                await session.execute(
-                    select(InferenceRow, RiskRow, ExecutionAttemptRow)
-                    .outerjoin(RiskRow, RiskRow.inference_id == InferenceRow.id)
-                    .outerjoin(
-                        ExecutionAttemptRow,
-                        ExecutionAttemptRow.inference_id == InferenceRow.id,
-                    )
-                    .order_by(InferenceRow.id.desc())
-                    .limit(limit)
-                )
+                await session.execute(query.order_by(InferenceRow.id.desc()).limit(limit))
             ).all()
         events = []
         for inference, risk, attempt in rows:

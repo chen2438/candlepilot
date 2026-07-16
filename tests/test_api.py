@@ -1326,3 +1326,25 @@ def test_portfolio_backtest_api_persists_aggregate_result(tmp_path: Path) -> Non
         assert run["result"]["allocation"] == "equal_weight_sleeves"
         assert set(run["result"]["per_symbol"]) == {"BTCUSDT", "ETHUSDT"}
     asyncio.run(database.close())
+
+
+def test_decision_events_reject_filters_they_cannot_honour(tmp_path: Path) -> None:
+    """An unknown filter value must not read as "no such decisions"."""
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'filters.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.PAPER,
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        assert client.get("/api/decision-events?outcome=hold").status_code == 200
+        assert client.get("/api/decision-events?outcome=rejceted").status_code == 422
+        assert client.get("/api/decision-events?cadence=7m").status_code == 422
+        assert client.get("/api/decision-events?before_id=0").status_code == 422
+        assert client.get("/api/decision-events?limit=501").status_code == 422
+    asyncio.run(database.close())
