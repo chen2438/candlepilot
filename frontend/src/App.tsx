@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AccountPortfolio,
   AccountPosition,
@@ -207,12 +207,30 @@ function initialReplayForm() {
   };
 }
 
+const DECISION_PAGE_SIZE = 50;
+
+type DecisionFilter = "all" | DecisionEvent["outcome"];
+
+function decisionQueryUrl(filter: DecisionFilter, beforeId?: number): string {
+  const params = new URLSearchParams({ limit: String(DECISION_PAGE_SIZE) });
+  // Filtering happens server-side over the whole table. Filtering the loaded
+  // page in the browser instead would answer "show me every rejection" with
+  // only the rejections that happen to be in the newest 50 rows.
+  if (filter !== "all") params.set("outcome", filter);
+  if (beforeId !== undefined) params.set("before_id", String(beforeId));
+  return `/api/decision-events?${params}`;
+}
+
 export default function App() {
   const [tab, setTab] = useState<TabKey>("overview");
   const [status, setStatus] = useState<EngineStatus>(emptyStatus);
   const [providers, setProviders] = useState<ProviderHealth[]>([]);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [decisions, setDecisions] = useState<DecisionEvent[]>([]);
+  const [decisionFilter, setDecisionFilter] = useState<DecisionFilter>("all");
+  const [decisionsExhausted, setDecisionsExhausted] = useState(false);
+  const decisionFilterRef = useRef(decisionFilter);
+  decisionFilterRef.current = decisionFilter;
   const [backtests, setBacktests] = useState<BacktestRun[]>([]);
   const [selectedBacktest, setSelectedBacktest] = useState<BacktestRun | null>(null);
   const [portfolio, setPortfolio] = useState<AccountPortfolio | null>(null);
@@ -391,17 +409,15 @@ export default function App() {
   }, []);
 
   const refresh = useCallback(async () => {
-    const [nextStatus, nextProviders, nextCandidates, nextDecisions, nextBacktests] = await Promise.all([
+    const [nextStatus, nextProviders, nextCandidates, nextBacktests] = await Promise.all([
       api<EngineStatus>("/api/status"),
       api<ProviderHealth[]>("/api/providers"),
       api<Candidate[]>("/api/universe"),
-      api<DecisionEvent[]>("/api/decision-events?limit=50"),
       api<BacktestRun[]>("/api/backtests?limit=10"),
     ]);
     setStatus(nextStatus);
     setProviders(nextProviders);
     setCandidates(nextCandidates);
-    setDecisions(nextDecisions);
     setBacktests(nextBacktests);
   }, []);
 
@@ -416,9 +432,40 @@ export default function App() {
     setOrders(nextOrders);
   }, []);
 
-  const refreshDecisions = useCallback(async () => {
-    setDecisions(await api<DecisionEvent[]>("/api/decision-events?limit=50"));
+  // The live tail is merged, not replaced: paging older decisions in would
+  // otherwise be wiped by the next push two seconds later. The audit log is
+  // append-only, but an event does change after it is written -- risk and
+  // execution rows land later -- so newer copies win by id.
+  const mergeDecisions = useCallback((incoming: DecisionEvent[]) => {
+    setDecisions((current) => {
+      const byId = new Map(current.map((event) => [event.id, event]));
+      for (const event of incoming) byId.set(event.id, event);
+      return [...byId.values()].sort((left, right) => right.id - left.id);
+    });
   }, []);
+
+  const refreshDecisions = useCallback(async () => {
+    mergeDecisions(await api<DecisionEvent[]>(decisionQueryUrl(decisionFilter)));
+  }, [decisionFilter, mergeDecisions]);
+  const refreshDecisionsRef = useRef(refreshDecisions);
+  refreshDecisionsRef.current = refreshDecisions;
+
+  const loadOlderDecisions = useCallback(async () => {
+    const oldest = decisions.at(-1);
+    const older = await api<DecisionEvent[]>(
+      decisionQueryUrl(decisionFilter, oldest ? oldest.id : undefined),
+    );
+    setDecisionsExhausted(!older.length);
+    mergeDecisions(older);
+  }, [decisions, decisionFilter, mergeDecisions]);
+
+  // A filtered list is a query result over the whole table, so switching the
+  // filter drops the previous page: it was answering a different question.
+  useEffect(() => {
+    setDecisions([]);
+    setDecisionsExhausted(false);
+    refreshDecisions().catch(() => undefined);
+  }, [refreshDecisions]);
 
   const refreshOperations = useCallback(async () => {
     const [metrics, testnet] = await Promise.allSettled([
@@ -448,7 +495,8 @@ export default function App() {
       api<EngineStatus>("/api/status").then(setStatus).catch(() => undefined);
     }, 5000);
     const decisionFallback = window.setInterval(() => {
-      refreshDecisions().catch(() => undefined);
+      if (decisionFilterRef.current !== "all") return;
+      refreshDecisionsRef.current().catch(() => undefined);
     }, 15000);
     const runUsage = window.setInterval(() => {
       refreshRunSession().catch(() => undefined);
@@ -469,7 +517,12 @@ export default function App() {
           | { type: "status"; data: EngineStatus }
           | { type: "decisions"; data: DecisionEvent[] };
         if (message.type === "status") setStatus(message.data);
-        if (message.type === "decisions") setDecisions(message.data);
+        // The push is the newest rows unfiltered, so it cannot be merged into a
+        // filtered list -- doing so would sprinkle in decisions that do not
+        // match what the user asked for. Filtering pauses the live tail.
+        if (message.type === "decisions" && decisionFilterRef.current === "all") {
+          mergeDecisions(message.data);
+        }
       };
     };
     connect();
@@ -481,7 +534,7 @@ export default function App() {
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       socket?.close();
     };
-  }, [refresh, refreshAccount, refreshDecisions, refreshOperations, refreshRunSession]);
+  }, [refresh, refreshAccount, mergeDecisions, refreshOperations, refreshRunSession]);
 
   const act = useCallback(async (name: string, path: string, body?: unknown) => {
     setBusy(name);
@@ -904,7 +957,13 @@ export default function App() {
             )}
           </article>
 
-          <DecisionPanel decisions={decisions} />
+          <DecisionPanel
+            decisions={decisions}
+            filter={decisionFilter}
+            onFilter={setDecisionFilter}
+            onLoadOlder={loadOlderDecisions}
+            exhausted={decisionsExhausted}
+          />
         </section>
         </>)}
 
@@ -1462,7 +1521,7 @@ function money(value: string): string {
   return Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-const DECISION_FILTERS: Array<{ key: "all" | DecisionEvent["outcome"]; label: string }> = [
+const DECISION_FILTERS: Array<{ key: DecisionFilter; label: string }> = [
   { key: "all", label: "全部" },
   { key: "approved", label: "风控放行" },
   { key: "executed", label: "下单成功" },
@@ -1495,16 +1554,35 @@ function executionLoss(value: string | null | undefined): string {
     : `$${Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`;
 }
 
-function DecisionPanel({ decisions }: { decisions: DecisionEvent[] }) {
-  const [filter, setFilter] = useState<"all" | DecisionEvent["outcome"]>("all");
+function DecisionPanel({
+  decisions,
+  filter,
+  onFilter,
+  onLoadOlder,
+  exhausted,
+}: {
+  decisions: DecisionEvent[];
+  filter: DecisionFilter;
+  onFilter: (next: DecisionFilter) => void;
+  onLoadOlder: () => Promise<void>;
+  exhausted: boolean;
+}) {
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [details, setDetails] = useState<Record<number, DecisionDetail>>({});
   const [detailLoading, setDetailLoading] = useState<number | null>(null);
   const [detailErrors, setDetailErrors] = useState<Record<number, string>>({});
   const [copied, setCopied] = useState<string | null>(null);
-  const visible = filter === "all"
-    ? decisions
-    : decisions.filter((decision) => decision.outcome === filter);
+  const visible = decisions;
+
+  const loadOlder = async () => {
+    setLoadingOlder(true);
+    try {
+      await onLoadOlder();
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
 
   const toggleDecision = async (decision: DecisionEvent) => {
     if (expanded === decision.id) {
@@ -1550,7 +1628,7 @@ function DecisionPanel({ decisions }: { decisions: DecisionEvent[] }) {
           <button
             className={filter === item.key ? "active" : ""}
             key={item.key}
-            onClick={() => setFilter(item.key)}
+            onClick={() => onFilter(item.key)}
           >{item.label}</button>
         ))}
       </div>
@@ -1639,6 +1717,18 @@ function DecisionPanel({ decisions }: { decisions: DecisionEvent[] }) {
           </div>
         ))}
         {!visible.length && <div className="empty cards">当前筛选条件下没有决策记录。</div>}
+      </div>
+      <div className="decision-more">
+        {exhausted
+          ? <span className="decision-more-note">已到最早一条记录。</span>
+          : <button className="text-button" disabled={loadingOlder} onClick={() => void loadOlder()}>
+              {loadingOlder ? "加载中…" : "加载更早"}
+            </button>}
+        {filter !== "all" && (
+          <span className="decision-more-note" data-tooltip="实时推送的是未筛选的最新记录，混入当前列表会掺进不符合筛选条件的决策。">
+            筛选中 · 实时更新已暂停
+          </span>
+        )}
       </div>
     </article>
   );
