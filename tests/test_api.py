@@ -21,7 +21,11 @@ from candlepilot.market.scanner import MarketCandidateInput
 from candlepilot.providers.base import LLMProvider, ProviderResult
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.settings_file import read_env_file
-from candlepilot.storage.database import AuditRepository, Database
+from candlepilot.storage.database import (
+    CURRENT_SCHEMA_VERSION,
+    AuditRepository,
+    Database,
+)
 
 
 class ApiProvider(LLMProvider):
@@ -156,8 +160,8 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         assert readiness.status_code == 200
         assert readiness.json()["checks"]["database"] == {
             "ready": True,
-            "schema_version": 3,
-            "expected_schema_version": 3,
+            "schema_version": CURRENT_SCHEMA_VERSION,
+            "expected_schema_version": CURRENT_SCHEMA_VERSION,
         }
         runtime_metrics = client.get("/api/metrics/runtime")
         assert runtime_metrics.status_code == 200
@@ -1135,107 +1139,6 @@ def test_provider_route_api_exposes_order_and_locks_while_running(tmp_path: Path
     asyncio.run(database.close())
 
 
-def test_backtest_run_is_persisted_and_listed(tmp_path: Path) -> None:
-    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'backtest-api.db'}")
-    market = ApiMarket()
-    engine = TradingEngine(
-        mode=TradingMode.PAPER,
-        providers=ProviderRegistry([ApiProvider()]),
-        audit=AuditRepository(database.sessions),
-        market=market,  # type: ignore[arg-type]
-    )
-    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
-    first = datetime(2026, 1, 1, tzinfo=UTC)
-    payload = {
-        "symbol": "BTCUSDT",
-        "cadence": "5m",
-        "candles": [
-            {
-                "timestamp": first.isoformat(),
-                "open": "100",
-                "high": "101",
-                "low": "99",
-                "close": "100",
-                "volume": "10",
-            },
-            {
-                "timestamp": (first + timedelta(minutes=5)).isoformat(),
-                "open": "100",
-                "high": "111",
-                "low": "99",
-                "close": "110",
-                "volume": "12",
-            },
-        ],
-        "decisions": [
-            {
-                "decided_at": first.isoformat(),
-                "intent": {
-                    "symbol": "BTCUSDT",
-                    "cadence": "5m",
-                    "action": "OPEN_LONG",
-                    "confidence": 0.8,
-                    "leverage": 2,
-                    "risk_fraction": "0.01",
-                    "stop_loss": "95",
-                    "take_profit": "108",
-                    "rationale": "fixture breakout",
-                },
-            }
-        ],
-    }
-
-    with TestClient(app) as client:
-        created = client.post("/api/backtests", json=payload)
-        assert created.status_code == 201
-        run = created.json()
-        assert run["id"] == 1
-        assert run["symbol"] == "BTCUSDT"
-        assert len(run["result"]["trades"]) == 1
-        assert run["result"]["total_return"] != "0"
-        assert run["result"]["provenance"]["data_version"].startswith("backtest-candles-v1:sha256:")
-
-        listed = client.get("/api/backtests").json()
-        assert listed[0]["id"] == run["id"]
-        assert listed[0]["result"]["trade_count"] == 1
-        assert "trades" not in listed[0]["result"]
-        assert "equity_curve" not in listed[0]["result"]
-        assert client.get(f"/api/backtests/{run['id']}").json() == run
-    asyncio.run(database.close())
-
-
-def test_cached_replay_rejects_range_without_decisions(tmp_path: Path) -> None:
-    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'replay-api.db'}")
-    market = ApiMarket()
-    engine = TradingEngine(
-        mode=TradingMode.PAPER,
-        providers=ProviderRegistry([ApiProvider()]),
-        audit=AuditRepository(database.sessions),
-        market=market,  # type: ignore[arg-type]
-    )
-    app = create_app(
-        settings=Settings(data_dir=tmp_path),
-        database=database,
-        market=market,  # type: ignore[arg-type]
-        engine=engine,
-    )
-    start = datetime(2026, 1, 1, tzinfo=UTC)
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/api/backtests/replay",
-            json={
-                "symbol": "BTCUSDT",
-                "cadence": "5m",
-                "start": start.isoformat(),
-                "end": (start + timedelta(minutes=10)).isoformat(),
-            },
-        )
-        assert response.status_code == 409, response.text
-        assert "no cached LLM decisions" in response.json()["detail"]
-    asyncio.run(database.close())
-
-
 def test_backtest_detail_returns_404_for_unknown_run(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'missing-backtest.db'}")
     market = ApiMarket()
@@ -1248,83 +1151,6 @@ def test_backtest_detail_returns_404_for_unknown_run(tmp_path: Path) -> None:
     app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
     with TestClient(app) as client:
         assert client.get("/api/backtests/999").status_code == 404
-    asyncio.run(database.close())
-
-
-def test_fresh_llm_backtest_calls_provider_and_audits_decisions(tmp_path: Path) -> None:
-    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'fresh-replay.db'}")
-    market = LLMReplayMarket()
-    engine = TradingEngine(
-        mode=TradingMode.PAPER,
-        providers=ProviderRegistry([ApiProvider()]),
-        audit=AuditRepository(database.sessions),
-        market=market,  # type: ignore[arg-type]
-    )
-    app = create_app(
-        settings=Settings(data_dir=tmp_path),
-        database=database,
-        market=market,  # type: ignore[arg-type]
-        engine=engine,
-    )
-    start = datetime(2026, 1, 1, tzinfo=UTC)
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/api/backtests/llm",
-            json={
-                "symbol": "BTCUSDT",
-                "cadence": "5m",
-                "provider": "api-fixture",
-                "start": start.isoformat(),
-                "end": (start + timedelta(hours=2)).isoformat(),
-                "max_calls": 2,
-            },
-        )
-        assert response.status_code == 201, response.text
-        replay = response.json()["result"]["replay"]
-        assert replay["source"] == "fresh_llm_calls"
-        assert replay["decision_count"] == 2
-        assert len(client.get("/api/signals").json()) == 2
-    asyncio.run(database.close())
-
-
-def test_portfolio_backtest_api_persists_aggregate_result(tmp_path: Path) -> None:
-    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'portfolio-api.db'}")
-    market = ApiMarket()
-    engine = TradingEngine(
-        mode=TradingMode.PAPER,
-        providers=ProviderRegistry([ApiProvider()]),
-        audit=AuditRepository(database.sessions),
-        market=market,  # type: ignore[arg-type]
-    )
-    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
-    start = datetime(2026, 1, 1, tzinfo=UTC)
-    candles = [
-        {
-            "timestamp": start.isoformat(),
-            "open": "100",
-            "high": "101",
-            "low": "99",
-            "close": "100",
-            "volume": "10",
-        }
-    ]
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/api/backtests/portfolio",
-            json={
-                "legs": [
-                    {"symbol": "BTCUSDT", "cadence": "5m", "candles": candles},
-                    {"symbol": "ETHUSDT", "cadence": "5m", "candles": candles},
-                ]
-            },
-        )
-        assert response.status_code == 201, response.text
-        run = response.json()
-        assert run["symbol"] == "PORTFOLIO"
-        assert run["result"]["allocation"] == "equal_weight_sleeves"
-        assert set(run["result"]["per_symbol"]) == {"BTCUSDT", "ETHUSDT"}
     asyncio.run(database.close())
 
 

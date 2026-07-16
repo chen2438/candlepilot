@@ -2,7 +2,6 @@ import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } fro
 import type {
   AccountPortfolio,
   AccountPosition,
-  BacktestRun,
   Candidate,
   DecisionEvent,
   DecisionDetail,
@@ -85,19 +84,17 @@ const HISTORY_CATEGORIES: Array<{ key: string; label: string; hint: string }> = 
   { key: "inferences", label: "模型调用与决策", hint: "AI 分析 / 最近决策" },
   { key: "risk_decisions", label: "风控决策", hint: "风险事件" },
   { key: "executions", label: "订单与成交", hint: "" },
-  { key: "backtests", label: "回测记录", hint: "" },
   { key: "user_events", label: "测试网事件", hint: "用户数据流" },
   { key: "alerts", label: "告警历史", hint: "" },
   { key: "market_cache", label: "行情缓存", hint: "Parquet" },
   { key: "pricing_cache", label: "定价缓存", hint: "models.dev" },
 ];
 
-type TabKey = "overview" | "account" | "backtest" | "operations" | "data" | "settings";
+type TabKey = "overview" | "account" | "operations" | "data" | "settings";
 
 const TABS: Array<{ key: TabKey; label: string; meta: string }> = [
   { key: "overview", label: "总览", meta: "引擎 · 接入 · 候选 · 决策" },
   { key: "account", label: "账户", meta: "持仓 · 订单" },
-  { key: "backtest", label: "回测", meta: "重放已审计决策" },
   { key: "operations", label: "运维", meta: "模型 · 测试网" },
   { key: "data", label: "数据", meta: "删除历史数据" },
   { key: "settings", label: "设置", meta: "编辑本地 .env" },
@@ -187,26 +184,6 @@ function percent(value: string): string {
   return `${(Number(value) * 100).toFixed(2)}%`;
 }
 
-function localDateTime(date: Date): string {
-  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
-  return local.toISOString().slice(0, 16);
-}
-
-function initialReplayForm() {
-  const end = new Date();
-  end.setSeconds(0, 0);
-  const start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
-  return {
-    symbol: "BTCUSDT",
-    cadence: "5m",
-    start: localDateTime(start),
-    end: localDateTime(end),
-    initialEquity: "10000",
-    feeRate: "0.0005",
-    slippage: "0.0005",
-  };
-}
-
 const DECISION_PAGE_SIZE = 50;
 
 type DecisionFilter = "all" | DecisionEvent["outcome"];
@@ -231,8 +208,6 @@ export default function App() {
   const [decisionsExhausted, setDecisionsExhausted] = useState(false);
   const decisionFilterRef = useRef(decisionFilter);
   decisionFilterRef.current = decisionFilter;
-  const [backtests, setBacktests] = useState<BacktestRun[]>([]);
-  const [selectedBacktest, setSelectedBacktest] = useState<BacktestRun | null>(null);
   const [portfolio, setPortfolio] = useState<AccountPortfolio | null>(null);
   const [positions, setPositions] = useState<AccountPosition[]>([]);
   const [orders, setOrders] = useState<OrderRecord[]>([]);
@@ -243,7 +218,6 @@ export default function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [socketOnline, setSocketOnline] = useState(false);
-  const [replayForm, setReplayForm] = useState(initialReplayForm);
   const [configDraft, setConfigDraft] = useState<Record<string, { model: string; effort: string; custom: boolean }>>({});
   const [historySelected, setHistorySelected] = useState<Record<string, boolean>>({});
   const [historyConfirm, setHistoryConfirm] = useState(false);
@@ -409,16 +383,14 @@ export default function App() {
   }, []);
 
   const refresh = useCallback(async () => {
-    const [nextStatus, nextProviders, nextCandidates, nextBacktests] = await Promise.all([
+    const [nextStatus, nextProviders, nextCandidates] = await Promise.all([
       api<EngineStatus>("/api/status"),
       api<ProviderHealth[]>("/api/providers"),
       api<Candidate[]>("/api/universe"),
-      api<BacktestRun[]>("/api/backtests?limit=10"),
     ]);
     setStatus(nextStatus);
     setProviders(nextProviders);
     setCandidates(nextCandidates);
-    setBacktests(nextBacktests);
   }, []);
 
   const refreshAccount = useCallback(async () => {
@@ -567,39 +539,6 @@ export default function App() {
     }
   }, []);
 
-  const runCachedReplay = useCallback(async (event: FormEvent) => {
-    event.preventDefault();
-    setBusy("backtest");
-    setError(null);
-    try {
-      const start = new Date(replayForm.start);
-      const end = new Date(replayForm.end);
-      if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end <= start) {
-        throw new Error("回测结束时间必须晚于开始时间");
-      }
-      const created = await api<BacktestRun>("/api/backtests/replay", {
-        method: "POST",
-        body: JSON.stringify({
-          symbol: replayForm.symbol.trim().toUpperCase(),
-          cadence: replayForm.cadence,
-          start: start.toISOString(),
-          end: end.toISOString(),
-          config: {
-            initial_equity: replayForm.initialEquity,
-            fee_rate: replayForm.feeRate,
-            slippage_fraction: replayForm.slippage,
-          },
-        }),
-      });
-      setBacktests((current) => [created, ...current.filter((run) => run.id !== created.id)]);
-    } catch (reason) {
-      const message = reason instanceof Error ? reason.message : String(reason);
-      setError(message.includes("no cached LLM decisions") ? "该区间没有可重放的已审计 LLM 决策" : message);
-    } finally {
-      setBusy(null);
-    }
-  }, [replayForm]);
-
   const clearHistory = useCallback(async () => {
     const categories = Object.entries(historySelected).filter(([, on]) => on).map(([key]) => key);
     if (!categories.length) return;
@@ -621,18 +560,6 @@ export default function App() {
       setBusy(null);
     }
   }, [historySelected, refresh, refreshAccount]);
-
-  const openBacktest = useCallback(async (id: number) => {
-    setBusy("backtest-detail");
-    setError(null);
-    try {
-      setSelectedBacktest(await api<BacktestRun>(`/api/backtests/${id}`));
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBusy(null);
-    }
-  }, []);
 
   const activeProvider = useMemo(
     () => providers.find((provider) => provider.provider === status.active_provider),
@@ -967,48 +894,6 @@ export default function App() {
         </section>
         </>)}
 
-        {tab === "backtest" && (
-        <section className="grid">
-          <article className="panel backtest-panel">
-            <PanelTitle code="05" title="回测运行" meta="事件驱动 · 下一根 K 线成交" />
-            <form className="backtest-form" onSubmit={runCachedReplay}>
-              <label><span>标的</span><input required pattern="[A-Za-z0-9]+USDT" value={replayForm.symbol} onChange={(event) => setReplayForm({ ...replayForm, symbol: event.target.value })} /></label>
-              <label><span>周期</span><select value={replayForm.cadence} onChange={(event) => setReplayForm({ ...replayForm, cadence: event.target.value })}><option value="1m">1m</option><option value="5m">5m</option><option value="15m">15m</option><option value="30m">30m</option></select></label>
-              <label><span>开始时间</span><input required type="datetime-local" value={replayForm.start} onChange={(event) => setReplayForm({ ...replayForm, start: event.target.value })} /></label>
-              <label><span>结束时间</span><input required type="datetime-local" value={replayForm.end} onChange={(event) => setReplayForm({ ...replayForm, end: event.target.value })} /></label>
-              <label><span>初始权益</span><input required min="1" step="any" type="number" value={replayForm.initialEquity} onChange={(event) => setReplayForm({ ...replayForm, initialEquity: event.target.value })} /></label>
-              <label><span>手续费率</span><input required min="0" max="1" step="any" type="number" value={replayForm.feeRate} onChange={(event) => setReplayForm({ ...replayForm, feeRate: event.target.value })} /></label>
-              <label><span>滑点比例</span><input required min="0" max="1" step="any" type="number" value={replayForm.slippage} onChange={(event) => setReplayForm({ ...replayForm, slippage: event.target.value })} /></label>
-              <button className="compact" disabled={busy !== null} type="submit">{busy === "backtest" ? "重放中…" : "重放缓存决策"}</button>
-              <small>仅使用已审计的 LLM 决策，不会在回测时产生新的模型调用。</small>
-            </form>
-            <div className="table-wrap">
-              <table>
-                <thead><tr><th>运行</th><th>标的</th><th>周期</th><th>总收益</th><th>最大回撤</th><th>胜率</th><th>交易数</th><th>时间</th><th /></tr></thead>
-                <tbody>
-                  {backtests.map((run) => (
-                    <tr key={run.id}>
-                      <td>#{run.id}{run.result.replay && <small>{run.result.replay.decision_count} 决策</small>}</td>
-                      <td><strong>{run.symbol}</strong></td>
-                      <td>{run.cadence}</td>
-                      <td className={Number(run.result.total_return) >= 0 ? "positive" : "negative"}>{percent(run.result.total_return)}</td>
-                      <td className="negative">{percent(run.result.max_drawdown)}</td>
-                      <td>{percent(run.result.win_rate)}</td>
-                      <td>{run.result.trade_count ?? run.result.trades?.length ?? 0}</td>
-                      <td>{new Date(run.created_at).toLocaleString("zh-CN", { hour12: false })}</td>
-                      <td><button className="text-button" disabled={busy !== null} onClick={() => openBacktest(run.id)}>详情</button></td>
-                    </tr>
-                  ))}
-                  {!backtests.length && <tr><td colSpan={9} className="empty">尚无回测运行。请使用上方表单重放已审计的历史决策。</td></tr>}
-                </tbody>
-              </table>
-            </div>
-            {selectedBacktest && (
-              <BacktestDetail run={selectedBacktest} onClose={() => setSelectedBacktest(null)} />
-            )}
-          </article>
-        </section>
-        )}
 
         {tab === "account" && (
         <section className="grid">
@@ -2028,113 +1913,3 @@ function OperationsPanel({
   );
 }
 
-function EquityChart({ points }: { points: Array<{ timestamp: string; equity: string }> }) {
-  if (points.length < 2) return <div className="empty chart-empty">权益点不足，无法绘制曲线。</div>;
-  const width = 900;
-  const height = 190;
-  const values = points.map((point) => Number(point.equity));
-  const minimum = Math.min(...values);
-  const maximum = Math.max(...values);
-  const range = maximum - minimum || 1;
-  const coordinates = values.map((value, index) => {
-    const x = (index / (values.length - 1)) * width;
-    const y = height - 12 - ((value - minimum) / range) * (height - 24);
-    return `${x.toFixed(2)},${y.toFixed(2)}`;
-  }).join(" ");
-  return (
-    <div className="equity-chart">
-      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="回测权益曲线">
-        <line x1="0" y1={height - 12} x2={width} y2={height - 12} />
-        <polyline points={coordinates} />
-      </svg>
-      <div><span>{minimum.toFixed(2)}</span><strong>{values.at(-1)?.toFixed(2)}</strong><span>{maximum.toFixed(2)}</span></div>
-    </div>
-  );
-}
-
-const GROUP_LABELS: Record<string, string> = {
-  side: "方向",
-  exit_reason: "退出原因",
-  regime: "市场状态",
-};
-
-const REGIME_LABELS: Record<string, string> = {
-  trend_up: "上升趋势",
-  trend_down: "下降趋势",
-  range: "震荡",
-  high_volatility: "高波动",
-  unknown: "未知",
-};
-
-type GroupStats = BacktestRun["result"]["grouped_stats"];
-
-function GroupedStatsPanel({ grouped }: { grouped: GroupStats }) {
-  const groups = Object.entries(grouped).filter(([, buckets]) => Object.keys(buckets).length > 0);
-  if (!groups.length) return null;
-  return (
-    <div className="grouped-stats">
-      {groups.map(([groupName, buckets]) => (
-        <div className="grouped-stats-block" key={groupName}>
-          <h4>{GROUP_LABELS[groupName] ?? groupName}</h4>
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>分组</th><th>笔数</th><th>胜率</th><th>净盈亏</th><th>盈亏因子</th></tr></thead>
-              <tbody>
-                {Object.entries(buckets).map(([bucket, stats]) => (
-                  <tr key={bucket}>
-                    <td>{groupName === "regime" ? (REGIME_LABELS[bucket] ?? bucket) : bucket}</td>
-                    <td>{stats.trade_count}</td>
-                    <td>{(Number(stats.win_rate) * 100).toFixed(1)}%</td>
-                    <td className={Number(stats.net_pnl) >= 0 ? "positive" : "negative"}>{Number(stats.net_pnl).toFixed(2)}</td>
-                    <td>{stats.profit_factor === null ? "—" : Number(stats.profit_factor).toFixed(2)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function BacktestDetail({ run, onClose }: { run: BacktestRun; onClose: () => void }) {
-  const trades = run.result.trades ?? [];
-  const curve = run.result.equity_curve ?? [];
-  return (
-    <section className="backtest-detail" aria-label={`回测 #${run.id} 详情`}>
-      <div className="detail-heading">
-        <div><span className="eyebrow">RUN #{run.id} / {run.symbol} / {run.cadence}</span><h3>回测详情</h3></div>
-        <button className="text-button" onClick={onClose}>关闭</button>
-      </div>
-      <div className="detail-metrics">
-        <Metric label="总收益" value={(Number(run.result.total_return) * 100).toFixed(2)} suffix="%" />
-        <Metric label="最大回撤" value={(Number(run.result.max_drawdown) * 100).toFixed(2)} suffix="%" />
-        <Metric label="Sharpe" value={run.result.sharpe_ratio === null ? "—" : Number(run.result.sharpe_ratio).toFixed(2)} suffix="" />
-        <Metric label="Sortino" value={run.result.sortino_ratio === null ? "—" : Number(run.result.sortino_ratio).toFixed(2)} suffix="" />
-        <Metric label="换手" value={Number(run.result.turnover).toFixed(2)} suffix="×" />
-      </div>
-      <EquityChart points={curve} />
-      <GroupedStatsPanel grouped={run.result.grouped_stats} />
-      <div className="table-wrap detail-trades">
-        <table>
-          <thead><tr><th>方向</th><th>数量</th><th>入场</th><th>出场</th><th>净盈亏</th><th>费用</th><th>原因</th></tr></thead>
-          <tbody>
-            {trades.map((trade, index) => (
-              <tr key={`${trade.entry_time}-${index}`}>
-                <td className={trade.side === "LONG" ? "positive" : "negative"}>{trade.side}</td>
-                <td>{Number(trade.quantity).toFixed(4)}</td>
-                <td>{Number(trade.entry_price).toFixed(4)}<small>{new Date(trade.entry_time).toLocaleString("zh-CN", { hour12: false })}</small></td>
-                <td>{Number(trade.exit_price).toFixed(4)}<small>{new Date(trade.exit_time).toLocaleString("zh-CN", { hour12: false })}</small></td>
-                <td className={Number(trade.net_pnl) >= 0 ? "positive" : "negative"}>{Number(trade.net_pnl).toFixed(2)}</td>
-                <td>{Number(trade.fees).toFixed(2)}</td>
-                <td>{trade.exit_reason}</td>
-              </tr>
-            ))}
-            {!trades.length && <tr><td colSpan={7} className="empty">该运行没有成交记录。</td></tr>}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  );
-}

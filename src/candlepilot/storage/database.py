@@ -113,18 +113,6 @@ class ExecutionAttemptRow(Base):
     )
 
 
-class BacktestRow(Base):
-    __tablename__ = "backtests"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    symbol: Mapped[str] = mapped_column(String(32), index=True)
-    cadence: Mapped[str] = mapped_column(String(8), index=True)
-    result_json: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
-    )
-
-
 class RuntimeStateRow(Base):
     __tablename__ = "runtime_state"
 
@@ -214,6 +202,14 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             "ON execution_attempts (created_at)",
         ),
     ),
+    (
+        4,
+        # The old backtest is gone. Its stored results came from a payload that
+        # never matched what live sends -- single timeframe, unprefixed, no
+        # daily levels -- so keeping them would invite comparing them against
+        # the rewrite's numbers as though the two measured the same thing.
+        ("DROP TABLE IF EXISTS backtests",),
+    ),
 )
 CURRENT_SCHEMA_VERSION = max(version for version, _ in MIGRATIONS)
 
@@ -291,7 +287,6 @@ class AuditRepository:
         "inferences": InferenceRow,
         "risk_decisions": RiskRow,
         "executions": ExecutionRow,
-        "backtests": BacktestRow,
         "user_events": UserStreamEventRow,
         "alerts": AlertEventRow,
     }
@@ -1021,52 +1016,3 @@ class AuditRepository:
             )
         return results
 
-    async def record_backtest(
-        self, symbol: str, cadence: str, result: dict[str, Any]
-    ) -> dict[str, Any]:
-        row = BacktestRow(
-            symbol=symbol,
-            cadence=cadence,
-            result_json=json.dumps(result, separators=(",", ":")),
-        )
-        async with self.sessions.begin() as session:
-            session.add(row)
-        return self._backtest_dict(row)
-
-    async def recent_backtests(self, limit: int = 20) -> list[dict[str, Any]]:
-        async with self.sessions() as session:
-            rows = (
-                await session.scalars(
-                    select(BacktestRow).order_by(BacktestRow.id.desc()).limit(limit)
-                )
-            ).all()
-        return [self._backtest_dict(row, detail=False) for row in rows]
-
-    async def backtest(self, backtest_id: int) -> dict[str, Any] | None:
-        async with self.sessions() as session:
-            row = await session.get(BacktestRow, backtest_id)
-        return self._backtest_dict(row, detail=True) if row is not None else None
-
-    @staticmethod
-    def _backtest_dict(row: BacktestRow, *, detail: bool = True) -> dict[str, Any]:
-        created_at = (
-            row.created_at.replace(tzinfo=UTC) if row.created_at.tzinfo is None else row.created_at
-        )
-        result = json.loads(row.result_json)
-        if not detail:
-            result = dict(result)
-            result["trade_count"] = len(result.pop("trades", []))
-            result.pop("equity_curve", None)
-            per_symbol = result.get("per_symbol")
-            if isinstance(per_symbol, dict):
-                for sleeve in per_symbol.values():
-                    if isinstance(sleeve, dict):
-                        sleeve["trade_count"] = len(sleeve.pop("trades", []))
-                        sleeve.pop("equity_curve", None)
-        return {
-            "id": row.id,
-            "symbol": row.symbol,
-            "cadence": row.cadence,
-            "result": result,
-            "created_at": created_at,
-        }

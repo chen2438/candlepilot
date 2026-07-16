@@ -27,9 +27,6 @@ from candlepilot.application.scheduler import (
     TradingScheduler,
 )
 from candlepilot.application.testnet_feed import TestnetUserFeed
-from candlepilot.backtest.engine import BacktestConfig, BacktestEngine, Candle, ReplayIntent
-from candlepilot.backtest.portfolio import PortfolioBacktestEngine
-from candlepilot.backtest.replay import align_cached_intents, generate_fresh_intents
 from candlepilot.broker.binance_testnet import (
     BinanceTestnetBroker,
     BinanceTestnetCredentials,
@@ -43,7 +40,7 @@ from candlepilot.config import (
     MAX_CUSTOM_LLM_PROVIDERS,
     Settings,
 )
-from candlepilot.domain.models import MarketSnapshot, PortfolioState, TradeIntent, TradingMode
+from candlepilot.domain.models import MarketSnapshot, PortfolioState, TradingMode
 from candlepilot.market.binance import BinancePublicClient
 from candlepilot.market.cache import HistoricalMarketCache
 from candlepilot.market.history import build_backtest_candles
@@ -55,7 +52,6 @@ from candlepilot.providers.pricing import PROVIDER_IDS, ModelPricingCatalog
 from candlepilot.providers.pricing import load_catalog as load_pricing_catalog
 from candlepilot.providers.openai_compatible import validate_base_url
 from candlepilot.providers.registry import ProviderRegistry
-from candlepilot.provenance import BACKTEST_DATA_SCHEMA_VERSION, content_fingerprint
 from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
 from candlepilot.settings_file import (
     CUSTOM_PROVIDERS_ENV,
@@ -147,61 +143,12 @@ class DecisionRequest(ApiModel):
     rules: SymbolRulesInput
 
 
-class BacktestCandleInput(ApiModel):
-    timestamp: datetime
-    open: Annotated[Decimal, Field(gt=0)]
-    high: Annotated[Decimal, Field(gt=0)]
-    low: Annotated[Decimal, Field(gt=0)]
-    close: Annotated[Decimal, Field(gt=0)]
-    volume: Annotated[Decimal, Field(ge=0)]
-    funding_rate: Decimal = Decimal("0")
 
 
-class ReplayIntentInput(ApiModel):
-    decided_at: datetime
-    intent: TradeIntent
 
 
-class BacktestConfigInput(ApiModel):
-    initial_equity: Annotated[Decimal, Field(gt=0)] = Decimal("10000")
-    fee_rate: Annotated[Decimal, Field(ge=0, le=1)] = Decimal("0.0005")
-    slippage_fraction: Annotated[Decimal, Field(ge=0, le=1)] = Decimal("0.0005")
-    max_risk_fraction: Annotated[Decimal, Field(gt=0, le=1)] = Decimal("0.02")
-    max_margin_fraction: Annotated[Decimal, Field(gt=0, le=1)] = Decimal("0.60")
 
 
-class BacktestRunRequest(ApiModel):
-    symbol: str = Field(pattern=r"^[A-Z0-9]+USDT$")
-    cadence: Literal["1m", "5m", "15m", "30m"]
-    candles: list[BacktestCandleInput] = Field(min_length=1, max_length=100_000)
-    decisions: list[ReplayIntentInput] = Field(default_factory=list, max_length=100_000)
-    config: BacktestConfigInput = Field(default_factory=BacktestConfigInput)
-
-
-class BacktestReplayRequest(ApiModel):
-    symbol: str = Field(pattern=r"^[A-Z0-9]+USDT$")
-    cadence: Literal["1m", "5m", "15m", "30m"]
-    start: datetime
-    end: datetime
-    limit: int = Field(default=10_000, ge=1, le=100_000)
-    config: BacktestConfigInput = Field(default_factory=BacktestConfigInput)
-
-
-class BacktestLLMRequest(BacktestReplayRequest):
-    provider: str
-    max_calls: int = Field(default=100, ge=1, le=500)
-
-
-class PortfolioBacktestLeg(ApiModel):
-    symbol: str = Field(pattern=r"^[A-Z0-9]+USDT$")
-    cadence: Literal["1m", "5m", "15m", "30m"]
-    candles: list[BacktestCandleInput] = Field(min_length=1, max_length=100_000)
-    decisions: list[ReplayIntentInput] = Field(default_factory=list, max_length=100_000)
-
-
-class PortfolioBacktestRequest(ApiModel):
-    legs: list[PortfolioBacktestLeg] = Field(min_length=2, max_length=20)
-    config: BacktestConfigInput = Field(default_factory=BacktestConfigInput)
 
 
 # CLI-accepted aliases that are not published as models.dev ids.
@@ -311,36 +258,6 @@ def _json_value(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_json_value(item) for item in value]
     return value
-
-
-def _candle_from_payload(payload: dict[str, Any]) -> Candle:
-    return Candle(
-        timestamp=payload["timestamp"],
-        open=Decimal(str(payload["open"])),
-        high=Decimal(str(payload["high"])),
-        low=Decimal(str(payload["low"])),
-        close=Decimal(str(payload["close"])),
-        volume=Decimal(str(payload["volume"])),
-        funding_rate=Decimal(str(payload.get("funding_rate", "0"))),
-    )
-
-
-def _backtest_provenance(
-    candles: list[Candle],
-    *,
-    prompt_versions: list[str | None] | None = None,
-    models: list[str | None] | None = None,
-    provider_versions: list[str | None] | None = None,
-) -> dict[str, Any]:
-    return {
-        "data_version": content_fingerprint(
-            candles,
-            schema_version=BACKTEST_DATA_SCHEMA_VERSION,
-        ),
-        "prompt_versions": sorted({item for item in prompt_versions or [] if item}),
-        "models": sorted({item for item in models or [] if item}),
-        "provider_versions": sorted({item for item in provider_versions or [] if item}),
-    }
 
 
 def _status(engine: TradingEngine, scheduler: TradingScheduler | None = None) -> dict[str, Any]:
@@ -1492,197 +1409,6 @@ def create_app(
             "execution": outcome.execution.model_dump(mode="json") if outcome.execution else None,
         }
 
-    @app.get("/api/backtests")
-    async def get_backtests(limit: int = 20) -> list[dict[str, Any]]:
-        if not 1 <= limit <= 100:
-            raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
-        return await engine.audit.recent_backtests(limit)
-
-    @app.get("/api/backtests/{backtest_id}")
-    async def get_backtest(backtest_id: int) -> dict[str, Any]:
-        if backtest_id < 1:
-            raise HTTPException(status_code=422, detail="backtest id must be positive")
-        result = await engine.audit.backtest(backtest_id)
-        if result is None:
-            raise HTTPException(status_code=404, detail="backtest not found")
-        return result
-
-    @app.post("/api/backtests", status_code=201)
-    async def run_backtest(request: BacktestRunRequest) -> dict[str, Any]:
-        mismatched = [
-            replay
-            for replay in request.decisions
-            if replay.intent.symbol != request.symbol or replay.intent.cadence != request.cadence
-        ]
-        if mismatched:
-            raise HTTPException(
-                status_code=422,
-                detail="all replay intents must match the requested symbol and cadence",
-            )
-        config = BacktestConfig(**request.config.model_dump())
-        candles = [Candle(**item.model_dump()) for item in request.candles]
-        decisions = [ReplayIntent(item.decided_at, item.intent) for item in request.decisions]
-        try:
-            result = BacktestEngine(config).run(candles, decisions)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        serialized = _json_value(asdict(result))
-        serialized["provenance"] = _backtest_provenance(candles)
-        return await engine.audit.record_backtest(
-            request.symbol,
-            request.cadence,
-            serialized,
-        )
-
-    @app.post("/api/backtests/replay", status_code=201)
-    async def replay_cached_backtest(request: BacktestReplayRequest) -> dict[str, Any]:
-        symbol = request.symbol.upper()
-        try:
-            candle_payloads, records = await asyncio.gather(
-                load_backtest_candles(
-                    symbol, request.cadence, request.start, request.end, request.limit
-                ),
-                engine.audit.intents_between(symbol, request.cadence, request.start, request.end),
-            )
-            candles = [_candle_from_payload(payload) for payload in candle_payloads]
-            decisions = align_cached_intents(
-                records,
-                request.cadence,
-                {candle.timestamp for candle in candles},
-            )
-            if not decisions:
-                raise HTTPException(
-                    status_code=409,
-                    detail="no cached LLM decisions match this symbol, cadence, and range",
-                )
-            result = BacktestEngine(BacktestConfig(**request.config.model_dump())).run(
-                candles, decisions
-            )
-        except HTTPException:
-            raise
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"cached replay failed: {exc}") from exc
-        serialized = _json_value(asdict(result))
-        serialized["provenance"] = _backtest_provenance(
-            candles,
-            prompt_versions=[item["provenance"].get("prompt_version") for item in records],
-            models=[item.get("model") for item in records],
-            provider_versions=[item["provenance"].get("provider_version") for item in records],
-        )
-        serialized["replay"] = {
-            "source": "cached_llm_decisions",
-            "decision_count": len(decisions),
-            "start": request.start.isoformat(),
-            "end": request.end.isoformat(),
-        }
-        return await engine.audit.record_backtest(symbol, request.cadence, serialized)
-
-    @app.post("/api/backtests/llm", status_code=201)
-    async def run_fresh_llm_backtest(request: BacktestLLMRequest) -> dict[str, Any]:
-        symbol = request.symbol.upper()
-        try:
-            provider = engine.providers.get(request.provider)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        health = await provider.health_check()
-        if not health.available or not health.authenticated:
-            raise HTTPException(status_code=409, detail=f"provider is unavailable: {health.detail}")
-        config = BacktestConfig(**request.config.model_dump())
-        try:
-            candle_payloads = await load_backtest_candles(
-                symbol, request.cadence, request.start, request.end, request.limit
-            )
-            candles = [_candle_from_payload(payload) for payload in candle_payloads]
-            decisions, provider_results = await generate_fresh_intents(
-                provider,
-                candles,
-                symbol=symbol,
-                cadence=request.cadence,
-                config=config,
-                max_calls=request.max_calls,
-            )
-            if not decisions:
-                raise HTTPException(
-                    status_code=409,
-                    detail="fresh LLM replay requires at least 20 historical candles",
-                )
-            inference_ids = [
-                await engine.audit.record_inference(result) for result in provider_results
-            ]
-            result = BacktestEngine(config).run(candles, decisions)
-        except HTTPException:
-            raise
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"fresh LLM replay failed: {exc}") from exc
-        serialized = _json_value(asdict(result))
-        serialized["provenance"] = _backtest_provenance(
-            candles,
-            prompt_versions=[item.prompt_version for item in provider_results],
-            models=[item.model for item in provider_results],
-            provider_versions=[item.provider_version for item in provider_results],
-        )
-        serialized["replay"] = {
-            "source": "fresh_llm_calls",
-            "provider": request.provider,
-            "models": sorted({item.model for item in provider_results if item.model}),
-            "decision_count": len(decisions),
-            "inference_ids": inference_ids,
-            "portfolio_context": "fixed_initial_equity",
-            "start": request.start.isoformat(),
-            "end": request.end.isoformat(),
-        }
-        return await engine.audit.record_backtest(symbol, request.cadence, serialized)
-
-    @app.post("/api/backtests/portfolio", status_code=201)
-    async def run_portfolio_backtest(request: PortfolioBacktestRequest) -> dict[str, Any]:
-        symbols = [leg.symbol for leg in request.legs]
-        if len(set(symbols)) != len(symbols):
-            raise HTTPException(status_code=422, detail="portfolio symbols must be unique")
-        mismatched = [
-            decision
-            for leg in request.legs
-            for decision in leg.decisions
-            if decision.intent.symbol != leg.symbol or decision.intent.cadence != leg.cadence
-        ]
-        if mismatched:
-            raise HTTPException(
-                status_code=422,
-                detail="all portfolio intents must match their leg symbol and cadence",
-            )
-        legs = {
-            leg.symbol: (
-                [Candle(**item.model_dump()) for item in leg.candles],
-                [ReplayIntent(item.decided_at, item.intent) for item in leg.decisions],
-            )
-            for leg in request.legs
-        }
-        try:
-            result = PortfolioBacktestEngine(BacktestConfig(**request.config.model_dump())).run(
-                legs
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        serialized = _json_value(asdict(result))
-        serialized["provenance"] = {
-            "data_version": content_fingerprint(
-                legs,
-                schema_version=BACKTEST_DATA_SCHEMA_VERSION,
-            ),
-            "per_symbol_data_versions": {
-                symbol: _backtest_provenance(candles)["data_version"]
-                for symbol, (candles, _) in legs.items()
-            },
-            "prompt_versions": [],
-            "models": [],
-            "provider_versions": [],
-        }
-        serialized["symbols"] = symbols
-        serialized["cadences"] = {leg.symbol: leg.cadence for leg in request.legs}
-        return await engine.audit.record_backtest("PORTFOLIO", "mixed", serialized)
 
     @app.websocket("/ws/events")
     async def event_stream(websocket: WebSocket) -> None:

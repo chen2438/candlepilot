@@ -13,7 +13,12 @@ from candlepilot.domain.models import (
 )
 from candlepilot.providers.base import ProviderResult
 from candlepilot.providers.pricing import parse_models_dev
-from candlepilot.storage.database import DECISION_OUTCOMES, AuditRepository, Database
+from candlepilot.storage.database import (
+    CURRENT_SCHEMA_VERSION,
+    DECISION_OUTCOMES,
+    AuditRepository,
+    Database,
+)
 
 
 def test_inference_audit_round_trip(tmp_path: Path) -> None:
@@ -493,7 +498,9 @@ def test_database_migrations_are_versioned_and_idempotent(tmp_path: Path) -> Non
         await database.close()
         return first, second
 
-    assert asyncio.run(scenario()) == (3, 3)
+    # Derived, not hardcoded: the point is that re-running initialize is a
+    # no-op, not that the schema happens to be at some particular version.
+    assert asyncio.run(scenario()) == (CURRENT_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION)
 
 
 async def _seed_decisions(repository: AuditRepository) -> None:

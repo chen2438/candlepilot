@@ -1,13 +1,29 @@
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from candlepilot.backtest.engine import Candle
 from candlepilot.provenance import BACKTEST_DATA_SCHEMA_VERSION, content_fingerprint
 
 
-def _candles(close: str = "101") -> list[Candle]:
+@dataclass(frozen=True, slots=True)
+class _Row:
+    """A stand-in for any dataclass the fingerprint is asked to hash.
+
+    content_fingerprint is generic over shape, so this test owns its own type
+    rather than borrowing one from whatever module happens to call it.
+    """
+
+    timestamp: datetime
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: Decimal
+
+
+def _candles(close: str = "101") -> list[_Row]:
     return [
-        Candle(
+        _Row(
             datetime(2026, 1, 1, tzinfo=UTC),
             Decimal("100"),
             Decimal("102"),
