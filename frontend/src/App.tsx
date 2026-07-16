@@ -776,7 +776,7 @@ export default function App() {
             <button className="compact" disabled={busy !== null} onClick={refreshUniverse}>{busy === "universe" ? "扫描中…" : "刷新全市场"}</button>
             <div className="table-wrap">
               <table>
-                <thead><tr><th>标的</th><th title={CANDIDATE_DEFINITIONS.score}>评分</th><th title={CANDIDATE_DEFINITIONS.volumeRank}>成交额排名</th><th title={CANDIDATE_DEFINITIONS.spread}>价差</th><th title={CANDIDATE_DEFINITIONS.volatility}>24h 波动</th><th title={CANDIDATE_DEFINITIONS.trend}>趋势</th></tr></thead>
+                <thead><tr><th>标的</th><th data-tooltip={CANDIDATE_DEFINITIONS.score}>评分</th><th data-tooltip={CANDIDATE_DEFINITIONS.volumeRank}>成交额排名</th><th data-tooltip={CANDIDATE_DEFINITIONS.spread}>价差</th><th data-tooltip={CANDIDATE_DEFINITIONS.volatility}>24h 波动</th><th data-tooltip={CANDIDATE_DEFINITIONS.trend}>趋势</th></tr></thead>
                 <tbody>
                   {candidates.map((candidate) => (
                     <tr key={candidate.symbol}>
@@ -917,7 +917,7 @@ export default function App() {
 }
 
 function Metric({ label, value, suffix }: { label: string; value: string; suffix: string }) {
-  return <div className="metric" title={METRIC_DEFINITIONS[label]}><span>{label}</span><strong>{value}<small>{suffix}</small></strong></div>;
+  return <div className="metric" data-tooltip={METRIC_DEFINITIONS[label]}><span>{label}</span><strong>{value}<small>{suffix}</small></strong></div>;
 }
 
 function formatDuration(seconds: number): string {
@@ -954,18 +954,18 @@ function RunUsage({ session }: { session: RunSessionMetrics }) {
         </small>
       </div>
       <div className="run-usage-metrics">
-        <span title="本次或上次引擎运行中，Provider 报告的非缓存输入 Token 合计。">输入 Token<strong>{session.input_tokens.toLocaleString()}</strong></span>
-        <span title="本次或上次运行中从 Provider 提示词缓存读取并复用的输入 Token 合计。">缓存输入<strong>{session.cached_input_tokens.toLocaleString()}</strong></span>
-        <span title="本次或上次运行中新写入 Provider 提示词缓存的输入 Token 合计；并非所有 Provider 都报告此项。">缓存写入<strong>{session.cache_creation_input_tokens.toLocaleString()}</strong></span>
-        <span title="本次或上次运行中 Provider 报告的输出 Token 合计；是否包含内部思考 Token 取决于 Provider 的计量口径。">输出 Token<strong>{session.output_tokens.toLocaleString()}</strong></span>
-        <span title="本次或上次运行中各调用经统一审计后的总 Token 合计，包含 Provider 报告的缓存相关用量。">总 Token<strong>{session.total_tokens.toLocaleString()}</strong></span>
-        <span title={session.cost_complete ? "按各模型公开 API 单价或 Provider 返回成本折算的本次运行总成本；订阅 Auth 的实际账单可能不同。" : `仅 ${session.priced_call_count}/${session.call_count} 次调用可定价，因此不展示不完整的总成本。`}>
+        <span data-tooltip="本次或上次引擎运行中，Provider 报告的非缓存输入 Token 合计。">输入 Token<strong>{session.input_tokens.toLocaleString()}</strong></span>
+        <span data-tooltip="本次或上次运行中从 Provider 提示词缓存读取并复用的输入 Token 合计。">缓存输入<strong>{session.cached_input_tokens.toLocaleString()}</strong></span>
+        <span data-tooltip="本次或上次运行中新写入 Provider 提示词缓存的输入 Token 合计；并非所有 Provider 都报告此项。">缓存写入<strong>{session.cache_creation_input_tokens.toLocaleString()}</strong></span>
+        <span data-tooltip="本次或上次运行中 Provider 报告的输出 Token 合计；是否包含内部思考 Token 取决于 Provider 的计量口径。">输出 Token<strong>{session.output_tokens.toLocaleString()}</strong></span>
+        <span data-tooltip="本次或上次运行中各调用经统一审计后的总 Token 合计，包含 Provider 报告的缓存相关用量。">总 Token<strong>{session.total_tokens.toLocaleString()}</strong></span>
+        <span data-tooltip={session.cost_complete ? "按各模型公开 API 单价或 Provider 返回成本折算的本次运行总成本；订阅 Auth 的实际账单可能不同。" : `仅 ${session.priced_call_count}/${session.call_count} 次调用可定价，因此不展示不完整的总成本。`}>
           等效成本<strong>{cost}</strong>
           {!session.cost_complete && <small>{session.priced_call_count}/{session.call_count} 可定价</small>}
         </span>
-        <span title="本次或上次运行内所有模型调用耗时的算术平均值，不使用引擎总运行时长计算。">平均调用耗时<strong>{(session.average_duration_ms / 1000).toFixed(2)}s</strong></span>
-        <span title="本次或上次运行的总 Token 除以模型调用次数。">平均 Token<strong>{session.average_tokens.toLocaleString("zh-CN", { maximumFractionDigits: 1 })}</strong></span>
-        <span title={session.cost_complete ? "本次运行完整等效成本除以模型调用次数；订阅 Auth 的实际账单可能不同。" : "存在无法定价的调用，因此不计算可能误导的完整平均成本。"}>
+        <span data-tooltip="本次或上次运行内所有模型调用耗时的算术平均值，不使用引擎总运行时长计算。">平均调用耗时<strong>{(session.average_duration_ms / 1000).toFixed(2)}s</strong></span>
+        <span data-tooltip="本次或上次运行的总 Token 除以模型调用次数。">平均 Token<strong>{session.average_tokens.toLocaleString("zh-CN", { maximumFractionDigits: 1 })}</strong></span>
+        <span data-tooltip={session.cost_complete ? "本次运行完整等效成本除以模型调用次数；订阅 Auth 的实际账单可能不同。" : "存在无法定价的调用，因此不计算可能误导的完整平均成本。"}>
           平均成本<strong>{averageCost}</strong>
         </span>
       </div>
@@ -979,7 +979,7 @@ function PanelTitle({ code, title, meta }: { code: string; title: string; meta: 
 }
 
 function RiskItem({ label, value, detail }: { label: string; value: string; detail: string }) {
-  return <div className="risk-item" title={RISK_DEFINITIONS[label]}><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;
+  return <div className="risk-item" data-tooltip={RISK_DEFINITIONS[label]}><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;
 }
 
 function money(value: string): string {
@@ -1079,11 +1079,11 @@ function DecisionPanel({ decisions }: { decisions: DecisionEvent[] }) {
                 <strong>{decision.intent.symbol}</strong>
                 <small>{decision.intent.cadence} · {providerLabel(decision.provider)} · {inferenceConfigLabel(decision)}</small>
               </span>
-              {decision.failover ? <span className="signal-confidence residual" title="该 Provider 调用失败时在有序路由中的位置。">
+              {decision.failover ? <span className="signal-confidence residual" data-tooltip="该 Provider 调用失败时在有序路由中的位置。">
                 #{decision.failover.route_position}<small>{decision.failover.continues ? "继续切换" : "路由耗尽"}</small>
               </span> : <span
                 className={`signal-confidence ${decision.intent.action === "HOLD" ? "residual" : ""}`}
-                title={decision.intent.action === "HOLD"
+                data-tooltip={decision.intent.action === "HOLD"
                   ? "HOLD 时表示当前快照仍残留的交易机会强度，不是盈利概率，也不代表模型输出可靠性。"
                   : "模型对该非 HOLD 方向在当前快照下具备可执行交易优势的估计；不是盈利概率，且不能绕过硬风控。"}
               >
@@ -1248,7 +1248,7 @@ function AccountPanel({
         <Metric label="可用余额" value={portfolio ? money(portfolio.available_balance) : "—"} suffix="" />
         <div
           className="metric"
-          title={isTestnet
+          data-tooltip={isTestnet
             ? METRIC_DEFINITIONS["未实现盈亏"]
             : "模拟账户当前权益相对本次运行起始权益的变化额，用于判断日亏熔断。"}
         ><span>{isTestnet ? "未实现盈亏" : "当日盈亏"}</span><strong className={Number(displayedPnl ?? 0) >= 0 ? "positive" : "negative"}>{displayedPnl === null ? "—" : money(displayedPnl)}</strong></div>
@@ -1342,8 +1342,8 @@ function OperationsPanel({
                   <Metric label="错误率" value={(metric.error_rate * 100).toFixed(1)} suffix="%" />
                 </div>
                 <div className="provider-metric-usage">
-                  <span title="过去 24 小时该 Provider 全部审计调用的总 Token 合计。">Token 用量<strong>{metric.tokens_total.toLocaleString("zh-CN")}</strong></span>
-                  <span title="过去 24 小时可定价调用的等效成本合计；无法定价的调用不计入，订阅 Auth 的实际账单可能不同。">
+                  <span data-tooltip="过去 24 小时该 Provider 全部审计调用的总 Token 合计。">Token 用量<strong>{metric.tokens_total.toLocaleString("zh-CN")}</strong></span>
+                  <span data-tooltip="过去 24 小时可定价调用的等效成本合计；无法定价的调用不计入，订阅 Auth 的实际账单可能不同。">
                     等效成本
                     <strong>{metric.cost_usd_total === null ? "—" : `$${metric.cost_usd_total.toFixed(4)}`}</strong>
                   </span>
