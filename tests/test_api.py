@@ -19,6 +19,7 @@ from candlepilot.domain.models import (
 from candlepilot.market.scanner import MarketCandidateInput
 from candlepilot.providers.base import LLMProvider, ProviderResult
 from candlepilot.providers.registry import ProviderRegistry
+from candlepilot.settings_file import read_env_file
 from candlepilot.storage.database import AuditRepository, Database
 
 
@@ -651,6 +652,73 @@ def test_provider_config_sets_model_and_reasoning_effort(tmp_path: Path) -> None
             ).status_code
             == 409
         )
+    asyncio.run(database.close())
+
+
+def test_settings_endpoint_reads_masked_and_writes_env(tmp_path: Path, monkeypatch) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "# keep me\nCANDLEPILOT_PORT=8000\nBINANCE_TESTNET_API_KEY=super-secret\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CANDLEPILOT_ENV_FILE", str(env_path))
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'settings.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.PAPER,
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        payload = client.get("/api/settings").json()
+        assert payload["path"] == str(env_path)
+        fields = {f["key"]: f for s in payload["sections"] for f in s["fields"]}
+        assert fields["CANDLEPILOT_PORT"]["value"] == "8000"
+        # The secret is never returned in full, only a masked tail.
+        assert fields["BINANCE_TESTNET_API_KEY"]["value"] is None
+        assert fields["BINANCE_TESTNET_API_KEY"]["configured"] is True
+        assert "super-secret" not in client.get("/api/settings").text
+
+        saved = client.post(
+            "/api/settings",
+            json={"values": {"CANDLEPILOT_PORT": "9100", "CANDLEPILOT_CADENCES": "5m,15m"}},
+        )
+        assert saved.status_code == 200, saved.text
+        text = env_path.read_text(encoding="utf-8")
+        assert "# keep me" in text  # comments survive
+        assert "CANDLEPILOT_PORT=9100" in text
+        assert "CANDLEPILOT_CADENCES=5m,15m" in text
+        assert "BINANCE_TESTNET_API_KEY=super-secret" in text  # untouched key kept
+
+        # An empty value clears the setting: every parser treats "KEY=" as unset,
+        # and keeping the key present matches the .env.example convention.
+        cleared = client.post("/api/settings", json={"values": {"CANDLEPILOT_CADENCES": ""}})
+        assert "CANDLEPILOT_CADENCES=\n" in env_path.read_text(encoding="utf-8")
+        fields = {f["key"]: f for s in cleared.json()["sections"] for f in s["fields"]}
+        assert fields["CANDLEPILOT_CADENCES"]["configured"] is False
+        assert Settings.from_mapping(read_env_file(env_path)).cadences == ("5m", "15m", "30m")
+
+        # Invalid values are rejected before the file is touched.
+        before = env_path.read_text(encoding="utf-8")
+        # These parse fine but would brick startup at engine/scheduler construction.
+        for values in (
+            {"CANDLEPILOT_CADENCES": "7m"},
+            {"CANDLEPILOT_CANDIDATES_PER_CYCLE": "99"},
+            {"CANDLEPILOT_HOST": "0.0.0.0"},
+            {"CANDLEPILOT_MODE": "bogus"},
+            {"CANDLEPILOT_PORT": "not-a-port"},
+        ):
+            assert client.post("/api/settings", json={"values": values}).status_code == 422, values
+        assert env_path.read_text(encoding="utf-8") == before
+
+        assert client.post(
+            "/api/settings", json={"values": {"NOT_A_SETTING": "x"}}
+        ).status_code == 422
+        assert client.post(
+            "/api/settings", json={"values": {"CANDLEPILOT_PORT": "1\n2"}}
+        ).status_code == 422
     asyncio.run(database.close())
 
 

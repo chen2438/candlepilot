@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from uuid import uuid4
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -43,6 +44,12 @@ from candlepilot.providers.pricing import load_catalog as load_pricing_catalog
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.provenance import BACKTEST_DATA_SCHEMA_VERSION, content_fingerprint
 from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
+from candlepilot.settings_file import (
+    ENV_FIELDS,
+    describe_settings,
+    read_env_file,
+    write_env_file,
+)
 from candlepilot.storage.database import AuditRepository, CURRENT_SCHEMA_VERSION, Database
 
 
@@ -64,6 +71,12 @@ class ProviderConfig(ApiModel):
 
 class ProviderTestRequest(ApiModel):
     name: str
+
+
+class SettingsUpdate(ApiModel):
+    # Only the keys the console actually changed are sent, so an untouched
+    # secret is never echoed back as its own mask.
+    values: dict[str, str] = Field(max_length=64)
 
 
 class RunLimits(ApiModel):
@@ -177,6 +190,28 @@ def _model_options(
     if current and current not in options:
         options.append(current)
     return options
+
+
+def _validate_startup_settings(settings: Settings) -> None:
+    """Reject values the parsers accept but startup would later choke on.
+
+    ``Settings`` parsing is deliberately lenient for some keys — the engine and
+    scheduler do the range checks at construction. Saving such a value would
+    brick the next start, so mirror those checks here.
+    """
+
+    unsupported = set(settings.cadences) - set(SUPPORTED_CADENCES)
+    if unsupported:
+        raise ValueError(
+            f"unsupported cadences: {', '.join(sorted(unsupported))}; "
+            f"choose from {', '.join(SUPPORTED_CADENCES)}"
+        )
+    if not 1 <= settings.candidates_per_cycle <= MAX_CANDIDATES_PER_CYCLE:
+        raise ValueError(
+            f"candidates_per_cycle must be between 1 and {MAX_CANDIDATES_PER_CYCLE}"
+        )
+    if settings.bind_host not in {"127.0.0.1", "localhost", "::1"}:
+        raise ValueError("bind host must be localhost")
 
 
 def _delete_pricing_cache(cache_dir: Path) -> int:
@@ -396,6 +431,8 @@ def create_app(
     pricing_lock = asyncio.Lock()
     pricing_memo: dict[str, Any] = {"catalog": None, "expires_at": None}
     testnet_account_lock = asyncio.Lock()
+    env_path = Path(os.environ.get("CANDLEPILOT_ENV_FILE", ".env")).resolve()
+    settings_file_lock = asyncio.Lock()
     testnet_account_memo: dict[str, Any] = {"account": None, "expires_at": 0.0}
 
     async def pricing_catalog() -> ModelPricingCatalog | None:
@@ -790,6 +827,39 @@ def create_app(
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _status(engine, scheduler)
+
+    @app.get("/api/settings")
+    async def get_settings() -> dict[str, Any]:
+        async with settings_file_lock:
+            return describe_settings(env_path, read_env_file(env_path))
+
+    @app.post("/api/settings")
+    async def save_settings(update: SettingsUpdate) -> dict[str, Any]:
+        unknown = set(update.values) - set(ENV_FIELDS)
+        if unknown:
+            raise HTTPException(
+                status_code=422, detail=f"unknown settings: {', '.join(sorted(unknown))}"
+            )
+        for key, value in update.values.items():
+            if "\n" in value or "\r" in value:
+                raise HTTPException(
+                    status_code=422, detail=f"{key} must be a single line"
+                )
+        async with settings_file_lock:
+            current = read_env_file(env_path)
+            candidate = {**current, **{k: v for k, v in update.values.items() if v != ""}}
+            for key, value in update.values.items():
+                if value == "":
+                    candidate.pop(key, None)
+            # Validate the whole candidate with the startup parsers before the
+            # file is touched, so a bad value can never brick the next start.
+            try:
+                candidate_settings = Settings.from_mapping(candidate)
+                _validate_startup_settings(candidate_settings)
+            except (ValueError, TypeError) as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            write_env_file(env_path, update.values)
+            return describe_settings(env_path, read_env_file(env_path))
 
     @app.post("/api/run-limits")
     async def select_run_limits(limits: RunLimits) -> dict[str, Any]:

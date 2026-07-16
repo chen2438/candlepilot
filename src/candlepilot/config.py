@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -327,61 +328,76 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
+        return cls.from_mapping(os.environ)
+
+    @classmethod
+    def from_mapping(cls, env: Mapping[str, str]) -> Settings:
+        """Build settings from any env-shaped mapping.
+
+        Keeping this pure lets a candidate ``.env`` be validated with exactly the
+        same parsers as startup, without mutating ``os.environ`` underneath a
+        concurrent LLM subprocess call.
+        """
+
+        def get(key: str, default: str | None = None) -> str | None:
+            value = env.get(key, default)
+            return value if value is not None else None
+
         return cls(
-            mode=TradingMode(os.getenv("CANDLEPILOT_MODE", TradingMode.PAPER.value)),
-            database_url=os.getenv("CANDLEPILOT_DATABASE_URL", DEFAULT_DATABASE_URL),
-            data_dir=Path(os.getenv("CANDLEPILOT_DATA_DIR", "data")),
-            bind_host=os.getenv("CANDLEPILOT_HOST", "127.0.0.1"),
-            bind_port=int(os.getenv("CANDLEPILOT_PORT", "8000")),
-            inference_timeout_seconds=float(os.getenv("CANDLEPILOT_LLM_TIMEOUT", "45")),
+            mode=TradingMode(get("CANDLEPILOT_MODE", TradingMode.PAPER.value)),
+            database_url=get("CANDLEPILOT_DATABASE_URL", DEFAULT_DATABASE_URL),
+            data_dir=Path(get("CANDLEPILOT_DATA_DIR", "data")),
+            bind_host=get("CANDLEPILOT_HOST", "127.0.0.1"),
+            bind_port=int(get("CANDLEPILOT_PORT", "8000")),
+            inference_timeout_seconds=float(get("CANDLEPILOT_LLM_TIMEOUT", "45")),
             max_snapshot_age_seconds=_parse_snapshot_age(
-                os.getenv("CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS")
+                get("CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS")
             ),
-            cadences=_parse_cadences(os.getenv("CANDLEPILOT_CADENCES")),
+            cadences=_parse_cadences(get("CANDLEPILOT_CADENCES")),
             candidates_per_cycle=_parse_candidates_per_cycle(
-                os.getenv("CANDLEPILOT_CANDIDATES_PER_CYCLE")
+                get("CANDLEPILOT_CANDIDATES_PER_CYCLE")
             ),
             max_run_seconds=_parse_positive_number(
-                os.getenv("CANDLEPILOT_MAX_RUN_SECONDS"), int
+                get("CANDLEPILOT_MAX_RUN_SECONDS"), int
             ),
             max_run_cost_usd=_parse_positive_number(
-                os.getenv("CANDLEPILOT_MAX_RUN_COST_USD"), float
+                get("CANDLEPILOT_MAX_RUN_COST_USD"), float
             ),
-            provider_chain=_parse_provider_chain(os.getenv("CANDLEPILOT_PROVIDER_CHAIN")),
+            provider_chain=_parse_provider_chain(get("CANDLEPILOT_PROVIDER_CHAIN")),
             default_provider=_parse_default_provider(
-                os.getenv("CANDLEPILOT_DEFAULT_PROVIDER")
+                get("CANDLEPILOT_DEFAULT_PROVIDER")
             ),
-            codex_model=os.getenv("CANDLEPILOT_CODEX_MODEL") or None,
-            codex_reasoning_effort=os.getenv("CANDLEPILOT_CODEX_REASONING_EFFORT") or None,
-            claude_model=os.getenv("CANDLEPILOT_CLAUDE_MODEL") or None,
-            claude_effort=os.getenv("CANDLEPILOT_CLAUDE_EFFORT") or None,
-            custom_llm_base_url=os.getenv("CANDLEPILOT_CUSTOM_LLM_BASE_URL") or None,
-            custom_llm_api_key=SecretStr(os.environ["CANDLEPILOT_CUSTOM_LLM_API_KEY"])
-            if os.getenv("CANDLEPILOT_CUSTOM_LLM_API_KEY")
+            codex_model=get("CANDLEPILOT_CODEX_MODEL") or None,
+            codex_reasoning_effort=get("CANDLEPILOT_CODEX_REASONING_EFFORT") or None,
+            claude_model=get("CANDLEPILOT_CLAUDE_MODEL") or None,
+            claude_effort=get("CANDLEPILOT_CLAUDE_EFFORT") or None,
+            custom_llm_base_url=get("CANDLEPILOT_CUSTOM_LLM_BASE_URL") or None,
+            custom_llm_api_key=SecretStr(get("CANDLEPILOT_CUSTOM_LLM_API_KEY") or "")
+            if get("CANDLEPILOT_CUSTOM_LLM_API_KEY")
             else None,
-            custom_llm_model=os.getenv("CANDLEPILOT_CUSTOM_LLM_MODEL") or None,
-            custom_llm_reasoning_effort=os.getenv(
+            custom_llm_model=get("CANDLEPILOT_CUSTOM_LLM_MODEL") or None,
+            custom_llm_reasoning_effort=get(
                 "CANDLEPILOT_CUSTOM_LLM_REASONING_EFFORT"
             )
             or None,
             custom_llm_wire_api=_parse_custom_llm_wire_api(
-                os.getenv("CANDLEPILOT_CUSTOM_LLM_WIRE_API")
+                get("CANDLEPILOT_CUSTOM_LLM_WIRE_API")
             ),
             custom_llm_require_api_key=_parse_boolean(
-                os.getenv("CANDLEPILOT_CUSTOM_LLM_REQUIRE_API_KEY"),
+                get("CANDLEPILOT_CUSTOM_LLM_REQUIRE_API_KEY"),
                 name="CANDLEPILOT_CUSTOM_LLM_REQUIRE_API_KEY",
                 default=True,
             ),
             custom_llm_providers=_parse_custom_llm_providers(
-                os.getenv("CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON")
+                get("CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON")
             ),
             custom_llm_extra_headers=_parse_custom_llm_headers(
-                os.getenv("CANDLEPILOT_CUSTOM_LLM_EXTRA_HEADERS_JSON")
+                get("CANDLEPILOT_CUSTOM_LLM_EXTRA_HEADERS_JSON")
             ),
-            binance_testnet_api_key=SecretStr(os.environ["BINANCE_TESTNET_API_KEY"])
-            if os.getenv("BINANCE_TESTNET_API_KEY")
+            binance_testnet_api_key=SecretStr(get("BINANCE_TESTNET_API_KEY") or "")
+            if get("BINANCE_TESTNET_API_KEY")
             else None,
-            binance_testnet_api_secret=SecretStr(os.environ["BINANCE_TESTNET_API_SECRET"])
-            if os.getenv("BINANCE_TESTNET_API_SECRET")
+            binance_testnet_api_secret=SecretStr(get("BINANCE_TESTNET_API_SECRET") or "")
+            if get("BINANCE_TESTNET_API_SECRET")
             else None,
         )

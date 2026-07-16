@@ -1,3 +1,21 @@
+export interface SettingsField {
+  key: string;
+  label: string;
+  kind: "text" | "int" | "number" | "bool" | "enum" | "json" | "secret";
+  options: string[];
+  placeholder: string;
+  description: string;
+  secret: boolean;
+  configured: boolean;
+  value: string | null;
+  masked: string | null;
+}
+
+export interface SettingsPayload {
+  path: string;
+  sections: Array<{ title: string; fields: SettingsField[] }>;
+}
+
 export interface EngineStatus {
   mode: string;
   running: boolean;

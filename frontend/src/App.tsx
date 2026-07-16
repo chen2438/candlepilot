@@ -12,6 +12,8 @@ import type {
   ProviderMetric,
   ProviderMetricsResponse,
   RunSessionMetrics,
+  SettingsField,
+  SettingsPayload,
   TestnetAccountStatus,
 } from "./types";
 
@@ -88,7 +90,7 @@ const HISTORY_CATEGORIES: Array<{ key: string; label: string; hint: string }> = 
   { key: "pricing_cache", label: "定价缓存", hint: "models.dev" },
 ];
 
-type TabKey = "overview" | "account" | "backtest" | "operations" | "data";
+type TabKey = "overview" | "account" | "backtest" | "operations" | "data" | "settings";
 
 const TABS: Array<{ key: TabKey; label: string; meta: string }> = [
   { key: "overview", label: "总览", meta: "引擎 · 接入 · 候选 · 决策" },
@@ -96,6 +98,7 @@ const TABS: Array<{ key: TabKey; label: string; meta: string }> = [
   { key: "backtest", label: "回测", meta: "重放已审计决策" },
   { key: "operations", label: "运维", meta: "模型 · 测试网" },
   { key: "data", label: "数据", meta: "删除历史数据" },
+  { key: "settings", label: "设置", meta: "编辑本地 .env" },
 ];
 
 const METRIC_DEFINITIONS: Record<string, string> = {
@@ -1015,9 +1018,142 @@ export default function App() {
           </article>
         </section>
         )}
+
+        {tab === "settings" && (
+        <section className="grid">
+          <SettingsPanel busy={busy} setBusy={setBusy} setError={setError} />
+        </section>
+        )}
       </main>
       <footer><span>CANDLEPILOT / GPL-3.0</span><span>LOCALHOST ONLY · NO LIVE MONEY</span></footer>
     </div>
+  );
+}
+
+function SettingsPanel({
+  busy,
+  setBusy,
+  setError,
+}: {
+  busy: string | null;
+  setBusy: (value: string | null) => void;
+  setError: (value: string | null) => void;
+}) {
+  const [payload, setPayload] = useState<SettingsPayload | null>(null);
+  // Only edited keys are tracked, so an untouched secret is never written back
+  // as its own mask.
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [saved, setSaved] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setPayload(await api<SettingsPayload>("/api/settings"));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }, [setError]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const dirty = Object.keys(draft).length;
+
+  const save = useCallback(async () => {
+    setBusy("settings");
+    setError(null);
+    setSaved(null);
+    try {
+      const next = await api<SettingsPayload>("/api/settings", {
+        method: "POST",
+        body: JSON.stringify({ values: draft }),
+      });
+      setPayload(next);
+      setDraft({});
+      setSaved(`已保存 ${dirty} 项到 ${next.path}，重启后生效`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }, [draft, dirty, setBusy, setError]);
+
+  if (!payload) return <article className="panel settings-panel"><PanelTitle code="09" title="设置" meta="编辑本地 .env" /><div className="empty cards">读取中…</div></article>;
+
+  const shown = (field: SettingsField) =>
+    draft[field.key] ?? (field.secret ? "" : field.value ?? "");
+
+  return (
+    <article className="panel settings-panel">
+      <PanelTitle code="09" title="设置" meta="写入本地 .env · 重启后生效" />
+      <p className="settings-note">
+        保存只写入 <code>{payload.path}</code>，<strong>不会改变正在运行的进程</strong>；重启后生效。
+        密钥只写不读：现有值仅显示掩码尾号，留空表示保持不变。shell 里 export 的同名变量在运行时优先级更高。
+      </p>
+      {payload.sections.map((section) => (
+        <div className="settings-section" key={section.title}>
+          <h4 className="account-subhead">{section.title}</h4>
+          {section.fields.map((field) => (
+            <div className="settings-row" key={field.key}>
+              <span className="settings-label">
+                <strong>{field.label}</strong>
+                <small>{field.key}</small>
+              </span>
+              <div className="settings-input">
+                {field.kind === "enum" ? (
+                  <select
+                    value={shown(field)}
+                    disabled={busy !== null}
+                    onChange={(event) => setDraft((c) => ({ ...c, [field.key]: event.target.value }))}
+                  >
+                    {(field.options.includes("") ? field.options : ["", ...field.options]).map((option) => (
+                      <option key={option} value={option}>{option || "（默认）"}</option>
+                    ))}
+                  </select>
+                ) : field.kind === "bool" ? (
+                  <select
+                    value={shown(field)}
+                    disabled={busy !== null}
+                    onChange={(event) => setDraft((c) => ({ ...c, [field.key]: event.target.value }))}
+                  >
+                    <option value="">（默认）</option>
+                    <option value="true">true</option>
+                    <option value="false">false</option>
+                  </select>
+                ) : field.kind === "json" ? (
+                  <textarea
+                    rows={3}
+                    placeholder={field.secret && field.configured ? `已配置（${field.masked}）· 留空保持不变` : field.placeholder}
+                    value={shown(field)}
+                    disabled={busy !== null}
+                    onChange={(event) => setDraft((c) => ({ ...c, [field.key]: event.target.value }))}
+                  />
+                ) : (
+                  <input
+                    type={field.secret ? "password" : field.kind === "int" || field.kind === "number" ? "number" : "text"}
+                    placeholder={field.secret && field.configured ? `已配置（${field.masked}）· 留空保持不变` : field.placeholder}
+                    value={shown(field)}
+                    disabled={busy !== null}
+                    onChange={(event) => setDraft((c) => ({ ...c, [field.key]: event.target.value }))}
+                  />
+                )}
+                {field.description && <small className="settings-hint">{field.description}</small>}
+              </div>
+              <span className={`settings-state ${field.configured ? "on" : ""}`}>
+                {field.secret
+                  ? field.configured ? `已配置 ${field.masked}` : "未配置"
+                  : field.configured ? "已设置" : "默认"}
+              </span>
+            </div>
+          ))}
+        </div>
+      ))}
+      <div className="settings-actions">
+        <button className="compact" disabled={busy !== null || !dirty} onClick={save}>
+          {busy === "settings" ? "保存中…" : dirty ? `保存 ${dirty} 项改动` : "无改动"}
+        </button>
+        <button className="text-button" disabled={busy !== null || !dirty} onClick={() => { setDraft({}); setSaved(null); }}>放弃改动</button>
+        {saved && <span className="settings-saved">{saved}</span>}
+      </div>
+    </article>
   );
 }
 
