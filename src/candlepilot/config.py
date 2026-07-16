@@ -70,6 +70,18 @@ def _parse_cadences(raw: str | None) -> tuple[str, ...]:
     return parsed or ("5m", "15m", "30m")
 
 
+def _parse_positive_number[T: (int, float)](raw: str | None, cast: type[T]) -> T | None:
+    """Parse an optional positive run limit; blank or invalid means unbounded."""
+
+    if not raw or not raw.strip():
+        return None
+    try:
+        value = cast(raw.strip())
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 def _parse_candidates_per_cycle(raw: str | None) -> int:
     if not raw:
         return 5
@@ -178,6 +190,8 @@ class Settings:
     max_snapshot_age_seconds: int = 75
     cadences: tuple[str, ...] = ("5m", "15m", "30m")
     candidates_per_cycle: int = 5
+    max_run_seconds: int | None = None
+    max_run_cost_usd: float | None = None
     provider_chain: tuple[str, ...] = ()
     default_provider: str | None = None
     codex_model: str | None = None
@@ -209,6 +223,12 @@ class Settings:
             cadences=_parse_cadences(os.getenv("CANDLEPILOT_CADENCES")),
             candidates_per_cycle=_parse_candidates_per_cycle(
                 os.getenv("CANDLEPILOT_CANDIDATES_PER_CYCLE")
+            ),
+            max_run_seconds=_parse_positive_number(
+                os.getenv("CANDLEPILOT_MAX_RUN_SECONDS"), int
+            ),
+            max_run_cost_usd=_parse_positive_number(
+                os.getenv("CANDLEPILOT_MAX_RUN_COST_USD"), float
             ),
             provider_chain=_parse_provider_chain(os.getenv("CANDLEPILOT_PROVIDER_CHAIN")),
             default_provider=_parse_default_provider(

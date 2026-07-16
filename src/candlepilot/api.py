@@ -66,6 +66,11 @@ class ProviderTestRequest(ApiModel):
     name: str
 
 
+class RunLimits(ApiModel):
+    max_run_seconds: int | None = Field(default=None, gt=0, le=7 * 24 * 3600)
+    max_run_cost_usd: float | None = Field(default=None, gt=0, le=10_000)
+
+
 class HistoryClearRequest(ApiModel):
     categories: list[str] = Field(min_length=1, max_length=16)
 
@@ -240,6 +245,14 @@ def _status(engine: TradingEngine, scheduler: TradingScheduler | None = None) ->
         "active_provider": engine.active_provider,
         "provider_routes": engine.provider_route_status(),
         "active_cadences": list(engine.active_cadences),
+        "run_limits": {
+            "max_run_seconds": engine.max_run_seconds,
+            "max_run_cost_usd": engine.max_run_cost_usd,
+        },
+        "auto_stop_reason": engine.auto_stop_reason,
+        "route_exhausted_since": engine.route_exhausted_since.isoformat()
+        if engine.route_exhausted_since
+        else None,
         "supported_cadences": list(SUPPORTED_CADENCES),
         "candidates_per_cycle": scheduler.candidates_per_cycle if scheduler is not None else None,
         "max_candidates_per_cycle": MAX_CANDIDATES_PER_CYCLE,
@@ -325,6 +338,11 @@ def create_app(
         engine.select_provider_chain(settings.provider_chain)
     elif settings.default_provider is not None and engine.selected_provider is None:
         engine.select_provider(settings.default_provider)
+    if settings.max_run_seconds is not None or settings.max_run_cost_usd is not None:
+        engine.select_run_limits(
+            max_run_seconds=settings.max_run_seconds,
+            max_run_cost_usd=settings.max_run_cost_usd,
+        )
 
     async def load_paper_backfill(symbols: list[str]) -> list[MarketSnapshot]:
         results = await asyncio.gather(
@@ -351,10 +369,21 @@ def create_app(
         if testnet_stream is not None
         else None
     )
+    async def current_run_cost_usd() -> float | None:
+        if engine.run_start_inference_id is None:
+            return None
+        metrics = await engine.audit.run_session_metrics(
+            engine.run_start_inference_id,
+            end_at_id=None,
+            catalog=await pricing_catalog(),
+        )
+        return metrics.get("equivalent_cost_usd")
+
     scheduler = TradingScheduler(
         engine,
         market,
         candidates_per_cycle=settings.candidates_per_cycle,
+        run_cost_loader=current_run_cost_usd,
         paper_feed=paper_feed,
         testnet_feed=testnet_feed,
     )
@@ -756,6 +785,19 @@ def create_app(
     ) -> dict[str, Any]:
         try:
             scheduler.select_candidates_per_cycle(selection.candidates_per_cycle)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _status(engine, scheduler)
+
+    @app.post("/api/run-limits")
+    async def select_run_limits(limits: RunLimits) -> dict[str, Any]:
+        try:
+            engine.select_run_limits(
+                max_run_seconds=limits.max_run_seconds,
+                max_run_cost_usd=limits.max_run_cost_usd,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except RuntimeError as exc:

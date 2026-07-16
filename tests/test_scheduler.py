@@ -144,7 +144,12 @@ def test_scheduler_only_runs_selected_cadences(tmp_path: Path) -> None:
         return names
 
     names = asyncio.run(scenario())
-    assert names == ["candlepilot-15m", "candlepilot-30m", "candlepilot-universe"]
+    assert names == [
+        "candlepilot-15m",
+        "candlepilot-30m",
+        "candlepilot-guard",
+        "candlepilot-universe",
+    ]
 
 
 def test_scheduler_candidates_per_cycle_validates_and_locks_when_running(
@@ -283,6 +288,97 @@ def test_scheduler_always_analyzes_open_positions_outside_candidate_limit(
         return [outcome.intent.symbol for outcome in outcomes]
 
     assert asyncio.run(scenario()) == ["BTCUSDT", "ETHUSDT"]
+
+
+def test_guard_stops_the_run_when_a_limit_is_reached(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'guard.db'}")
+        await database.initialize()
+        market = SchedulerMarket()
+        engine = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([HoldProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider("hold")
+        # Already past the duration limit the moment the guard first ticks.
+        engine.select_run_limits(max_run_seconds=1, max_run_cost_usd=None)
+        await engine.start()
+        engine.run_started_at = datetime.now(UTC) - timedelta(seconds=30)
+        scheduler = TradingScheduler(
+            engine,  # type: ignore[arg-type]
+            market,  # type: ignore[arg-type]
+            guard_interval_seconds=0.01,
+        )
+        scheduler.start()
+        for _ in range(200):
+            if not engine.running:
+                break
+            await asyncio.sleep(0.01)
+        if scheduler._auto_stop_task is not None:
+            await scheduler._auto_stop_task
+        running, reason, tasks = engine.running, engine.auto_stop_reason, scheduler._tasks
+        await database.close()
+        return running, reason, tasks
+
+    running, reason, tasks = asyncio.run(scenario())
+    assert running is False
+    assert reason is not None and "duration limit" in reason
+    assert tasks == []  # the scheduler tore its own tasks down
+
+
+def test_guard_only_loads_cost_when_a_budget_is_set(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'guard-cost.db'}")
+        await database.initialize()
+        market = SchedulerMarket()
+        engine = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([HoldProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider("hold")
+        await engine.start()
+        calls = {"count": 0}
+
+        async def loader():
+            calls["count"] += 1
+            return 99.0
+
+        scheduler = TradingScheduler(
+            engine,  # type: ignore[arg-type]
+            market,  # type: ignore[arg-type]
+            guard_interval_seconds=0.01,
+            run_cost_loader=loader,
+        )
+        # No budget configured: the cost loader must not be called at all.
+        scheduler.start()
+        await asyncio.sleep(0.05)
+        await scheduler.stop()
+        without_budget = calls["count"]
+        assert engine.running is True
+
+        # With a budget, the loader drives the stop.
+        await engine.stop()
+        engine.select_run_limits(max_run_seconds=None, max_run_cost_usd=1.0)
+        await engine.start()
+        scheduler.start()
+        for _ in range(200):
+            if not engine.running:
+                break
+            await asyncio.sleep(0.01)
+        if scheduler._auto_stop_task is not None:
+            await scheduler._auto_stop_task
+        reason = engine.auto_stop_reason
+        await database.close()
+        return without_budget, calls["count"], reason
+
+    without_budget, with_budget, reason = asyncio.run(scenario())
+    assert without_budget == 0
+    assert with_budget > 0
+    assert reason is not None and "cost budget" in reason
 
 
 def test_concurrent_cadences_cannot_open_opposing_positions(tmp_path: Path) -> None:

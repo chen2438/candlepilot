@@ -36,6 +36,10 @@ from candlepilot.storage.database import AuditRepository
 
 SUPPORTED_CADENCES: tuple[str, ...] = ("5m", "15m", "30m")
 PROVIDER_FAILURE_COOLDOWN = timedelta(seconds=60)
+# Every route failing is normally transient: each failure cools down for
+# PROVIDER_FAILURE_COOLDOWN and is retried. Only give up once the route has
+# stayed exhausted across several cooldown cycles, so a blip never stops a run.
+ROUTE_EXHAUSTION_STOP_AFTER = timedelta(seconds=180)
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +99,10 @@ class TradingEngine:
         self.run_ended_at: datetime | None = None
         self.run_start_inference_id: int | None = None
         self.run_end_inference_id: int | None = None
+        self.route_exhausted_since: datetime | None = None
+        self.max_run_seconds: int | None = None
+        self.max_run_cost_usd: float | None = None
+        self.auto_stop_reason: str | None = None
 
     async def provider_health(self) -> list[ProviderHealth]:
         return await self.providers.health()
@@ -164,6 +172,57 @@ class TradingEngine:
             raise RuntimeError("cannot change cadences while running")
         self.active_cadences = self._normalize_cadences(cadences)
 
+    def select_run_limits(
+        self,
+        *,
+        max_run_seconds: int | None,
+        max_run_cost_usd: float | None,
+    ) -> None:
+        """Bound the next run by wall-clock time and/or equivalent model cost.
+
+        Either limit may be ``None`` to leave that dimension unbounded; whichever
+        limit is reached first stops the run.
+        """
+
+        if self.running:
+            raise RuntimeError("cannot change run limits while running")
+        if max_run_seconds is not None and max_run_seconds <= 0:
+            raise ValueError("max_run_seconds must be positive")
+        if max_run_cost_usd is not None and max_run_cost_usd <= 0:
+            raise ValueError("max_run_cost_usd must be positive")
+        self.max_run_seconds = max_run_seconds
+        self.max_run_cost_usd = max_run_cost_usd
+
+    def evaluate_stop_reason(
+        self,
+        *,
+        now: datetime | None = None,
+        run_cost_usd: float | None = None,
+    ) -> str | None:
+        """Return why the current run should stop, or ``None`` to keep running."""
+
+        if not self.running:
+            return None
+        now = now or datetime.now(UTC)
+        if self.max_run_seconds is not None and self.run_started_at is not None:
+            elapsed = (now - self.run_started_at).total_seconds()
+            if elapsed >= self.max_run_seconds:
+                return f"run duration limit reached ({self.max_run_seconds}s)"
+        if self.max_run_cost_usd is not None and run_cost_usd is not None:
+            if run_cost_usd >= self.max_run_cost_usd:
+                return (
+                    f"run cost budget reached (${run_cost_usd:.4f} of "
+                    f"${self.max_run_cost_usd:.4f})"
+                )
+        if self.route_exhausted_since is not None:
+            exhausted_for = now - self.route_exhausted_since
+            if exhausted_for >= ROUTE_EXHAUSTION_STOP_AFTER:
+                return (
+                    "every provider in the route failed for "
+                    f"{int(exhausted_for.total_seconds())}s"
+                )
+        return None
+
     async def start(self) -> None:
         if self.running:
             raise RuntimeError("engine is already running")
@@ -214,6 +273,8 @@ class TradingEngine:
         self.run_end_inference_id = None
         self.run_started_at = datetime.now(UTC)
         self.run_ended_at = None
+        self.route_exhausted_since = None
+        self.auto_stop_reason = None
         self.running = True
 
     async def stop(self) -> None:
@@ -358,10 +419,13 @@ class TradingEngine:
             break
 
         if result is not None:
+            self.route_exhausted_since = None
             for failed_result in failed_results:
                 await self.audit.record_inference(failed_result)
         else:
             self.active_provider = None
+            if self.route_exhausted_since is None:
+                self.route_exhausted_since = datetime.now(UTC)
             if not failed_results:
                 raise RuntimeError("no provider route was attempted")
             for failed_result in failed_results[:-1]:

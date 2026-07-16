@@ -43,6 +43,25 @@ def test_cadences_default_and_env_override(monkeypatch) -> None:
     assert Settings.from_env().cadences == ("15m", "30m")
 
 
+def test_run_limits_default_to_unbounded_and_read_env(monkeypatch) -> None:
+    monkeypatch.delenv("CANDLEPILOT_MAX_RUN_SECONDS", raising=False)
+    monkeypatch.delenv("CANDLEPILOT_MAX_RUN_COST_USD", raising=False)
+    settings = Settings.from_env()
+    assert settings.max_run_seconds is None
+    assert settings.max_run_cost_usd is None
+
+    monkeypatch.setenv("CANDLEPILOT_MAX_RUN_SECONDS", "7200")
+    monkeypatch.setenv("CANDLEPILOT_MAX_RUN_COST_USD", "3.5")
+    settings = Settings.from_env()
+    assert settings.max_run_seconds == 7200
+    assert settings.max_run_cost_usd == 3.5
+
+    # Blank, zero, negative and malformed values all mean "unbounded".
+    for bad in ("", "0", "-5", "abc"):
+        monkeypatch.setenv("CANDLEPILOT_MAX_RUN_SECONDS", bad)
+        assert Settings.from_env().max_run_seconds is None
+
+
 def test_candidates_per_cycle_default_and_env_override(monkeypatch) -> None:
     monkeypatch.delenv("CANDLEPILOT_CANDIDATES_PER_CYCLE", raising=False)
     assert Settings.from_env().candidates_per_cycle == 5

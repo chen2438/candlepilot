@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from candlepilot.application.engine import DecisionOutcome, TradingEngine
@@ -34,22 +35,30 @@ class TradingScheduler:
         *,
         candidates_per_cycle: int = DEFAULT_CANDIDATES_PER_CYCLE,
         universe_refresh_seconds: float = 60,
+        guard_interval_seconds: float = 5,
+        run_cost_loader: Callable[[], Awaitable[float | None]] | None = None,
         paper_feed: PaperMarketFeed | None = None,
         testnet_feed: TestnetUserFeed | None = None,
     ) -> None:
         if universe_refresh_seconds <= 0:
             raise ValueError("universe_refresh_seconds must be positive")
+        if guard_interval_seconds <= 0:
+            raise ValueError("guard_interval_seconds must be positive")
         self.engine = engine
         self.market = market
         self.candidates_per_cycle = _normalize_candidates_per_cycle(candidates_per_cycle)
         self.universe_refresh_seconds = universe_refresh_seconds
+        self.guard_interval_seconds = guard_interval_seconds
+        self.run_cost_loader = run_cost_loader
         self.paper_feed = paper_feed
         self.testnet_feed = testnet_feed
         self._tasks: list[asyncio.Task[None]] = []
         self._symbol_locks: dict[str, asyncio.Lock] = {}
         self._stop = asyncio.Event()
+        self._auto_stop_task: asyncio.Task[None] | None = None
         self.last_error: str | None = None
         self.universe_last_error: str | None = None
+        self.guard_last_error: str | None = None
 
     def select_candidates_per_cycle(self, value: int) -> None:
         if self.engine.running:
@@ -69,6 +78,9 @@ class TradingScheduler:
         ]
         self._tasks.append(
             asyncio.create_task(self._run_universe(), name="candlepilot-universe")
+        )
+        self._tasks.append(
+            asyncio.create_task(self._run_guard(), name="candlepilot-guard")
         )
 
     async def stop(self) -> None:
@@ -117,6 +129,56 @@ class TradingScheduler:
                 return
             except TimeoutError:
                 pass
+
+    async def _run_guard(self) -> None:
+        """Stop the run once a limit is hit or every provider route has failed.
+
+        Polls independently of the cadence timers so a 30m cadence cannot delay a
+        duration or budget stop by half an hour.
+        """
+
+        while not self._stop.is_set():
+            if self.engine.running:
+                try:
+                    reason = self.engine.evaluate_stop_reason(
+                        run_cost_usd=await self._run_cost()
+                    )
+                    self.guard_last_error = None
+                    if reason is not None:
+                        self.request_auto_stop(reason)
+                        return
+                except Exception as exc:
+                    self.guard_last_error = str(exc)
+            try:
+                await asyncio.wait_for(
+                    self._stop.wait(), timeout=self.guard_interval_seconds
+                )
+                return
+            except TimeoutError:
+                pass
+
+    async def _run_cost(self) -> float | None:
+        if self.run_cost_loader is None or self.engine.max_run_cost_usd is None:
+            return None
+        return await self.run_cost_loader()
+
+    def request_auto_stop(self, reason: str) -> None:
+        """Gracefully stop the run from inside a scheduler task.
+
+        The stop runs in a detached task: ``stop()`` cancels and gathers
+        ``self._tasks``, so a tracked task cannot await its own cancellation.
+        """
+
+        if self._auto_stop_task is not None and not self._auto_stop_task.done():
+            return
+        self.engine.auto_stop_reason = reason
+        self._auto_stop_task = asyncio.create_task(
+            self._auto_stop(), name="candlepilot-auto-stop"
+        )
+
+    async def _auto_stop(self) -> None:
+        await self.engine.stop()
+        await self.stop()
 
     async def sync_market_feed(self) -> None:
         if self.paper_feed is None or self.engine.mode != TradingMode.PAPER:

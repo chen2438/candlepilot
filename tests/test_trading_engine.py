@@ -440,6 +440,119 @@ def test_engine_cadence_selection_validates_and_locks_when_running(tmp_path: Pat
     assert errors == {"invalid": True, "empty": True, "locked": True}
 
 
+def test_evaluate_stop_reason_covers_duration_budget_and_route_exhaustion() -> None:
+    from candlepilot.application.engine import ROUTE_EXHAUSTION_STOP_AFTER
+
+    engine = TradingEngine.__new__(TradingEngine)  # pure check; no I/O needed
+    now = datetime.now(UTC)
+    engine.running = True
+    engine.run_started_at = now - timedelta(seconds=100)
+    engine.max_run_seconds = None
+    engine.max_run_cost_usd = None
+    engine.route_exhausted_since = None
+
+    assert engine.evaluate_stop_reason(now=now, run_cost_usd=5.0) is None
+
+    engine.max_run_seconds = 120
+    assert engine.evaluate_stop_reason(now=now) is None  # 100s < 120s
+    engine.max_run_seconds = 100
+    assert "duration limit" in engine.evaluate_stop_reason(now=now)
+
+    engine.max_run_seconds = None
+    engine.max_run_cost_usd = 2.0
+    assert engine.evaluate_stop_reason(now=now, run_cost_usd=1.5) is None
+    assert "cost budget" in engine.evaluate_stop_reason(now=now, run_cost_usd=2.0)
+    # An unknown cost must never trigger a stop.
+    assert engine.evaluate_stop_reason(now=now, run_cost_usd=None) is None
+
+    engine.max_run_cost_usd = None
+    engine.route_exhausted_since = now - ROUTE_EXHAUSTION_STOP_AFTER + timedelta(seconds=1)
+    assert engine.evaluate_stop_reason(now=now) is None  # still within grace
+    engine.route_exhausted_since = now - ROUTE_EXHAUSTION_STOP_AFTER
+    assert "every provider" in engine.evaluate_stop_reason(now=now)
+
+    # A stopped engine never reports a reason.
+    engine.running = False
+    assert engine.evaluate_stop_reason(now=now) is None
+
+
+def test_run_limits_validate_and_lock_while_running(tmp_path: Path) -> None:
+    import pytest
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'limits.db'}")
+        await database.initialize()
+        engine = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=FakeMarket(),  # type: ignore[arg-type]
+        )
+        engine.select_provider("fake-auth")
+        assert engine.max_run_seconds is None and engine.max_run_cost_usd is None
+
+        with pytest.raises(ValueError):
+            engine.select_run_limits(max_run_seconds=0, max_run_cost_usd=None)
+        with pytest.raises(ValueError):
+            engine.select_run_limits(max_run_seconds=None, max_run_cost_usd=0)
+
+        engine.select_run_limits(max_run_seconds=600, max_run_cost_usd=1.5)
+        assert engine.max_run_seconds == 600
+        assert engine.max_run_cost_usd == 1.5
+
+        await engine.start()
+        with pytest.raises(RuntimeError):
+            engine.select_run_limits(max_run_seconds=60, max_run_cost_usd=None)
+        assert engine.max_run_seconds == 600
+        await database.close()
+
+    asyncio.run(scenario())
+
+
+def test_route_exhaustion_is_tracked_and_cleared(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'exhaust.db'}")
+        await database.initialize()
+        market = FakeMarket()
+        engine = TradingEngine(
+            mode=TradingMode.PAPER,
+            providers=ProviderRegistry([FailedProvider(), FakeProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        snapshot = MarketSnapshot(
+            symbol="BTCUSDT",
+            cadence="5m",
+            timestamp=datetime.now(UTC),
+            mark_price="100",
+            bid="99.9",
+            ask="100.1",
+            quote_volume_24h="1000000",
+        )
+        rules = SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"))
+        portfolio = PortfolioState(equity="10000", available_balance="8000")
+
+        # Only the failing provider is routed: the route becomes exhausted.
+        engine.select_provider("failed-primary")
+        await engine.start()
+        await engine.evaluate(snapshot, portfolio, rules)
+        exhausted = engine.route_exhausted_since
+        await engine.stop()
+
+        # A working provider clears the exhaustion marker on the next success.
+        engine.select_provider("fake-auth")
+        await engine.start()
+        engine.route_exhausted_since = datetime.now(UTC)
+        await engine.evaluate(snapshot, portfolio, rules)
+        cleared = engine.route_exhausted_since
+        await database.close()
+        return exhausted, cleared
+
+    exhausted, cleared = asyncio.run(scenario())
+    assert exhausted is not None
+    assert cleared is None
+
+
 def test_testnet_mode_refuses_to_start_without_credentials(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'testnet.db'}")

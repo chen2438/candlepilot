@@ -654,6 +654,46 @@ def test_provider_config_sets_model_and_reasoning_effort(tmp_path: Path) -> None
     asyncio.run(database.close())
 
 
+def test_run_limits_endpoint(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'run-limits.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.PAPER,
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        status = client.get("/api/status").json()
+        assert status["run_limits"] == {"max_run_seconds": None, "max_run_cost_usd": None}
+        assert status["auto_stop_reason"] is None
+
+        updated = client.post(
+            "/api/run-limits", json={"max_run_seconds": 3600, "max_run_cost_usd": 2.5}
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["run_limits"] == {
+            "max_run_seconds": 3600,
+            "max_run_cost_usd": 2.5,
+        }
+
+        # Both limits are optional; null clears them back to unbounded.
+        cleared = client.post(
+            "/api/run-limits", json={"max_run_seconds": None, "max_run_cost_usd": None}
+        ).json()
+        assert cleared["run_limits"] == {"max_run_seconds": None, "max_run_cost_usd": None}
+
+        assert client.post("/api/run-limits", json={"max_run_seconds": 0}).status_code == 422
+        assert client.post("/api/run-limits", json={"max_run_cost_usd": -1}).status_code == 422
+
+        # Locked while the engine runs.
+        client.post("/api/providers/select", json={"name": "api-fixture"})
+        client.post("/api/engine/start")
+        assert client.post("/api/run-limits", json={"max_run_seconds": 60}).status_code == 409
+    asyncio.run(database.close())
+
+
 def test_provider_test_endpoint_reports_success_and_failure(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'test-provider.db'}")
     market = ApiMarket()

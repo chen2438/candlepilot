@@ -26,6 +26,9 @@ const emptyStatus: EngineStatus = {
   active_provider: null,
   provider_routes: [],
   active_cadences: ["5m", "15m", "30m"],
+  run_limits: { max_run_seconds: null, max_run_cost_usd: null },
+  auto_stop_reason: null,
+  route_exhausted_since: null,
   supported_cadences: ["5m", "15m", "30m"],
   candidates_per_cycle: 5,
   max_candidates_per_cycle: 20,
@@ -213,6 +216,7 @@ export default function App() {
   const [candidateDraft, setCandidateDraft] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<Record<string, { ok: boolean; text: string }>>({});
   const [universeExpanded, setUniverseExpanded] = useState(false);
+  const [limitDraft, setLimitDraft] = useState<{ minutes: string; budget: string } | null>(null);
 
   const applyProviderConfig = useCallback(async (name: string, draft: { model: string; effort: string }) => {
     setBusy("provider-config");
@@ -340,6 +344,34 @@ export default function App() {
       setCandidateDraft(null);
     }
   }, [candidateDraft, status.candidates_per_cycle]);
+
+  // Limits are sent as a pair: the engine treats null as "unbounded", so an
+  // empty box clears that dimension rather than leaving a stale limit behind.
+  const applyRunLimits = useCallback(async (minutes: string, budget: string) => {
+    const parse = (raw: string, scale = 1) => {
+      const trimmed = raw.trim();
+      if (!trimmed) return null;
+      const value = Number(trimmed) * scale;
+      return Number.isFinite(value) && value > 0 ? value : null;
+    };
+    setBusy("run-limits");
+    setError(null);
+    try {
+      setStatus(
+        await api<EngineStatus>("/api/run-limits", {
+          method: "POST",
+          body: JSON.stringify({
+            max_run_seconds: parse(minutes, 60),
+            max_run_cost_usd: parse(budget),
+          }),
+        }),
+      );
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     const [nextStatus, nextProviders, nextCandidates, nextDecisions, nextBacktests] = await Promise.all([
@@ -575,6 +607,7 @@ export default function App() {
 
       <main>
         {error && <div className="error-banner"><b>操作失败</b><span>{error}</span><button onClick={() => setError(null)}>×</button></div>}
+        {status.auto_stop_reason && !status.running && <div className="lock-banner">引擎已自动停止：{status.auto_stop_reason}。持仓保持不变（测试网仍由交易所侧止盈止损保护）；确认后可重新启动。</div>}
         {status.emergency_locked && <div className="lock-banner">紧急锁定已生效{status.emergency_locked_until ? `，自动解锁时间：${new Date(status.emergency_locked_until).toLocaleString("zh-CN", { hour12: false })}` : ""}。检查账户状态后也可手动解除。</div>}
 
         {tab === "overview" && (<>
@@ -636,6 +669,52 @@ export default function App() {
                   onKeyUp={commitCandidates}
                 />
                 <div className="range-scale"><span>1</span><span>{status.max_candidates_per_cycle}</span></div>
+              </div>
+            </div>
+            <div className="cadence-select" title={status.running ? "运行时锁定" : "到达任一上限即自动优雅停止；留空表示不限"}>
+              <span>运行上限（留空=不限）</span>
+              <div className="limit-row">
+                <label>
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    placeholder="分钟"
+                    value={limitDraft ? limitDraft.minutes : status.run_limits.max_run_seconds ? String(Math.round(status.run_limits.max_run_seconds / 60)) : ""}
+                    disabled={busy !== null || status.running}
+                    onFocus={(event) => event.target.select()}
+                    onChange={(event) => setLimitDraft({
+                      minutes: event.target.value,
+                      budget: limitDraft ? limitDraft.budget : status.run_limits.max_run_cost_usd ? String(status.run_limits.max_run_cost_usd) : "",
+                    })}
+                  />
+                  <small>分钟</small>
+                </label>
+                <label>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    placeholder="预算"
+                    value={limitDraft ? limitDraft.budget : status.run_limits.max_run_cost_usd ? String(status.run_limits.max_run_cost_usd) : ""}
+                    disabled={busy !== null || status.running}
+                    onFocus={(event) => event.target.select()}
+                    onChange={(event) => setLimitDraft({
+                      minutes: limitDraft ? limitDraft.minutes : status.run_limits.max_run_seconds ? String(Math.round(status.run_limits.max_run_seconds / 60)) : "",
+                      budget: event.target.value,
+                    })}
+                  />
+                  <small>$ 等效</small>
+                </label>
+                <button
+                  className="text-button"
+                  disabled={busy !== null || status.running || limitDraft === null}
+                  onClick={async () => {
+                    if (!limitDraft) return;
+                    await applyRunLimits(limitDraft.minutes, limitDraft.budget);
+                    setLimitDraft(null);
+                  }}
+                >{busy === "run-limits" ? "…" : "应用"}</button>
               </div>
             </div>
             <button
