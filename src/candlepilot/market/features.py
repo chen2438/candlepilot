@@ -113,18 +113,18 @@ class FeaturePipeline:
         *,
         symbol: str,
         cadence: Literal["1m", "5m", "15m", "30m"],
-        rows: list[list[Any]],
+        features: dict[str, float],
         mark_price: Decimal,
         bid: Decimal,
         ask: Decimal,
         quote_volume_24h: Decimal,
         funding_rate: Decimal,
-        extra_features: dict[str, float] | None = None,
         timestamp: datetime | None = None,
     ) -> MarketSnapshot:
-        features = self.calculate(rows)
-        if extra_features:
-            features.update(extra_features)
+        # Features arrive already assembled: computing the decision cadence's
+        # own features here as well would repeat every ``<cadence>_`` key from
+        # ``multitimeframe`` unprefixed, and the model would read one reading
+        # as two independent ones.
         return MarketSnapshot(
             symbol=symbol,
             cadence=cadence,

@@ -213,6 +213,14 @@ def test_market_snapshot_includes_microstructure() -> None:
     assert requested_intervals == ["1m", "5m", "15m", "30m"]
     assert snapshot.features["basis_bps"] == 50.0
     assert snapshot.features["book_imbalance"] == 0.5
+    # Every per-interval reading is prefixed exactly once. An unprefixed copy
+    # would be the decision cadence's own features repeated, and the model
+    # would read one reading as two independent ones.
+    assert not [
+        name
+        for name in snapshot.features
+        if any(f"{interval}_{name}" in snapshot.features for interval in ("1m", "5m", "15m", "30m"))
+    ]
     assert snapshot.features["recent_trade_imbalance"] == 1.0
     assert snapshot.features["open_interest"] == 42.0
     assert snapshot.features["1m_ema_spread"] == snapshot.features["30m_ema_spread"]

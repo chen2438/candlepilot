@@ -48,7 +48,7 @@ def test_snapshot_contains_exchange_and_derived_data() -> None:
     snapshot = FeaturePipeline().snapshot(
         symbol="BTCUSDT",
         cadence="5m",
-        rows=_rows(),
+        features=FeaturePipeline().calculate(_rows()),
         mark_price=Decimal("106"),
         bid=Decimal("105.9"),
         ask=Decimal("106.1"),

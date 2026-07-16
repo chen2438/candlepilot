@@ -267,7 +267,7 @@ class BinancePublicClient:
         book, ticker, premium, depth, interest, trades = results[len(feature_intervals) :]
         pipeline = FeaturePipeline()
         mark_price = Decimal(premium["markPrice"])
-        extra_features = pipeline.microstructure(
+        features = pipeline.microstructure(
             mark_price=mark_price,
             index_price=Decimal(premium["indexPrice"]),
             open_interest=Decimal(interest["openInterest"]),
@@ -275,15 +275,14 @@ class BinancePublicClient:
             asks=depth["asks"],
             trades=trades,
         )
-        extra_features.update(pipeline.multitimeframe(rows_by_interval))
+        features.update(pipeline.multitimeframe(rows_by_interval))
         return pipeline.snapshot(
             symbol=symbol,
             cadence=cadence,  # type: ignore[arg-type]
-            rows=rows_by_interval[cadence],
+            features=features,
             mark_price=mark_price,
             bid=Decimal(book["bidPrice"]),
             ask=Decimal(book["askPrice"]),
             quote_volume_24h=Decimal(ticker["quoteVolume"]),
             funding_rate=Decimal(premium["lastFundingRate"]),
-            extra_features=extra_features,
         )
