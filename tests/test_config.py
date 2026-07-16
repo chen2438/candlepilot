@@ -43,6 +43,97 @@ def test_cadences_default_and_env_override(monkeypatch) -> None:
     assert Settings.from_env().cadences == ("15m", "30m")
 
 
+def test_custom_llm_providers_parse_from_json(monkeypatch) -> None:
+    import json
+
+    monkeypatch.setenv(
+        "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON",
+        json.dumps(
+            [
+                {
+                    "id": "groq",
+                    "base_url": "https://api.groq.example/v1",
+                    "api_key": "gk",
+                    "model": "llama-3.3-70b",
+                    "wire_api": "responses",
+                    "extra_headers": {"x-team": "desk"},
+                },
+                {"id": "local", "base_url": "http://127.0.0.1:1234/v1", "require_api_key": False},
+            ]
+        ),
+    )
+    providers = Settings.from_env().custom_llm_providers
+    assert [p.id for p in providers] == ["groq", "local"]
+    assert providers[0].provider_name == "openai-compatible:groq"
+    assert providers[0].wire_api == "responses"
+    assert providers[0].api_key.get_secret_value() == "gk"
+    assert providers[0].extra_headers["x-team"].get_secret_value() == "desk"
+    assert providers[1].require_api_key is False
+    assert providers[1].api_key is None
+    # Secrets must not leak through repr.
+    assert "gk" not in repr(providers)
+
+
+def test_custom_llm_providers_reject_bad_definitions(monkeypatch) -> None:
+    import json
+
+    import pytest
+
+    bad_cases = [
+        '{"id": "a"}',  # not a list
+        json.dumps([{"id": "groq"}]),  # missing base_url
+        json.dumps([{"base_url": "https://x/v1"}]),  # missing id
+        json.dumps([{"id": "Groq", "base_url": "https://x/v1"}]),  # uppercase id
+        json.dumps([{"id": "a", "base_url": "https://x/v1", "typo": 1}]),  # unknown key
+        json.dumps([{"id": "a", "base_url": "https://x/v1", "wire_api": "grpc"}]),
+        json.dumps([{"id": "a", "base_url": "https://x/v1", "require_api_key": "yes"}]),
+        json.dumps(
+            [
+                {"id": "dup", "base_url": "https://x/v1"},
+                {"id": "dup", "base_url": "https://y/v1"},
+            ]
+        ),  # duplicate id
+        json.dumps(
+            [{"id": "a", "base_url": "https://x/v1", "extra_headers": {"Authorization": "x"}}]
+        ),  # protected header
+        "not json",
+    ]
+    for raw in bad_cases:
+        monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON", raw)
+        with pytest.raises(ValueError):
+            Settings.from_env()
+
+    monkeypatch.setenv(
+        "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON",
+        json.dumps([{"id": f"p{i}", "base_url": "https://x/v1"} for i in range(9)]),
+    )
+    with pytest.raises(ValueError, match="at most"):
+        Settings.from_env()
+
+    monkeypatch.delenv("CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON")
+    assert Settings.from_env().custom_llm_providers == ()
+
+
+def test_provider_chain_accepts_custom_endpoint_ids(monkeypatch) -> None:
+    import pytest
+
+    monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", "codex, custom:groq, openai-compatible:local")
+    assert Settings.from_env().provider_chain == (
+        "codex-auth",
+        "openai-compatible:groq",
+        "openai-compatible:local",
+    )
+    # Ids are matched case-insensitively.
+    monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", "custom:GROQ")
+    assert Settings.from_env().provider_chain == ("openai-compatible:groq",)
+
+    for bad in ("custom:bad_id", "custom:", "custom:-x", "custom:a b"):
+        monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", bad)
+        with pytest.raises(ValueError):
+            Settings.from_env()
+    monkeypatch.delenv("CANDLEPILOT_PROVIDER_CHAIN")
+
+
 def test_run_limits_default_to_unbounded_and_read_env(monkeypatch) -> None:
     monkeypatch.delenv("CANDLEPILOT_MAX_RUN_SECONDS", raising=False)
     monkeypatch.delenv("CANDLEPILOT_MAX_RUN_COST_USD", raising=False)

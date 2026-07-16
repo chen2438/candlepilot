@@ -136,17 +136,29 @@ const CANDIDATE_DEFINITIONS = {
 
 const UNIVERSE_COLLAPSED_ROWS = 5;
 
+const CUSTOM_PROVIDER_PREFIX = "openai-compatible:";
+
+// Extra custom endpoints are named "openai-compatible:<id>"; the id is what
+// distinguishes them for the user.
+function customProviderId(name: string): string | null {
+  return name.startsWith(CUSTOM_PROVIDER_PREFIX)
+    ? name.slice(CUSTOM_PROVIDER_PREFIX.length)
+    : null;
+}
+
 function providerLabel(name: string): string {
   if (name === "codex-auth") return "Codex Auth";
   if (name === "claude-code-auth") return "Claude Code Auth";
   if (name === "openai-compatible") return "Custom API";
+  const id = customProviderId(name);
+  if (id) return `Custom API · ${id}`;
   return name;
 }
 
 function providerIcon(name: string): string {
   if (name === "codex-auth") return "CX";
   if (name === "claude-code-auth") return "CC";
-  if (name === "openai-compatible") return "API";
+  if (name === "openai-compatible" || customProviderId(name)) return "API";
   return "AI";
 }
 
@@ -154,7 +166,7 @@ function providerConfigLabel(name: string): string {
   if (name === "codex-auth") return "Codex";
   if (name === "claude-code-auth") return "Claude";
   if (name === "openai-compatible") return "Custom API";
-  return name;
+  return customProviderId(name) ?? name;
 }
 
 function inferenceConfigLabel(decision: DecisionEvent): string {

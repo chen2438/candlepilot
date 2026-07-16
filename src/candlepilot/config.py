@@ -25,6 +25,19 @@ DEFAULT_PROVIDER_ALIASES = {
     "openai-compatible": "openai-compatible",
 }
 CUSTOM_LLM_WIRE_APIS = {"chat-completions", "responses"}
+CUSTOM_PROVIDER_PREFIX = "openai-compatible:"
+CUSTOM_PROVIDER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
+MAX_CUSTOM_LLM_PROVIDERS = 8
+CUSTOM_LLM_PROVIDER_KEYS = {
+    "id",
+    "base_url",
+    "api_key",
+    "model",
+    "reasoning_effort",
+    "wire_api",
+    "require_api_key",
+    "extra_headers",
+}
 PROTECTED_CUSTOM_HEADER_NAMES = {
     "authorization",
     "content-length",
@@ -107,6 +120,15 @@ def _parse_default_provider(raw: str | None) -> str | None:
     if not raw or not raw.strip():
         return None
     alias = raw.strip().lower()
+    # Additional custom endpoints are addressed by id, e.g. "custom:groq".
+    prefix, separator, identifier = alias.partition(":")
+    if separator and prefix in {"custom", "custom-api", "openai-compatible"}:
+        if not CUSTOM_PROVIDER_ID_PATTERN.fullmatch(identifier):
+            raise ValueError(
+                f"invalid custom LLM provider id in {raw!r}: "
+                "expected [a-z0-9][a-z0-9-]* (max 31 chars)"
+            )
+        return f"{CUSTOM_PROVIDER_PREFIX}{identifier}"
     try:
         return DEFAULT_PROVIDER_ALIASES[alias]
     except KeyError as exc:
@@ -158,6 +180,10 @@ def _parse_custom_llm_headers(raw: str | None) -> dict[str, SecretStr]:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise ValueError("CANDLEPILOT_CUSTOM_LLM_EXTRA_HEADERS_JSON must be JSON") from exc
+    return _validate_custom_llm_headers(parsed)
+
+
+def _validate_custom_llm_headers(parsed: object) -> dict[str, SecretStr]:
     if not isinstance(parsed, dict) or len(parsed) > 16:
         raise ValueError("custom LLM extra headers must be a JSON object with at most 16 entries")
     headers: dict[str, SecretStr] = {}
@@ -172,6 +198,96 @@ def _parse_custom_llm_headers(raw: str | None) -> dict[str, SecretStr]:
             raise ValueError("custom LLM extra header value must be a non-empty single line")
         headers[name] = SecretStr(value)
     return headers
+
+
+@dataclass(frozen=True, slots=True)
+class CustomLlmProvider:
+    """One additional OpenAI-compatible endpoint declared in the JSON list."""
+
+    id: str
+    base_url: str
+    api_key: SecretStr | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
+    wire_api: str = "chat-completions"
+    require_api_key: bool = True
+    extra_headers: dict[str, SecretStr] | None = None
+
+    @property
+    def provider_name(self) -> str:
+        return f"{CUSTOM_PROVIDER_PREFIX}{self.id}"
+
+
+def _parse_custom_llm_providers(raw: str | None) -> tuple[CustomLlmProvider, ...]:
+    """Parse extra custom endpoints from ``CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON``.
+
+    The legacy flat ``CANDLEPILOT_CUSTOM_LLM_*`` vars still define the unsuffixed
+    ``openai-compatible`` provider; entries here are additional and each needs a
+    unique ``id`` that becomes ``openai-compatible:<id>``.
+    """
+
+    if raw is None or not raw.strip():
+        return ()
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON must be JSON") from exc
+    if not isinstance(parsed, list):
+        raise ValueError("CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON must be a JSON array")
+    if len(parsed) > MAX_CUSTOM_LLM_PROVIDERS:
+        raise ValueError(
+            f"at most {MAX_CUSTOM_LLM_PROVIDERS} custom LLM providers may be configured"
+        )
+    providers: list[CustomLlmProvider] = []
+    seen: set[str] = set()
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            raise ValueError("each custom LLM provider must be a JSON object")
+        unknown = set(entry) - CUSTOM_LLM_PROVIDER_KEYS
+        if unknown:
+            raise ValueError(
+                f"unknown custom LLM provider keys: {', '.join(sorted(unknown))}"
+            )
+        identifier = entry.get("id")
+        if not isinstance(identifier, str) or not CUSTOM_PROVIDER_ID_PATTERN.fullmatch(identifier):
+            raise ValueError(
+                "custom LLM provider id must match [a-z0-9][a-z0-9-]* (max 31 chars)"
+            )
+        if identifier in seen:
+            raise ValueError(f"duplicate custom LLM provider id: {identifier}")
+        seen.add(identifier)
+        base_url = entry.get("base_url")
+        if not isinstance(base_url, str) or not base_url.strip():
+            raise ValueError(f"custom LLM provider {identifier} requires base_url")
+        api_key = entry.get("api_key")
+        if api_key is not None and (not isinstance(api_key, str) or not api_key):
+            raise ValueError(f"custom LLM provider {identifier} api_key must be a string")
+        for field in ("model", "reasoning_effort"):
+            value = entry.get(field)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"custom LLM provider {identifier} {field} must be a string")
+        require_api_key = entry.get("require_api_key", True)
+        if not isinstance(require_api_key, bool):
+            raise ValueError(
+                f"custom LLM provider {identifier} require_api_key must be true or false"
+            )
+        wire_api = entry.get("wire_api")
+        if wire_api is not None and not isinstance(wire_api, str):
+            raise ValueError(f"custom LLM provider {identifier} wire_api must be a string")
+        headers = entry.get("extra_headers")
+        providers.append(
+            CustomLlmProvider(
+                id=identifier,
+                base_url=base_url.strip(),
+                api_key=SecretStr(api_key) if api_key else None,
+                model=entry.get("model") or None,
+                reasoning_effort=entry.get("reasoning_effort") or None,
+                wire_api=_parse_custom_llm_wire_api(wire_api),
+                require_api_key=require_api_key,
+                extra_headers=_validate_custom_llm_headers(headers) if headers else None,
+            )
+        )
+    return tuple(providers)
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,6 +321,7 @@ class Settings:
     custom_llm_wire_api: str = "chat-completions"
     custom_llm_require_api_key: bool = True
     custom_llm_extra_headers: dict[str, SecretStr] | None = None
+    custom_llm_providers: tuple[CustomLlmProvider, ...] = ()
     binance_testnet_api_key: SecretStr | None = None
     binance_testnet_api_secret: SecretStr | None = None
 
@@ -254,6 +371,9 @@ class Settings:
                 os.getenv("CANDLEPILOT_CUSTOM_LLM_REQUIRE_API_KEY"),
                 name="CANDLEPILOT_CUSTOM_LLM_REQUIRE_API_KEY",
                 default=True,
+            ),
+            custom_llm_providers=_parse_custom_llm_providers(
+                os.getenv("CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON")
             ),
             custom_llm_extra_headers=_parse_custom_llm_headers(
                 os.getenv("CANDLEPILOT_CUSTOM_LLM_EXTRA_HEADERS_JSON")

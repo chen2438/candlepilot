@@ -415,6 +415,50 @@ def test_claude_provider_sends_prompt_on_stdin_with_schema(tmp_path: Path) -> No
     assert "Overbought or oversold readings alone" in stdin
 
 
+def test_registry_builds_one_provider_per_custom_endpoint() -> None:
+    from pydantic import SecretStr
+
+    from candlepilot.config import CustomLlmProvider, Settings
+    from candlepilot.providers.registry import ProviderRegistry
+
+    registry = ProviderRegistry.from_settings(
+        Settings(
+            custom_llm_base_url="https://legacy.example/v1",
+            custom_llm_api_key=SecretStr("legacy"),
+            custom_llm_model="legacy-model",
+            custom_llm_providers=(
+                CustomLlmProvider(
+                    id="groq",
+                    base_url="https://api.groq.example/v1",
+                    api_key=SecretStr("groq-key"),
+                    model="llama-3.3-70b",
+                    wire_api="responses",
+                ),
+                CustomLlmProvider(
+                    id="local",
+                    base_url="http://127.0.0.1:1234/v1",
+                    model="qwen",
+                    require_api_key=False,
+                ),
+            ),
+        )
+    )
+    # The legacy flat configuration keeps the unsuffixed name.
+    assert registry.get("openai-compatible").model == "legacy-model"
+    groq = registry.get("openai-compatible:groq")
+    assert groq.model == "llama-3.3-70b"
+    assert groq.wire_api == "responses"
+    assert groq.base_url == "https://api.groq.example/v1"
+    local = registry.get("openai-compatible:local")
+    assert local.require_api_key is False
+    assert local.base_url == "http://127.0.0.1:1234/v1"
+    # Each endpoint is a distinct instance with its own name.
+    assert groq is not local
+    assert {"openai-compatible", "openai-compatible:groq", "openai-compatible:local"} <= set(
+        registry.names
+    )
+
+
 def test_registry_from_settings_applies_model_and_effort() -> None:
     from pydantic import SecretStr
 

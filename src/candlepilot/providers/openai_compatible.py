@@ -144,6 +144,7 @@ class OpenAICompatibleProvider(LLMProvider):
         base_url: str | None,
         api_key: SecretStr | None,
         model: str | None,
+        name: str | None = None,
         reasoning_effort: str | None = None,
         wire_api: str = "chat-completions",
         require_api_key: bool = True,
@@ -151,6 +152,10 @@ class OpenAICompatibleProvider(LLMProvider):
         timeout: float = 45,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        # Several endpoints can be configured at once, so the name is per instance
+        # and shadows the class default used by the single legacy configuration.
+        if name:
+            self.name = name
         self.base_url: str | None = None
         self._configuration_error: str | None = None
         if base_url:
