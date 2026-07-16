@@ -965,7 +965,13 @@ function DecisionPanel({ decisions }: { decisions: DecisionEvent[] }) {
             >
               <span className={`action ${decision.intent.action.toLowerCase()}`}>{decision.intent.action}</span>
               <span className="signal-symbol"><strong>{decision.intent.symbol}</strong><small>{decision.intent.cadence} · {providerLabel(decision.provider)}</small></span>
-              <span className="signal-confidence">{Math.round(decision.intent.confidence * 100)}<small>% CONF</small></span>
+              <span
+                className={`signal-confidence ${decision.intent.action === "HOLD" ? "residual" : ""}`}
+                title={decision.intent.action === "HOLD" ? "没有可执行动作时的残余交易机会强度" : "模型对当前动作具备可执行交易优势的估计"}
+              >
+                {Math.round(decision.intent.confidence * 100)}%
+                <small>{decision.intent.action === "HOLD" ? "机会强度" : "执行置信度"}</small>
+              </span>
               <span className={`decision-outcome ${decision.outcome}`}>{OUTCOME_LABELS[decision.outcome]}</span>
               <span className="signal-time">{new Date(decision.created_at).toLocaleTimeString("zh-CN", { hour12: false })}</span>
               <span className="decision-chevron">{expanded === decision.id ? "−" : "+"}</span>
