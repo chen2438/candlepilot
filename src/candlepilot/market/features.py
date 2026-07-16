@@ -35,11 +35,20 @@ class Kline:
 
 
 def _ema(values: list[float], period: int) -> float:
+    """EMA seeded from the first ``period`` values rather than a single close.
+
+    Seeding on one value leaves that value's noise in the result for as long as
+    it takes to decay, so the seed must be an average and the series must be as
+    long as the caller can supply.
+    """
+
     if not values:
         raise ValueError("EMA requires values")
+    if len(values) <= period:
+        return sum(values) / len(values)
+    result = sum(values[:period]) / period
     alpha = 2 / (period + 1)
-    result = values[0]
-    for value in values[1:]:
+    for value in values[period:]:
         result = alpha * value + (1 - alpha) * result
     return result
 
@@ -89,8 +98,8 @@ class FeaturePipeline:
         closes = [float(item.close) for item in closed]
         volumes = [float(item.quote_volume) for item in closed]
         last = closes[-1]
-        ema_fast = _ema(closes[-50:], 20)
-        ema_slow = _ema(closes[-100:], 50)
+        ema_fast = _ema(closes, 20)
+        ema_slow = _ema(closes, 50)
         atr = _atr(closed, 14)
         volume_mean = sum(volumes[-20:]) / 20
         # Price structure: moving averages say which way, not where. Judging

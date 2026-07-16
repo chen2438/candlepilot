@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from candlepilot.market.features import FeaturePipeline
+from candlepilot.market.features import FeaturePipeline, _ema
 
 
 def _rows(count: int = 60) -> list[list[object]]:
@@ -158,3 +158,22 @@ def test_trade_imbalance_reports_the_window_it_covers() -> None:
     # Same one-sided imbalance, but over a window worth nothing.
     assert blink["recent_trade_imbalance"] == 1.0
     assert blink["recent_trade_seconds"] == 0.2
+
+
+def test_ema_seed_does_not_leak_the_first_close_into_the_result() -> None:
+    """A one-value seed keeps that value's noise in the average.
+
+    A spike in the oldest bar of the window says nothing about the current
+    trend, so it must not move the EMA that the setup rules read.
+    """
+
+    # A window only 2.5x the period is where seeding matters: there are not
+    # enough steps for a bad seed to decay away before the value is read.
+    spiked = [500.0, *([100.0] * 49)]
+
+    assert _ema([100.0] * 50, 20) == 100.0
+    assert abs(_ema(spiked, 20) - 100.0) < 1.5
+
+    # Too short to seed on `period` values: report the plain average rather
+    # than pretending to a smoothing that has not warmed up.
+    assert _ema([100.0, 102.0], 20) == 101.0
