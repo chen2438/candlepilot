@@ -820,6 +820,45 @@ def test_custom_providers_editor_endpoint(tmp_path: Path, monkeypatch) -> None:
     asyncio.run(database.close())
 
 
+def test_restart_command_drops_dotenv_values_but_keeps_exports(monkeypatch) -> None:
+    import candlepilot.api as api_module
+    from candlepilot.api import restart_command
+
+    # One value came from .env, one is genuinely exported in the shell.
+    monkeypatch.setenv("CANDLEPILOT_FROM_DOTENV", "stale")
+    monkeypatch.setenv("CANDLEPILOT_EXPORTED", "shell")
+    monkeypatch.setattr(api_module, "DOTENV_INJECTED_KEYS", {"CANDLEPILOT_FROM_DOTENV"})
+    monkeypatch.setattr(api_module.sys, "argv", ["/usr/bin/candlepilot", "serve"])
+
+    argv, environment = restart_command()
+    # Re-exec through the module so both launch styles come back the same way.
+    assert argv[1:] == ["-m", "candlepilot.cli", "serve"]
+    # The stale .env value must go, or the rewritten file would be ignored.
+    assert "CANDLEPILOT_FROM_DOTENV" not in environment
+    assert environment["CANDLEPILOT_EXPORTED"] == "shell"
+
+
+def test_restart_is_refused_while_the_engine_runs(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'restart.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.PAPER,
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        client.post("/api/providers/select", json={"name": "api-fixture"})
+        client.post("/api/engine/start")
+        # A restart would kill a live run, so it must be refused.
+        refused = client.post("/api/restart")
+        assert refused.status_code == 409
+        assert "stop the engine" in refused.json()["detail"]
+        client.post("/api/engine/stop")
+    asyncio.run(database.close())
+
+
 def test_run_limits_endpoint(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'run-limits.db'}")
     market = ApiMarket()

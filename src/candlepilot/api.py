@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 from uuid import uuid4
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -33,6 +34,7 @@ from candlepilot.broker.binance_testnet import BinanceTestnetBroker, BinanceTest
 from candlepilot.broker.user_stream import BinanceTestnetUserStream
 from candlepilot.config import (
     CUSTOM_LLM_WIRE_APIS,
+    DOTENV_INJECTED_KEYS,
     ENV_FILE_VARIABLE,
     MAX_CUSTOM_LLM_PROVIDERS,
     Settings,
@@ -216,6 +218,25 @@ def _model_options(
     if current and current not in options:
         options.append(current)
     return options
+
+
+def restart_command() -> tuple[list[str], dict[str, str]]:
+    """Build the argv and environment for re-executing this backend.
+
+    Values this process took from .env are dropped so the rewritten file is read
+    again — load_dotenv never overrides a real variable, so inheriting them would
+    silently keep the old configuration. Anything genuinely exported in the shell
+    is preserved (it legitimately outranks .env). Re-exec goes through the module
+    so `candlepilot serve` and `python -m candlepilot.cli serve` both come back.
+    """
+
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in DOTENV_INJECTED_KEYS
+    }
+    argv = [sys.executable, "-m", "candlepilot.cli", *sys.argv[1:]]
+    return argv, environment
 
 
 def _validate_startup_settings(settings: Settings) -> None:
@@ -948,6 +969,27 @@ def create_app(
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             write_env_file(env_path, {CUSTOM_PROVIDERS_ENV: serialized})
         return await get_custom_providers()
+
+    @app.post("/api/restart")
+    async def restart_backend() -> dict[str, Any]:
+        if engine.running:
+            raise HTTPException(
+                status_code=409,
+                detail="stop the engine before restarting the backend",
+            )
+
+        async def _reexec() -> None:
+            # Reply first: exec replaces this process, so nothing can be sent after.
+            await asyncio.sleep(0.25)
+            await database.close()
+            argv, environment = restart_command()
+            logging.getLogger("candlepilot").info(
+                "restarting backend", extra={"argv": argv}
+            )
+            os.execve(sys.executable, argv, environment)
+
+        asyncio.get_running_loop().create_task(_reexec())
+        return {"restarting": True, "env_file": str(env_path)}
 
     @app.post("/api/settings")
     async def save_settings(update: SettingsUpdate) -> dict[str, Any]:

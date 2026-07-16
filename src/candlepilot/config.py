@@ -16,6 +16,10 @@ from candlepilot.domain.models import TradingMode
 DEFAULT_DATABASE_URL = "sqlite+aiosqlite:///./candlepilot.db"
 # Single source of truth for the .env location, shared with the console editor.
 ENV_FILE_VARIABLE = "CANDLEPILOT_ENV_FILE"
+# Keys this process took from .env rather than from a real environment variable.
+# A restart must drop these before re-exec, otherwise the inherited old values
+# would win over the rewritten .env (load_dotenv never overrides real vars).
+DOTENV_INJECTED_KEYS: set[str] = set()
 DEFAULT_PROVIDER_ALIASES = {
     "codex": "codex-auth",
     "codex-auth": "codex-auth",
@@ -74,6 +78,7 @@ def load_dotenv(path: Path | None = None) -> None:
             value = value[1:-1]
         if key and key not in os.environ:
             os.environ[key] = value
+            DOTENV_INJECTED_KEYS.add(key)
 
 
 def _parse_cadences(raw: str | None) -> tuple[str, ...]:

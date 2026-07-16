@@ -1032,6 +1032,81 @@ export default function App() {
   );
 }
 
+function RestartPanel({
+  busy,
+  setBusy,
+  setError,
+}: {
+  busy: string | null;
+  setBusy: (value: string | null) => void;
+  setError: (value: string | null) => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const restart = useCallback(async () => {
+    setBusy("restart");
+    setError(null);
+    setNote("正在重启后端…");
+    try {
+      await api<{ restarting: boolean }>("/api/restart", { method: "POST" });
+    } catch (reason) {
+      setBusy(null);
+      setConfirming(false);
+      setNote(null);
+      setError(reason instanceof Error ? reason.message : String(reason));
+      return;
+    }
+    // The process is replaced, so poll until the new one answers, then reload
+    // to pick up the fresh state.
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      try {
+        const response = await fetch("/api/health/live", { cache: "no-store" });
+        if (response.ok) {
+          setNote("后端已重启，正在刷新…");
+          window.location.reload();
+          return;
+        }
+      } catch {
+        // Expected while the old process is gone and the new one is binding.
+      }
+    }
+    setBusy(null);
+    setConfirming(false);
+    setNote(null);
+    setError("后端在 30 秒内没有恢复，请检查启动它的终端。");
+  }, [setBusy, setError]);
+
+  return (
+    <div className="settings-section">
+      <h4 className="account-subhead">重启后端</h4>
+      <div className="settings-actions">
+        {!confirming ? (
+          <button className="compact" disabled={busy !== null} onClick={() => setConfirming(true)}>
+            重启后端
+          </button>
+        ) : (
+          <>
+            <span className="history-warn">确认重启？引擎必须已停止；重启期间页面会短暂断开。</span>
+            <button className="compact" disabled={busy !== null} onClick={restart}>
+              {busy === "restart" ? "重启中…" : "确认重启"}
+            </button>
+            <button className="text-button" disabled={busy !== null} onClick={() => setConfirming(false)}>
+              取消
+            </button>
+          </>
+        )}
+        {note && <span className="settings-saved">{note}</span>}
+      </div>
+      <small className="settings-hint">
+        用当前 .env 重新启动后端进程，让上面保存的设置生效。引擎运行中会被拒绝；
+        由 .env 注入的旧值会被清掉，但你在 shell 里 export 的变量仍然优先。
+      </small>
+    </div>
+  );
+}
+
 type ProviderDraft = CustomProvider & { api_key: string | null };
 
 function CustomProvidersPanel({
@@ -1246,6 +1321,7 @@ function SettingsPanel({
         保存只写入 <code>{payload.path}</code>，<strong>不会改变正在运行的进程</strong>；重启后生效。
         密钥只写不读：现有值仅显示掩码尾号，留空表示保持不变。shell 里 export 的同名变量在运行时优先级更高。
       </p>
+      <RestartPanel busy={busy} setBusy={setBusy} setError={setError} />
       <CustomProvidersPanel busy={busy} setBusy={setBusy} setError={setError} />
       {payload.sections.map((section) => (
         <div className="settings-section" key={section.title}>
