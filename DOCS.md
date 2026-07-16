@@ -2,7 +2,7 @@
 
 > 本文件是 CandlePilot 的**唯一权威功能文档**，记录系统当前的全部能力、接口与边界。
 > `STATUS.md` 与 `PLAN.md` 已弃用，后续变更只同步更新本文件。
-> 最后更新：2026-07-15（修复 Claude Provider 调用）
+> 最后更新：2026-07-16（增加自带 Base URL / API Key 的模型接入）
 
 ---
 
@@ -44,7 +44,7 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 
 ## 4. 功能详解
 
-### 4.1 LLM 接入（订阅认证，无 API Key）
+### 4.1 LLM 接入
 
 - **Codex Auth**：优先检测当前 ChatGPT App 与旧版 Codex App 的内置二进制
   （`/Applications/ChatGPT.app/...`、`/Applications/Codex.app/...`），不可用时依次回退到
@@ -56,9 +56,18 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
   模型调用 `ExitPlanMode` 或改为解释计划流程而非直接作答，耗尽单轮导致 `error_max_turns`）；
   Prompt 内联完整 `TradeIntent` JSON Schema（Claude 无 `--output-schema`，否则会臆造字段名）；
   Prompt 经 stdin 传入而非命令行参数（`--disallowedTools` 会贪婪吞掉后随的位置参数）。
+- **Custom API**：可通过 `.env` 自带 Base URL、API Key 与模型名，接入实现 OpenAI-compatible
+  `/chat/completions` 的服务。请求只发送统一 Prompt，不启用工具，并在本地严格校验返回的
+  `TradeIntent`；支持标准 token usage、缓存 token，以及服务端可选返回的单次成本。
+  外部地址必须使用 HTTPS，仅 `localhost` / `127.0.0.1` / `::1` 可使用 HTTP；禁止 URL 内嵌
+  凭据、query、fragment 和 HTTP 重定向，避免 Key 被明文传输或转发。该 Provider 不主动探测
+  `/models`，`doctor` 只报告配置是否完整，实际连通性由控制台「测试」显式验证。
 - **隔离与安全**：LLM 子进程运行在独立空临时目录，环境变量白名单
   （含 `USER`/`LOGNAME` 以支持 macOS 钥匙串读取 Claude 登录态），移除所有币安/API Key
   变量；禁用工具、MCP、网络；45 秒硬超时、单 Provider 并发 1、统一取消。
+- **API Key 边界**：Custom API Key 只从启动环境读取并以 `SecretStr` 留在后端内存；不通过
+  REST/WebSocket 返回，不写入数据库、审计详情或日志。Custom API 作为用户显式配置的外部
+  接收方会收到行情特征、组合状态和 Prompt，但不会收到币安凭据或其他环境变量。
 - **严格 Schema**：输出必须通过统一 `TradeIntent` Pydantic 校验，否则降级为 `HOLD`。
 - **主备切换**：控制台手动选择当前 Provider；可显式配置单次主备故障切换（默认关闭）。
 - **可选模型与推理强度**：Codex 传 `-m` / `-c model_reasoning_effort`，Claude 传
@@ -172,7 +181,8 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
   token 与 `total_cost_usd`。
 - **等效成本**：Claude 直接用 CLI 自带 `total_cost_usd`；Codex 经 **models.dev** 逐 token
   折算管线（`https://models.dev/api.json`，本地缓存 24h、离线回退，缓存读为输入子集、
-  支持长上下文分层）。
+  支持长上下文分层）；Custom API 仅在服务响应的 usage 明确提供 `cost` / `cost_usd` 时记录，
+  不根据未知后端的模型名猜测价格。
 - 订阅计划实际不按次计费，成本仅为**折算估算**；无法定价的模型显示为空。
 - `/api/metrics/providers` 聚合 1–720 小时窗口：调用量、错误率、平均/P95 延迟、
   模型分布、Token 用量、等效成本。
@@ -186,7 +196,7 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 | 标签页 | 面板 | 内容 |
 |---|---|---|
 | 总览 | 引擎控制（hero）| 系统状态、分析周期、每周期标的数、启动/停止/紧急熔断 |
-| 总览 | 01 模型认证 | Provider 选择、登录状态、模型与推理强度选择器、配置连通性测试 |
+| 总览 | 01 模型接入 | Codex/Claude/Custom API 选择、就绪状态、模型与推理强度选择器、配置连通性测试 |
 | 总览 | 02 硬风控边界 | 只读展示不可修改的风控参数 |
 | 总览 | 03 动态候选池 | 全市场扫描结果，可手动刷新 |
 | 总览 | 04 决策与风控 | 将 LLM 意图与对应硬风控结果合并为一条审计事件；可按放行、否决、HOLD、仅推理筛选并展开参数与原因 |
@@ -218,9 +228,12 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 | `CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS` | LLM 分析快照允许进入下单前行情刷新的最大年龄（秒，默认 30，必须为正整数）|
 | `CANDLEPILOT_CADENCES` | 逗号分隔的分析周期子集，默认 `5m,15m,30m` |
 | `CANDLEPILOT_CANDIDATES_PER_CYCLE` | 每周期分析候选池前 N 个标的，默认 5（范围 1–20）|
-| `CANDLEPILOT_DEFAULT_PROVIDER` | 启动时默认选中的 LLM Provider；支持 `codex` / `claude-code`（也接受内部名 `codex-auth` / `claude-code-auth`），留空则在控制台手动选择 |
+| `CANDLEPILOT_DEFAULT_PROVIDER` | 启动时默认选中的 LLM Provider；支持 `codex` / `claude-code` / `openai-compatible`（也接受相应内部名），留空则在控制台手动选择 |
 | `CANDLEPILOT_CODEX_MODEL` / `CANDLEPILOT_CODEX_REASONING_EFFORT` | Codex 模型 / 推理强度（minimal/low/medium/high）|
 | `CANDLEPILOT_CLAUDE_MODEL` / `CANDLEPILOT_CLAUDE_EFFORT` | Claude 模型 / 强度（low/medium/high/xhigh/max）|
+| `CANDLEPILOT_CUSTOM_LLM_BASE_URL` | OpenAI-compatible API 根地址（系统追加 `/chat/completions`）；外部仅 HTTPS，回环地址可 HTTP |
+| `CANDLEPILOT_CUSTOM_LLM_API_KEY` | Custom API Bearer Key；仅后端环境读取，绝不经 API、日志或数据库暴露 |
+| `CANDLEPILOT_CUSTOM_LLM_MODEL` / `CANDLEPILOT_CUSTOM_LLM_REASONING_EFFORT` | Custom API 模型名 / 可选强度（low/medium/high/xhigh）|
 | `BINANCE_TESTNET_API_KEY` / `BINANCE_TESTNET_API_SECRET` | 仅测试网模式需要 |
 
 ## 6. CLI 命令

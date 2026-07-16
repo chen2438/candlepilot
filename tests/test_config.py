@@ -73,6 +73,9 @@ def test_snapshot_age_default_override_and_validation(monkeypatch) -> None:
         ("claude", "claude-code-auth"),
         ("Claude Code", "claude-code-auth"),
         ("claude-code-auth", "claude-code-auth"),
+        ("custom", "openai-compatible"),
+        ("custom-api", "openai-compatible"),
+        ("openai-compatible", "openai-compatible"),
     ],
 )
 def test_default_provider_aliases(monkeypatch, configured, expected) -> None:
@@ -113,3 +116,17 @@ def test_testnet_secrets_are_wrapped(monkeypatch) -> None:
     assert settings.binance_testnet_api_key is not None
     assert settings.binance_testnet_api_key.get_secret_value() == "key-value"
     assert "secret-value" not in repr(settings)
+
+
+def test_custom_llm_settings_wrap_key_and_read_endpoint(monkeypatch) -> None:
+    monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_BASE_URL", "https://llm.example/v1")
+    monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_API_KEY", "custom-secret")
+    monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_MODEL", "vendor-model")
+    monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_REASONING_EFFORT", "high")
+    settings = Settings.from_env()
+    assert settings.custom_llm_base_url == "https://llm.example/v1"
+    assert settings.custom_llm_api_key is not None
+    assert settings.custom_llm_api_key.get_secret_value() == "custom-secret"
+    assert settings.custom_llm_model == "vendor-model"
+    assert settings.custom_llm_reasoning_effort == "high"
+    assert "custom-secret" not in repr(settings)

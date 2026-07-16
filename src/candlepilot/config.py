@@ -18,6 +18,9 @@ DEFAULT_PROVIDER_ALIASES = {
     "claude code": "claude-code-auth",
     "claude-code": "claude-code-auth",
     "claude-code-auth": "claude-code-auth",
+    "custom": "openai-compatible",
+    "custom-api": "openai-compatible",
+    "openai-compatible": "openai-compatible",
 }
 
 
@@ -112,6 +115,10 @@ class Settings:
     codex_reasoning_effort: str | None = None
     claude_model: str | None = None
     claude_effort: str | None = None
+    custom_llm_base_url: str | None = None
+    custom_llm_api_key: SecretStr | None = None
+    custom_llm_model: str | None = None
+    custom_llm_reasoning_effort: str | None = None
     binance_testnet_api_key: SecretStr | None = None
     binance_testnet_api_secret: SecretStr | None = None
 
@@ -138,6 +145,15 @@ class Settings:
             codex_reasoning_effort=os.getenv("CANDLEPILOT_CODEX_REASONING_EFFORT") or None,
             claude_model=os.getenv("CANDLEPILOT_CLAUDE_MODEL") or None,
             claude_effort=os.getenv("CANDLEPILOT_CLAUDE_EFFORT") or None,
+            custom_llm_base_url=os.getenv("CANDLEPILOT_CUSTOM_LLM_BASE_URL") or None,
+            custom_llm_api_key=SecretStr(os.environ["CANDLEPILOT_CUSTOM_LLM_API_KEY"])
+            if os.getenv("CANDLEPILOT_CUSTOM_LLM_API_KEY")
+            else None,
+            custom_llm_model=os.getenv("CANDLEPILOT_CUSTOM_LLM_MODEL") or None,
+            custom_llm_reasoning_effort=os.getenv(
+                "CANDLEPILOT_CUSTOM_LLM_REASONING_EFFORT"
+            )
+            or None,
             binance_testnet_api_key=SecretStr(os.environ["BINANCE_TESTNET_API_KEY"])
             if os.getenv("BINANCE_TESTNET_API_KEY")
             else None,

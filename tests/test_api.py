@@ -4,6 +4,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from candlepilot.api import create_app
 from candlepilot.application.engine import TradingEngine
@@ -222,6 +223,46 @@ def test_default_provider_is_selected_from_settings(tmp_path: Path) -> None:
     )
 
     assert application.state.engine.selected_provider == "api-fixture"
+    asyncio.run(database.close())
+
+
+def test_custom_provider_status_never_returns_endpoint_or_key(tmp_path: Path) -> None:
+    settings = Settings(
+        custom_llm_base_url="https://private.example/v1",
+        custom_llm_api_key=SecretStr("private-api-key"),
+        custom_llm_model="vendor-model",
+    )
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'custom-provider.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.PAPER,
+        providers=ProviderRegistry.from_settings(settings),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+
+    async def no_pricing(_path):
+        return None
+
+    application = create_app(
+        settings=settings,
+        database=database,
+        market=market,  # type: ignore[arg-type]
+        engine=engine,
+        pricing_loader=no_pricing,
+    )
+    with TestClient(application) as client:
+        response = client.get("/api/providers")
+        assert response.status_code == 200
+        rendered = response.text
+        custom = next(
+            item for item in response.json() if item["provider"] == "openai-compatible"
+        )
+        assert custom["available"] is True
+        assert custom["authenticated"] is True
+        assert custom["model"] == "vendor-model"
+        assert "private-api-key" not in rendered
+        assert "private.example" not in rendered
     asyncio.run(database.close())
 
 

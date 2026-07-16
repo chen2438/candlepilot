@@ -64,7 +64,7 @@ const HISTORY_CATEGORIES: Array<{ key: string; label: string; hint: string }> = 
 type TabKey = "overview" | "account" | "backtest" | "operations" | "data";
 
 const TABS: Array<{ key: TabKey; label: string; meta: string }> = [
-  { key: "overview", label: "总览", meta: "引擎 · 认证 · 候选 · 决策" },
+  { key: "overview", label: "总览", meta: "引擎 · 接入 · 候选 · 决策" },
   { key: "account", label: "账户", meta: "持仓 · 订单" },
   { key: "backtest", label: "回测", meta: "重放已审计决策" },
   { key: "operations", label: "运维", meta: "模型 · 测试网" },
@@ -74,6 +74,21 @@ const TABS: Array<{ key: TabKey; label: string; meta: string }> = [
 function providerLabel(name: string): string {
   if (name === "codex-auth") return "Codex Auth";
   if (name === "claude-code-auth") return "Claude Code Auth";
+  if (name === "openai-compatible") return "Custom API";
+  return name;
+}
+
+function providerIcon(name: string): string {
+  if (name === "codex-auth") return "CX";
+  if (name === "claude-code-auth") return "CC";
+  if (name === "openai-compatible") return "API";
+  return "AI";
+}
+
+function providerConfigLabel(name: string): string {
+  if (name === "codex-auth") return "Codex";
+  if (name === "claude-code-auth") return "Claude";
+  if (name === "openai-compatible") return "Custom API";
   return name;
 }
 
@@ -519,7 +534,7 @@ export default function App() {
 
         <section className="grid">
           <article className="panel provider-panel">
-            <PanelTitle code="01" title="模型认证" meta="手动路由" />
+            <PanelTitle code="01" title="模型接入" meta="手动路由" />
             <div className="provider-list">
               {providers.map((provider) => (
                 <button
@@ -529,7 +544,7 @@ export default function App() {
                   onClick={() => act("provider", "/api/providers/select", { name: provider.provider })}
                 >
                   <span className={`provider-icon ${provider.authenticated ? "ready" : ""}`}>
-                    {provider.provider.startsWith("codex") ? "CX" : "CC"}
+                    {providerIcon(provider.provider)}
                   </span>
                   <span className="provider-text">
                     <strong>{providerLabel(provider.provider)}</strong>
@@ -545,7 +560,7 @@ export default function App() {
               <span>当前路由</span><strong>{activeProvider ? providerLabel(activeProvider.provider) : "未选择"}</strong>
             </div>
             <div className="provider-config">
-              <div className="provider-config-title"><span>模型与推理强度</span><small>{status.running ? "运行时锁定" : "留空=CLI 默认"}</small></div>
+              <div className="provider-config-title"><span>模型与推理强度</span><small>{status.running ? "运行时锁定" : "留空=Provider 默认"}</small></div>
               {providers.map((provider) => {
                 const options = provider.model_options ?? [];
                 const model = configDraft[provider.provider]?.model ?? provider.model ?? "";
@@ -557,7 +572,7 @@ export default function App() {
                   setConfigDraft((current) => ({ ...current, [provider.provider]: { ...draft, ...next } }));
                 return (
                   <div className="provider-config-row" key={provider.provider}>
-                    <span className="config-name">{provider.provider.startsWith("codex") ? "Codex" : "Claude"}</span>
+                    <span className="config-name">{providerConfigLabel(provider.provider)}</span>
                     <div className="config-model-cell">
                       <select
                         value={custom ? "__custom__" : model}

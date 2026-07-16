@@ -83,13 +83,26 @@ candlepilot serve
 `candlepilot` 启动时会自动读取当前目录的 `.env`（`doctor`、`serve`、`acceptance` 都适用），
 无需手动 `source`。已在 shell 中 `export` 的变量优先级更高，会覆盖 `.env`。
 
-浏览器访问 [http://127.0.0.1:8000](http://127.0.0.1:8000)。在控制台选择已认证
-Provider，按需选择要分析的决策周期（1m/5m/15m 的任意子集，默认全部）和每周期
+浏览器访问 [http://127.0.0.1:8000](http://127.0.0.1:8000)。在控制台选择已就绪的
+Provider，按需选择要分析的决策周期（5m/15m/30m 的任意子集，默认全部）和每周期
 分析的候选标的数（默认前 5，范围 1–20），刷新候选池，然后启动引擎。启动后调度器
 只对齐并运行被选中的 K 线周期，且每周期只评估排名靠前的 N 个标的。控制台按
 总览 / 账户 / 回测 / 运维 / 数据 五个标签页组织，实时状态推送在切换标签时保持不断。
 
 `doctor` 会检查 LLM 登录状态和币安只读公共接口，不会下单。
+
+除 Codex/Claude 订阅认证外，也可在被 Git 忽略的 `.env` 中配置自带 Key 的
+OpenAI-compatible Chat Completions 服务：
+
+```bash
+CANDLEPILOT_CUSTOM_LLM_BASE_URL=https://provider.example/v1
+CANDLEPILOT_CUSTOM_LLM_API_KEY=...
+CANDLEPILOT_CUSTOM_LLM_MODEL=your-model-id
+CANDLEPILOT_DEFAULT_PROVIDER=openai-compatible
+```
+
+外部 Base URL 必须使用 HTTPS；本机回环服务可用 HTTP。Key 只由后端从环境变量读取，
+不会通过控制台/API 回传或写入日志、数据库。配置后可在控制台点击「测试」验证实际调用。
 
 ## 测试网
 

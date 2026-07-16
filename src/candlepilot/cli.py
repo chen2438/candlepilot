@@ -26,7 +26,7 @@ from candlepilot.storage.database import AuditRepository, Database
 
 async def _doctor() -> int:
     settings = Settings.from_env()
-    providers = await ProviderRegistry().health()
+    providers = await ProviderRegistry.from_settings(settings).health()
     market: dict[str, Any]
     try:
         async with BinancePublicClient() as client:

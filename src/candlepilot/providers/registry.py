@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 from candlepilot.domain.models import ProviderHealth
 from candlepilot.providers.base import LLMProvider
 from candlepilot.providers.cli import ClaudeCodeAuthProvider, CodexAuthProvider
+from candlepilot.providers.openai_compatible import OpenAICompatibleProvider
 
 if TYPE_CHECKING:
     from candlepilot.config import Settings
@@ -29,6 +30,13 @@ class ProviderRegistry:
                     model=settings.claude_model,
                     reasoning_effort=settings.claude_effort,
                 ),
+                OpenAICompatibleProvider(
+                    timeout=settings.inference_timeout_seconds,
+                    base_url=settings.custom_llm_base_url,
+                    api_key=settings.custom_llm_api_key,
+                    model=settings.custom_llm_model,
+                    reasoning_effort=settings.custom_llm_reasoning_effort,
+                ),
             ]
         )
 
@@ -44,4 +52,3 @@ class ProviderRegistry:
     @property
     def names(self) -> tuple[str, ...]:
         return tuple(self._providers)
-
