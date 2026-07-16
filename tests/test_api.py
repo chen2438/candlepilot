@@ -66,9 +66,7 @@ class ApiMarket:
         return None
 
     async def historical_klines(self, symbol, interval, start, end, *, max_candles=10_000):
-        step = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000}[
-            interval
-        ]
+        step = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000}[interval]
         start_ms = int(start.timestamp() * 1000)
         return [
             [start_ms + offset * step, "100", "101", "99", "100", "10"]
@@ -81,9 +79,7 @@ class ApiMarket:
 
 class LLMReplayMarket(ApiMarket):
     async def historical_klines(self, symbol, interval, start, end, *, max_candles=10_000):
-        step = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000}[
-            interval
-        ]
+        step = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000}[interval]
         start_ms = int(start.timestamp() * 1000)
         return [
             [
@@ -170,11 +166,10 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
             "pricing_source": None,
             "providers": [],
         }
+        assert client.get("/api/metrics/run-session").json()["state"] == "none"
         assert client.get("/api/metrics/providers?hours=0").status_code == 422
         assert client.post("/api/engine/start").status_code == 409
-        assert client.post(
-            "/api/providers/select", json={"name": "api-fixture"}
-        ).status_code == 200
+        assert client.post("/api/providers/select", json={"name": "api-fixture"}).status_code == 200
         assert client.post("/api/engine/start").json()["running"] is True
         universe = client.post("/api/universe/refresh").json()
         assert universe[0]["symbol"] == "BTCUSDT"
@@ -188,10 +183,21 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
                     "test-model",
                     timedelta(milliseconds=1),
                     "{}",
-                    {},
+                    {
+                        "input_tokens": 120,
+                        "cached_input_tokens": 20,
+                        "output_tokens": 30,
+                        "total_tokens": 150,
+                        "cost_usd": 0.004,
+                    },
                 )
             )
         )
+        running_usage = client.get("/api/metrics/run-session").json()
+        assert running_usage["state"] == "running"
+        assert running_usage["call_count"] == 1
+        assert running_usage["total_tokens"] == 150
+        assert running_usage["equivalent_cost_usd"] == 0.004
         with client.websocket_connect("/ws/events") as socket:
             event = socket.receive_json()
             assert event["type"] == "status"
@@ -203,6 +209,24 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         stopped = client.post("/api/engine/emergency-stop").json()
         assert stopped["running"] is False
         assert stopped["emergency_locked"] is True
+        completed_usage = client.get("/api/metrics/run-session").json()
+        assert completed_usage["state"] == "completed"
+        assert completed_usage["total_tokens"] == 150
+
+        # Inferences created after the stop boundary cannot change the last run.
+        asyncio.run(
+            engine.audit.record_inference(
+                ProviderResult(
+                    TradeIntent.hold("ETHUSDT", "5m", "outside session"),
+                    "api-fixture",
+                    "test-model",
+                    timedelta(milliseconds=1),
+                    "{}",
+                    {"total_tokens": 999, "cost_usd": 1},
+                )
+            )
+        )
+        assert client.get("/api/metrics/run-session").json()["total_tokens"] == 150
     asyncio.run(database.close())
 
 
@@ -255,9 +279,7 @@ def test_custom_provider_status_never_returns_endpoint_or_key(tmp_path: Path) ->
         response = client.get("/api/providers")
         assert response.status_code == 200
         rendered = response.text
-        custom = next(
-            item for item in response.json() if item["provider"] == "openai-compatible"
-        )
+        custom = next(item for item in response.json() if item["provider"] == "openai-compatible")
         assert custom["available"] is True
         assert custom["authenticated"] is True
         assert custom["model"] == "vendor-model"
@@ -506,7 +528,11 @@ def test_provider_metrics_prices_codex_via_injected_catalog(tmp_path: Path) -> N
     from candlepilot.providers.pricing import parse_models_dev
 
     catalog = parse_models_dev(
-        {"openai": {"models": {"gpt-5.6-sol": {"cost": {"input": 5, "output": 30, "cache_read": 0.5}}}}}
+        {
+            "openai": {
+                "models": {"gpt-5.6-sol": {"cost": {"input": 5, "output": 30, "cache_read": 0.5}}}
+            }
+        }
     )
 
     async def loader(_cache_dir):
@@ -593,24 +619,32 @@ def test_provider_config_sets_model_and_reasoning_effort(tmp_path: Path) -> None
 
         # Clearing sends empty strings back to null.
         cleared = client.post(
-            "/api/providers/config", json={"name": "api-fixture", "model": "", "reasoning_effort": ""}
+            "/api/providers/config",
+            json={"name": "api-fixture", "model": "", "reasoning_effort": ""},
         ).json()[0]
         assert cleared["model"] is None
         assert cleared["reasoning_effort"] is None
 
-        assert client.post(
-            "/api/providers/config", json={"name": "api-fixture", "reasoning_effort": "bogus"}
-        ).status_code == 422
-        assert client.post(
-            "/api/providers/config", json={"name": "missing", "model": "x"}
-        ).status_code == 404
+        assert (
+            client.post(
+                "/api/providers/config", json={"name": "api-fixture", "reasoning_effort": "bogus"}
+            ).status_code
+            == 422
+        )
+        assert (
+            client.post("/api/providers/config", json={"name": "missing", "model": "x"}).status_code
+            == 404
+        )
 
         # Locked while the engine runs.
         client.post("/api/providers/select", json={"name": "api-fixture"})
         client.post("/api/engine/start")
-        assert client.post(
-            "/api/providers/config", json={"name": "api-fixture", "model": "y"}
-        ).status_code == 409
+        assert (
+            client.post(
+                "/api/providers/config", json={"name": "api-fixture", "model": "y"}
+            ).status_code
+            == 409
+        )
     asyncio.run(database.close())
 
 
@@ -691,7 +725,10 @@ def test_history_clear_removes_selected_categories(tmp_path: Path) -> None:
         market=market,  # type: ignore[arg-type]
     )
     app = create_app(
-        settings=Settings(data_dir=tmp_path), database=database, market=market, engine=engine  # type: ignore[arg-type]
+        settings=Settings(data_dir=tmp_path),
+        database=database,
+        market=market,
+        engine=engine,  # type: ignore[arg-type]
     )
     intent = TradeIntent.hold("BTCUSDT", "5m", "seed")
     with TestClient(app) as client:
@@ -718,9 +755,7 @@ def test_history_clear_removes_selected_categories(tmp_path: Path) -> None:
         assert "market_cache" in cleared
         assert client.get("/api/signals").json() == []
 
-        assert client.post(
-            "/api/history/clear", json={"categories": ["bogus"]}
-        ).status_code == 422
+        assert client.post("/api/history/clear", json={"categories": ["bogus"]}).status_code == 422
         assert client.post("/api/history/clear", json={"categories": []}).status_code == 422
     asyncio.run(database.close())
 
@@ -867,9 +902,7 @@ def test_backtest_run_is_persisted_and_listed(tmp_path: Path) -> None:
         assert run["symbol"] == "BTCUSDT"
         assert len(run["result"]["trades"]) == 1
         assert run["result"]["total_return"] != "0"
-        assert run["result"]["provenance"]["data_version"].startswith(
-            "backtest-candles-v1:sha256:"
-        )
+        assert run["result"]["provenance"]["data_version"].startswith("backtest-candles-v1:sha256:")
 
         listed = client.get("/api/backtests").json()
         assert listed[0]["id"] == run["id"]

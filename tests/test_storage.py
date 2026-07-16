@@ -109,9 +109,7 @@ def test_execution_and_risk_queries_filter_and_order(tmp_path: Path) -> None:
             "ETHUSDT",
             ExecutionReport(client_order_id="cp-2", status="NEW"),
         )
-        await repository.record_risk(
-            "BTCUSDT", RiskDecision(accepted=True, reason="within limits")
-        )
+        await repository.record_risk("BTCUSDT", RiskDecision(accepted=True, reason="within limits"))
         await repository.record_risk(
             "ETHUSDT", RiskDecision(accepted=False, reason="missing stop"), inference_id=7
         )
@@ -293,7 +291,11 @@ def test_provider_metrics_price_codex_via_catalog(tmp_path: Path) -> None:
     from candlepilot.providers.pricing import parse_models_dev
 
     catalog = parse_models_dev(
-        {"openai": {"models": {"gpt-5.6-sol": {"cost": {"input": 5, "output": 30, "cache_read": 0.5}}}}}
+        {
+            "openai": {
+                "models": {"gpt-5.6-sol": {"cost": {"input": 5, "output": 30, "cache_read": 0.5}}}
+            }
+        }
     )
 
     async def scenario():
@@ -325,6 +327,64 @@ def test_provider_metrics_price_codex_via_catalog(tmp_path: Path) -> None:
     expected = 600 * 5e-6 + 400 * 5e-7 + 200 * 3e-5
     assert abs(codex["cost_usd_total"] - expected) < 1e-12
     assert codex["tokens_total"] == 1200
+
+
+def test_run_session_metrics_respect_id_boundaries_and_complete_cost(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'run-session.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        intent = TradeIntent.hold("BTCUSDT", "5m", "test")
+
+        async def record(usage: dict) -> int:
+            return await repository.record_inference(
+                ProviderResult(
+                    intent=intent,
+                    provider="claude-code-auth",
+                    model="claude-test",
+                    duration=timedelta(milliseconds=100),
+                    raw_output="{}",
+                    usage=usage,
+                )
+            )
+
+        await record({"total_tokens": 999, "cost_usd": 1})
+        start_id = await repository.latest_inference_id()
+        await record(
+            {
+                "input_tokens": 100,
+                "cache_read_input_tokens": 40,
+                "cache_creation_input_tokens": 10,
+                "output_tokens": 20,
+                "total_tokens": 120,
+                "cost_usd": 0.01,
+            }
+        )
+        end_id = await repository.latest_inference_id()
+        await record({"input_tokens": 50, "output_tokens": 5, "error": "fixture"})
+        completed = await repository.run_session_metrics(start_id, end_at_id=end_id)
+        running = await repository.run_session_metrics(start_id)
+        await database.close()
+        return completed, running
+
+    completed, running = asyncio.run(scenario())
+    assert completed == {
+        "call_count": 1,
+        "error_count": 0,
+        "input_tokens": 100,
+        "cached_input_tokens": 40,
+        "cache_creation_input_tokens": 10,
+        "output_tokens": 20,
+        "total_tokens": 120,
+        "priced_call_count": 1,
+        "cost_complete": True,
+        "equivalent_cost_usd": 0.01,
+    }
+    assert running["call_count"] == 2
+    assert running["error_count"] == 1
+    assert running["total_tokens"] == 175
+    assert running["cost_complete"] is False
+    assert running["equivalent_cost_usd"] is None
 
 
 def test_clear_history_is_selective_and_preserves_runtime_state(tmp_path: Path) -> None:

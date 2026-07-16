@@ -223,9 +223,7 @@ def _backtest_provenance(
     }
 
 
-def _status(
-    engine: TradingEngine, scheduler: TradingScheduler | None = None
-) -> dict[str, Any]:
+def _status(engine: TradingEngine, scheduler: TradingScheduler | None = None) -> dict[str, Any]:
     paper_feed = scheduler.paper_feed if scheduler is not None else None
     testnet_feed = scheduler.testnet_feed if scheduler is not None else None
     return {
@@ -239,9 +237,7 @@ def _status(
         "backup_provider": engine.backup_provider,
         "active_cadences": list(engine.active_cadences),
         "supported_cadences": list(SUPPORTED_CADENCES),
-        "candidates_per_cycle": scheduler.candidates_per_cycle
-        if scheduler is not None
-        else None,
+        "candidates_per_cycle": scheduler.candidates_per_cycle if scheduler is not None else None,
         "max_candidates_per_cycle": MAX_CANDIDATES_PER_CYCLE,
         "candidate_count": len(engine.candidates),
         "universe_refreshed_at": engine.universe_refreshed_at.isoformat()
@@ -476,9 +472,7 @@ def create_app(
         end: datetime,
         limit: int,
     ) -> list[dict[str, Any]]:
-        cached = await asyncio.to_thread(
-            history_cache.load, symbol, cadence, start, end, limit
-        )
+        cached = await asyncio.to_thread(history_cache.load, symbol, cadence, start, end, limit)
         if cached is not None:
             return cached
         rows, events = await asyncio.gather(
@@ -486,9 +480,7 @@ def create_app(
             market.historical_funding_rates(symbol, start, end),
         )
         candles = build_backtest_candles(rows, events, cadence)
-        await asyncio.to_thread(
-            history_cache.store, symbol, cadence, start, end, limit, candles
-        )
+        await asyncio.to_thread(history_cache.store, symbol, cadence, start, end, limit, candles)
         return candles
 
     @app.get("/api/status")
@@ -623,6 +615,40 @@ def create_app(
             "providers": await engine.audit.provider_metrics(hours, catalog=catalog),
         }
 
+    @app.get("/api/metrics/run-session")
+    async def get_run_session_metrics() -> dict[str, Any]:
+        if engine.run_started_at is None or engine.run_start_inference_id is None:
+            return {
+                "state": "none",
+                "started_at": None,
+                "ended_at": None,
+                "duration_seconds": 0,
+                "call_count": 0,
+                "error_count": 0,
+                "input_tokens": 0,
+                "cached_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "priced_call_count": 0,
+                "cost_complete": True,
+                "equivalent_cost_usd": 0.0,
+            }
+        ended_at = None if engine.running else engine.run_ended_at
+        measured_at = ended_at or datetime.now(UTC)
+        metrics = await engine.audit.run_session_metrics(
+            engine.run_start_inference_id,
+            end_at_id=None if engine.running else engine.run_end_inference_id,
+            catalog=await pricing_catalog(),
+        )
+        return {
+            "state": "running" if engine.running else "completed",
+            "started_at": engine.run_started_at,
+            "ended_at": ended_at,
+            "duration_seconds": max(0, int((measured_at - engine.run_started_at).total_seconds())),
+            **metrics,
+        }
+
     @app.get("/api/metrics/runtime")
     async def get_runtime_metrics() -> dict[str, Any]:
         return operational_metrics.snapshot()
@@ -667,9 +693,7 @@ def create_app(
         valid = db_categories | {"market_cache", "pricing_cache"}
         unknown = sorted(set(request.categories) - valid)
         if unknown:
-            raise HTTPException(
-                status_code=422, detail=f"unknown categories: {', '.join(unknown)}"
-            )
+            raise HTTPException(status_code=422, detail=f"unknown categories: {', '.join(unknown)}")
         selected = set(request.categories)
         cleared: dict[str, int] = {}
         db_selected = selected & db_categories
@@ -733,8 +757,8 @@ def create_app(
 
     @app.post("/api/engine/stop")
     async def stop_engine() -> dict[str, Any]:
-        engine.stop()
         await scheduler.stop()
+        await engine.stop()
         return _status(engine, scheduler)
 
     @app.post("/api/engine/emergency-stop")
@@ -1002,9 +1026,7 @@ def create_app(
             positions: list[dict[str, Any]] = []
             reconciliation = engine.testnet_reconciliation
             unprotected = (
-                set(reconciliation.unprotected_symbols)
-                if reconciliation is not None
-                else None
+                set(reconciliation.unprotected_symbols) if reconciliation is not None else None
             )
             for item in account.get("positions", []):
                 amount = Decimal(str(item.get("positionAmt", "0")))
@@ -1046,9 +1068,7 @@ def create_app(
         return [_json_value(item) for item in engine.paper_executor.position_snapshots()]
 
     @app.get("/api/orders")
-    async def get_orders(
-        limit: int = 100, status: str | None = None
-    ) -> list[dict[str, Any]]:
+    async def get_orders(limit: int = 100, status: str | None = None) -> list[dict[str, Any]]:
         if not 1 <= limit <= 500:
             raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
         return await engine.audit.recent_executions(limit, status=status)
@@ -1082,9 +1102,7 @@ def create_app(
             "provider": outcome.provider,
             "intent": outcome.intent.model_dump(mode="json"),
             "risk": outcome.risk.model_dump(mode="json"),
-            "execution": outcome.execution.model_dump(mode="json")
-            if outcome.execution
-            else None,
+            "execution": outcome.execution.model_dump(mode="json") if outcome.execution else None,
         }
 
     @app.get("/api/backtests")
@@ -1107,8 +1125,7 @@ def create_app(
         mismatched = [
             replay
             for replay in request.decisions
-            if replay.intent.symbol != request.symbol
-            or replay.intent.cadence != request.cadence
+            if replay.intent.symbol != request.symbol or replay.intent.cadence != request.cadence
         ]
         if mismatched:
             raise HTTPException(
@@ -1138,9 +1155,7 @@ def create_app(
                 load_backtest_candles(
                     symbol, request.cadence, request.start, request.end, request.limit
                 ),
-                engine.audit.intents_between(
-                    symbol, request.cadence, request.start, request.end
-                ),
+                engine.audit.intents_between(symbol, request.cadence, request.start, request.end),
             )
             candles = [_candle_from_payload(payload) for payload in candle_payloads]
             decisions = align_cached_intents(
@@ -1167,9 +1182,7 @@ def create_app(
             candles,
             prompt_versions=[item["provenance"].get("prompt_version") for item in records],
             models=[item.get("model") for item in records],
-            provider_versions=[
-                item["provenance"].get("provider_version") for item in records
-            ],
+            provider_versions=[item["provenance"].get("provider_version") for item in records],
         )
         serialized["replay"] = {
             "source": "cached_llm_decisions",
@@ -1246,8 +1259,7 @@ def create_app(
             decision
             for leg in request.legs
             for decision in leg.decisions
-            if decision.intent.symbol != leg.symbol
-            or decision.intent.cadence != leg.cadence
+            if decision.intent.symbol != leg.symbol or decision.intent.cadence != leg.cadence
         ]
         if mismatched:
             raise HTTPException(
@@ -1262,9 +1274,9 @@ def create_app(
             for leg in request.legs
         }
         try:
-            result = PortfolioBacktestEngine(
-                BacktestConfig(**request.config.model_dump())
-            ).run(legs)
+            result = PortfolioBacktestEngine(BacktestConfig(**request.config.model_dump())).run(
+                legs
+            )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         serialized = _json_value(asdict(result))
@@ -1291,14 +1303,10 @@ def create_app(
         last_decisions: list[dict[str, Any]] | None = None
         try:
             while True:
-                await websocket.send_json(
-                    {"type": "status", "data": _status(engine, scheduler)}
-                )
+                await websocket.send_json({"type": "status", "data": _status(engine, scheduler)})
                 decisions = await engine.audit.recent_decision_events(50)
                 if decisions != last_decisions:
-                    await websocket.send_json(
-                        {"type": "decisions", "data": _json_value(decisions)}
-                    )
+                    await websocket.send_json({"type": "decisions", "data": _json_value(decisions)})
                     last_decisions = decisions
                 await asyncio.sleep(2)
         except (WebSocketDisconnect, RuntimeError):

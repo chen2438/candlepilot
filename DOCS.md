@@ -199,6 +199,13 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 - 订阅计划实际不按次计费，成本仅为**折算估算**；无法定价的模型显示为空。
 - `/api/metrics/providers` 聚合 1–720 小时窗口：调用量、错误率、平均/P95 延迟、
   模型分布、Token 用量、等效成本。
+- 每次成功启动引擎都会建立新的运行会话，并以推理审计 ID 记录起止边界。控制台每 2 秒通过
+  `GET /api/metrics/run-session` 更新本次运行的时长、调用/错误数、输入/缓存/缓存写入/输出/总
+  Token 与等效成本；优雅停止会先结束调度任务再封存边界，紧急熔断也会封存边界。停止后继续
+  显示刚结束的会话，边界外的新推理不会混入。运行会话只保留在当前服务进程内，重启服务后
+  不尝试从历史记录猜测会话边界。
+- 会话内所有调用均可定价时才显示成本总额；若存在未知价格，只显示可定价调用数并将总成本
+  留空，避免把部分成本误报为完整成本。零调用会话的成本为 `$0.000000`。
 
 ### 4.10 控制台（白色浅色主题）
 
@@ -208,7 +215,7 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 
 | 标签页 | 面板 | 内容 |
 |---|---|---|
-| 总览 | 引擎控制（hero）| 系统状态、分析周期、每周期标的数、启动/停止/紧急熔断 |
+| 总览 | 引擎控制（hero）| 系统状态、分析周期、每周期标的数、启动/停止/紧急熔断；下方实时显示本次或上次运行的 Token、等效成本、调用数与时长 |
 | 总览 | 01 模型接入 | Codex/Claude/Custom API 选择、就绪状态、模型与推理强度选择器、配置连通性测试 |
 | 总览 | 02 硬风控边界 | 只读展示不可修改的风控参数 |
 | 总览 | 03 动态候选池 | 全市场扫描结果，可手动刷新 |
@@ -294,7 +301,8 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 `POST /api/backtests/replay`、`POST /api/backtests/llm`、`POST /api/backtests/portfolio`。
 
 **运维**：`GET /api/health/live`、`GET /api/health/ready`、`GET /api/metrics/runtime`、
-`GET /api/metrics/providers`、`GET /api/alerts`、`GET /api/alerts/history`。
+`GET /api/metrics/providers`、`GET /api/metrics/run-session`、`GET /api/alerts`、
+`GET /api/alerts/history`。
 
 **数据管理**：`POST /api/history/clear`。
 

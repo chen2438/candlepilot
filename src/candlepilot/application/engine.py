@@ -59,9 +59,7 @@ class TradingEngine:
         self.audit = audit
         self.market = market
         self.scanner = scanner or MarketScanner()
-        self.risk = risk or AggressiveRiskPolicy(
-            require_take_profit=mode == TradingMode.TESTNET
-        )
+        self.risk = risk or AggressiveRiskPolicy(require_take_profit=mode == TradingMode.TESTNET)
         self.paper_executor = paper_executor or PaperExecutor(state_store=audit)
         self.testnet_broker = testnet_broker
         self.selected_provider: str | None = None
@@ -75,6 +73,10 @@ class TradingEngine:
         self.testnet_reconciliation: ReconciliationReport | None = None
         self.candidates: list[Candidate] = []
         self.universe_refreshed_at: datetime | None = None
+        self.run_started_at: datetime | None = None
+        self.run_ended_at: datetime | None = None
+        self.run_start_inference_id: int | None = None
+        self.run_end_inference_id: int | None = None
 
     async def provider_health(self) -> list[ProviderHealth]:
         return await self.providers.health()
@@ -105,6 +107,8 @@ class TradingEngine:
         self.active_cadences = self._normalize_cadences(cadences)
 
     async def start(self) -> None:
+        if self.running:
+            raise RuntimeError("engine is already running")
         await self.restore_runtime_state()
         if self.emergency_locked:
             raise RuntimeError("engine is emergency locked")
@@ -123,15 +127,25 @@ class TradingEngine:
         health = await self.providers.get(self.selected_provider).health_check()
         if not health.available or not health.authenticated:
             raise RuntimeError(f"provider is unavailable: {health.detail}")
+        self.run_start_inference_id = await self.audit.latest_inference_id()
+        self.run_end_inference_id = None
+        self.run_started_at = datetime.now(UTC)
+        self.run_ended_at = None
         self.running = True
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
+        if self.running:
+            self.run_end_inference_id = await self.audit.latest_inference_id()
+            self.run_ended_at = datetime.now(UTC)
         self.running = False
 
     async def emergency_stop(self, *, now: datetime | None = None) -> None:
         now = now or datetime.now(UTC)
         if now.tzinfo is None:
             raise ValueError("emergency stop time must be timezone-aware")
+        if self.running:
+            self.run_end_inference_id = await self.audit.latest_inference_id()
+            self.run_ended_at = now
         self.running = False
         self.emergency_locked = True
         tomorrow = now.astimezone(UTC).date() + timedelta(days=1)
@@ -189,21 +203,16 @@ class TradingEngine:
             if Decimal(str(item.get("positionAmt", "0"))) != 0
         }
         return PortfolioState(
-            equity=account.get(
-                "totalMarginBalance", account.get("totalWalletBalance", "0")
-            ),
+            equity=account.get("totalMarginBalance", account.get("totalWalletBalance", "0")),
             available_balance=account.get("availableBalance", "0"),
             open_positions=len(positions),
             margin_used=account.get("totalInitialMargin", "0"),
             symbol_sides={
-                symbol: "LONG"
-                if Decimal(str(item["positionAmt"])) > 0
-                else "SHORT"
+                symbol: "LONG" if Decimal(str(item["positionAmt"])) > 0 else "SHORT"
                 for symbol, item in positions.items()
             },
             symbol_quantities={
-                symbol: abs(Decimal(str(item["positionAmt"])))
-                for symbol, item in positions.items()
+                symbol: abs(Decimal(str(item["positionAmt"]))) for symbol, item in positions.items()
             },
         )
 
@@ -244,9 +253,7 @@ class TradingEngine:
                     intent=intent,
                     provider=self.selected_provider,
                     model=primary_diagnostics.model if primary_diagnostics else provider.model,
-                    duration=primary_diagnostics.duration
-                    if primary_diagnostics
-                    else timedelta(0),
+                    duration=primary_diagnostics.duration if primary_diagnostics else timedelta(0),
                     raw_output=primary_diagnostics.raw_output
                     if primary_diagnostics
                     else str(primary_exc),
@@ -254,9 +261,7 @@ class TradingEngine:
                     prompt_version=primary_diagnostics.prompt_version
                     if primary_diagnostics
                     else None,
-                    data_version=primary_diagnostics.data_version
-                    if primary_diagnostics
-                    else None,
+                    data_version=primary_diagnostics.data_version if primary_diagnostics else None,
                     provider_version=primary_diagnostics.provider_version
                     if primary_diagnostics
                     else None,
@@ -272,8 +277,7 @@ class TradingEngine:
         evaluation_snapshot = snapshot
         evaluation_portfolio = portfolio
         intent_matches_snapshot = (
-            result.intent.symbol == snapshot.symbol
-            and result.intent.cadence == snapshot.cadence
+            result.intent.symbol == snapshot.symbol and result.intent.cadence == snapshot.cadence
         )
         if intent_matches_snapshot and result.intent.action != TradeAction.HOLD:
             analysis_age = (datetime.now(UTC) - snapshot.timestamp).total_seconds()
@@ -282,9 +286,7 @@ class TradingEngine:
                     accepted=False,
                     reason="analysis snapshot expired before pre-trade refresh",
                 )
-                await self.audit.record_risk(
-                    snapshot.symbol, rejection, inference_id=inference_id
-                )
+                await self.audit.record_risk(snapshot.symbol, rejection, inference_id=inference_id)
                 return DecisionOutcome(
                     intent=result.intent,
                     risk=rejection,
@@ -307,9 +309,7 @@ class TradingEngine:
                     accepted=False,
                     reason=f"pre-trade refresh failed: {type(exc).__name__}",
                 )
-                await self.audit.record_risk(
-                    snapshot.symbol, rejection, inference_id=inference_id
-                )
+                await self.audit.record_risk(snapshot.symbol, rejection, inference_id=inference_id)
                 return DecisionOutcome(
                     intent=result.intent,
                     risk=rejection,

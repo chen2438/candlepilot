@@ -159,6 +159,23 @@ export interface ProviderMetricsResponse {
   providers: ProviderMetric[];
 }
 
+export interface RunSessionMetrics {
+  state: "none" | "running" | "completed";
+  started_at: string | null;
+  ended_at: string | null;
+  duration_seconds: number;
+  call_count: number;
+  error_count: number;
+  input_tokens: number;
+  cached_input_tokens: number;
+  cache_creation_input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  priced_call_count: number;
+  cost_complete: boolean;
+  equivalent_cost_usd: number | null;
+}
+
 export interface TestnetAccountStatus {
   enabled: boolean;
   active: boolean;

@@ -110,7 +110,9 @@ class RuntimeStateRow(Base):
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[str] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC)
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
     )
 
 
@@ -121,7 +123,9 @@ class UserStreamEventRow(Base):
     event_type: Mapped[str] = mapped_column(String(32), index=True)
     symbol: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     event_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    transaction_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    transaction_time: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     payload_json: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
@@ -194,9 +198,7 @@ class Database:
     @staticmethod
     async def _apply_migrations(connection: AsyncConnection) -> None:
         current = await connection.scalar(
-            select(SchemaMigrationRow.version)
-            .order_by(SchemaMigrationRow.version.desc())
-            .limit(1)
+            select(SchemaMigrationRow.version).order_by(SchemaMigrationRow.version.desc()).limit(1)
         )
         for version, statements in MIGRATIONS:
             if current is not None and version <= current:
@@ -284,6 +286,69 @@ class AuditRepository:
                 )
         return row.id
 
+    async def latest_inference_id(self) -> int:
+        async with self.sessions() as session:
+            latest = await session.scalar(
+                select(InferenceRow.id).order_by(InferenceRow.id.desc()).limit(1)
+            )
+        return int(latest or 0)
+
+    async def run_session_metrics(
+        self,
+        start_after_id: int,
+        *,
+        end_at_id: int | None = None,
+        catalog: ModelPricingCatalog | None = None,
+    ) -> dict[str, Any]:
+        query = select(InferenceRow).where(InferenceRow.id > start_after_id)
+        if end_at_id is not None:
+            query = query.where(InferenceRow.id <= end_at_id)
+        query = query.order_by(InferenceRow.id.asc())
+        async with self.sessions() as session:
+            rows = (await session.scalars(query)).all()
+
+        totals = {
+            "input_tokens": 0,
+            "cached_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+        }
+        error_count = 0
+        cost_total = 0.0
+        priced_call_count = 0
+        for row in rows:
+            usage = json.loads(row.usage_json)
+            input_tokens = int(usage.get("input_tokens") or 0)
+            output_tokens = int(usage.get("output_tokens") or 0)
+            cached_input_tokens = int(
+                usage.get("cached_input_tokens") or usage.get("cache_read_input_tokens") or 0
+            )
+            totals["input_tokens"] += input_tokens
+            totals["cached_input_tokens"] += cached_input_tokens
+            totals["cache_creation_input_tokens"] += int(
+                usage.get("cache_creation_input_tokens") or 0
+            )
+            totals["output_tokens"] += output_tokens
+            totals["total_tokens"] += int(usage.get("total_tokens") or input_tokens + output_tokens)
+            if "error" in usage:
+                error_count += 1
+            cost = self._inference_cost(row, usage, catalog)
+            if cost is not None:
+                priced_call_count += 1
+                cost_total += cost
+
+        call_count = len(rows)
+        cost_complete = priced_call_count == call_count
+        return {
+            "call_count": call_count,
+            "error_count": error_count,
+            **totals,
+            "priced_call_count": priced_call_count,
+            "cost_complete": cost_complete,
+            "equivalent_cost_usd": cost_total if cost_complete else None,
+        }
+
     async def record_risk(
         self, symbol: str, decision: RiskDecision, *, inference_id: int | None = None
     ) -> int:
@@ -352,9 +417,7 @@ class AuditRepository:
             for row in rows
         ]
 
-    async def executions_between(
-        self, start: datetime, end: datetime
-    ) -> list[dict[str, Any]]:
+    async def executions_between(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
         async with self.sessions() as session:
             rows = (
                 await session.scalars(
@@ -378,9 +441,7 @@ class AuditRepository:
             for row in rows
         ]
 
-    async def risk_decisions_between(
-        self, start: datetime, end: datetime
-    ) -> list[dict[str, Any]]:
+    async def risk_decisions_between(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
         async with self.sessions() as session:
             rows = (
                 await session.scalars(
@@ -463,9 +524,7 @@ class AuditRepository:
         async with self.sessions() as session:
             rows = (
                 await session.scalars(
-                    select(UserStreamEventRow)
-                    .order_by(UserStreamEventRow.id.desc())
-                    .limit(limit)
+                    select(UserStreamEventRow).order_by(UserStreamEventRow.id.desc()).limit(limit)
                 )
             ).all()
         return [
@@ -506,9 +565,7 @@ class AuditRepository:
                 await session.delete(row)
 
     async def save_paper_state(self, state: dict[str, Any]) -> None:
-        await self.set_runtime_state(
-            "paper_account", json.dumps(state, separators=(",", ":"))
-        )
+        await self.set_runtime_state("paper_account", json.dumps(state, separators=(",", ":")))
 
     async def load_paper_state(self) -> dict[str, Any] | None:
         value = await self.get_runtime_state("paper_account")
@@ -524,17 +581,21 @@ class AuditRepository:
         results = []
         for row in rows:
             usage = json.loads(row.usage_json)
-            results.append({
-                "id": row.id,
-                "provider": row.provider,
-                "model": row.model,
-                "provenance": usage.get("_provenance", {}),
-                "intent": TradeIntent.model_validate_json(row.intent_json).model_dump(mode="json"),
-                "duration_ms": row.duration_ms,
-                "created_at": row.created_at.replace(tzinfo=UTC)
-                if row.created_at.tzinfo is None
-                else row.created_at,
-            })
+            results.append(
+                {
+                    "id": row.id,
+                    "provider": row.provider,
+                    "model": row.model,
+                    "provenance": usage.get("_provenance", {}),
+                    "intent": TradeIntent.model_validate_json(row.intent_json).model_dump(
+                        mode="json"
+                    ),
+                    "duration_ms": row.duration_ms,
+                    "created_at": row.created_at.replace(tzinfo=UTC)
+                    if row.created_at.tzinfo is None
+                    else row.created_at,
+                }
+            )
         return results
 
     async def recent_decision_events(self, limit: int = 100) -> list[dict[str, Any]]:
@@ -744,16 +805,18 @@ class AuditRepository:
         results = []
         for row in rows:
             usage = json.loads(row.usage_json)
-            results.append({
-                "id": row.id,
-                "provider": row.provider,
-                "model": row.model,
-                "provenance": usage.get("_provenance", {}),
-                "intent": TradeIntent.model_validate_json(row.intent_json),
-                "created_at": row.created_at.replace(tzinfo=UTC)
-                if row.created_at.tzinfo is None
-                else row.created_at,
-            })
+            results.append(
+                {
+                    "id": row.id,
+                    "provider": row.provider,
+                    "model": row.model,
+                    "provenance": usage.get("_provenance", {}),
+                    "intent": TradeIntent.model_validate_json(row.intent_json),
+                    "created_at": row.created_at.replace(tzinfo=UTC)
+                    if row.created_at.tzinfo is None
+                    else row.created_at,
+                }
+            )
         return results
 
     async def record_backtest(
@@ -785,9 +848,7 @@ class AuditRepository:
     @staticmethod
     def _backtest_dict(row: BacktestRow, *, detail: bool = True) -> dict[str, Any]:
         created_at = (
-            row.created_at.replace(tzinfo=UTC)
-            if row.created_at.tzinfo is None
-            else row.created_at
+            row.created_at.replace(tzinfo=UTC) if row.created_at.tzinfo is None else row.created_at
         )
         result = json.loads(row.result_json)
         if not detail:

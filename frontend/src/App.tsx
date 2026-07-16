@@ -11,6 +11,7 @@ import type {
   ProviderHealth,
   ProviderMetric,
   ProviderMetricsResponse,
+  RunSessionMetrics,
   TestnetAccountStatus,
 } from "./types";
 
@@ -36,6 +37,23 @@ const emptyStatus: EngineStatus = {
     last_backfill_at: null,
     last_error: null,
   },
+};
+
+const emptyRunSession: RunSessionMetrics = {
+  state: "none",
+  started_at: null,
+  ended_at: null,
+  duration_seconds: 0,
+  call_count: 0,
+  error_count: 0,
+  input_tokens: 0,
+  cached_input_tokens: 0,
+  cache_creation_input_tokens: 0,
+  output_tokens: 0,
+  total_tokens: 0,
+  priced_call_count: 0,
+  cost_complete: true,
+  equivalent_cost_usd: 0,
 };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -128,6 +146,7 @@ export default function App() {
   const [positions, setPositions] = useState<AccountPosition[]>([]);
   const [orders, setOrders] = useState<OrderRecord[]>([]);
   const [providerMetrics, setProviderMetrics] = useState<ProviderMetric[]>([]);
+  const [runSession, setRunSession] = useState<RunSessionMetrics>(emptyRunSession);
   const [testnetStatus, setTestnetStatus] = useState<TestnetAccountStatus | null>(null);
   const [operationsError, setOperationsError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -279,10 +298,15 @@ export default function App() {
     setOperationsError(failures.length ? failures.join("；") : null);
   }, []);
 
+  const refreshRunSession = useCallback(async () => {
+    setRunSession(await api<RunSessionMetrics>("/api/metrics/run-session"));
+  }, []);
+
   useEffect(() => {
     refresh().catch((reason: Error) => setError(reason.message));
     refreshAccount().catch((reason: Error) => setError(reason.message));
     refreshOperations().catch(() => undefined);
+    refreshRunSession().catch(() => undefined);
     const account = window.setInterval(() => {
       refreshAccount().catch(() => undefined);
       refreshOperations().catch(() => undefined);
@@ -290,6 +314,9 @@ export default function App() {
     const decisionFallback = window.setInterval(() => {
       refreshDecisions().catch(() => undefined);
     }, 15000);
+    const runUsage = window.setInterval(() => {
+      refreshRunSession().catch(() => undefined);
+    }, 2000);
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
     let socket: WebSocket | null = null;
     let reconnectTimer: number | null = null;
@@ -314,10 +341,11 @@ export default function App() {
       disposed = true;
       window.clearInterval(account);
       window.clearInterval(decisionFallback);
+      window.clearInterval(runUsage);
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       socket?.close();
     };
-  }, [refresh, refreshAccount, refreshDecisions, refreshOperations]);
+  }, [refresh, refreshAccount, refreshDecisions, refreshOperations, refreshRunSession]);
 
   const act = useCallback(async (name: string, path: string, body?: unknown) => {
     setBusy(name);
@@ -328,12 +356,13 @@ export default function App() {
         body: body === undefined ? undefined : JSON.stringify(body),
       });
       setStatus(next);
+      if (path.startsWith("/api/engine/")) await refreshRunSession();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setBusy(null);
     }
-  }, []);
+  }, [refreshRunSession]);
 
   const refreshUniverse = useCallback(async () => {
     setBusy("universe");
@@ -531,6 +560,8 @@ export default function App() {
             <button className="danger" disabled={busy !== null} onClick={() => act("kill", "/api/engine/emergency-stop")}>紧急熔断</button>
           </div>
         </section>
+
+        <RunUsage session={runSession} />
 
         <section className="grid">
           <article className="panel provider-panel">
@@ -786,6 +817,52 @@ export default function App() {
 
 function Metric({ label, value, suffix }: { label: string; value: string; suffix: string }) {
   return <div className="metric"><span>{label}</span><strong>{value}<small>{suffix}</small></strong></div>;
+}
+
+function formatDuration(seconds: number): string {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const rest = seconds % 60;
+  if (hours) return `${hours}h ${minutes}m ${rest}s`;
+  if (minutes) return `${minutes}m ${rest}s`;
+  return `${rest}s`;
+}
+
+function RunUsage({ session }: { session: RunSessionMetrics }) {
+  const active = session.state === "running";
+  const title = active ? "本次运行用量" : session.state === "completed" ? "上次运行用量" : "运行用量";
+  const cost = session.equivalent_cost_usd === null
+    ? "—"
+    : `$${session.equivalent_cost_usd.toFixed(6)}`;
+  return (
+    <section className={`run-usage panel ${active ? "active" : ""}`}>
+      <div className="run-usage-heading">
+        <div>
+          <span className={`run-state ${active ? "live" : ""}`}>
+            {active ? "LIVE" : session.state === "completed" ? "STOPPED" : "IDLE"}
+          </span>
+          <strong>{title}</strong>
+        </div>
+        <small>
+          {session.state === "none"
+            ? "启动引擎后开始统计"
+            : `${formatDuration(session.duration_seconds)} · ${session.call_count} 次调用${session.error_count ? ` · ${session.error_count} 次错误` : ""}`}
+        </small>
+      </div>
+      <div className="run-usage-metrics">
+        <span>输入 Token<strong>{session.input_tokens.toLocaleString()}</strong></span>
+        <span>缓存输入<strong>{session.cached_input_tokens.toLocaleString()}</strong></span>
+        <span>缓存写入<strong>{session.cache_creation_input_tokens.toLocaleString()}</strong></span>
+        <span>输出 Token<strong>{session.output_tokens.toLocaleString()}</strong></span>
+        <span>总 Token<strong>{session.total_tokens.toLocaleString()}</strong></span>
+        <span title={session.cost_complete ? "按模型公开 API 单价折算" : `仅 ${session.priced_call_count}/${session.call_count} 次调用可定价`}>
+          等效成本<strong>{cost}</strong>
+          {!session.cost_complete && <small>{session.priced_call_count}/{session.call_count} 可定价</small>}
+        </span>
+      </div>
+      <p>等效成本按可用的 API 单价或 Provider 返回成本折算，订阅 Auth 的实际账单可能不同。</p>
+    </section>
+  );
 }
 
 function PanelTitle({ code, title, meta }: { code: string; title: string; meta: string }) {
