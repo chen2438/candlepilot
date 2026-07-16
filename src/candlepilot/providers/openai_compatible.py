@@ -4,6 +4,7 @@ import asyncio
 import json
 import math
 import time
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any
 
@@ -28,6 +29,7 @@ from candlepilot.provenance import (
 
 
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+WIRE_APIS = {"chat-completions", "responses"}
 
 
 def validate_base_url(value: str) -> str:
@@ -46,19 +48,12 @@ def validate_base_url(value: str) -> str:
     return str(url).rstrip("/")
 
 
-def parse_chat_completion(payload: dict[str, Any]) -> tuple[str, str | None, dict[str, Any]]:
-    try:
-        content = payload["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise ProviderError("OpenAI-compatible endpoint returned no assistant message") from exc
-    if not isinstance(content, str) or not content.strip():
-        raise ProviderError("OpenAI-compatible endpoint returned an empty assistant message")
-
-    raw_usage = payload.get("usage") or {}
+def _parse_usage(raw_usage: Any, *, details_key: str) -> dict[str, Any]:
+    raw_usage = raw_usage or {}
     if not isinstance(raw_usage, dict):
         raise ProviderError("OpenAI-compatible endpoint returned invalid token usage")
-    prompt_details = raw_usage.get("prompt_tokens_details") or {}
-    if not isinstance(prompt_details, dict):
+    input_details = raw_usage.get(details_key) or {}
+    if not isinstance(input_details, dict):
         raise ProviderError("OpenAI-compatible endpoint returned invalid token usage")
     try:
         input_tokens = int(
@@ -68,7 +63,7 @@ def parse_chat_completion(payload: dict[str, Any]) -> tuple[str, str | None, dic
             raw_usage.get("completion_tokens", raw_usage.get("output_tokens", 0)) or 0
         )
         cached_tokens = int(
-            prompt_details.get("cached_tokens", raw_usage.get("cached_input_tokens", 0)) or 0
+            input_details.get("cached_tokens", raw_usage.get("cached_input_tokens", 0)) or 0
         )
         total_tokens = int(raw_usage.get("total_tokens") or input_tokens + output_tokens)
     except (TypeError, ValueError) as exc:
@@ -89,12 +84,55 @@ def parse_chat_completion(payload: dict[str, Any]) -> tuple[str, str | None, dic
         and reported_cost >= 0
     ):
         usage["cost_usd"] = float(reported_cost)
+    return usage
+
+
+def parse_chat_completion(payload: dict[str, Any]) -> tuple[str, str | None, dict[str, Any]]:
+    try:
+        content = payload["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ProviderError("OpenAI-compatible endpoint returned no assistant message") from exc
+    if not isinstance(content, str) or not content.strip():
+        raise ProviderError("OpenAI-compatible endpoint returned an empty assistant message")
+    usage = _parse_usage(payload.get("usage"), details_key="prompt_tokens_details")
     model = payload.get("model")
     return content, model if isinstance(model, str) and model else None, usage
 
 
+def parse_responses_response(
+    payload: dict[str, Any],
+) -> tuple[str, str | None, dict[str, Any]]:
+    if payload.get("status") not in {None, "completed"}:
+        raise ProviderError("OpenAI-compatible Responses request did not complete")
+    output_text = payload.get("output_text")
+    texts = [output_text] if isinstance(output_text, str) and output_text.strip() else []
+    if not texts:
+        output = payload.get("output") or []
+        if not isinstance(output, list):
+            raise ProviderError("OpenAI-compatible Responses endpoint returned invalid output")
+        for item in output:
+            if not isinstance(item, dict) or item.get("type") != "message":
+                continue
+            content = item.get("content") or []
+            if not isinstance(content, list):
+                continue
+            texts.extend(
+                part["text"]
+                for part in content
+                if isinstance(part, dict)
+                and part.get("type") == "output_text"
+                and isinstance(part.get("text"), str)
+                and part["text"].strip()
+            )
+    if not texts:
+        raise ProviderError("OpenAI-compatible Responses endpoint returned no output text")
+    usage = _parse_usage(payload.get("usage"), details_key="input_tokens_details")
+    model = payload.get("model")
+    return "".join(texts), model if isinstance(model, str) and model else None, usage
+
+
 class OpenAICompatibleProvider(LLMProvider):
-    """User-configured Chat Completions endpoint with client-side schema validation."""
+    """User-configured Responses or Chat Completions endpoint with local validation."""
 
     name = "openai-compatible"
     reasoning_effort_options = ("low", "medium", "high", "xhigh")
@@ -106,6 +144,9 @@ class OpenAICompatibleProvider(LLMProvider):
         api_key: SecretStr | None,
         model: str | None,
         reasoning_effort: str | None = None,
+        wire_api: str = "chat-completions",
+        require_api_key: bool = True,
+        extra_headers: Mapping[str, SecretStr] | None = None,
         timeout: float = 45,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
@@ -123,6 +164,11 @@ class OpenAICompatibleProvider(LLMProvider):
             if reasoning_effort and reasoning_effort.strip()
             else None
         )
+        if wire_api not in WIRE_APIS:
+            raise ValueError("custom LLM wire API must be chat-completions or responses")
+        self.wire_api = wire_api
+        self.require_api_key = require_api_key
+        self.extra_headers = dict(extra_headers or {})
         self.timeout = timeout
         self._transport = transport
         self._semaphore = asyncio.Semaphore(1)
@@ -141,7 +187,9 @@ class OpenAICompatibleProvider(LLMProvider):
         missing = []
         if self.base_url is None:
             missing.append("base URL")
-        if self.api_key is None or not self.api_key.get_secret_value():
+        if self.require_api_key and (
+            self.api_key is None or not self.api_key.get_secret_value()
+        ):
             missing.append("API key")
         if not self.model:
             missing.append("model")
@@ -167,7 +215,7 @@ class OpenAICompatibleProvider(LLMProvider):
             provider=self.name,
             available=True,
             authenticated=True,
-            version="Chat Completions",
+            version="Responses" if self.wire_api == "responses" else "Chat Completions",
             detail="Configured; use the provider test to verify connectivity",
         )
 
@@ -186,18 +234,36 @@ class OpenAICompatibleProvider(LLMProvider):
         if not health.available or not health.authenticated:
             raise ProviderUnavailable(health.detail)
         assert self.base_url is not None
-        assert self.api_key is not None
         assert self.model is not None
 
         started = time.monotonic()
         input_payload = _decision_payload(snapshot, portfolio)
         prompt = _decision_prompt(snapshot, portfolio, include_schema=True)
-        request: dict[str, Any] = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
+        if self.wire_api == "responses":
+            endpoint = f"{self.base_url}/responses"
+            request: dict[str, Any] = {
+                "model": self.model,
+                "input": prompt,
+                "store": False,
+            }
+            if self.reasoning_effort:
+                request["reasoning"] = {"effort": self.reasoning_effort}
+        else:
+            endpoint = f"{self.base_url}/chat/completions"
+            request = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            if self.reasoning_effort:
+                request["reasoning_effort"] = self.reasoning_effort
+
+        headers = {
+            name: value.get_secret_value() for name, value in self.extra_headers.items()
         }
-        if self.reasoning_effort:
-            request["reasoning_effort"] = self.reasoning_effort
+        headers["Content-Type"] = "application/json"
+        if self.require_api_key:
+            assert self.api_key is not None
+            headers["Authorization"] = f"Bearer {self.api_key.get_secret_value()}"
 
         self._active_task = asyncio.current_task()
         try:
@@ -208,11 +274,8 @@ class OpenAICompatibleProvider(LLMProvider):
                     transport=self._transport,
                 ) as client:
                     response = await client.post(
-                        f"{self.base_url}/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {self.api_key.get_secret_value()}",
-                            "Content-Type": "application/json",
-                        },
+                        endpoint,
+                        headers=headers,
                         json=request,
                     )
         except httpx.TimeoutException as exc:
@@ -234,7 +297,10 @@ class OpenAICompatibleProvider(LLMProvider):
             envelope = response.json()
             if not isinstance(envelope, dict):
                 raise TypeError
-            result_text, response_model, usage = parse_chat_completion(envelope)
+            if self.wire_api == "responses":
+                result_text, response_model, usage = parse_responses_response(envelope)
+            else:
+                result_text, response_model, usage = parse_chat_completion(envelope)
             intent = _parse_intent(result_text)
         except (json.JSONDecodeError, TypeError, ValidationError) as exc:
             raise ProviderError(
@@ -253,7 +319,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 snapshot.model_dump(mode="json"),
                 schema_version=MARKET_SNAPSHOT_SCHEMA_VERSION,
             ),
-            provider_version="openai-compatible-chat-completions",
+            provider_version=f"openai-compatible-{self.wire_api}",
             input_payload=input_payload,
             prompt=prompt,
         )

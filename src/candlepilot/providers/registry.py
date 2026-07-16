@@ -36,6 +36,9 @@ class ProviderRegistry:
                     api_key=settings.custom_llm_api_key,
                     model=settings.custom_llm_model,
                     reasoning_effort=settings.custom_llm_reasoning_effort,
+                    wire_api=settings.custom_llm_wire_api,
+                    require_api_key=settings.custom_llm_require_api_key,
+                    extra_headers=settings.custom_llm_extra_headers,
                 ),
             ]
         )

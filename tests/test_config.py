@@ -123,10 +123,49 @@ def test_custom_llm_settings_wrap_key_and_read_endpoint(monkeypatch) -> None:
     monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_API_KEY", "custom-secret")
     monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_MODEL", "vendor-model")
     monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_REASONING_EFFORT", "high")
+    monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_WIRE_API", "responses")
+    monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_REQUIRE_API_KEY", "false")
+    monkeypatch.setenv(
+        "CANDLEPILOT_CUSTOM_LLM_EXTRA_HEADERS_JSON",
+        '{"x-openai-actor-authorization":"header-secret"}',
+    )
     settings = Settings.from_env()
     assert settings.custom_llm_base_url == "https://llm.example/v1"
     assert settings.custom_llm_api_key is not None
     assert settings.custom_llm_api_key.get_secret_value() == "custom-secret"
     assert settings.custom_llm_model == "vendor-model"
     assert settings.custom_llm_reasoning_effort == "high"
+    assert settings.custom_llm_wire_api == "responses"
+    assert settings.custom_llm_require_api_key is False
+    assert settings.custom_llm_extra_headers is not None
+    assert (
+        settings.custom_llm_extra_headers["x-openai-actor-authorization"].get_secret_value()
+        == "header-secret"
+    )
     assert "custom-secret" not in repr(settings)
+    assert "header-secret" not in repr(settings)
+
+
+@pytest.mark.parametrize("value", ["completions", "response", ""])
+def test_custom_llm_settings_reject_invalid_wire_api(monkeypatch, value: str) -> None:
+    monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_WIRE_API", value)
+    if value:
+        with pytest.raises(ValueError, match="unsupported.*WIRE_API"):
+            Settings.from_env()
+    else:
+        assert Settings.from_env().custom_llm_wire_api == "chat-completions"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "not-json",
+        "[]",
+        '{"Authorization":"secret"}',
+        '{"x-provider":"line\\nbreak"}',
+    ],
+)
+def test_custom_llm_settings_reject_unsafe_extra_headers(monkeypatch, value: str) -> None:
+    monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_EXTRA_HEADERS_JSON", value)
+    with pytest.raises(ValueError, match="(?i)headers?"):
+        Settings.from_env()

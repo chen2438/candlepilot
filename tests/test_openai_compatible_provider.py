@@ -11,6 +11,7 @@ from candlepilot.providers.cli import ProviderError
 from candlepilot.providers.openai_compatible import (
     OpenAICompatibleProvider,
     parse_chat_completion,
+    parse_responses_response,
     validate_base_url,
 )
 
@@ -97,6 +98,66 @@ def test_custom_provider_calls_chat_completions_and_parses_usage() -> None:
     assert result.prompt is not None
 
 
+def test_custom_provider_calls_responses_with_optional_auth_and_headers() -> None:
+    header_secret = "test-header-secret-never-returned"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://llm.example/v1/responses"
+        assert "Authorization" not in request.headers
+        assert request.headers["x-openai-actor-authorization"] == header_secret
+        body = json.loads(request.content)
+        assert body["model"] == "vendor-model"
+        assert body["store"] is False
+        assert body["reasoning"] == {"effort": "high"}
+        assert '"additionalProperties":false' in body["input"]
+        assert "messages" not in body
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "model": "vendor-responses-model",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": json.dumps(_intent())}
+                        ],
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 1300,
+                    "input_tokens_details": {"cached_tokens": 1000},
+                    "output_tokens": 90,
+                    "total_tokens": 1390,
+                    "cost_usd": 0.02,
+                },
+            },
+        )
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://llm.example/v1",
+        api_key=None,
+        model="vendor-model",
+        reasoning_effort="high",
+        wire_api="responses",
+        require_api_key=False,
+        extra_headers={"x-openai-actor-authorization": SecretStr(header_secret)},
+        transport=httpx.MockTransport(handler),
+    )
+    result = asyncio.run(provider.generate_trade_intent(_market(), _portfolio()))
+
+    assert result.intent.action == TradeAction.HOLD
+    assert result.model == "vendor-responses-model"
+    assert result.provider_version == "openai-compatible-responses"
+    assert result.usage == {
+        "input_tokens": 1300,
+        "cached_input_tokens": 1000,
+        "output_tokens": 90,
+        "total_tokens": 1390,
+        "cost_usd": 0.02,
+    }
+
+
 @pytest.mark.parametrize(
     "value",
     [
@@ -138,6 +199,20 @@ def test_custom_provider_health_reports_only_safe_configuration_state() -> None:
     assert "llm.example" not in rendered
 
 
+def test_responses_provider_health_allows_header_only_auth() -> None:
+    provider = OpenAICompatibleProvider(
+        base_url="https://llm.example/v1",
+        api_key=None,
+        model="vendor-model",
+        wire_api="responses",
+        require_api_key=False,
+    )
+    health = asyncio.run(provider.health_check())
+    assert health.available is True
+    assert health.authenticated is True
+    assert health.version == "Responses"
+
+
 def test_custom_provider_http_errors_do_not_expose_key_or_url() -> None:
     secret = "test-secret-never-returned"
     provider = OpenAICompatibleProvider(
@@ -157,3 +232,10 @@ def test_custom_provider_http_errors_do_not_expose_key_or_url() -> None:
 def test_parse_chat_completion_rejects_missing_content() -> None:
     with pytest.raises(ProviderError, match="no assistant message"):
         parse_chat_completion({"choices": []})
+
+
+def test_parse_responses_rejects_incomplete_or_missing_output() -> None:
+    with pytest.raises(ProviderError, match="did not complete"):
+        parse_responses_response({"status": "in_progress"})
+    with pytest.raises(ProviderError, match="no output text"):
+        parse_responses_response({"status": "completed", "output": []})

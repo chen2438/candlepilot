@@ -57,17 +57,22 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
   Prompt 内联完整 `TradeIntent` JSON Schema（Claude 无 `--output-schema`，否则会臆造字段名）；
   Prompt 经 stdin 传入而非命令行参数（`--disallowedTools` 会贪婪吞掉后随的位置参数）。
 - **Custom API**：可通过 `.env` 自带 Base URL、API Key 与模型名，接入实现 OpenAI-compatible
-  `/chat/completions` 的服务。请求只发送统一 Prompt，不启用工具，并在本地严格校验返回的
-  `TradeIntent`；支持标准 token usage、缓存 token，以及服务端可选返回的单次成本。
+  `/chat/completions` 或 `/responses` 的服务，默认保持 Chat Completions。Responses 请求使用
+  `input`、`store=false` 与嵌套 `reasoning.effort`，并从 message 的 `output_text` 内容提取结果。
+  两种协议都只发送统一 Prompt、不启用工具，并在本地严格校验返回的 `TradeIntent`；支持标准
+  token usage、缓存 token，以及服务端可选返回的单次成本。
   外部地址必须使用 HTTPS，仅 `localhost` / `127.0.0.1` / `::1` 可使用 HTTP；禁止 URL 内嵌
   凭据、query、fragment 和 HTTP 重定向，避免 Key 被明文传输或转发。该 Provider 不主动探测
   `/models`，`doctor` 只报告配置是否完整，实际连通性由控制台「测试」显式验证。
 - **隔离与安全**：LLM 子进程运行在独立空临时目录，环境变量白名单
   （含 `USER`/`LOGNAME` 以支持 macOS 钥匙串读取 Claude 登录态），移除所有币安/API Key
   变量；禁用工具、MCP、网络；45 秒硬超时、单 Provider 并发 1、统一取消。
-- **API Key 边界**：Custom API Key 只从启动环境读取并以 `SecretStr` 留在后端内存；不通过
-  REST/WebSocket 返回，不写入数据库、审计详情或日志。Custom API 作为用户显式配置的外部
-  接收方会收到行情特征、组合状态和 Prompt，但不会收到币安凭据或其他环境变量。
+- **API Key 边界**：Custom API Key 与额外请求头值只从启动环境读取并以 `SecretStr` 留在后端
+  内存；不通过 REST/WebSocket 返回，不写入数据库、审计详情或日志。默认发送 Bearer Key；
+  对 `requires_openai_auth=false` 一类服务可显式关闭并配置 JSON 自定义头。自定义头最多 16 个，
+  禁止覆盖 Authorization、Host、Content-Type、Content-Length，且拒绝换行注入。Custom API
+  作为用户显式配置的外部接收方会收到行情特征、组合状态和 Prompt，但不会收到币安凭据或
+  其他环境变量。
 - **严格 Schema**：输出必须通过统一 `TradeIntent` Pydantic 校验，否则降级为 `HOLD`。
 - **主备切换**：控制台手动选择当前 Provider；可显式配置单次主备故障切换（默认关闭）。
 - **可选模型与推理强度**：Codex 传 `-m` / `-c model_reasoning_effort`，Claude 传
@@ -231,9 +236,12 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 | `CANDLEPILOT_DEFAULT_PROVIDER` | 启动时默认选中的 LLM Provider；支持 `codex` / `claude-code` / `openai-compatible`（也接受相应内部名），留空则在控制台手动选择 |
 | `CANDLEPILOT_CODEX_MODEL` / `CANDLEPILOT_CODEX_REASONING_EFFORT` | Codex 模型 / 推理强度（minimal/low/medium/high）|
 | `CANDLEPILOT_CLAUDE_MODEL` / `CANDLEPILOT_CLAUDE_EFFORT` | Claude 模型 / 强度（low/medium/high/xhigh/max）|
-| `CANDLEPILOT_CUSTOM_LLM_BASE_URL` | OpenAI-compatible API 根地址（系统追加 `/chat/completions`）；外部仅 HTTPS，回环地址可 HTTP |
+| `CANDLEPILOT_CUSTOM_LLM_BASE_URL` | OpenAI-compatible API 根地址；系统按协议追加 `/chat/completions` 或 `/responses`，外部仅 HTTPS，回环地址可 HTTP |
 | `CANDLEPILOT_CUSTOM_LLM_API_KEY` | Custom API Bearer Key；仅后端环境读取，绝不经 API、日志或数据库暴露 |
 | `CANDLEPILOT_CUSTOM_LLM_MODEL` / `CANDLEPILOT_CUSTOM_LLM_REASONING_EFFORT` | Custom API 模型名 / 可选强度（low/medium/high/xhigh）|
+| `CANDLEPILOT_CUSTOM_LLM_WIRE_API` | Custom API 协议：`chat-completions`（默认）或 `responses` |
+| `CANDLEPILOT_CUSTOM_LLM_REQUIRE_API_KEY` | 是否要求并发送 Bearer Key，默认 `true`；无 Bearer 认证的兼容服务可设 `false` |
+| `CANDLEPILOT_CUSTOM_LLM_EXTRA_HEADERS_JSON` | 服务商专用请求头 JSON；值按密钥保护，最多 16 个且不能覆盖受保护头 |
 | `BINANCE_TESTNET_API_KEY` / `BINANCE_TESTNET_API_SECRET` | 仅测试网模式需要 |
 
 ## 6. CLI 命令

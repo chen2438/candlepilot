@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -22,6 +24,14 @@ DEFAULT_PROVIDER_ALIASES = {
     "custom-api": "openai-compatible",
     "openai-compatible": "openai-compatible",
 }
+CUSTOM_LLM_WIRE_APIS = {"chat-completions", "responses"}
+PROTECTED_CUSTOM_HEADER_NAMES = {
+    "authorization",
+    "content-length",
+    "content-type",
+    "host",
+}
+HEADER_NAME_PATTERN = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 
 
 def load_dotenv(path: Path | None = None) -> None:
@@ -94,6 +104,48 @@ def _parse_default_provider(raw: str | None) -> str | None:
         ) from exc
 
 
+def _parse_custom_llm_wire_api(raw: str | None) -> str:
+    value = (raw or "chat-completions").strip().lower()
+    if value not in CUSTOM_LLM_WIRE_APIS:
+        choices = ", ".join(sorted(CUSTOM_LLM_WIRE_APIS))
+        raise ValueError(f"unsupported CANDLEPILOT_CUSTOM_LLM_WIRE_API: choose {choices}")
+    return value
+
+
+def _parse_boolean(raw: str | None, *, name: str, default: bool) -> bool:
+    if raw is None or not raw.strip():
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be true or false")
+
+
+def _parse_custom_llm_headers(raw: str | None) -> dict[str, SecretStr]:
+    if raw is None or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("CANDLEPILOT_CUSTOM_LLM_EXTRA_HEADERS_JSON must be JSON") from exc
+    if not isinstance(parsed, dict) or len(parsed) > 16:
+        raise ValueError("custom LLM extra headers must be a JSON object with at most 16 entries")
+    headers: dict[str, SecretStr] = {}
+    for name, value in parsed.items():
+        if (
+            not isinstance(name, str)
+            or not HEADER_NAME_PATTERN.fullmatch(name)
+            or name.lower() in PROTECTED_CUSTOM_HEADER_NAMES
+        ):
+            raise ValueError("custom LLM extra header name is invalid or protected")
+        if not isinstance(value, str) or not value or "\r" in value or "\n" in value:
+            raise ValueError("custom LLM extra header value must be a non-empty single line")
+        headers[name] = SecretStr(value)
+    return headers
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     mode: TradingMode = TradingMode.PAPER
@@ -119,6 +171,9 @@ class Settings:
     custom_llm_api_key: SecretStr | None = None
     custom_llm_model: str | None = None
     custom_llm_reasoning_effort: str | None = None
+    custom_llm_wire_api: str = "chat-completions"
+    custom_llm_require_api_key: bool = True
+    custom_llm_extra_headers: dict[str, SecretStr] | None = None
     binance_testnet_api_key: SecretStr | None = None
     binance_testnet_api_secret: SecretStr | None = None
 
@@ -154,6 +209,17 @@ class Settings:
                 "CANDLEPILOT_CUSTOM_LLM_REASONING_EFFORT"
             )
             or None,
+            custom_llm_wire_api=_parse_custom_llm_wire_api(
+                os.getenv("CANDLEPILOT_CUSTOM_LLM_WIRE_API")
+            ),
+            custom_llm_require_api_key=_parse_boolean(
+                os.getenv("CANDLEPILOT_CUSTOM_LLM_REQUIRE_API_KEY"),
+                name="CANDLEPILOT_CUSTOM_LLM_REQUIRE_API_KEY",
+                default=True,
+            ),
+            custom_llm_extra_headers=_parse_custom_llm_headers(
+                os.getenv("CANDLEPILOT_CUSTOM_LLM_EXTRA_HEADERS_JSON")
+            ),
             binance_testnet_api_key=SecretStr(os.environ["BINANCE_TESTNET_API_KEY"])
             if os.getenv("BINANCE_TESTNET_API_KEY")
             else None,

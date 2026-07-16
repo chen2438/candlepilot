@@ -370,6 +370,9 @@ def test_registry_from_settings_applies_model_and_effort() -> None:
             custom_llm_api_key=SecretStr("secret"),
             custom_llm_model="vendor-model",
             custom_llm_reasoning_effort="medium",
+            custom_llm_wire_api="responses",
+            custom_llm_require_api_key=False,
+            custom_llm_extra_headers={"x-provider": SecretStr("header-secret")},
         )
     )
     assert registry.get("codex-auth").model == "gpt-5.2-codex"
@@ -378,6 +381,11 @@ def test_registry_from_settings_applies_model_and_effort() -> None:
     assert registry.get("claude-code-auth").reasoning_effort == "xhigh"
     assert registry.get("openai-compatible").model == "vendor-model"
     assert registry.get("openai-compatible").reasoning_effort == "medium"
+    assert registry.get("openai-compatible").wire_api == "responses"
+    assert registry.get("openai-compatible").require_api_key is False
+    assert registry.get("openai-compatible").extra_headers["x-provider"].get_secret_value() == (
+        "header-secret"
+    )
 
 
 def test_cli_providers_declare_subscription_capabilities(tmp_path: Path) -> None:
