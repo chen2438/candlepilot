@@ -8,6 +8,17 @@ from typing import Any, Literal
 from candlepilot.domain.models import MarketSnapshot
 
 
+#: Intervals the decision model is given features for.
+#:
+#: Every setup rule in the prompt is written against these, and nothing goes in
+#: here without a rule that reads it: an interval the rules never name is one
+#: the model has to invent a use for, and it will invent a different one each
+#: call. 1m was dropped for exactly that reason -- it is still the paper
+#: mark-to-market interval, but that path builds its own bare snapshot straight
+#: off the stream and never asks for these features.
+DECISION_FEATURE_INTERVALS = ("5m", "15m", "30m")
+
+
 @dataclass(frozen=True, slots=True)
 class Kline:
     open_time: datetime
@@ -129,10 +140,11 @@ class FeaturePipeline:
     def multitimeframe(
         self, rows_by_interval: dict[str, list[list[Any]]]
     ) -> dict[str, float]:
-        if set(rows_by_interval) != {"1m", "5m", "15m", "30m"}:
-            raise ValueError("multitimeframe features require 1m, 5m, 15m, and 30m rows")
+        if set(rows_by_interval) != set(DECISION_FEATURE_INTERVALS):
+            expected = ", ".join(DECISION_FEATURE_INTERVALS)
+            raise ValueError(f"multitimeframe features require exactly {expected} rows")
         combined: dict[str, float] = {}
-        for interval in ("1m", "5m", "15m", "30m"):
+        for interval in DECISION_FEATURE_INTERVALS:
             for name, value in self.calculate(rows_by_interval[interval]).items():
                 combined[f"{interval}_{name}"] = value
         return combined

@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 
 from candlepilot.domain.models import MarketSnapshot
-from candlepilot.market.features import FeaturePipeline
+from candlepilot.market.features import DECISION_FEATURE_INTERVALS, FeaturePipeline
 from candlepilot.market.scanner import MarketCandidateInput
 from candlepilot.risk.engine import SymbolRules
 
@@ -251,7 +251,10 @@ class BinancePublicClient:
     async def market_snapshot(self, symbol: str, cadence: str) -> MarketSnapshot:
         if cadence not in {"1m", "5m", "15m", "30m"}:
             raise ValueError("unsupported decision cadence")
-        feature_intervals = ("1m", "5m", "15m", "30m")
+        # `cadence` only labels which decision the snapshot feeds; the feature
+        # ladder is the same either way. The paper backfill asks for "1m" and
+        # reads nothing but mark/bid/ask off the result.
+        feature_intervals = DECISION_FEATURE_INTERVALS
         results = await asyncio.gather(
             *(self.klines(symbol, interval, 200) for interval in feature_intervals),
             self._get("/fapi/v1/ticker/bookTicker", symbol=symbol),

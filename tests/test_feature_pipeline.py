@@ -1,7 +1,13 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from candlepilot.market.features import FeaturePipeline, _ema
+import pytest
+
+from candlepilot.market.features import (
+    DECISION_FEATURE_INTERVALS,
+    FeaturePipeline,
+    _ema,
+)
 
 
 def _rows(count: int = 60) -> list[list[object]]:
@@ -84,14 +90,24 @@ def test_microstructure_features_capture_direction_and_basis() -> None:
 
 
 def test_multitimeframe_features_are_namespaced() -> None:
-    features = FeaturePipeline().multitimeframe(
-        {"1m": _rows(), "5m": _rows(), "15m": _rows(), "30m": _rows()}
-    )
+    rows_by_interval = {interval: _rows() for interval in DECISION_FEATURE_INTERVALS}
+    features = FeaturePipeline().multitimeframe(rows_by_interval)
 
-    assert len(features) == 4 * len(FeaturePipeline().calculate(_rows()))
-    assert features["1m_ema_spread"] == features["5m_ema_spread"]
+    per_interval = len(FeaturePipeline().calculate(_rows()))
+    assert len(features) == len(DECISION_FEATURE_INTERVALS) * per_interval
+    assert features["15m_ema_spread"] == features["5m_ema_spread"]
     assert "15m_rsi_14" in features
     assert "30m_rsi_14" in features
+    # 1m is not a decision interval: no setup rule reads it, so it is not sent.
+    assert not [name for name in features if name.startswith("1m_")]
+
+
+def test_multitimeframe_rejects_an_interval_set_the_rules_do_not_cover() -> None:
+    pipeline = FeaturePipeline()
+    rows_by_interval = {interval: _rows() for interval in DECISION_FEATURE_INTERVALS}
+
+    with pytest.raises(ValueError, match="5m, 15m, 30m"):
+        pipeline.multitimeframe({**rows_by_interval, "1m": _rows()})
 
 
 def test_structure_features_locate_price_against_its_recent_range() -> None:

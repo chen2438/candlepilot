@@ -5,6 +5,7 @@ from decimal import Decimal
 import httpx
 
 from candlepilot.market.binance import BinancePublicClient, BinanceRateLimit
+from candlepilot.market.features import DECISION_FEATURE_INTERVALS
 
 
 def _response(request: httpx.Request) -> httpx.Response:
@@ -210,7 +211,9 @@ def test_market_snapshot_includes_microstructure() -> None:
 
     snapshot = asyncio.run(scenario())
     assert snapshot.cadence == "30m"
-    assert requested_intervals == ["1m", "5m", "15m", "30m"]
+    # 1m is no longer fetched: no setup rule reads it, so paying a klines
+    # request per symbol per cycle for it bought only payload noise.
+    assert requested_intervals == ["5m", "15m", "30m"]
     assert snapshot.features["basis_bps"] == 50.0
     assert snapshot.features["book_imbalance"] == 0.5
     # Every per-interval reading is prefixed exactly once. An unprefixed copy
@@ -219,11 +222,15 @@ def test_market_snapshot_includes_microstructure() -> None:
     assert not [
         name
         for name in snapshot.features
-        if any(f"{interval}_{name}" in snapshot.features for interval in ("1m", "5m", "15m", "30m"))
+        if any(
+            f"{interval}_{name}" in snapshot.features
+            for interval in DECISION_FEATURE_INTERVALS
+        )
     ]
     assert snapshot.features["recent_trade_imbalance"] == 1.0
     assert snapshot.features["open_interest"] == 42.0
-    assert snapshot.features["1m_ema_spread"] == snapshot.features["30m_ema_spread"]
+    assert snapshot.features["5m_ema_spread"] == snapshot.features["30m_ema_spread"]
+    assert not [name for name in snapshot.features if name.startswith("1m_")]
 
 
 def test_exchange_info_carries_the_price_tick_into_symbol_rules() -> None:

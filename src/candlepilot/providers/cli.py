@@ -221,7 +221,7 @@ def _decision_prompt(
         "edge for the proposed non-HOLD action; it is not profit probability and never "
         "bypasses hard risk controls. For HOLD it is only residual opportunity strength and "
         "should normally be below 0.55. Do not inflate confidence or force a trade. "
-        "Market features are per interval, prefixed 1m/5m/15m/30m. Trend is ema_spread and "
+        "Market features are per interval, prefixed 5m/15m/30m. Trend is ema_spread and "
         "the ema_20/ema_50 pair; structure is range_high_20, range_low_20, range_high_50 and "
         "range_low_50, with range_position_50 giving where price sits in the 50-bar range (0 "
         "at the low, 1 at the high); participation is quote_volume_ratio, book_imbalance and "
