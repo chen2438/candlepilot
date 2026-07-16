@@ -12,6 +12,7 @@ from candlepilot.domain.models import (
     TradeIntent,
 )
 from candlepilot.providers.base import ProviderResult
+from candlepilot.providers.pricing import parse_models_dev
 from candlepilot.storage.database import DECISION_OUTCOMES, AuditRepository, Database
 
 
@@ -639,3 +640,46 @@ def test_paging_and_filtering_compose(tmp_path: Path) -> None:
 
     assert [event["id"] for event in first + second] == [event["id"] for event in both]
     assert all(event["intent"]["symbol"] == "SOLUSDT" for event in both)
+
+
+def test_custom_endpoint_is_priced_once_it_declares_who_bills_it(tmp_path: Path) -> None:
+    """Custom API calls showed no cost at all, whatever the model.
+
+    The provider name is "openai-compatible:<id>", which no fixed map contained,
+    so the catalog was never consulted and every custom endpoint reported "--"
+    forever. That also left the run budget guard inert, since it stops on an
+    equivalent cost it could never compute.
+    """
+
+    catalog = parse_models_dev(
+        {"xai": {"models": {"grok-4.5": {"cost": {"input": 2, "output": 6, "cache_read": 0.5}}}}}
+    )
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'custom-cost.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        intent = TradeIntent.hold("BTCUSDT", "5m", "seed")
+        await repository.record_inference(
+            ProviderResult(
+                intent=intent,
+                provider="openai-compatible:grok",
+                model="grok-4.5",
+                duration=timedelta(seconds=28),
+                raw_output=intent.model_dump_json(),
+                usage={"input_tokens": 1_000_000, "output_tokens": 1_000_000, "total_tokens": 2_000_000},
+            )
+        )
+        declared = await repository.provider_metrics(
+            catalog=catalog, provider_ids={"openai-compatible:grok": "xai"}
+        )
+        undeclared = await repository.provider_metrics(catalog=catalog)
+        await database.close()
+        return declared, undeclared
+
+    declared, undeclared = asyncio.run(scenario())
+
+    # 1M input at $2/M plus 1M output at $6/M.
+    assert declared[0]["cost_usd_total"] == 8.0
+    # Without a declared vendor the cost stays unknown rather than guessed.
+    assert undeclared[0]["cost_usd_total"] is None

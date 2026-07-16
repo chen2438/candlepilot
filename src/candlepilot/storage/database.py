@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 from collections import Counter
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -364,6 +365,7 @@ class AuditRepository:
         *,
         end_at_id: int | None = None,
         catalog: ModelPricingCatalog | None = None,
+        provider_ids: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         query = select(InferenceRow).where(InferenceRow.id > start_after_id)
         if end_at_id is not None:
@@ -400,7 +402,7 @@ class AuditRepository:
             totals["total_tokens"] += int(usage.get("total_tokens") or input_tokens + output_tokens)
             if "error" in usage:
                 error_count += 1
-            cost = self._inference_cost(row, usage, catalog)
+            cost = self._inference_cost(row, usage, catalog, provider_ids)
             if cost is not None:
                 priced_call_count += 1
                 cost_total += cost
@@ -831,9 +833,10 @@ class AuditRepository:
         inference: InferenceRow,
         usage: dict[str, Any],
         catalog: ModelPricingCatalog | None,
+        provider_ids: Mapping[str, str] | None = None,
     ) -> float | None:
         cost = usage.get("cost_usd")
-        provider_id = PROVIDER_IDS.get(inference.provider)
+        provider_id = (provider_ids or PROVIDER_IDS).get(inference.provider)
         if cost is None and catalog is not None and provider_id is not None:
             cost = catalog.cost_usd(
                 provider_id,
@@ -850,6 +853,7 @@ class AuditRepository:
         inference_id: int,
         *,
         catalog: ModelPricingCatalog | None = None,
+        provider_ids: Mapping[str, str] | None = None,
     ) -> dict[str, Any] | None:
         async with self.sessions() as session:
             row = (
@@ -909,12 +913,18 @@ class AuditRepository:
             "audit_status": audit_status,
             "raw_output": inference.raw_output,
             "usage": {key: value for key, value in usage.items() if key != "_provenance"},
-            "equivalent_cost_usd": self._inference_cost(inference, usage, catalog),
+            "equivalent_cost_usd": self._inference_cost(
+                inference, usage, catalog, provider_ids
+            ),
             "created_at": self._utc(inference.created_at),
         }
 
     async def provider_metrics(
-        self, hours: int = 24, *, catalog: ModelPricingCatalog | None = None
+        self,
+        hours: int = 24,
+        *,
+        catalog: ModelPricingCatalog | None = None,
+        provider_ids: Mapping[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         cutoff = datetime.now(UTC) - timedelta(hours=hours)
         async with self.sessions() as session:
@@ -937,7 +947,7 @@ class AuditRepository:
             tokens_total = 0
             cost_total = 0.0
             cost_present = False
-            provider_id = PROVIDER_IDS.get(provider)
+            provider_id = (provider_ids or PROVIDER_IDS).get(provider)
             for row in provider_rows:
                 usage = json.loads(row.usage_json)
                 if "error" in usage:

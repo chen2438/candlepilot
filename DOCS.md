@@ -2,7 +2,7 @@
 
 > 本文件是 CandlePilot 的**唯一权威功能文档**，记录系统当前的全部能力、接口与边界。
 > `STATUS.md` 与 `PLAN.md` 已弃用，后续变更只同步更新本文件。
-> 最后更新：2026-07-16（决策审计可翻页与服务端筛选）
+> 最后更新：2026-07-17（Custom API 等效成本核算）
 
 ---
 
@@ -58,7 +58,7 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
   Prompt 经 stdin 传入而非命令行参数（`--disallowedTools` 会贪婪吞掉后随的位置参数）。
 - **Custom API（可多个）**：全部端点统一由 `CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON` 定义
   （JSON 数组，最多 8 个）。每项需唯一小写 `id` 与 `base_url`，可选 `api_key` / `model` /
-  `reasoning_effort` / `wire_api` / `require_api_key` / `extra_headers`；各端点互相独立
+  `reasoning_effort` / `wire_api` / `require_api_key` / `extra_headers` / `pricing`；各端点互相独立
   （各自的地址、密钥、模型与协议）。注册名 `openai-compatible:<id>`，主备路由中写
   `custom:<id>`（大小写不敏感）。**不存在"单个端点"的特例配置**：扁平的
   `CANDLEPILOT_CUSTOM_LLM_*` 变量已移除，若 `.env` 中仍存在非空值，启动会**直接报错**并提示
@@ -79,6 +79,14 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
   禁止覆盖 Authorization、Host、Content-Type、Content-Length，且拒绝换行注入。Custom API
   作为用户显式配置的外部接收方会收到行情特征、组合状态和 Prompt，但不会收到币安凭据或
   其他环境变量。
+- **Custom API 计费厂商（`pricing`）**：填 models.dev 的厂商 ID（如 `xai`、`openrouter`），
+  控制台端点表单提供候选列表（来自目录，也允许填目录未收录的值）。**这个值无法推断，只能声明**：
+  同一模型被多家厂商转售，价格与结构都不同（`grok-4.5` 在 models.dev 下有十余家，
+  xai 收 $2/$6 而 venice 收 $2.27/$6.8，缓存价与分层也不一致），而 OpenAI 兼容端点
+  恰恰就是聚合器的典型场景，所以模型名和 base_url 都不能确定该按谁的价算。
+  **留空则成本保持未知**（显示「—」）而不是猜一个看似合理的错数。
+  注意：留空同时意味着**预算自动停止对该端点失效**（等效成本永远算不出，
+  按"成本未知时绝不触发停止"的规则不会停）。
 - **严格 Schema**：输出必须通过统一 `TradeIntent` Pydantic 校验，否则降级为 `HOLD`。
   `rationale` 是非交易关键解释字段，模型被要求尽量控制在 800 字符内，数据模型硬上限为
   1000 字符；若模型只违反该长度限制，Provider 会确定性截断到 1000 字符并在 usage 中写入

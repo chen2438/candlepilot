@@ -7,7 +7,7 @@ import os
 import sys
 import time
 from uuid import uuid4
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
@@ -100,6 +100,7 @@ class CustomProviderInput(ApiModel):
     reasoning_effort: str | None = None
     wire_api: str = "chat-completions"
     require_api_key: bool = True
+    pricing: str | None = None
     # None keeps the stored key, "" clears it, any other value replaces it — the
     # console never receives the current key, so it cannot send it back.
     api_key: str | None = None
@@ -210,11 +211,32 @@ _CURATED_MODEL_ALIASES: dict[str, tuple[str, ...]] = {
 _MODEL_ID_PREFIX: dict[str, str] = {"openai": "gpt-5", "anthropic": "claude-"}
 
 
+def pricing_provider_ids(settings: Settings) -> dict[str, str]:
+    """Map each configured provider to the models.dev provider it bills as.
+
+    The CLIs are fixed; a custom endpoint is only in here if its config says so.
+    It cannot be derived: the same model is resold by a dozen models.dev
+    providers at rates that genuinely differ, and an OpenAI-compatible endpoint
+    is exactly the aggregator case, so neither the model name nor the base URL
+    settles whose price applies. Absent from this map means cost stays unknown,
+    which is the honest answer rather than a plausible wrong number.
+    """
+
+    identifiers = dict(PROVIDER_IDS)
+    for provider in settings.custom_llm_providers:
+        if provider.pricing:
+            identifiers[provider.provider_name] = provider.pricing
+    return identifiers
+
+
 def _model_options(
-    provider_name: str, catalog: ModelPricingCatalog | None, current: str | None
+    provider_name: str,
+    catalog: ModelPricingCatalog | None,
+    current: str | None,
+    provider_ids: Mapping[str, str] | None = None,
 ) -> list[str]:
     options: list[str] = list(_CURATED_MODEL_ALIASES.get(provider_name, ()))
-    provider_id = PROVIDER_IDS.get(provider_name)
+    provider_id = (provider_ids or PROVIDER_IDS).get(provider_name)
     if catalog is not None and provider_id is not None:
         prefix = _MODEL_ID_PREFIX.get(provider_id, "")
         catalog_ids = sorted(
@@ -394,6 +416,7 @@ def create_app(
     pricing_loader: Callable[[Path], Awaitable[ModelPricingCatalog | None]] | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
+    provider_pricing_ids = pricing_provider_ids(settings)
     pricing_loader = pricing_loader or load_pricing_catalog
     owns_database = database is None
     owns_market = market is None
@@ -468,6 +491,7 @@ def create_app(
             engine.run_start_inference_id,
             end_at_id=None,
             catalog=await pricing_catalog(),
+            provider_ids=provider_pricing_ids,
         )
         return metrics.get("equivalent_cost_usd")
 
@@ -686,7 +710,9 @@ def create_app(
                     "model": provider.model,
                     "reasoning_effort": provider.reasoning_effort,
                     "reasoning_effort_options": list(provider.reasoning_effort_options),
-                    "model_options": _model_options(item.provider, catalog, provider.model),
+                    "model_options": _model_options(
+                        item.provider, catalog, provider.model, provider_pricing_ids
+                    ),
                 }
             )
         return result
@@ -761,7 +787,9 @@ def create_app(
         return {
             "window_hours": hours,
             "pricing_source": "models.dev" if catalog is not None else None,
-            "providers": await engine.audit.provider_metrics(hours, catalog=catalog),
+            "providers": await engine.audit.provider_metrics(
+                hours, catalog=catalog, provider_ids=provider_pricing_ids
+            ),
         }
 
     @app.get("/api/metrics/run-session")
@@ -792,6 +820,7 @@ def create_app(
             engine.run_start_inference_id,
             end_at_id=None if engine.running else engine.run_end_inference_id,
             catalog=await pricing_catalog(),
+            provider_ids=provider_pricing_ids,
         )
         return {
             "state": "running" if engine.running else "completed",
@@ -922,6 +951,7 @@ def create_app(
 
     @app.get("/api/custom-providers")
     async def get_custom_providers() -> dict[str, Any]:
+        catalog = await pricing_catalog()
         async with settings_file_lock:
             stored = _stored_custom_providers()
         providers = []
@@ -936,6 +966,7 @@ def create_app(
                     "reasoning_effort": entry.get("reasoning_effort") or "",
                     "wire_api": entry.get("wire_api") or "chat-completions",
                     "require_api_key": entry.get("require_api_key", True),
+                    "pricing": entry.get("pricing") or "",
                     # Header values are secrets too: expose only their names.
                     "extra_header_names": sorted(headers) if isinstance(headers, dict) else [],
                     "api_key_configured": bool(key),
@@ -946,6 +977,9 @@ def create_app(
             "providers": providers,
             "max_providers": MAX_CUSTOM_LLM_PROVIDERS,
             "wire_apis": sorted(CUSTOM_LLM_WIRE_APIS),
+            "pricing_options": sorted(
+                {provider for provider, _ in catalog.prices} if catalog else set()
+            ),
         }
 
     @app.post("/api/custom-providers")
@@ -974,6 +1008,7 @@ def create_app(
                 for field, value in (
                     ("model", provider.model),
                     ("reasoning_effort", provider.reasoning_effort),
+                    ("pricing", provider.pricing),
                 ):
                     if value and value.strip():
                         entry[field] = value.strip()
@@ -1229,6 +1264,7 @@ def create_app(
         detail = await engine.audit.decision_detail(
             inference_id,
             catalog=await pricing_catalog(),
+            provider_ids=provider_pricing_ids,
         )
         if detail is None:
             raise HTTPException(status_code=404, detail="inference not found")

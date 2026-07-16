@@ -1215,6 +1215,7 @@ function CustomProvidersPanel({
             model: row.model.trim() || null,
             reasoning_effort: row.reasoning_effort.trim() || null,
             wire_api: row.wire_api,
+            pricing: row.pricing.trim() || null,
             require_api_key: row.require_api_key,
             ...(row.api_key === null ? {} : { api_key: row.api_key }),
           })),
@@ -1236,6 +1237,9 @@ function CustomProvidersPanel({
   return (
     <div className="settings-section">
       <h4 className="account-subhead">Custom API 端点（{rows.length}/{payload.max_providers}）</h4>
+      <datalist id="models-dev-providers">
+        {payload.pricing_options.map((option) => <option key={option} value={option} />)}
+      </datalist>
       {!rows.length && <div className="empty cards">还没有自定义端点。点「新增端点」接入任意 OpenAI 兼容服务。</div>}
       {rows.map((row, index) => (
         <div className="endpoint-card" key={index}>
@@ -1266,6 +1270,19 @@ function CustomProvidersPanel({
                 onChange={(e) => update(index, { wire_api: e.target.value })}>
                 {payload.wire_apis.map((w) => <option key={w} value={w}>{w}</option>)}
               </select>
+            </label>
+            <label><span>计费厂商</span>
+              <input
+                list="models-dev-providers"
+                value={row.pricing}
+                placeholder="留空 = 不计算成本"
+                disabled={busy !== null}
+                onChange={(e) => update(index, { pricing: e.target.value })}
+              />
+              <small>
+                models.dev 厂商 ID（如 <code>xai</code>、<code>openrouter</code>）。同一模型被多家转售且价格不同，
+                无法从模型名或地址推断，只能你来指定；留空则成本显示「—」而不是猜一个。
+              </small>
             </label>
             <label><span>推理强度</span>
               <select value={row.reasoning_effort} disabled={busy !== null}
@@ -1306,7 +1323,7 @@ function CustomProvidersPanel({
           disabled={busy !== null || full}
           title={full ? `最多 ${payload.max_providers} 个` : ""}
           onClick={() => setDrafts([...rows, {
-            id: "", base_url: "", model: "", reasoning_effort: "", wire_api: "chat-completions",
+            id: "", base_url: "", model: "", reasoning_effort: "", wire_api: "chat-completions", pricing: "",
             require_api_key: true, extra_header_names: [], api_key_configured: false,
             api_key_masked: "", api_key: "",
           }])}

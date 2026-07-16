@@ -41,6 +41,7 @@ CUSTOM_LLM_PROVIDER_KEYS = {
     "wire_api",
     "require_api_key",
     "extra_headers",
+    "pricing",
 }
 PROTECTED_CUSTOM_HEADER_NAMES = {
     "authorization",
@@ -207,6 +208,14 @@ class CustomLlmProvider:
     wire_api: str = "chat-completions"
     require_api_key: bool = True
     extra_headers: dict[str, SecretStr] | None = None
+    #: models.dev provider id this endpoint bills as, e.g. ``xai``.
+    #:
+    #: It cannot be inferred. The same model is resold by many providers at
+    #: different rates -- grok-4.5 is listed under a dozen, and not all charge
+    #: what xAI charges -- and an OpenAI-compatible endpoint is exactly the
+    #: aggregator case, so neither the model name nor the base URL identifies
+    #: whose price applies. Left unset, cost stays unknown rather than guessed.
+    pricing: str | None = None
 
     @property
     def provider_name(self) -> str:
@@ -286,7 +295,7 @@ def _parse_custom_llm_providers(raw: str | None) -> tuple[CustomLlmProvider, ...
         api_key = entry.get("api_key")
         if api_key is not None and (not isinstance(api_key, str) or not api_key):
             raise ValueError(f"custom LLM provider {identifier} api_key must be a string")
-        for field in ("model", "reasoning_effort"):
+        for field in ("model", "reasoning_effort", "pricing"):
             value = entry.get(field)
             if value is not None and not isinstance(value, str):
                 raise ValueError(f"custom LLM provider {identifier} {field} must be a string")
@@ -309,6 +318,7 @@ def _parse_custom_llm_providers(raw: str | None) -> tuple[CustomLlmProvider, ...
                 wire_api=_parse_custom_llm_wire_api(wire_api),
                 require_api_key=require_api_key,
                 extra_headers=_validate_custom_llm_headers(headers) if headers else None,
+                pricing=(entry.get("pricing") or "").strip() or None,
             )
         )
     return tuple(providers)

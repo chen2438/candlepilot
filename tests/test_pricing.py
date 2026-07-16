@@ -1,7 +1,10 @@
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from candlepilot.api import pricing_provider_ids
+from candlepilot.config import Settings
 from candlepilot.providers.pricing import (
     load_catalog,
     parse_models_dev,
@@ -105,3 +108,32 @@ def test_catalog_cache_refresh_and_offline_fallback(tmp_path: Path) -> None:
     assert stale_calls == 2  # third load refetched after TTL
     assert fallback is not None and fallback.get("openai", "gpt-5.6-sol") is not None
     assert empty is None
+
+
+def test_pricing_provider_ids_only_include_custom_endpoints_that_declared_one() -> None:
+    """A custom endpoint's price cannot be inferred, only declared.
+
+    The same model is resold by many models.dev providers at rates that
+    genuinely differ, and an OpenAI-compatible endpoint is exactly the
+    aggregator case, so an undeclared endpoint must stay unpriced rather than
+    be charged at some other vendor's rate.
+    """
+
+    settings = Settings.from_mapping(
+        {
+            "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON": json.dumps(
+                [
+                    {"id": "grok", "base_url": "https://api.x.ai/v1", "pricing": "xai"},
+                    {"id": "mystery", "base_url": "https://example.test/v1"},
+                ]
+            )
+        }
+    )
+
+    identifiers = pricing_provider_ids(settings)
+
+    assert identifiers["openai-compatible:grok"] == "xai"
+    assert "openai-compatible:mystery" not in identifiers
+    # The CLIs keep their fixed mapping.
+    assert identifiers["codex-auth"] == "openai"
+    assert identifiers["claude-code-auth"] == "anthropic"

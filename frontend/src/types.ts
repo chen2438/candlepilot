@@ -4,6 +4,7 @@ export interface CustomProvider {
   model: string;
   reasoning_effort: string;
   wire_api: string;
+  pricing: string;
   require_api_key: boolean;
   extra_header_names: string[];
   api_key_configured: boolean;
@@ -14,6 +15,7 @@ export interface CustomProvidersPayload {
   providers: CustomProvider[];
   max_providers: number;
   wire_apis: string[];
+  pricing_options: string[];
 }
 
 export interface SettingsField {
