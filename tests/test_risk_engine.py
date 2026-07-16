@@ -89,7 +89,7 @@ def test_rejects_take_profit_on_wrong_side_of_entry() -> None:
 
 def test_rejects_stale_market_data() -> None:
     result = AggressiveRiskPolicy().evaluate(
-        _intent(), _snapshot(age_seconds=31), _portfolio(), RULES
+        _intent(), _snapshot(age_seconds=76), _portfolio(), RULES
     )
     assert not result.decision.accepted
     assert "stale" in result.decision.reason

@@ -81,7 +81,7 @@ def _parse_candidates_per_cycle(raw: str | None) -> int:
 
 def _parse_snapshot_age(raw: str | None) -> int:
     if not raw:
-        return 30
+        return 75
     try:
         value = int(raw.strip())
     except ValueError as exc:
@@ -159,7 +159,7 @@ class Settings:
     max_margin_fraction: Decimal = Decimal("0.60")
     daily_loss_fraction: Decimal = Decimal("0.08")
     inference_timeout_seconds: float = 45.0
-    max_snapshot_age_seconds: int = 30
+    max_snapshot_age_seconds: int = 75
     cadences: tuple[str, ...] = ("5m", "15m", "30m")
     candidates_per_cycle: int = 5
     default_provider: str | None = None

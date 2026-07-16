@@ -143,7 +143,7 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
   限价单因行情变化已可立即成交时仍可在全部最新风控通过后执行，放行原因会追加
   `limit entry is immediately marketable after refresh` 审计标记；保证金数量使用刷新后的买一/卖一
   与限价中更保守的价格计算。`HOLD` 无订单，不因分析快照变旧产生伪否决。
-- 分析快照从采集到 LLM 返回的最大年龄默认 30 秒，可通过
+- 分析快照从采集到 LLM 返回的最大年龄默认 75 秒，可通过
   `CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS` 调整；超过上限会在刷新前否决。刷新后的行情仍须通过
   同一有效期检查。另拒绝余额不足、无止损、强平缓冲不足、不符合交易所精度的意图。
 - 每次新推理都审计结构化行情/组合输入、实际 Prompt、Provider 原始输出和 token usage；控制台
@@ -261,7 +261,7 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 | `CANDLEPILOT_DATABASE_URL` | SQLite 连接串 |
 | `CANDLEPILOT_DATA_DIR` | 数据目录（Parquet 行情缓存、models.dev 定价缓存）|
 | `CANDLEPILOT_LLM_TIMEOUT` | LLM 子进程硬超时（秒，默认 45）|
-| `CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS` | LLM 分析快照允许进入下单前行情刷新的最大年龄（秒，默认 30，必须为正整数）|
+| `CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS` | LLM 分析快照允许进入下单前行情刷新的最大年龄（秒，默认 75，必须为正整数）|
 | `CANDLEPILOT_CADENCES` | 逗号分隔的分析周期子集，默认 `5m,15m,30m` |
 | `CANDLEPILOT_CANDIDATES_PER_CYCLE` | 每周期分析候选池前 N 个标的，默认 5（范围 1–20）|
 | `CANDLEPILOT_DEFAULT_PROVIDER` | 启动时默认选中的 LLM Provider；支持 `codex` / `claude-code` / `openai-compatible`（也接受相应内部名），留空则在控制台手动选择 |

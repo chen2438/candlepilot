@@ -47,7 +47,7 @@ class AggressiveRiskPolicy:
         max_margin_fraction: Decimal = Decimal("0.60"),
         daily_loss_fraction: Decimal = Decimal("0.08"),
         slippage_fraction: Decimal = Decimal("0.001"),
-        max_snapshot_age_seconds: int = 30,
+        max_snapshot_age_seconds: int = 75,
         require_take_profit: bool = False,
     ) -> None:
         if max_snapshot_age_seconds <= 0:

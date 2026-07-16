@@ -300,7 +300,7 @@ def test_engine_rejects_expired_analysis_before_market_refresh(tmp_path: Path) -
             MarketSnapshot(
                 symbol="BTCUSDT",
                 cadence="5m",
-                timestamp=datetime.now(UTC) - timedelta(seconds=31),
+                timestamp=datetime.now(UTC) - timedelta(seconds=76),
                 mark_price="100",
                 bid="99.9",
                 ask="100.1",
