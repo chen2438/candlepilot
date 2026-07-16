@@ -5,6 +5,9 @@ export interface EngineStatus {
   emergency_locked_until: string | null;
   selected_provider: string | null;
   backup_provider: string | null;
+  provider_chain: string[];
+  active_provider: string | null;
+  provider_routes: ProviderRouteStatus[];
   active_cadences: string[];
   supported_cadences: string[];
   candidates_per_cycle: number | null;
@@ -20,6 +23,17 @@ export interface EngineStatus {
     last_backfill_at: string | null;
     last_error: string | null;
   };
+}
+
+export interface ProviderRouteStatus {
+  provider: string;
+  priority: number;
+  state: "active" | "cooldown" | "standby";
+  consecutive_failures: number;
+  cooldown_until: string | null;
+  last_error: string | null;
+  last_failed_at: string | null;
+  last_success_at: string | null;
 }
 
 export interface ProviderHealth {
@@ -58,6 +72,11 @@ export interface DecisionEvent {
   provenance: {
     reasoning_effort?: string | null;
     [key: string]: unknown;
+  };
+  failover: null | {
+    route_position: number;
+    continues: boolean;
+    error: string | null;
   };
   intent: {
     symbol: string;

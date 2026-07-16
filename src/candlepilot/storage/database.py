@@ -632,6 +632,13 @@ class AuditRepository:
                     "provider": inference.provider,
                     "model": inference.model,
                     "provenance": usage.get("_provenance", {}),
+                    "failover": {
+                        "route_position": usage.get("route_position"),
+                        "continues": bool(usage.get("failover_continues")),
+                        "error": usage.get("error_message"),
+                    }
+                    if usage.get("failover_attempt")
+                    else None,
                     "intent": intent.model_dump(mode="json"),
                     "duration_ms": inference.duration_ms,
                     "outcome": outcome,

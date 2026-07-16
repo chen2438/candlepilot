@@ -51,7 +51,8 @@ class ApiModel(BaseModel):
 
 
 class ProviderSelection(ApiModel):
-    name: str
+    providers: list[str] | None = Field(default=None, min_length=1, max_length=16)
+    name: str | None = None
     backup: str | None = None
 
 
@@ -235,6 +236,9 @@ def _status(engine: TradingEngine, scheduler: TradingScheduler | None = None) ->
         else None,
         "selected_provider": engine.selected_provider,
         "backup_provider": engine.backup_provider,
+        "provider_chain": list(engine.provider_chain),
+        "active_provider": engine.active_provider,
+        "provider_routes": engine.provider_route_status(),
         "active_cadences": list(engine.active_cadences),
         "supported_cadences": list(SUPPORTED_CADENCES),
         "candidates_per_cycle": scheduler.candidates_per_cycle if scheduler is not None else None,
@@ -317,7 +321,9 @@ def create_app(
         testnet_broker=testnet_broker,
         cadences=settings.cadences,
     )
-    if settings.default_provider is not None and engine.selected_provider is None:
+    if settings.provider_chain and not engine.provider_chain:
+        engine.select_provider_chain(settings.provider_chain)
+    elif settings.default_provider is not None and engine.selected_provider is None:
         engine.select_provider(settings.default_provider)
 
     async def load_paper_backfill(symbols: list[str]) -> list[MarketSnapshot]:
@@ -720,11 +726,18 @@ def create_app(
     @app.post("/api/providers/select")
     async def select_provider(selection: ProviderSelection) -> dict[str, Any]:
         try:
-            engine.select_provider(selection.name, selection.backup)
+            if selection.providers is not None:
+                engine.select_provider_chain(selection.providers)
+            elif selection.name is not None:
+                engine.select_provider(selection.name, selection.backup)
+            else:
+                raise ValueError("providers or name is required")
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _status(engine, scheduler)
 
     @app.post("/api/cadences")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
@@ -30,6 +31,7 @@ from candlepilot.storage.database import AuditRepository
 
 
 SUPPORTED_CADENCES: tuple[str, ...] = ("5m", "15m", "30m")
+PROVIDER_FAILURE_COOLDOWN = timedelta(seconds=60)
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +40,15 @@ class DecisionOutcome:
     risk: RiskDecision
     execution: ExecutionReport | None
     provider: str
+
+
+@dataclass(slots=True)
+class ProviderRouteState:
+    consecutive_failures: int = 0
+    cooldown_until: datetime | None = None
+    last_error: str | None = None
+    last_failed_at: datetime | None = None
+    last_success_at: datetime | None = None
 
 
 class TradingEngine:
@@ -64,6 +75,9 @@ class TradingEngine:
         self.testnet_broker = testnet_broker
         self.selected_provider: str | None = None
         self.backup_provider: str | None = None
+        self.provider_chain: tuple[str, ...] = ()
+        self.active_provider: str | None = None
+        self._provider_route_states: dict[str, ProviderRouteState] = {}
         self.active_cadences: tuple[str, ...] = self._normalize_cadences(
             cadences if cadences is not None else SUPPORTED_CADENCES
         )
@@ -82,13 +96,53 @@ class TradingEngine:
         return await self.providers.health()
 
     def select_provider(self, name: str, backup: str | None = None) -> None:
-        self.providers.get(name)
-        if backup is not None:
-            self.providers.get(backup)
-            if backup == name:
-                raise ValueError("backup provider must differ from primary provider")
-        self.selected_provider = name
-        self.backup_provider = backup
+        self.select_provider_chain([name, *([backup] if backup is not None else [])])
+
+    def select_provider_chain(self, providers: tuple[str, ...] | list[str]) -> None:
+        if self.running:
+            raise RuntimeError("cannot change provider route while running")
+        if not providers:
+            raise ValueError("provider route must contain at least one provider")
+        ordered = tuple(providers)
+        if len(set(ordered)) != len(ordered):
+            raise ValueError("provider route cannot contain duplicates")
+        for name in ordered:
+            self.providers.get(name)
+        self.provider_chain = ordered
+        self.selected_provider = ordered[0]
+        self.backup_provider = ordered[1] if len(ordered) > 1 else None
+        self.active_provider = None
+        self._provider_route_states = {
+            name: self._provider_route_states.get(name, ProviderRouteState())
+            for name in ordered
+        }
+
+    def provider_route_status(self, *, now: datetime | None = None) -> list[dict[str, object]]:
+        now = now or datetime.now(UTC)
+        statuses: list[dict[str, object]] = []
+        for priority, name in enumerate(self.provider_chain, start=1):
+            route = self._provider_route_states.setdefault(name, ProviderRouteState())
+            cooling = route.cooldown_until is not None and route.cooldown_until > now
+            state = "active" if name == self.active_provider else "cooldown" if cooling else "standby"
+            statuses.append(
+                {
+                    "provider": name,
+                    "priority": priority,
+                    "state": state,
+                    "consecutive_failures": route.consecutive_failures,
+                    "cooldown_until": route.cooldown_until.isoformat()
+                    if route.cooldown_until
+                    else None,
+                    "last_error": route.last_error,
+                    "last_failed_at": route.last_failed_at.isoformat()
+                    if route.last_failed_at
+                    else None,
+                    "last_success_at": route.last_success_at.isoformat()
+                    if route.last_success_at
+                    else None,
+                }
+            )
+        return statuses
 
     @staticmethod
     def _normalize_cadences(cadences: tuple[str, ...] | list[str]) -> tuple[str, ...]:
@@ -112,8 +166,8 @@ class TradingEngine:
         await self.restore_runtime_state()
         if self.emergency_locked:
             raise RuntimeError("engine is emergency locked")
-        if self.selected_provider is None:
-            raise RuntimeError("an authenticated LLM provider must be selected")
+        if not self.provider_chain:
+            raise RuntimeError("at least one authenticated LLM provider must be selected")
         if self.mode == TradingMode.TESTNET and self.testnet_broker is None:
             raise RuntimeError("Binance testnet credentials are not configured")
         if self.mode == TradingMode.TESTNET and self.testnet_broker is not None:
@@ -124,9 +178,34 @@ class TradingEngine:
                 raise AccountReconciliationError(
                     f"testnet positions lack protective stops: {symbols}"
                 )
-        health = await self.providers.get(self.selected_provider).health_check()
-        if not health.available or not health.authenticated:
-            raise RuntimeError(f"provider is unavailable: {health.detail}")
+        health_results = await asyncio.gather(
+            *(self.providers.get(name).health_check() for name in self.provider_chain),
+            return_exceptions=True,
+        )
+        ready: list[str] = []
+        failures: list[str] = []
+        checked_at = datetime.now(UTC)
+        for name, health in zip(self.provider_chain, health_results, strict=True):
+            state = self._provider_route_states[name]
+            if isinstance(health, BaseException):
+                detail = type(health).__name__
+                failures.append(f"{name}: {detail}")
+                state.last_error = detail
+                state.last_failed_at = checked_at
+                state.cooldown_until = checked_at + PROVIDER_FAILURE_COOLDOWN
+            elif health.available and health.authenticated:
+                ready.append(name)
+                state.consecutive_failures = 0
+                state.cooldown_until = None
+                state.last_error = None
+            else:
+                failures.append(f"{name}: {health.detail}")
+                state.last_error = health.detail
+                state.last_failed_at = checked_at
+                state.cooldown_until = checked_at + PROVIDER_FAILURE_COOLDOWN
+        if not ready:
+            raise RuntimeError(f"no provider in route is ready: {'; '.join(failures)}")
+        self.active_provider = ready[0]
         self.run_start_inference_id = await self.audit.latest_inference_id()
         self.run_end_inference_id = None
         self.run_started_at = datetime.now(UTC)
@@ -222,58 +301,68 @@ class TradingEngine:
         portfolio: PortfolioState,
         rules: SymbolRules,
     ) -> DecisionOutcome:
-        if not self.running or self.selected_provider is None:
+        if not self.running or not self.provider_chain:
             raise RuntimeError("engine is not running")
-        provider = self.providers.get(self.selected_provider)
-        try:
-            result = await provider.generate_trade_intent(snapshot, portfolio)
-        except ProviderError as primary_exc:
-            primary_diagnostics = (
-                primary_exc if isinstance(primary_exc, ProviderInvocationError) else None
-            )
-            result = None
-            if self.backup_provider is not None:
-                backup = self.providers.get(self.backup_provider)
-                try:
-                    result = await backup.generate_trade_intent(snapshot, portfolio)
-                except ProviderError as backup_exc:
-                    primary_exc = ProviderError(
-                        f"primary failed: {primary_exc}; backup failed: {backup_exc}"
+        now = datetime.now(UTC)
+        candidates = [
+            name
+            for name in self.provider_chain
+            if (state := self._provider_route_states.setdefault(name, ProviderRouteState())).cooldown_until is None
+            or state.cooldown_until <= now
+        ]
+        if not candidates:
+            # Avoid dropping an entire decision cycle when every route is cooling down.
+            candidates = [
+                min(
+                    self.provider_chain,
+                    key=lambda name: self._provider_route_states[name].cooldown_until
+                    or datetime.min.replace(tzinfo=UTC),
+                )
+            ]
+
+        failed_results: list[ProviderResult] = []
+        result: ProviderResult | None = None
+        for position, name in enumerate(candidates, start=1):
+            provider = self.providers.get(name)
+            try:
+                result = await provider.generate_trade_intent(snapshot, portfolio)
+            except ProviderError as exc:
+                failed_at = datetime.now(UTC)
+                state = self._provider_route_states[name]
+                state.consecutive_failures += 1
+                state.cooldown_until = failed_at + PROVIDER_FAILURE_COOLDOWN
+                state.last_error = str(exc)
+                state.last_failed_at = failed_at
+                failed_results.append(
+                    self._provider_failure_result(
+                        provider_name=name,
+                        provider=provider,
+                        error=exc,
+                        snapshot=snapshot,
+                        portfolio=portfolio,
+                        route_position=self.provider_chain.index(name) + 1,
+                        failover_continues=position < len(candidates),
                     )
-            if result is None:
-                usage = dict(primary_diagnostics.usage) if primary_diagnostics else {}
-                usage["error"] = type(primary_exc).__name__
-                usage["error_message"] = str(primary_exc)
-                intent = TradeIntent.hold(
-                    snapshot.symbol,
-                    snapshot.cadence,
-                    f"provider error: {primary_exc}",
                 )
-                result = ProviderResult(
-                    intent=intent,
-                    provider=self.selected_provider,
-                    model=primary_diagnostics.model if primary_diagnostics else provider.model,
-                    duration=primary_diagnostics.duration if primary_diagnostics else timedelta(0),
-                    raw_output=primary_diagnostics.raw_output
-                    if primary_diagnostics
-                    else str(primary_exc),
-                    usage=usage,
-                    prompt_version=primary_diagnostics.prompt_version
-                    if primary_diagnostics
-                    else None,
-                    data_version=primary_diagnostics.data_version if primary_diagnostics else None,
-                    provider_version=primary_diagnostics.provider_version
-                    if primary_diagnostics
-                    else None,
-                    input_payload=primary_diagnostics.input_payload
-                    if primary_diagnostics
-                    else {
-                        "market": snapshot.model_dump(mode="json"),
-                        "portfolio": portfolio.model_dump(mode="json"),
-                    },
-                    prompt=primary_diagnostics.prompt if primary_diagnostics else None,
-                    reasoning_effort=provider.reasoning_effort,
-                )
+                continue
+            state = self._provider_route_states[name]
+            state.consecutive_failures = 0
+            state.cooldown_until = None
+            state.last_error = None
+            state.last_success_at = datetime.now(UTC)
+            self.active_provider = name
+            break
+
+        if result is not None:
+            for failed_result in failed_results:
+                await self.audit.record_inference(failed_result)
+        else:
+            self.active_provider = None
+            if not failed_results:
+                raise RuntimeError("no provider route was attempted")
+            for failed_result in failed_results[:-1]:
+                await self.audit.record_inference(failed_result)
+            result = failed_results[-1]
         inference_id = await self.audit.record_inference(result)
         evaluation_snapshot = snapshot
         evaluation_portfolio = portfolio
@@ -349,4 +438,50 @@ class TradingEngine:
             risk=evaluation.decision,
             execution=execution,
             provider=result.provider,
+        )
+
+    @staticmethod
+    def _provider_failure_result(
+        *,
+        provider_name: str,
+        provider: object,
+        error: ProviderError,
+        snapshot: MarketSnapshot,
+        portfolio: PortfolioState,
+        route_position: int,
+        failover_continues: bool,
+    ) -> ProviderResult:
+        diagnostics = error if isinstance(error, ProviderInvocationError) else None
+        usage = dict(diagnostics.usage) if diagnostics else {}
+        usage.update(
+            {
+                "error": type(error).__name__,
+                "error_message": str(error),
+                "failover_attempt": True,
+                "route_position": route_position,
+                "failover_continues": failover_continues,
+            }
+        )
+        rationale = (
+            f"provider attempt failed at route position {route_position}; "
+            f"{'continuing failover' if failover_continues else 'no provider succeeded'}: {error}"
+        )
+        return ProviderResult(
+            intent=TradeIntent.hold(snapshot.symbol, snapshot.cadence, rationale[:2000]),
+            provider=provider_name,
+            model=diagnostics.model if diagnostics else getattr(provider, "model", None),
+            duration=diagnostics.duration if diagnostics else timedelta(0),
+            raw_output=diagnostics.raw_output if diagnostics else str(error),
+            usage=usage,
+            prompt_version=diagnostics.prompt_version if diagnostics else None,
+            data_version=diagnostics.data_version if diagnostics else None,
+            provider_version=diagnostics.provider_version if diagnostics else None,
+            input_payload=diagnostics.input_payload
+            if diagnostics
+            else {
+                "market": snapshot.model_dump(mode="json"),
+                "portfolio": portfolio.model_dump(mode="json"),
+            },
+            prompt=diagnostics.prompt if diagnostics else None,
+            reasoning_effort=getattr(provider, "reasoning_effort", None),
         )

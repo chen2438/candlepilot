@@ -850,6 +850,32 @@ def test_unknown_provider_is_404(tmp_path: Path) -> None:
     asyncio.run(database.close())
 
 
+def test_provider_route_api_exposes_order_and_locks_while_running(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'provider-route-api.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        mode=TradingMode.PAPER,
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        selected = client.post(
+            "/api/providers/select", json={"providers": ["api-fixture"]}
+        )
+        assert selected.status_code == 200
+        assert selected.json()["provider_chain"] == ["api-fixture"]
+        assert selected.json()["provider_routes"][0]["priority"] == 1
+        assert selected.json()["active_provider"] is None
+        assert client.post("/api/engine/start").json()["active_provider"] == "api-fixture"
+        locked = client.post(
+            "/api/providers/select", json={"providers": ["api-fixture"]}
+        )
+        assert locked.status_code == 409
+    asyncio.run(database.close())
+
+
 def test_backtest_run_is_persisted_and_listed(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'backtest-api.db'}")
     market = ApiMarket()

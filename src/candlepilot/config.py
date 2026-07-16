@@ -104,6 +104,22 @@ def _parse_default_provider(raw: str | None) -> str | None:
         ) from exc
 
 
+def _parse_provider_chain(raw: str | None) -> tuple[str, ...]:
+    if not raw or not raw.strip():
+        return ()
+    providers: list[str] = []
+    for item in raw.split(","):
+        provider = _parse_default_provider(item)
+        if provider is None:
+            continue
+        if provider in providers:
+            raise ValueError("CANDLEPILOT_PROVIDER_CHAIN cannot contain duplicates")
+        providers.append(provider)
+    if not providers:
+        raise ValueError("CANDLEPILOT_PROVIDER_CHAIN must contain at least one provider")
+    return tuple(providers)
+
+
 def _parse_custom_llm_wire_api(raw: str | None) -> str:
     value = (raw or "chat-completions").strip().lower()
     if value not in CUSTOM_LLM_WIRE_APIS:
@@ -162,6 +178,7 @@ class Settings:
     max_snapshot_age_seconds: int = 75
     cadences: tuple[str, ...] = ("5m", "15m", "30m")
     candidates_per_cycle: int = 5
+    provider_chain: tuple[str, ...] = ()
     default_provider: str | None = None
     codex_model: str | None = None
     codex_reasoning_effort: str | None = None
@@ -193,6 +210,7 @@ class Settings:
             candidates_per_cycle=_parse_candidates_per_cycle(
                 os.getenv("CANDLEPILOT_CANDIDATES_PER_CYCLE")
             ),
+            provider_chain=_parse_provider_chain(os.getenv("CANDLEPILOT_PROVIDER_CHAIN")),
             default_provider=_parse_default_provider(
                 os.getenv("CANDLEPILOT_DEFAULT_PROVIDER")
             ),

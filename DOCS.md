@@ -2,7 +2,7 @@
 
 > 本文件是 CandlePilot 的**唯一权威功能文档**，记录系统当前的全部能力、接口与边界。
 > `STATUS.md` 与 `PLAN.md` 已弃用，后续变更只同步更新本文件。
-> 最后更新：2026-07-16（增加自带 Base URL / API Key 的模型接入）
+> 最后更新：2026-07-16（增加有序 Provider 主备路由、冷却与自动恢复）
 
 ---
 
@@ -78,7 +78,16 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
   1000 字符；若模型只违反该长度限制，Provider 会确定性截断到 1000 字符并在 usage 中写入
   `rationale_truncated=true`，同时完整原始输出仍留在本地审计。方向、杠杆、风险、价格与保护单
   等交易关键字段不做自动修正，任何不合规仍安全降级。
-- **主备切换**：控制台手动选择当前 Provider；可显式配置单次主备故障切换（默认关闭）。
+- **有序主备路由**：控制台或 `CANDLEPILOT_PROVIDER_CHAIN` 可配置任意长度且不重复的 Provider
+  顺序，例如 `codex → claude-code → openai-compatible`。启动时并行检查整条路由，只要至少一个
+  节点已就绪即可启动，并选择顺序最靠前的就绪节点承载。
+- **故障冷却与恢复**：一次分析按顺序尝试未冷却节点；调用失败的节点立即冷却 60 秒，本次继续
+  尝试后续节点。冷却到期后自动回到优先顺序参与下一次调用，成功即恢复为承载节点；如果所有
+  节点都在冷却，系统会尝试最早到期的一个节点，避免整个决策周期静默丢失。路由在引擎运行时
+  锁定，防止并发分析期间改变顺序。
+- **切换审计**：每个实际发起但失败的 Provider 调用均单独写入推理审计，记录路由位置、是否继续
+  切换、错误、原始输出和可获得的 Token/耗时；最终成功结果再独立进入硬风控。所有节点均失败时
+  最后一次失败生成 `HOLD`，不会下单。
 - **可选模型与推理强度**：Codex 传 `-m` / `-c model_reasoning_effort`，Claude 传
   `--model` / `--effort`。默认取自环境变量，也可在控制台运行前经 `/api/providers/config`
   修改；控制台模型为下拉选择（选项来自 models.dev 目录、按 Provider 过滤、含 CLI 别名），
@@ -233,7 +242,7 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 | 标签页 | 面板 | 内容 |
 |---|---|---|
 | 总览 | 引擎控制（hero）| 系统状态、分析周期、每周期标的数、启动/停止/紧急熔断；下方实时显示本次或上次运行的 Token、等效成本、调用数与时长 |
-| 总览 | 01 模型接入 | Codex/Claude/Custom API 选择、就绪状态、模型与推理强度选择器、配置连通性测试 |
+| 总览 | 01 模型接入 | Codex/Claude/Custom API 有序主备路由、当前承载/冷却状态、模型与推理强度选择器、配置连通性测试 |
 | 总览 | 02 硬风控边界 | 只读展示不可修改的风控参数 |
 | 总览 | 03 动态候选池 | 全市场扫描结果，可手动刷新 |
 | 总览 | 04 决策与风控 | 将 LLM 意图与对应硬风控结果合并为一条审计事件；可按放行、否决、HOLD、仅推理筛选并展开参数与原因 |
@@ -271,7 +280,8 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 | `CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS` | LLM 分析快照允许进入下单前行情刷新的最大年龄（秒，默认 75，必须为正整数）|
 | `CANDLEPILOT_CADENCES` | 逗号分隔的分析周期子集，默认 `5m,15m,30m` |
 | `CANDLEPILOT_CANDIDATES_PER_CYCLE` | 每周期分析候选池前 N 个标的，默认 5（范围 1–20）|
-| `CANDLEPILOT_DEFAULT_PROVIDER` | 启动时默认选中的 LLM Provider；支持 `codex` / `claude-code` / `openai-compatible`（也接受相应内部名），留空则在控制台手动选择 |
+| `CANDLEPILOT_PROVIDER_CHAIN` | 启动时默认的逗号分隔有序 Provider 路由，例如 `codex,claude-code,openai-compatible`；不允许重复，优先级高于旧的单 Provider 配置 |
+| `CANDLEPILOT_DEFAULT_PROVIDER` | 兼容旧配置的单 Provider 默认值；仅在 `CANDLEPILOT_PROVIDER_CHAIN` 留空时使用 |
 | `CANDLEPILOT_CODEX_MODEL` / `CANDLEPILOT_CODEX_REASONING_EFFORT` | Codex 模型 / 推理强度（minimal/low/medium/high）|
 | `CANDLEPILOT_CLAUDE_MODEL` / `CANDLEPILOT_CLAUDE_EFFORT` | Claude 模型 / 强度（low/medium/high/xhigh/max）|
 | `CANDLEPILOT_CUSTOM_LLM_BASE_URL` | OpenAI-compatible API 根地址；系统按协议追加 `/chat/completions` 或 `/responses`，外部仅 HTTPS，回环地址可 HTTP |
@@ -298,6 +308,12 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 `POST /api/candidates-per-cycle`、`POST /api/engine/start`、
 `POST /api/engine/stop`、`POST /api/engine/emergency-stop`、
 `POST /api/engine/clear-emergency-lock`。
+
+`POST /api/providers/select` 的新格式为
+`{"providers":["codex-auth","claude-code-auth","openai-compatible"]}`；旧的
+`{"name":"codex-auth","backup":"claude-code-auth"}` 仍兼容。引擎运行时修改返回 409。
+`GET /api/status` 通过 `provider_chain`、`active_provider` 和 `provider_routes` 返回顺序、当前承载、
+冷却截止时间、最近错误与最近成功/失败时间；不返回任何凭据。
 
 **行情与选币**：`GET /api/universe`、`POST /api/universe/refresh`、
 `GET /api/market/klines`、`GET /api/market/funding-rates`、

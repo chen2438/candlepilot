@@ -22,6 +22,9 @@ const emptyStatus: EngineStatus = {
   emergency_locked_until: null,
   selected_provider: null,
   backup_provider: null,
+  provider_chain: [],
+  active_provider: null,
+  provider_routes: [],
   active_cadences: ["5m", "15m", "30m"],
   supported_cadences: ["5m", "15m", "30m"],
   candidates_per_cycle: 5,
@@ -246,6 +249,38 @@ export default function App() {
     }
   }, []);
 
+  const changeProviderChain = useCallback(async (chain: string[]) => {
+    if (!chain.length) return;
+    setBusy("provider-route");
+    setError(null);
+    try {
+      setStatus(await api<EngineStatus>("/api/providers/select", {
+        method: "POST",
+        body: JSON.stringify({ providers: chain }),
+      }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
+  const toggleProviderRoute = useCallback((name: string) => {
+    const chain = status.provider_chain;
+    const next = chain.includes(name)
+      ? chain.filter((provider) => provider !== name)
+      : [...chain, name];
+    if (next.length) void changeProviderChain(next);
+  }, [status.provider_chain, changeProviderChain]);
+
+  const moveProviderRoute = useCallback((index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= status.provider_chain.length) return;
+    const next = [...status.provider_chain];
+    [next[index], next[target]] = [next[target], next[index]];
+    void changeProviderChain(next);
+  }, [status.provider_chain, changeProviderChain]);
+
   const toggleCadence = useCallback(async (cadence: string, active: string[], supported: string[]) => {
     const next = active.includes(cadence) ? active.filter((c) => c !== cadence) : [...active, cadence];
     if (!next.length) return; // keep at least one cadence
@@ -358,6 +393,7 @@ export default function App() {
     const account = window.setInterval(() => {
       refreshAccount().catch(() => undefined);
       refreshOperations().catch(() => undefined);
+      api<EngineStatus>("/api/status").then(setStatus).catch(() => undefined);
     }, 5000);
     const decisionFallback = window.setInterval(() => {
       refreshDecisions().catch(() => undefined);
@@ -494,8 +530,8 @@ export default function App() {
   }, []);
 
   const activeProvider = useMemo(
-    () => providers.find((provider) => provider.provider === status.selected_provider),
-    [providers, status.selected_provider],
+    () => providers.find((provider) => provider.provider === status.active_provider),
+    [providers, status.active_provider],
   );
   const allHistorySelected = HISTORY_CATEGORIES.every(
     (category) => historySelected[category.key],
@@ -615,12 +651,14 @@ export default function App() {
           <article className="panel provider-panel">
             <PanelTitle code="01" title="模型接入" meta="手动路由" />
             <div className="provider-list">
-              {providers.map((provider) => (
-                <button
+              {providers.map((provider) => {
+                const routeIndex = status.provider_chain.indexOf(provider.provider);
+                return <button
                   key={provider.provider}
-                  className={`provider-card ${status.selected_provider === provider.provider ? "selected" : ""}`}
-                  disabled={!provider.available || !provider.authenticated || status.running}
-                  onClick={() => act("provider", "/api/providers/select", { name: provider.provider })}
+                  className={`provider-card ${routeIndex >= 0 ? "selected" : ""}`}
+                  disabled={status.running || busy !== null || (routeIndex === 0 && status.provider_chain.length === 1)}
+                  onClick={() => toggleProviderRoute(provider.provider)}
+                  title={routeIndex >= 0 ? "点击从路由中移除" : "点击加入路由末尾；当前不可用也可预先配置"}
                 >
                   <span className={`provider-icon ${provider.authenticated ? "ready" : ""}`}>
                     {providerIcon(provider.provider)}
@@ -630,13 +668,28 @@ export default function App() {
                     <small>{provider.version ?? provider.detail}</small>
                   </span>
                   <span className={`status-pill ${provider.authenticated ? "ok" : "off"}`}>
-                    {provider.authenticated ? "READY" : provider.available ? "LOGIN" : "MISSING"}
+                    {routeIndex >= 0 ? `#${routeIndex + 1} · ` : ""}{provider.authenticated ? "READY" : provider.available ? "LOGIN" : "MISSING"}
                   </span>
                 </button>
-              ))}
+              })}
+            </div>
+            <div className="provider-route">
+              <div className="provider-config-title"><span>主备顺序</span><small>{status.running ? "运行时锁定" : "失败后冷却 60 秒并自动恢复"}</small></div>
+              {status.provider_chain.map((name, index) => {
+                const route = status.provider_routes.find((item) => item.provider === name);
+                const health = providers.find((item) => item.provider === name);
+                const state = route?.state === "active" ? "承载中" : route?.state === "cooldown" ? "冷却" : health?.authenticated ? "待命" : "不可用";
+                return <div className={`provider-route-row ${route?.state ?? "standby"}`} key={name}>
+                  <strong>{index + 1}</strong>
+                  <span>{providerLabel(name)}<small>{state}{route?.last_error ? ` · ${route.last_error}` : ""}</small></span>
+                  <button disabled={status.running || busy !== null || index === 0} onClick={() => moveProviderRoute(index, -1)} title="提高优先级">↑</button>
+                  <button disabled={status.running || busy !== null || index === status.provider_chain.length - 1} onClick={() => moveProviderRoute(index, 1)} title="降低优先级">↓</button>
+                  <button disabled={status.running || busy !== null || status.provider_chain.length === 1} onClick={() => toggleProviderRoute(name)} title="移出路由">×</button>
+                </div>;
+              })}
             </div>
             <div className="provider-foot">
-              <span>当前路由</span><strong>{activeProvider ? providerLabel(activeProvider.provider) : "未选择"}</strong>
+              <span>实际承载</span><strong>{activeProvider ? providerLabel(activeProvider.provider) : status.running ? "等待可用 Provider" : "引擎未运行"}</strong>
             </div>
             <div className="provider-config">
               <div className="provider-config-title"><span>模型与推理强度</span><small>{status.running ? "运行时锁定" : "留空=Provider 默认"}</small></div>
@@ -1019,12 +1072,16 @@ function DecisionPanel({ decisions }: { decisions: DecisionEvent[] }) {
               aria-expanded={expanded === decision.id}
               onClick={() => void toggleDecision(decision)}
             >
-              <span className={`action ${decision.intent.action.toLowerCase()}`}>{decision.intent.action}</span>
+              <span className={`action ${decision.failover ? "provider-fail" : decision.intent.action.toLowerCase()}`}>
+                {decision.failover ? "PROVIDER_FAIL" : decision.intent.action}
+              </span>
               <span className="signal-symbol">
                 <strong>{decision.intent.symbol}</strong>
                 <small>{decision.intent.cadence} · {providerLabel(decision.provider)} · {inferenceConfigLabel(decision)}</small>
               </span>
-              <span
+              {decision.failover ? <span className="signal-confidence residual" title="该 Provider 调用失败时在有序路由中的位置。">
+                #{decision.failover.route_position}<small>{decision.failover.continues ? "继续切换" : "路由耗尽"}</small>
+              </span> : <span
                 className={`signal-confidence ${decision.intent.action === "HOLD" ? "residual" : ""}`}
                 title={decision.intent.action === "HOLD"
                   ? "HOLD 时表示当前快照仍残留的交易机会强度，不是盈利概率，也不代表模型输出可靠性。"
@@ -1032,8 +1089,8 @@ function DecisionPanel({ decisions }: { decisions: DecisionEvent[] }) {
               >
                 {Math.round(decision.intent.confidence * 100)}%
                 <small>{decision.intent.action === "HOLD" ? "机会强度" : "执行置信度"}</small>
-              </span>
-              <span className={`decision-outcome ${decision.outcome}`}>{OUTCOME_LABELS[decision.outcome]}</span>
+              </span>}
+              <span className={`decision-outcome ${decision.outcome}`}>{decision.failover ? "故障切换" : OUTCOME_LABELS[decision.outcome]}</span>
               <span className="signal-time">{new Date(decision.created_at).toLocaleTimeString("zh-CN", { hour12: false })}</span>
               <span className="decision-chevron">{expanded === decision.id ? "−" : "+"}</span>
             </button>
@@ -1051,8 +1108,8 @@ function DecisionPanel({ decisions }: { decisions: DecisionEvent[] }) {
                   <span>风控数量<strong>{decision.risk?.decision.max_quantity ?? "—"}</strong></span>
                 </div>
                 <div className={`decision-reason ${decision.outcome}`}>
-                  <strong>{OUTCOME_LABELS[decision.outcome]}</strong>
-                  <span>{decision.risk?.reason ?? "该记录只有模型推理，未进入实时硬风控流程。"}</span>
+                  <strong>{decision.failover ? "故障切换" : OUTCOME_LABELS[decision.outcome]}</strong>
+                  <span>{decision.failover?.error ?? decision.risk?.reason ?? "该记录只有模型推理，未进入实时硬风控流程。"}</span>
                 </div>
                 <AnalysisDetail
                   copied={copied}

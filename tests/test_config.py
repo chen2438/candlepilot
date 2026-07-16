@@ -94,6 +94,23 @@ def test_default_provider_rejects_unknown_value(monkeypatch) -> None:
         Settings.from_env()
 
 
+def test_provider_chain_accepts_aliases_and_preserves_order(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "CANDLEPILOT_PROVIDER_CHAIN", "codex,claude-code,openai-compatible"
+    )
+    assert Settings.from_env().provider_chain == (
+        "codex-auth",
+        "claude-code-auth",
+        "openai-compatible",
+    )
+
+
+def test_provider_chain_rejects_duplicates(monkeypatch) -> None:
+    monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", "codex,codex-auth")
+    with pytest.raises(ValueError, match="duplicates"):
+        Settings.from_env()
+
+
 def test_from_env_reads_loaded_dotenv(tmp_path: Path, monkeypatch) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text("CANDLEPILOT_PORT=9001\nCANDLEPILOT_CODEX_MODEL=gpt-x\n")
