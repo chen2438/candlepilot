@@ -18,6 +18,18 @@ from candlepilot.domain.models import MarketSnapshot
 #: off the stream and never asks for these features.
 DECISION_FEATURE_INTERVALS = ("5m", "15m", "30m")
 
+#: Interval supplying daily structure levels, and only those.
+#:
+#: The full feature ladder is deliberately *not* applied here. The levels are
+#: what the daily bar is for -- the 20-day high and low are places real orders
+#: sit, unlike a 50-minute high that nobody defends -- and a daily RSI or volume
+#: ratio would be another reading with no rule to read it. It also keeps the
+#: bar count honest: 20 daily closes is what MarketScanner's 30-day listing
+#: floor guarantees, whereas a daily ema_50 would silently degrade to a plain
+#: mean on anything younger than 50 days.
+DAILY_STRUCTURE_INTERVAL = "1d"
+DAILY_STRUCTURE_PERIOD = 20
+
 
 @dataclass(frozen=True, slots=True)
 class Kline:
@@ -148,6 +160,36 @@ class FeaturePipeline:
             for name, value in self.calculate(rows_by_interval[interval]).items():
                 combined[f"{interval}_{name}"] = value
         return combined
+
+    def daily_structure(
+        self, rows: list[list[Any]], *, mark_price: Decimal
+    ) -> dict[str, float]:
+        """The 20-day high and low, and where the live mark sits between them.
+
+        Position is measured against ``mark_price`` rather than the last daily
+        close, which can be almost a day stale -- the question is where price is
+        now, not where it finished yesterday. It is deliberately not clamped:
+        above 1 means price is through the 20-day high, and that is the signal,
+        not an error.
+        """
+
+        klines = [Kline.from_binance(row) for row in rows]
+        closed = [item for item in klines if item.closed]
+        if len(closed) < DAILY_STRUCTURE_PERIOD:
+            raise ValueError(
+                f"daily structure requires at least {DAILY_STRUCTURE_PERIOD} closed daily klines"
+            )
+        high, low = _range(closed, DAILY_STRUCTURE_PERIOD)
+        span = high - low
+        mark = float(mark_price)
+        prefix = DAILY_STRUCTURE_INTERVAL
+        return {
+            f"{prefix}_range_high_{DAILY_STRUCTURE_PERIOD}": high,
+            f"{prefix}_range_low_{DAILY_STRUCTURE_PERIOD}": low,
+            f"{prefix}_range_position_{DAILY_STRUCTURE_PERIOD}": (
+                (mark - low) / span if span else 0.5
+            ),
+        }
 
     def snapshot(
         self,

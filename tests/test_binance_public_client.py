@@ -211,9 +211,9 @@ def test_market_snapshot_includes_microstructure() -> None:
 
     snapshot = asyncio.run(scenario())
     assert snapshot.cadence == "30m"
-    # 1m is no longer fetched: no setup rule reads it, so paying a klines
-    # request per symbol per cycle for it bought only payload noise.
-    assert requested_intervals == ["5m", "15m", "30m"]
+    # 1m is not fetched: no setup rule reads it, so paying a klines request per
+    # symbol per cycle for it bought only payload noise. 1d is, for its levels.
+    assert requested_intervals == ["5m", "15m", "30m", "1d"]
     assert snapshot.features["basis_bps"] == 50.0
     assert snapshot.features["book_imbalance"] == 0.5
     # Every per-interval reading is prefixed exactly once. An unprefixed copy
@@ -231,6 +231,12 @@ def test_market_snapshot_includes_microstructure() -> None:
     assert snapshot.features["open_interest"] == 42.0
     assert snapshot.features["5m_ema_spread"] == snapshot.features["30m_ema_spread"]
     assert not [name for name in snapshot.features if name.startswith("1m_")]
+    # The daily bar contributes levels only -- no daily RSI, EMA or volume ratio.
+    assert {name for name in snapshot.features if name.startswith("1d_")} == {
+        "1d_range_high_20",
+        "1d_range_low_20",
+        "1d_range_position_20",
+    }
 
 
 def test_exchange_info_carries_the_price_tick_into_symbol_rules() -> None:

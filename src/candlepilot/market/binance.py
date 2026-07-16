@@ -9,7 +9,11 @@ from typing import Any
 import httpx
 
 from candlepilot.domain.models import MarketSnapshot
-from candlepilot.market.features import DECISION_FEATURE_INTERVALS, FeaturePipeline
+from candlepilot.market.features import (
+    DAILY_STRUCTURE_INTERVAL,
+    DECISION_FEATURE_INTERVALS,
+    FeaturePipeline,
+)
 from candlepilot.market.scanner import MarketCandidateInput
 from candlepilot.risk.engine import SymbolRules
 
@@ -147,7 +151,7 @@ class BinancePublicClient:
         return inputs
 
     async def klines(self, symbol: str, interval: str, limit: int = 200) -> list[list[Any]]:
-        if interval not in {"1m", "5m", "15m", "30m", "1h"}:
+        if interval not in {"1m", "5m", "15m", "30m", "1h", "1d"}:
             raise ValueError("unsupported kline interval")
         if not 1 <= limit <= 1500:
             raise ValueError("kline limit must be between 1 and 1500")
@@ -254,7 +258,7 @@ class BinancePublicClient:
         # `cadence` only labels which decision the snapshot feeds; the feature
         # ladder is the same either way. The paper backfill asks for "1m" and
         # reads nothing but mark/bid/ask off the result.
-        feature_intervals = DECISION_FEATURE_INTERVALS
+        feature_intervals = (*DECISION_FEATURE_INTERVALS, DAILY_STRUCTURE_INTERVAL)
         results = await asyncio.gather(
             *(self.klines(symbol, interval, 200) for interval in feature_intervals),
             self._get("/fapi/v1/ticker/bookTicker", symbol=symbol),
@@ -278,7 +282,9 @@ class BinancePublicClient:
             asks=depth["asks"],
             trades=trades,
         )
+        daily_rows = rows_by_interval.pop(DAILY_STRUCTURE_INTERVAL)
         features.update(pipeline.multitimeframe(rows_by_interval))
+        features.update(pipeline.daily_structure(daily_rows, mark_price=mark_price))
         return pipeline.snapshot(
             symbol=symbol,
             cadence=cadence,  # type: ignore[arg-type]

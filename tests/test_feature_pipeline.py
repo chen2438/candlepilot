@@ -193,3 +193,61 @@ def test_ema_seed_does_not_leak_the_first_close_into_the_result() -> None:
     # Too short to seed on `period` values: report the plain average rather
     # than pretending to a smoothing that has not warmed up.
     assert _ema([100.0, 102.0], 20) == 101.0
+
+
+def _daily_rows(count: int = 30, *, high: float = 120, low: float = 80) -> list[list[object]]:
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    rows = []
+    for index in range(count):
+        open_ms = int((start + timedelta(days=index)).timestamp() * 1000)
+        close_ms = open_ms + 86_399_999
+        # The extremes sit inside the last 20 bars so the window really covers them.
+        bar_high = high if index == count - 5 else 105.0
+        bar_low = low if index == count - 3 else 95.0
+        rows.append(
+            [open_ms, "100", str(bar_high), str(bar_low), "100", "10", close_ms, "1000"]
+        )
+    return rows
+
+
+def test_daily_structure_places_the_live_mark_between_the_daily_extremes() -> None:
+    """The daily levels are the ones real orders actually sit at.
+
+    Position is measured off the live mark, not the last daily close: a close
+    can be nearly a day old, and the question the setup rules ask is where
+    price is now.
+    """
+
+    structure = FeaturePipeline().daily_structure(_daily_rows(), mark_price=Decimal("100"))
+
+    assert structure["1d_range_high_20"] == 120.0
+    assert structure["1d_range_low_20"] == 80.0
+    assert structure["1d_range_position_20"] == 0.5
+    # Levels only: a daily RSI or volume ratio would be a reading with no rule.
+    assert set(structure) == {
+        "1d_range_high_20",
+        "1d_range_low_20",
+        "1d_range_position_20",
+    }
+
+
+def test_daily_position_is_not_clamped_when_price_breaks_the_range() -> None:
+    """Above 1 means price is through the 20-day high. That is the signal."""
+
+    pipeline = FeaturePipeline()
+    broken = pipeline.daily_structure(_daily_rows(), mark_price=Decimal("130"))
+    assert broken["1d_range_position_20"] > 1
+
+    collapsed = pipeline.daily_structure(_daily_rows(), mark_price=Decimal("70"))
+    assert collapsed["1d_range_position_20"] < 0
+
+
+def test_daily_structure_refuses_a_symbol_too_young_to_have_the_levels() -> None:
+    """20 daily closes is what the scanner's 30-day listing floor guarantees.
+
+    Inventing levels from 10 bars and calling them the 20-day range would be
+    worse than refusing: the model cannot tell a real level from a made-up one.
+    """
+
+    with pytest.raises(ValueError, match="20 closed daily klines"):
+        FeaturePipeline().daily_structure(_daily_rows(10), mark_price=Decimal("100"))
