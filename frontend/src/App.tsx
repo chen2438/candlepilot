@@ -1843,7 +1843,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
 
   // The estimate is stale the moment the spec changes; showing an old one
   // beside a new window is worse than showing none.
-  useEffect(() => { setEstimate(null); }, [form]);
+  useEffect(() => { setEstimate(null); }, [form, useRecordedBook]);
 
   const refreshProbe = useCallback(async () => {
     try {
@@ -2025,7 +2025,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
             inputMode="numeric" disabled={busy !== null}
             onChange={(e) => setForm({ ...form, start: e.target.value })} />
         </label>
-        <label><span>止（本地时间 · 最长 3 天）</span>
+        <label><span>止（本地时间 · 最长 31 天，约 1 个月）</span>
           <input type="text" value={form.end} placeholder="YYYY/MM/DD HH:mm"
             inputMode="numeric" disabled={busy !== null}
             onChange={(e) => setForm({ ...form, end: e.target.value })} />
@@ -2076,7 +2076,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
 
         <div className="probe">
         <div className="probe-head">
-          <strong>试跑 {probe?.decisions ?? 3} 次决策</strong>
+          <strong>试跑 {probe?.decisions ?? 5} 次决策</strong>
           <button
             className="compact"
             disabled={busy !== null || !form.providers.length || engineRunning || probe?.running}
@@ -2088,9 +2088,10 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
             </button>
           )}
           <small>
-            用这个窗口的真实 payload 调每个模型 {probe?.decisions ?? 3} 次，量出它实际要多久。
+            用这个窗口的真实 payload 调每个模型 {probe?.decisions ?? 5} 次，量出它实际要多久。
             试跑期间超时放宽到 {probe?.ceiling_seconds ?? 180}s——用当前超时去试只会复现超时，
-            量不出模型真正需要的时间。这几次是真实调用，会真实计费。
+            量不出模型真正需要的时间。估算和启动要求当前参数下每个模型 5 次全部成功；修改参数后
+            需要重新试跑。这几次是真实调用，会真实计费。
           </small>
         </div>
         {probe?.providers.map((item) => (
@@ -2123,11 +2124,18 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                   : "准备中"}
               </small>
             )}
-            {item.done && !item.error && item.suggested_timeout_seconds !== null && (
+            {item.done && !item.error && item.failures === 0
+              && item.suggested_timeout_seconds !== null && (
               <button
                 className="text-button"
                 onClick={() => setTimeoutSeconds(String(item.suggested_timeout_seconds))}
               >建议 {item.suggested_timeout_seconds}s · 点击采用</button>
+            )}
+            {item.done && !item.error && item.failures > 0
+              && item.failures < probe.decisions && (
+              <span className="negative">
+                {item.failures}/{probe.decisions} 次失败——估算和回测要求重新取得 5 次完整成功
+              </span>
             )}
             {/* Only when every call actually ran and failed. A probe that was
                 cut short has no calls to have failed, and saying they did would
@@ -2155,7 +2163,10 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
           <span>每模型 <strong>{estimate.decisions_per_model}</strong> 次决策</span>
           <span>共 <strong>{estimate.total_calls}</strong> 次模型调用</span>
           <span>预计 <strong>{estimate.estimated_hours}</strong> 小时
-            <small>按本机实测延迟 · 上限 {estimate.max_hours}h</small></span>
+            <small>
+              按本次试跑最慢模型 {providerLabel(estimate.slowest_provider)} 的最慢一次
+              {estimate.seconds_per_call}s · 上限 {estimate.max_hours}h
+            </small></span>
           {!estimate.within_limit && <span className="negative">超出耗时上限，请缩短窗口</span>}
         </div>
       )}

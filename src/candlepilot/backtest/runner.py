@@ -36,7 +36,7 @@ from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
 
 MAX_BACKTEST_SYMBOLS = 5
 MAX_BACKTEST_MODELS = 4
-MAX_BACKTEST_DAYS = 3
+MAX_BACKTEST_DAYS = 31
 #: Refuse a window that would still be running tomorrow.
 #:
 #: The limit is on wall clock, not call count: the same 2,592 calls are 20

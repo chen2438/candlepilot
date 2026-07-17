@@ -311,6 +311,9 @@ export interface BacktestEstimate {
   total_calls: number;
   estimated_seconds: number;
   estimated_hours: number;
+  seconds_per_call: number;
+  slowest_provider: string;
+  latency_source: "probe_slowest_success";
   max_hours: number;
   within_limit: boolean;
 }

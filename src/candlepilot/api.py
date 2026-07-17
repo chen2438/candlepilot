@@ -39,6 +39,7 @@ from candlepilot.backtest.runner import (
     MAX_BACKTEST_SYMBOLS,
     MAX_ESTIMATED_HOURS,
     BacktestDecision,
+    BacktestEstimate,
     BacktestRunner,
     BacktestSpec,
     ModelRun,
@@ -1564,6 +1565,7 @@ def create_app(
     # Probes are pre-flight, not history: they describe the endpoint as it is
     # right now, so they live with the process rather than in the database.
     probes: dict[str, ProviderProbe] = {}
+    probe_keys: dict[str, tuple[object, ...]] = {}
     probe_task: asyncio.Task[None] | None = None
 
     def active_backtest_tasks() -> list[asyncio.Task[None]]:
@@ -1575,21 +1577,6 @@ def create_app(
     def _set_probe_task(task: asyncio.Task[None]) -> None:
         nonlocal probe_task
         probe_task = task
-
-    async def measured_seconds_per_call() -> float:
-        """Estimate from this install's own latency, not a guess.
-
-        A backtest's cost is dominated by how slow the configured models
-        actually are here, which the audit log already knows.
-        """
-
-        metrics = await engine.audit.provider_metrics(24 * 7)
-        durations = [
-            item["average_duration_ms"] for item in metrics if item["average_duration_ms"] > 0
-        ]
-        if not durations:
-            return 25.0
-        return sum(durations) / len(durations) / 1000
 
     def _spec_from(request: BacktestRequest) -> BacktestSpec:
         return BacktestSpec(
@@ -1632,15 +1619,74 @@ def create_app(
             spec = replace(spec, timeout_seconds=configured_timeouts.pop())
         return spec
 
+    def _probe_key(spec: BacktestSpec, provider_name: str) -> tuple[object, ...]:
+        """Everything that can change the payload or selected model.
+
+        Timeout is deliberately absent: applying the timeout suggested by a
+        probe must not invalidate the measurements that produced it.
+        """
+
+        provider = engine.providers.get(provider_name)
+        return (
+            spec.symbols,
+            spec.cadences,
+            spec.start,
+            spec.end,
+            spec.config.initial_equity,
+            spec.config.fee_rate,
+            spec.config.slippage_fraction,
+            spec.use_recorded_book,
+            provider.model,
+            provider.reasoning_effort,
+        )
+
+    def _probe_estimate(spec: BacktestSpec) -> tuple[BacktestEstimate, dict[str, Any]]:
+        """Estimate from five clean calls against every participating model."""
+
+        invalid: list[str] = []
+        for name in spec.providers:
+            probe = probes.get(name)
+            if probe is None or probe_keys.get(name) != _probe_key(spec, name):
+                invalid.append(f"{name} has no matching probe")
+                continue
+            if (
+                not probe.done
+                or probe.error is not None
+                or len(probe.calls) != PROBE_DECISIONS
+                or probe.failures
+            ):
+                invalid.append(f"{name} does not have {PROBE_DECISIONS} successful calls")
+        if invalid:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"run a fresh {PROBE_DECISIONS}-decision probe for the current "
+                    f"backtest settings: {'; '.join(invalid)}"
+                ),
+            )
+
+        slowest_provider = max(
+            spec.providers,
+            key=lambda name: probes[name].slowest_ok_seconds or 0.0,
+        )
+        seconds_per_call = probes[slowest_provider].slowest_ok_seconds
+        assert seconds_per_call is not None
+        projected = estimate(spec, seconds_per_call=seconds_per_call)
+        payload = {
+            **projected.as_dict(),
+            "seconds_per_call": round(seconds_per_call, 3),
+            "slowest_provider": slowest_provider,
+            "latency_source": "probe_slowest_success",
+            "max_hours": MAX_ESTIMATED_HOURS,
+            "within_limit": projected.estimated_seconds <= MAX_ESTIMATED_HOURS * 3600,
+        }
+        return projected, payload
+
     @app.post("/api/backtests/estimate")
     async def estimate_backtest(request: BacktestRequest) -> dict[str, Any]:
         spec = await _checked_spec(request)
-        result = estimate(spec, seconds_per_call=await measured_seconds_per_call())
-        return {
-            **result.as_dict(),
-            "max_hours": MAX_ESTIMATED_HOURS,
-            "within_limit": result.estimated_seconds <= MAX_ESTIMATED_HOURS * 3600,
-        }
+        _projected, payload = _probe_estimate(spec)
+        return payload
 
     async def _load_series(
         spec: BacktestSpec,
@@ -1778,7 +1824,7 @@ def create_app(
         # Every provider is published before anything is awaited, and each is
         # filled in as its calls land. A probe that only appears once it has
         # finished is indistinguishable from a hung one for as long as it takes
-        # -- and at the ceiling, three calls is nine minutes.
+        # -- and at the ceiling, five calls is fifteen minutes.
         for name in spec.providers:
             probes[name] = ProviderProbe(provider=name)
 
@@ -1789,6 +1835,7 @@ def create_app(
 
         try:
             series, _rules = await _load_series(spec)
+            captures = await _recorded_book(spec) if spec.use_recorded_book else {}
         except asyncio.CancelledError:
             fail_all("cancelled")
             raise
@@ -1797,9 +1844,10 @@ def create_app(
             return
 
         symbol = spec.symbols[0]
-        builder = HistoricalSnapshotBuilder(series[symbol])
+        builder = HistoricalSnapshotBuilder(series[symbol], captures.get(symbol))
         portfolio = SimulatedExchange(spec.config).portfolio_state({})
-        for name in spec.providers:
+
+        async def one(name: str) -> None:
             probe = probes[name]
             try:
                 await probe_provider(
@@ -1811,17 +1859,19 @@ def create_app(
                     into=probe,
                 )
             except asyncio.CancelledError:
-                # This one was interrupted and the ones after it never started.
-                # Marked unconditionally: probe_provider's `finally` has already
-                # set done on the way out, so keying off that would leave a
-                # cancelled probe looking like one that simply finished early.
-                for pending in spec.providers[spec.providers.index(name) :]:
-                    probes[pending].error = "cancelled"
-                    probes[pending].done = True
+                # probe_provider's finally already marks it done, but only the
+                # error distinguishes a cancellation from a short clean run.
+                probe.error = "cancelled"
+                probe.done = True
                 raise
             except Exception as exc:  # noqa: BLE001 - one endpoint, not the set
                 probe.error = str(exc)[:200]
                 probe.done = True
+
+        # Providers are also parallel during the real comparison. Probing them
+        # serially would turn five 180-second ceilings into an hour-long gate
+        # with four models, while teaching nothing about their shared wall time.
+        await asyncio.gather(*(one(name) for name in spec.providers))
 
     @app.post("/api/backtests/probe", status_code=202)
     async def start_probe(request: BacktestRequest) -> dict[str, Any]:
@@ -1842,8 +1892,10 @@ def create_app(
         if active_backtest_tasks():
             raise HTTPException(status_code=409, detail="a backtest is already running")
         spec = await _checked_spec(request)
+        probes.clear()
+        probe_keys.clear()
         for name in spec.providers:
-            probes.pop(name, None)
+            probe_keys[name] = _probe_key(spec, name)
         _set_probe_task(
             asyncio.create_task(_run_probe(spec), name="candlepilot-backtest-probe")
         )
@@ -1888,7 +1940,7 @@ def create_app(
     async def cancel_probe() -> dict[str, Any]:
         """Stop waiting on an endpoint that is not going to answer.
 
-        Three calls at the ceiling is nine minutes; without this the only way
+        Five calls at the ceiling is fifteen minutes; without this the only way
         out of a probe against a dead endpoint is to restart the backend.
         """
 
@@ -1914,18 +1966,22 @@ def create_app(
         if active_backtest_tasks():
             raise HTTPException(status_code=409, detail="a backtest is already running")
         spec = await _checked_spec(request)
-        projected = estimate(spec, seconds_per_call=await measured_seconds_per_call())
+        # Coverage errors are facts about the requested historical window, so
+        # report them before asking for a probe that could never reproduce the
+        # requested real payload.
+        captures = await _recorded_book(spec) if spec.use_recorded_book else {}
+        projected, estimate_payload = _probe_estimate(spec)
         if projected.estimated_seconds > MAX_ESTIMATED_HOURS * 3600:
             raise HTTPException(
                 status_code=422,
                 detail=f"this window needs {projected.decisions_per_model} calls per model, "
-                f"about {projected.estimated_seconds / 3600:.1f}h at the latency measured "
-                f"here; the limit is {MAX_ESTIMATED_HOURS:g}h. Shorten the window, drop a "
-                f"symbol, or use one cadence.",
+                f"about {projected.estimated_seconds / 3600:.1f}h at the slowest "
+                f"participating model's probed latency; the limit is "
+                f"{MAX_ESTIMATED_HOURS:g}h. Shorten the window, drop a symbol, or use "
+                "one cadence.",
             )
         # Coverage is checked before the run is created: a real backtest that
         # cannot be real should fail the request, not fail an hour in.
-        captures = await _recorded_book(spec) if spec.use_recorded_book else {}
         run_id = await engine.audit.create_backtest_run(
             {
                 "symbols": list(spec.symbols),
@@ -1948,14 +2004,14 @@ def create_app(
                 "timeout_source": (
                     "explicit" if request.timeout_seconds is not None else "provider_config"
                 ),
-                "estimate": projected.as_dict(),
+                "estimate": estimate_payload,
             },
             list(spec.providers),
         )
         backtest_tasks[run_id] = asyncio.create_task(
             _run_backtest(run_id, spec, captures), name=f"candlepilot-backtest-{run_id}"
         )
-        return {"id": run_id, "status": "running", "estimate": projected.as_dict()}
+        return {"id": run_id, "status": "running", "estimate": estimate_payload}
 
     @app.get("/api/backtests")
     async def list_backtests(limit: int = 20) -> list[dict[str, Any]]:

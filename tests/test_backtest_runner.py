@@ -135,8 +135,9 @@ def test_estimate_adds_each_cadence_rather_than_multiplying_the_window() -> None
 
 
 def test_specs_that_cannot_finish_are_refused() -> None:
-    with pytest.raises(ValueError, match="cannot exceed 3 days"):
-        validate(_spec(end=WINDOW_START + timedelta(days=4)))
+    validate(_spec(end=WINDOW_START + timedelta(days=31)))
+    with pytest.raises(ValueError, match="cannot exceed 31 days"):
+        validate(_spec(end=WINDOW_START + timedelta(days=31, seconds=1)))
     with pytest.raises(ValueError, match="end after it starts"):
         validate(_spec(end=WINDOW_START))
     with pytest.raises(ValueError, match="compared against itself"):

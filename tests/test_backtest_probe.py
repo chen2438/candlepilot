@@ -45,15 +45,16 @@ def _series() -> dict[str, list[Candle]]:
 
 
 def _spec(**overrides) -> BacktestSpec:
-    return BacktestSpec(
+    values = dict(
         symbols=("BTCUSDT",),
         cadences=("5m",),
         start=START,
         end=START + timedelta(hours=1),
         providers=("model-a",),
         config=BacktestConfig(),
-        **overrides,
     )
+    values.update(overrides)
+    return BacktestSpec(**values)  # type: ignore[arg-type]
 
 
 class _Provider(LLMProvider):
@@ -96,6 +97,15 @@ def test_the_probe_sends_the_payload_the_run_will_send() -> None:
     assert len(probe_instants(spec)) == PROBE_DECISIONS
 
 
+def test_a_short_slow_cadence_window_still_produces_five_samples() -> None:
+    spec = _spec(cadences=("4h",), end=START + timedelta(hours=4))
+
+    instants = probe_instants(spec)
+
+    assert len(instants) == PROBE_DECISIONS
+    assert len(set(instants)) == 1
+
+
 def test_the_probe_outlives_the_timeout_it_exists_to_question() -> None:
     """Probing at the configured timeout would only reproduce the timeouts.
 
@@ -132,11 +142,13 @@ def test_a_suggestion_leaves_room_over_the_slowest_call() -> None:
             ProbeCall(seconds=30.0, ok=True),
             ProbeCall(seconds=40.0, ok=True),
             ProbeCall(seconds=20.0, ok=True),
+            ProbeCall(seconds=35.0, ok=True),
+            ProbeCall(seconds=25.0, ok=True),
         ],
     )
 
     assert probe.slowest_ok_seconds == 40.0
-    # 40 * 1.5: three samples cannot describe a tail, so the suggestion is a
+    # 40 * 1.5: five samples cannot describe a tail, so the suggestion is a
     # starting point above the worst seen rather than a computed bound.
     assert probe.suggested_timeout_seconds == 60
 
@@ -146,16 +158,19 @@ def test_an_endpoint_that_never_answers_gets_no_suggestion() -> None:
 
     probe = ProviderProbe(
         provider="model-a",
-        calls=[ProbeCall(seconds=180.0, ok=False, error="timed out") for _ in range(3)],
+        calls=[
+            ProbeCall(seconds=180.0, ok=False, error="timed out")
+            for _ in range(PROBE_DECISIONS)
+        ],
     )
 
     assert probe.slowest_ok_seconds is None
     assert probe.suggested_timeout_seconds is None
-    assert probe.failures == 3
+    assert probe.failures == PROBE_DECISIONS
 
 
 def test_a_failed_call_is_a_result_not_the_end_of_the_probe() -> None:
-    """Two good samples and one failure still says more than no samples."""
+    """Four good samples and one failure still says more than no samples."""
 
     result = _run(_Provider(fail=1))
 

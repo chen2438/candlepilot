@@ -19,9 +19,10 @@ from candlepilot.backtest.snapshots import HistoricalSnapshotBuilder
 from candlepilot.domain.models import PortfolioState
 from candlepilot.providers.base import LLMProvider
 
-#: Calls per provider. Enough to catch an endpoint that is slow rather than
-#: unlucky, few enough that the wait before a run stays honest.
-PROBE_DECISIONS = 3
+#: Calls per provider. Five samples are still cheap next to a full backtest,
+#: while making one unusually fast or slow answer less likely to describe the
+#: endpoint by itself.
+PROBE_DECISIONS = 5
 
 #: The ceiling a probe call is given, in seconds.
 #:
@@ -33,7 +34,7 @@ PROBE_CEILING_SECONDS = 180.0
 
 #: Multiplier applied to the slowest observed call to suggest a timeout.
 #:
-#: Three samples cannot describe a tail, so the suggestion is a starting point
+#: Five samples cannot describe a tail, so the suggestion is a starting point
 #: with room above the worst seen, not a computed safe bound.
 TIMEOUT_HEADROOM = 1.5
 
@@ -56,7 +57,7 @@ class ProviderProbe:
 
     Filled in as the calls land rather than returned at the end. A probe waits
     on the very thing it is measuring, and at `PROBE_CEILING_SECONDS` a silent
-    one can run for nine minutes before it admits to anything -- long enough to
+    one can run for fifteen minutes before it admits to anything -- long enough to
     look identical to a hang.
     """
 
@@ -100,14 +101,18 @@ class ProviderProbe:
 
 
 def probe_instants(spec: BacktestSpec, count: int = PROBE_DECISIONS) -> list[datetime]:
-    """The first decision instants of the window, in order.
+    """Five real decision payloads from the start of the window.
 
     The probe sends what the run will send, so it reads its snapshots off the
-    same schedule rather than inventing an instant of its own.
+    same schedule rather than inventing an instant of its own. A short, slow-
+    cadence window can contain fewer than five distinct decisions; repeat its
+    available payloads so the latency sample still has the promised size.
     """
 
     times = sorted(decision_times(spec, spec.cadences[0]))
-    return times[:count]
+    if not times:
+        return []
+    return [times[index % len(times)] for index in range(count)]
 
 
 async def probe_provider(

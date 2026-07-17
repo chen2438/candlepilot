@@ -11,6 +11,7 @@ from pydantic import SecretStr
 
 from candlepilot.api import create_app
 from candlepilot.application.engine import TradingEngine
+from candlepilot.backtest.probe import PROBE_CEILING_SECONDS, PROBE_DECISIONS
 from conftest import FakeTestnetBroker, StatefulTestnetBroker
 from candlepilot.broker.binance_testnet import ProtectiveLevels, ReconciliationReport
 from candlepilot.config import Settings
@@ -1413,42 +1414,155 @@ def _window(hours: int = 1) -> dict[str, str]:
     }
 
 
+def _complete_probe(client: TestClient, payload: dict[str, object]) -> dict[str, object]:
+    started = client.post("/api/backtests/probe", json=payload)
+    assert started.status_code == 202, started.text
+    for _ in range(500):
+        body = client.get("/api/backtests/probe").json()
+        if not body["running"] and body["providers"]:
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("probe never finished")
+    assert all(item["done"] for item in body["providers"]), body
+    assert all(item["failures"] == 0 for item in body["providers"]), body
+    return body
+
+
+def _start_backtest(client: TestClient, payload: dict[str, object]):
+    _complete_probe(client, payload)
+    return client.post("/api/backtests", json=payload)
+
+
 def test_backtest_estimate_counts_calls_before_any_are_paid_for(tmp_path: Path) -> None:
     database, _engine, app = _backtest_app(tmp_path, "bt-estimate.db")
 
     with TestClient(app) as client:
+        payload = {"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(2)}
+        _complete_probe(client, payload)
         response = client.post(
             "/api/backtests/estimate",
-            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(2)},
+            json=payload,
         )
         assert response.status_code == 200
         body = response.json()
         # Two hours of 5m bars.
         assert body["decisions_per_model"] == 24
         assert body["total_calls"] == 24
+        assert body["slowest_provider"] == "api-fixture"
+        assert body["latency_source"] == "probe_slowest_success"
         assert body["within_limit"] is True
     asyncio.run(database.close())
 
 
-def test_backtest_refuses_a_window_that_could_not_finish(tmp_path: Path) -> None:
-    """A three-day multi-symbol comparison is days of real calls, not seconds."""
+def test_estimate_uses_the_slowest_participating_probe_and_rejects_stale_data(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'bt-probe-estimate.db'}")
+    market = BacktestMarket()
+    timing: dict[str, float] = {}
+
+    class Fast(ApiProvider):
+        name = "fast-fixture"
+
+        async def generate_trade_intent(self, snapshot, portfolio):
+            timing.setdefault("fast_started", time.monotonic())
+            await asyncio.sleep(0.005)
+            timing["fast_finished"] = time.monotonic()
+            return await super().generate_trade_intent(snapshot, portfolio)
+
+    class Slow(ApiProvider):
+        name = "slow-fixture"
+
+        async def generate_trade_intent(self, snapshot, portfolio):
+            timing.setdefault("slow_started", time.monotonic())
+            await asyncio.sleep(0.03)
+            timing["slow_finished"] = time.monotonic()
+            return await super().generate_trade_intent(snapshot, portfolio)
+
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([Fast(), Slow()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    window = _window(2)
+    payload = {
+        "symbols": ["BTCUSDT"],
+        "providers": ["fast-fixture", "slow-fixture"],
+        **window,
+    }
+
+    with TestClient(app) as client:
+        _complete_probe(client, payload)
+        estimate_response = client.post("/api/backtests/estimate", json=payload)
+        assert estimate_response.status_code == 200
+        estimate_body = estimate_response.json()
+        assert estimate_body["slowest_provider"] == "slow-fixture"
+        assert estimate_body["seconds_per_call"] >= 0.03
+        assert estimate_body["total_calls"] == 48
+        # The slow provider began before all fast calls completed: providers
+        # are probed in parallel just as they are during the comparison.
+        assert timing["slow_started"] < timing["fast_finished"]
+
+        stale = {
+            **payload,
+            "start": (datetime.fromisoformat(window["start"]) + timedelta(minutes=5)).isoformat(),
+        }
+        stale_response = client.post("/api/backtests/estimate", json=stale)
+        assert stale_response.status_code == 422
+        assert "no matching probe" in stale_response.json()["detail"]
+    asyncio.run(database.close())
+
+
+def test_estimate_rejects_a_probe_with_any_failed_call(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'bt-probe-failed.db'}")
+    market = BacktestMarket()
+
+    class Flaky(ApiProvider):
+        calls = 0
+
+        async def generate_trade_intent(self, snapshot, portfolio):
+            Flaky.calls += 1
+            if Flaky.calls == 1:
+                raise RuntimeError("transient failure")
+            return await super().generate_trade_intent(snapshot, portfolio)
+
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([Flaky()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    payload = {"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window()}
+
+    with TestClient(app) as client:
+        assert client.post("/api/backtests/probe", json=payload).status_code == 202
+        for _ in range(500):
+            status = client.get("/api/backtests/probe").json()
+            if not status["running"]:
+                break
+            time.sleep(0.02)
+        response = client.post("/api/backtests/estimate", json=payload)
+        assert response.status_code == 422
+        assert "does not have 5 successful calls" in response.json()["detail"]
+    asyncio.run(database.close())
+
+
+def test_backtest_requires_a_probe_for_the_current_settings(tmp_path: Path) -> None:
+    """An unrelated historical average must not authorize a paid run."""
 
     database, _engine, app = _backtest_app(tmp_path, "bt-limit.db")
 
     with TestClient(app) as client:
-        end = datetime.now(UTC) - timedelta(hours=1)
         response = client.post(
             "/api/backtests",
-            json={
-                "symbols": ["BTCUSDT", "ETHUSDT"],
-                "cadences": ["5m", "15m", "30m"],
-                "providers": ["api-fixture"],
-                "start": (end - timedelta(days=3)).isoformat(),
-                "end": end.isoformat(),
-            },
+            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window()},
         )
         assert response.status_code == 422
-        assert "calls per model" in response.json()["detail"]
+        assert "fresh 5-decision probe" in response.json()["detail"]
     asyncio.run(database.close())
 
 
@@ -1478,10 +1592,8 @@ def test_backtest_runs_in_the_background_and_reports_each_model(tmp_path: Path) 
     provider.reasoning_effort = "high"
 
     with TestClient(app) as client:
-        created = client.post(
-            "/api/backtests",
-            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window()},
-        )
+        payload = {"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window()}
+        created = _start_backtest(client, payload)
         # 202: a real window is hours of calls, so it cannot be a synchronous
         # request. The id is handed back immediately.
         assert created.status_code == 202
@@ -1530,10 +1642,8 @@ def test_running_backtest_exposes_each_completed_decision_immediately(tmp_path: 
     app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
 
     with TestClient(app) as client:
-        created = client.post(
-            "/api/backtests",
-            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window()},
-        )
+        payload = {"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window()}
+        created = _start_backtest(client, payload)
         assert created.status_code == 202
         run_id = created.json()["id"]
         for _ in range(100):
@@ -1560,6 +1670,8 @@ def test_app_shutdown_cancels_background_work_before_closing_resources(
 
     class NeverReturns(ApiProvider):
         async def generate_trade_intent(self, snapshot, portfolio):
+            if self.timeout == PROBE_CEILING_SECONDS:
+                return await super().generate_trade_intent(snapshot, portfolio)
             await asyncio.Event().wait()
             raise AssertionError("unreachable")
 
@@ -1575,10 +1687,8 @@ def test_app_shutdown_cancels_background_work_before_closing_resources(
         assert client.post(
             "/api/collector/start", json={"symbols": ["BTCUSDT"]}
         ).status_code == 200
-        created = client.post(
-            "/api/backtests",
-            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
-        )
+        payload = {"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)}
+        created = _start_backtest(client, payload)
         assert created.status_code == 202
         run_id = created.json()["id"]
         for _ in range(200):
@@ -1690,13 +1800,11 @@ def test_a_real_backtest_runs_when_every_instant_was_recorded(tmp_path: Path) ->
     _seed_captures(database, engine, "BTCUSDT", aligned_capture_times(start, end))
 
     with TestClient(app) as client:
-        created = client.post(
-            "/api/backtests",
-            json={
-                "symbols": ["BTCUSDT"], "providers": ["api-fixture"],
-                "use_recorded_book": True, **window,
-            },
-        )
+        payload = {
+            "symbols": ["BTCUSDT"], "providers": ["api-fixture"],
+            "use_recorded_book": True, **window,
+        }
+        created = _start_backtest(client, payload)
         assert created.status_code == 202
         run_id = created.json()["id"]
         for _ in range(200):
@@ -1740,10 +1848,8 @@ def test_a_plain_backtest_does_not_need_any_captures(tmp_path: Path) -> None:
     database, _engine, app = _backtest_app(tmp_path, "bt-plain.db")
 
     with TestClient(app) as client:
-        created = client.post(
-            "/api/backtests",
-            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
-        )
+        payload = {"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)}
+        created = _start_backtest(client, payload)
         assert created.status_code == 202
     asyncio.run(database.close())
 
@@ -1764,11 +1870,12 @@ def test_a_running_backtest_reports_progress_over_the_api(tmp_path: Path) -> Non
     class Gated(ApiProvider):
         """Holds the run open at its second decision so the API can be read."""
 
-        calls = 0
+        run_calls = 0
 
         async def generate_trade_intent(self, snapshot, portfolio):
-            Gated.calls += 1
-            if Gated.calls == 2:
+            if self.timeout != PROBE_CEILING_SECONDS:
+                Gated.run_calls += 1
+            if Gated.run_calls == 2:
                 await gate.wait()
             result = await super().generate_trade_intent(snapshot, portfolio)
             return ProviderResult(
@@ -1790,10 +1897,8 @@ def test_a_running_backtest_reports_progress_over_the_api(tmp_path: Path) -> Non
     app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
 
     with TestClient(app) as client:
-        created = client.post(
-            "/api/backtests",
-            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
-        )
+        payload = {"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)}
+        created = _start_backtest(client, payload)
         assert created.status_code == 202
 
         # Wait for the run to reach the gate rather than sleeping a fixed span.
@@ -1844,11 +1949,12 @@ def test_a_provider_failure_stops_and_truncates_the_backtest(
     )
 
     class Timeouts(ApiProvider):
-        calls = 0
+        run_calls = 0
 
         async def generate_trade_intent(self, snapshot, portfolio):
-            Timeouts.calls += 1
-            if Timeouts.calls in {2, 3, 4}:
+            if self.timeout != PROBE_CEILING_SECONDS:
+                Timeouts.run_calls += 1
+            if Timeouts.run_calls in {2, 3, 4}:
                 raise RuntimeError("endpoint timed out after 45s")
             return await super().generate_trade_intent(snapshot, portfolio)
 
@@ -1862,13 +1968,8 @@ def test_a_provider_failure_stops_and_truncates_the_backtest(
     window = _window(1)
 
     with TestClient(app) as client:
-        assert (
-            client.post(
-                "/api/backtests",
-                json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **window},
-            ).status_code
-            == 202
-        )
+        payload = {"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **window}
+        assert _start_backtest(client, payload).status_code == 202
         run = _await_run(client)
 
     assert run["status"] == "failed"
@@ -1891,13 +1992,8 @@ def test_a_clean_run_is_still_completed(tmp_path: Path) -> None:
     database, _engine, app = _backtest_app(tmp_path, "bt-clean.db")
 
     with TestClient(app) as client:
-        assert (
-            client.post(
-                "/api/backtests",
-                json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
-            ).status_code
-            == 202
-        )
+        payload = {"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)}
+        assert _start_backtest(client, payload).status_code == 202
         run = _await_run(client)
 
     assert run["status"] == "completed"
@@ -1917,7 +2013,8 @@ def test_the_run_timeout_reaches_the_provider_and_is_handed_back(tmp_path: Path)
 
     class Recording(ApiProvider):
         async def generate_trade_intent(self, snapshot, portfolio):
-            seen.append(self.timeout)
+            if self.timeout != PROBE_CEILING_SECONDS:
+                seen.append(self.timeout)
             return await super().generate_trade_intent(snapshot, portfolio)
 
     provider = Recording()
@@ -1931,18 +2028,13 @@ def test_the_run_timeout_reaches_the_provider_and_is_handed_back(tmp_path: Path)
     app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
 
     with TestClient(app) as client:
-        assert (
-            client.post(
-                "/api/backtests",
-                json={
-                    "symbols": ["BTCUSDT"],
-                    "providers": ["api-fixture"],
-                    "timeout_seconds": 90,
-                    **_window(1),
-                },
-            ).status_code
-            == 202
-        )
+        payload = {
+            "symbols": ["BTCUSDT"],
+            "providers": ["api-fixture"],
+            "timeout_seconds": 90,
+            **_window(1),
+        }
+        assert _start_backtest(client, payload).status_code == 202
         _await_run(client)
         # Recorded on the run: a failure count means nothing if nothing says
         # which timeout produced it.
@@ -1964,7 +2056,8 @@ def test_the_configured_timeout_is_frozen_on_the_run(tmp_path: Path) -> None:
 
     class Recording(ApiProvider):
         async def generate_trade_intent(self, snapshot, portfolio):
-            seen.append(self.timeout)
+            if self.timeout != PROBE_CEILING_SECONDS:
+                seen.append(self.timeout)
             return await super().generate_trade_intent(snapshot, portfolio)
 
     provider = Recording()
@@ -1978,13 +2071,8 @@ def test_the_configured_timeout_is_frozen_on_the_run(tmp_path: Path) -> None:
     app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
 
     with TestClient(app) as client:
-        assert (
-            client.post(
-                "/api/backtests",
-                json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
-            ).status_code
-            == 202
-        )
+        payload = {"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)}
+        assert _start_backtest(client, payload).status_code == 202
         _await_run(client)
         spec = client.get("/api/backtests/1").json()["spec"]
         assert spec["timeout_seconds"] == 60
@@ -2010,7 +2098,7 @@ def test_the_probe_times_real_calls_and_suggests_a_timeout(tmp_path: Path) -> No
             json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
         )
         assert started.status_code == 202
-        assert started.json()["decisions"] == 3
+        assert started.json()["decisions"] == PROBE_DECISIONS
 
         for _ in range(200):
             body = client.get("/api/backtests/probe").json()
@@ -2021,7 +2109,7 @@ def test_the_probe_times_real_calls_and_suggests_a_timeout(tmp_path: Path) -> No
     assert body["running"] is False
     probe = body["providers"][0]
     assert probe["provider"] == "api-fixture"
-    assert len(probe["calls"]) == 3
+    assert len(probe["calls"]) == PROBE_DECISIONS
     assert all(call["ok"] for call in probe["calls"])
     assert probe["failures"] == 0
     assert probe["suggested_timeout_seconds"] is not None
@@ -2053,13 +2141,8 @@ def test_every_backtest_decision_is_readable_afterwards(tmp_path: Path) -> None:
     database, _engine, app = _backtest_app(tmp_path, "bt-decisions.db")
 
     with TestClient(app) as client:
-        assert (
-            client.post(
-                "/api/backtests",
-                json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
-            ).status_code
-            == 202
-        )
+        payload = {"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)}
+        assert _start_backtest(client, payload).status_code == 202
         run = _await_run(client)
         decisions = client.get("/api/backtests/1/decisions").json()
 
@@ -2084,10 +2167,8 @@ def test_decisions_are_filtered_to_one_model(tmp_path: Path) -> None:
     database, _engine, app = _backtest_app(tmp_path, "bt-decisions-filter.db")
 
     with TestClient(app) as client:
-        client.post(
-            "/api/backtests",
-            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
-        )
+        payload = {"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)}
+        _start_backtest(client, payload)
         _await_run(client)
         mine = client.get("/api/backtests/1/decisions?provider=api-fixture").json()
         other = client.get("/api/backtests/1/decisions?provider=nobody").json()
@@ -2105,10 +2186,8 @@ def test_clearing_backtests_takes_the_decisions_with_them(tmp_path: Path) -> Non
     database, _engine, app = _backtest_app(tmp_path, "bt-decisions-clear.db")
 
     with TestClient(app) as client:
-        client.post(
-            "/api/backtests",
-            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
-        )
+        payload = {"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)}
+        _start_backtest(client, payload)
         _await_run(client)
         assert len(client.get("/api/backtests/1/decisions").json()) == 12
 
@@ -2120,9 +2199,9 @@ def test_clearing_backtests_takes_the_decisions_with_them(tmp_path: Path) -> Non
 
 
 def test_a_running_probe_shows_each_call_as_it_lands(tmp_path: Path) -> None:
-    """The probe published nothing until all three calls were done.
+    """The probe published nothing until all five calls were done.
 
-    At PROBE_CEILING_SECONDS that is nine minutes of a spinner that looks the
+    At PROBE_CEILING_SECONDS that is fifteen minutes of a spinner that looks the
     same as a hang -- against the one thing whose slowness is the whole point.
     """
 
@@ -2179,7 +2258,7 @@ def test_a_running_probe_shows_each_call_as_it_lands(tmp_path: Path) -> None:
 
 
 def test_a_probe_can_be_abandoned(tmp_path: Path) -> None:
-    """Three calls at the ceiling is nine minutes; there has to be a way out."""
+    """Five calls at the ceiling is fifteen minutes; there has to be a way out."""
 
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'probe-cancel.db'}")
     market = BacktestMarket()
