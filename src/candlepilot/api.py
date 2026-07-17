@@ -547,6 +547,13 @@ def create_app(
             testnet_levels_memo["expires_at"] = time.monotonic() + 1.0
             return levels
 
+    async def testnet_daily_income() -> Decimal:
+        broker = engine.testnet_broker
+        if broker is None:
+            raise RuntimeError("testnet broker is not configured")
+        loader = getattr(broker, "daily_income", None)
+        return await loader() if callable(loader) else Decimal("0")
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await database.initialize()
@@ -1340,7 +1347,9 @@ def create_app(
     @app.get("/api/account/portfolio")
     async def get_account_portfolio() -> dict[str, Any]:
         try:
-            account = await testnet_account()
+            account, realized_today = await asyncio.gather(
+                testnet_account(), testnet_daily_income()
+            )
         except Exception as exc:
             raise HTTPException(
                 status_code=502, detail=f"testnet account query failed: {exc}"
@@ -1362,7 +1371,10 @@ def create_app(
                     )
                 ),
                 "available_balance": str(account.get("availableBalance", "0")),
-                "daily_pnl": None,
+                "daily_pnl": str(
+                    Decimal(str(realized_today))
+                    + Decimal(str(account.get("totalUnrealizedProfit", "0")))
+                ),
                 "unrealized_pnl": str(account.get("totalUnrealizedProfit", "0")),
                 "open_positions": len(positions),
                 "margin_used": str(account.get("totalInitialMargin", "0")),
@@ -1966,4 +1978,3 @@ def create_app(
         app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="console")
 
     return app
-

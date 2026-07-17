@@ -1101,6 +1101,9 @@ def test_testnet_portfolio_carries_entry_price_and_live_bracket(tmp_path: Path) 
         async def protective_levels(self):
             return {"BTCUSDT": ProtectiveLevels(stop_loss=Decimal("104"))}
 
+        async def daily_income(self):
+            return Decimal("-10")
+
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'testnet-portfolio.db'}")
         await database.initialize()
@@ -1125,5 +1128,6 @@ def test_testnet_portfolio_carries_entry_price_and_live_bracket(tmp_path: Path) 
     assert position.stop_loss == Decimal("104")
     # No take-profit leg on the exchange must read as absent, not as invented.
     assert position.take_profit is None
+    assert portfolio.daily_pnl == Decimal("-13.75")
     # A flat symbol is not a position.
     assert "ETHUSDT" not in portfolio.positions

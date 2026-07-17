@@ -123,6 +123,7 @@ const METRIC_DEFINITIONS: Record<string, string> = {
   "错误率": "过去 24 小时带 Provider 错误标记的调用数除以调用总数。",
   "钱包余额": "币安测试网账户的钱包余额，不包含当前未实现盈亏。",
   "未实现盈亏": "全部未平仓头寸按最新标记价计算的浮动盈亏合计。",
+  "当日盈亏": "从当日 UTC 00:00 起的已实现盈亏、手续费和资金费，加上当前未实现盈亏；硬风控用它判断 8% 日亏熔断。",
   "总收益": "回测结束权益相对初始权益的累计变化比例，包含模型交易产生的费用和资金费影响。",
   "最大回撤": "回测权益曲线从任一历史峰值到后续低点的最大跌幅。",
   "Sharpe": "回测周期收益的年化平均值除以样本标准差，未扣无风险利率；值越高代表单位总波动收益越高。",
@@ -2306,9 +2307,7 @@ function AccountPanel({
   orders: OrderRecord[];
 }) {
   const isTestnet = portfolio?.source === "binance-testnet";
-  const displayedPnl = portfolio
-    ? isTestnet ? portfolio.unrealized_pnl : portfolio.daily_pnl
-    : null;
+  const displayedPnl = portfolio?.daily_pnl ?? null;
   return (
     <article className="panel account-panel">
       <PanelTitle
@@ -2321,10 +2320,8 @@ function AccountPanel({
         <Metric label="可用余额" value={portfolio ? money(portfolio.available_balance) : "—"} suffix="" />
         <div
           className="metric"
-          data-tooltip={isTestnet
-            ? METRIC_DEFINITIONS["未实现盈亏"]
-            : "模拟账户当前权益相对本次运行起始权益的变化额，用于判断日亏熔断。"}
-        ><span>{isTestnet ? "未实现盈亏" : "当日盈亏"}</span><strong className={Number(displayedPnl ?? 0) >= 0 ? "positive" : "negative"}>{displayedPnl === null ? "—" : money(displayedPnl)}</strong></div>
+          data-tooltip={METRIC_DEFINITIONS["当日盈亏"]}
+        ><span>当日盈亏</span><strong className={Number(displayedPnl ?? 0) >= 0 ? "positive" : "negative"}>{displayedPnl === null ? "—" : money(displayedPnl)}</strong></div>
         <Metric label="占用保证金" value={portfolio ? money(portfolio.margin_used) : "—"} suffix="" />
         <Metric label="持仓数" value={portfolio ? String(portfolio.open_positions) : "—"} suffix="" />
       </div>
@@ -2480,4 +2477,3 @@ function OperationsPanel({
     </article>
   );
 }
-

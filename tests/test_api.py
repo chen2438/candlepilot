@@ -396,7 +396,7 @@ def test_testnet_account_status_is_sanitized_and_includes_reconciliation(
             "cash": "10000.5",
             "equity": "10025.5",
             "available_balance": "9000",
-            "daily_pnl": None,
+            "daily_pnl": "25",
             "unrealized_pnl": "25",
             "open_positions": 1,
             "margin_used": "1000",

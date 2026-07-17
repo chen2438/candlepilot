@@ -108,6 +108,39 @@ class BinanceTestnetBroker:
         )
         self._time_offset_ms = 0
 
+    async def daily_income(self, *, now: datetime | None = None) -> Decimal:
+        """Return today's trading income components from the UTC session.
+
+        Deposits and transfers are deliberately excluded: the daily loss breaker
+        measures trading performance, not account funding. Unrealized PnL comes
+        from the account payload and is added by the portfolio assembler.
+        """
+
+        now = now or datetime.now(UTC)
+        if now.tzinfo is None:
+            raise ValueError("daily income time must be timezone-aware")
+        now = now.astimezone(UTC)
+        start = datetime.combine(now.date(), datetime.min.time(), tzinfo=UTC)
+        total = Decimal("0")
+        page = 1
+        while True:
+            rows = await self._signed_request(
+                "GET",
+                "/fapi/v1/income",
+                {
+                    "startTime": int(start.timestamp() * 1000),
+                    "endTime": int(now.timestamp() * 1000),
+                    "page": page,
+                    "limit": 1000,
+                },
+            )
+            for row in rows:
+                if row.get("incomeType") in {"REALIZED_PNL", "COMMISSION", "FUNDING_FEE"}:
+                    total += Decimal(str(row.get("income", "0")))
+            if len(rows) < 1000:
+                return total
+            page += 1
+
     async def close(self) -> None:
         if self._owns_client:
             await self._client.aclose()

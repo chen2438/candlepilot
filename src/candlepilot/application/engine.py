@@ -331,7 +331,15 @@ class TradingEngine:
 
     async def current_portfolio(self) -> PortfolioState:
         broker = self.testnet_broker
-        account, levels = await asyncio.gather(broker.account(), broker.protective_levels())
+        daily_income_loader = getattr(broker, "daily_income", None)
+        daily_income = (
+            daily_income_loader()
+            if callable(daily_income_loader)
+            else asyncio.sleep(0, result=Decimal("0"))
+        )
+        account, levels, realized_today = await asyncio.gather(
+            broker.account(), broker.protective_levels(), daily_income
+        )
         raw_positions = {
             str(item["symbol"]): item
             for item in account.get("positions", [])
@@ -350,9 +358,16 @@ class TradingEngine:
                 stop_loss=guard.stop_loss,
                 take_profit=guard.take_profit,
             )
+        account_unrealized = account.get("totalUnrealizedProfit")
+        unrealized_today = (
+            Decimal(str(account_unrealized))
+            if account_unrealized is not None
+            else sum((position.unrealized_pnl for position in positions.values()), Decimal("0"))
+        )
         return PortfolioState(
             equity=account.get("totalMarginBalance", account.get("totalWalletBalance", "0")),
             available_balance=account.get("availableBalance", "0"),
+            daily_pnl=Decimal(str(realized_today)) + unrealized_today,
             open_positions=len(positions),
             margin_used=account.get("totalInitialMargin", "0"),
             positions=positions,

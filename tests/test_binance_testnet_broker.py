@@ -374,6 +374,36 @@ def test_reconciliation_reports_pending_entry_orders() -> None:
     assert report.open_order_count == 2
 
 
+def test_daily_income_sums_trading_components_and_excludes_transfers() -> None:
+    queries: list[dict[str, list[str]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        queries.append(parse_qs(request.url.query.decode()))
+        return httpx.Response(
+            200,
+            json=[
+                {"incomeType": "REALIZED_PNL", "income": "-30"},
+                {"incomeType": "COMMISSION", "income": "-1.5"},
+                {"incomeType": "FUNDING_FEE", "income": "0.5"},
+                {"incomeType": "TRANSFER", "income": "1000"},
+            ],
+        )
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        result = await broker.daily_income(now=datetime(2026, 7, 17, 12, tzinfo=UTC))
+        await client.aclose()
+        return result
+
+    assert asyncio.run(scenario()) == Decimal("-31")
+    assert queries[0]["startTime"] == ["1784246400000"]
+    assert queries[0]["endTime"] == ["1784289600000"]
+    assert queries[0]["page"] == ["1"]
+
+
 def test_emergency_flatten_cancels_orphan_orders_before_closing_positions() -> None:
     requests: list[httpx.Request] = []
 
