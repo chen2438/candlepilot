@@ -86,6 +86,7 @@ export interface ProviderHealth {
   detail: string;
   model: string | null;
   reasoning_effort: string | null;
+  timeout_seconds: number;
   reasoning_effort_options: string[];
   pricing: string | null;
   pricing_options: string[];

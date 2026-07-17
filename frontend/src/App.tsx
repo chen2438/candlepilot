@@ -1619,6 +1619,14 @@ function formatDuration(seconds: number): string {
   return `${rest}s`;
 }
 
+function formatEstimatedDuration(seconds: number): string {
+  const totalMinutes = Math.ceil(seconds / 60);
+  if (totalMinutes <= 60) return `${totalMinutes} 分钟`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours} 小时 ${minutes} 分钟`;
+}
+
 function backtestElapsed(run: BacktestRun): string {
   const end = run.ended_at ? new Date(run.ended_at).getTime() : Date.now();
   const start = new Date(run.created_at).getTime();
@@ -1802,6 +1810,17 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
   const [decisions, setDecisions] = useState<BacktestDecision[] | null>(null);
   const [detailResult, setDetailResult] = useState<BacktestResult | null>(null);
   const localTimeZone = useMemo(() => localTimeZoneLabel(), []);
+  const configuredTimeouts = useMemo(() => [
+    ...new Set(
+      form.providers.map((name) => providers.find((item) => item.provider === name)?.timeout_seconds)
+        .filter((seconds): seconds is number => seconds !== undefined),
+    ),
+  ], [form.providers, providers]);
+  const timeoutPlaceholder = configuredTimeouts.length === 1
+    ? `留空默认 ${configuredTimeouts[0]}s`
+    : configuredTimeouts.length > 1
+      ? "各模型默认值不同，请填写"
+      : "留空使用 Provider 默认值";
 
   const body = useCallback(() => ({
     symbols: form.symbols.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),
@@ -2150,7 +2169,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
         <label className="probe-timeout">
           <span>本次回测超时（秒）</span>
           <input
-            type="number" min={1} placeholder="留空=创建时固化 Provider 当前值"
+            type="number" min={1} placeholder={timeoutPlaceholder} title={timeoutPlaceholder}
             value={timeout} disabled={busy !== null}
             onChange={(event) => setTimeoutSeconds(event.target.value)}
           />
@@ -2162,7 +2181,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
         <div className={`backtest-estimate ${estimate.within_limit ? "" : "over"}`}>
           <span>每模型 <strong>{estimate.decisions_per_model}</strong> 次决策</span>
           <span>共 <strong>{estimate.total_calls}</strong> 次模型调用</span>
-          <span>预计 <strong>{estimate.estimated_hours}</strong> 小时
+          <span>预计 <strong>{formatEstimatedDuration(estimate.estimated_seconds)}</strong>
             <small>
               按本次试跑最慢模型 {providerLabel(estimate.slowest_provider)} 的最慢一次
               {estimate.seconds_per_call}s · 上限 {estimate.max_hours}h

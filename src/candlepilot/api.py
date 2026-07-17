@@ -760,6 +760,7 @@ def create_app(
                     "capabilities": asdict(provider.capabilities),
                     "model": provider.model,
                     "reasoning_effort": provider.reasoning_effort,
+                    "timeout_seconds": provider.timeout,
                     "reasoning_effort_options": list(provider.reasoning_effort_options),
                     "pricing": provider_pricing_ids.get(item.provider) if custom else None,
                     "pricing_options": _pricing_options(catalog) if custom else [],

@@ -636,6 +636,7 @@ def test_provider_config_sets_model_and_reasoning_effort(tmp_path: Path) -> None
         listed = client.get("/api/providers").json()[0]
         assert listed["model"] is None
         assert listed["reasoning_effort"] is None
+        assert listed["timeout_seconds"] == 45
         assert listed["reasoning_effort_options"] == ["low", "medium", "high"]
 
         updated = client.post(
