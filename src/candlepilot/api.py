@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from candlepilot.application.engine import SUPPORTED_CADENCES, TradingEngine
+from candlepilot.application.engine import TradingEngine
 from candlepilot.application.scheduler import (
     MAX_CANDIDATES_PER_CYCLE,
     TradingScheduler,
@@ -58,7 +58,11 @@ from candlepilot.config import (
     MAX_CUSTOM_LLM_PROVIDERS,
     Settings,
 )
-from candlepilot.domain.models import MarketSnapshot, PortfolioState
+from candlepilot.domain.models import (
+    SUPPORTED_CADENCES,
+    MarketSnapshot,
+    PortfolioState,
+)
 from candlepilot.market.binance import BinancePublicClient
 from candlepilot.market.cache import HistoricalMarketCache
 from candlepilot.market.collector import (
@@ -290,17 +294,13 @@ def restart_command() -> tuple[list[str], dict[str, str]]:
 def _validate_startup_settings(settings: Settings) -> None:
     """Reject values the parsers accept but startup would later choke on.
 
-    ``Settings`` parsing is deliberately lenient for some keys — the engine and
-    scheduler do the range checks at construction. Saving such a value would
-    brick the next start, so mirror those checks here.
+    ``Settings`` parsing is lenient about the remaining keys here — the engine
+    and scheduler do those range checks at construction. Saving such a value
+    would brick the next start, so mirror those checks here. Cadences are not
+    among them: ``_parse_cadences`` validates them, so a bad one never reaches
+    this function.
     """
 
-    unsupported = set(settings.cadences) - set(SUPPORTED_CADENCES)
-    if unsupported:
-        raise ValueError(
-            f"unsupported cadences: {', '.join(sorted(unsupported))}; "
-            f"choose from {', '.join(SUPPORTED_CADENCES)}"
-        )
     if not 1 <= settings.candidates_per_cycle <= MAX_CANDIDATES_PER_CYCLE:
         raise ValueError(
             f"candidates_per_cycle must be between 1 and {MAX_CANDIDATES_PER_CYCLE}"

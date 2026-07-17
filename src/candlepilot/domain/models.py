@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -11,6 +11,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 PositiveDecimal = Annotated[Decimal, Field(gt=0)]
 NonNegativeDecimal = Annotated[Decimal, Field(ge=0)]
 RATIONALE_MAX_LENGTH = 1_000
+
+#: A decision cadence. Every layer -- env parsing, the engine, the API and the
+#: stored models -- validates against this one definition, so the set cannot
+#: drift between the parser that accepts a value and the code that rejects it.
+Cadence = Literal["5m", "15m", "30m"]
+#: The same set as a tuple, in the canonical order cadences are reported in.
+SUPPORTED_CADENCES: tuple[str, ...] = get_args(Cadence)
 
 
 class StrictModel(BaseModel):
@@ -43,7 +50,7 @@ class ProviderHealth(StrictModel):
 
 class MarketSnapshot(StrictModel):
     symbol: str = Field(pattern=r"^[A-Z0-9]+USDT$")
-    cadence: Literal["1m", "5m", "15m", "30m"]
+    cadence: Cadence
     timestamp: datetime
     mark_price: PositiveDecimal
     bid: PositiveDecimal
@@ -63,7 +70,7 @@ class MarketSnapshot(StrictModel):
 
 class TradeIntent(StrictModel):
     symbol: str = Field(pattern=r"^[A-Z0-9]+USDT$")
-    cadence: Literal["1m", "5m", "15m", "30m"]
+    cadence: Cadence
     action: TradeAction
     confidence: float = Field(ge=0, le=1)
     leverage: int = Field(ge=1, le=10)
@@ -99,7 +106,7 @@ class TradeIntent(StrictModel):
     def hold(
         cls,
         symbol: str,
-        cadence: Literal["1m", "5m", "15m", "30m"],
+        cadence: Cadence,
         reason: str,
     ) -> TradeIntent:
         return cls(

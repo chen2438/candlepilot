@@ -10,6 +10,8 @@ from pathlib import Path
 
 from pydantic import SecretStr
 
+from candlepilot.domain.models import SUPPORTED_CADENCES
+
 
 
 DEFAULT_DATABASE_URL = "sqlite+aiosqlite:///./candlepilot.db"
@@ -82,10 +84,25 @@ def load_dotenv(path: Path | None = None) -> None:
 
 
 def _parse_cadences(raw: str | None) -> tuple[str, ...]:
-    if not raw:
-        return ("5m", "15m", "30m")
-    parsed = tuple(item.strip() for item in raw.split(",") if item.strip())
-    return parsed or ("5m", "15m", "30m")
+    """Parse ``CANDLEPILOT_CADENCES`` into a canonical, validated subset.
+
+    This used to hand any string through and let the engine reject it at
+    construction, three layers later. The value is a typo away from wrong and
+    the parser is where it is read, so it is also where it is checked.
+    """
+
+    if not raw or not raw.strip():
+        return SUPPORTED_CADENCES
+    requested = {item.strip() for item in raw.split(",") if item.strip()}
+    if not requested:
+        return SUPPORTED_CADENCES
+    unsupported = requested - set(SUPPORTED_CADENCES)
+    if unsupported:
+        raise ValueError(
+            f"unsupported cadences: {', '.join(sorted(unsupported))}; "
+            f"choose from {', '.join(SUPPORTED_CADENCES)}"
+        )
+    return tuple(cadence for cadence in SUPPORTED_CADENCES if cadence in requested)
 
 
 def _parse_positive_number[T: (int, float)](raw: str | None, cast: type[T]) -> T | None:

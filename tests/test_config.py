@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from candlepilot.config import DEFAULT_DATABASE_URL, Settings, load_dotenv
+from candlepilot.domain.models import SUPPORTED_CADENCES
 
 
 def test_settings_use_concrete_database_default(monkeypatch) -> None:
@@ -41,6 +42,30 @@ def test_cadences_default_and_env_override(monkeypatch) -> None:
     assert Settings.from_env().cadences == ("5m", "15m", "30m")
     monkeypatch.setenv("CANDLEPILOT_CADENCES", "15m, 30m")
     assert Settings.from_env().cadences == ("15m", "30m")
+
+
+def test_the_parser_rejects_a_cadence_the_engine_would_refuse(monkeypatch) -> None:
+    """The parser handed any string through and let the engine object later.
+
+    A typo in .env was accepted here, survived Settings, and only surfaced as
+    `unsupported cadences` when TradingEngine was constructed three layers
+    away. The value is read here, so it is checked here.
+    """
+
+    for raw in ("1m", "garbage", "5m,1m"):
+        monkeypatch.setenv("CANDLEPILOT_CADENCES", raw)
+        with pytest.raises(ValueError, match="unsupported cadences"):
+            Settings.from_env()
+
+
+def test_cadences_come_back_in_canonical_order(monkeypatch) -> None:
+    """Order is the engine's, not the order they happen to be typed in."""
+
+    monkeypatch.setenv("CANDLEPILOT_CADENCES", "30m,5m")
+    assert Settings.from_env().cadences == ("5m", "30m")
+    # Blank and whitespace-only both mean "unset", not "no cadences".
+    monkeypatch.setenv("CANDLEPILOT_CADENCES", "   ")
+    assert Settings.from_env().cadences == SUPPORTED_CADENCES
 
 
 def test_custom_llm_providers_parse_from_json(monkeypatch) -> None:

@@ -15,6 +15,7 @@ from candlepilot.broker.binance_testnet import (
     ReconciliationReport,
 )
 from candlepilot.domain.models import (
+    SUPPORTED_CADENCES,
     ExecutionAttempt,
     ExecutionReport,
     MarketSnapshot,
@@ -34,7 +35,6 @@ from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
 from candlepilot.storage.database import AuditRepository
 
 
-SUPPORTED_CADENCES: tuple[str, ...] = ("5m", "15m", "30m")
 PROVIDER_FAILURE_COOLDOWN = timedelta(seconds=60)
 # Every route failing is normally transient: each failure cools down for
 # PROVIDER_FAILURE_COOLDOWN and is retried. Only give up once the route has

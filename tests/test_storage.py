@@ -174,7 +174,7 @@ def test_decision_events_join_inference_and_risk_outcomes(tmp_path: Path) -> Non
             RiskDecision(accepted=False, reason="margin limit"),
             inference_id=opening_id,
         )
-        hold = TradeIntent.hold("ETHUSDT", "1m", "no setup")
+        hold = TradeIntent.hold("ETHUSDT", "5m", "no setup")
         hold_id = await repository.record_inference(
             ProviderResult(hold, "claude-code-auth", None, timedelta(milliseconds=20), "{}", {})
         )
