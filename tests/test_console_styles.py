@@ -98,3 +98,25 @@ def test_the_wide_panels_fill_their_row(panel: str) -> None:
     assert _declares(_bodies(panel), "grid-column:span2"), (
         f"{panel} must declare grid-column:span 2"
     )
+
+
+def test_the_backtest_form_stacks_its_labels_like_every_other_form() -> None:
+    """An inline label sits beside its input and ragged-aligns the row."""
+
+    # The house convention, set by the settings endpoint grid.
+    assert _declares(_bodies(".endpoint-grid label"), "display:grid")
+    assert _declares(_bodies(".backtest-form label"), "display:grid")
+    assert _declares(_bodies(".backtest-form label"), "min-width:0")
+
+
+def test_the_backtest_inputs_use_the_shared_field_style() -> None:
+    """Unstyled inputs render as raw native widgets next to styled ones."""
+
+    styled = [
+        selector
+        for selector, body in _rules()
+        if _declares(body, "border-radius:5px") and _declares(body, "height:28px")
+    ]
+    parts = {part.strip() for selector in styled for part in selector.split(",")}
+    assert ".backtest-form input" in parts
+    assert ".collector-actions input" in parts
