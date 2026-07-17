@@ -430,6 +430,27 @@ def test_progress_is_reported_while_the_run_is_still_running() -> None:
     assert [done for done, _ in seen] == list(range(run.decisions_total + 1))
 
 
+def test_progress_accumulates_tokens_and_requires_complete_pricing() -> None:
+    run = ModelRun("model-a")
+    prices = iter((0.01, None))
+    for price in prices:
+        run.record_usage(
+            {
+                "input_tokens": 100,
+                "cached_input_tokens": 40,
+                "output_tokens": 20,
+                "total_tokens": 120,
+            },
+            price,
+        )
+
+    assert run.total_tokens == 240
+    assert run.cached_input_tokens == 80
+    assert run.usage_calls == 2
+    assert run.priced_calls == 1
+    assert run.equivalent_cost_usd is None
+
+
 def test_compare_reports_each_model_while_it_works() -> None:
     """on_progress must reach the runner, not just fire once per finished model."""
 

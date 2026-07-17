@@ -90,7 +90,7 @@ from candlepilot.providers.pricing import (
 )
 from candlepilot.providers.pricing import PROVIDER_IDS, ModelPricingCatalog
 from candlepilot.providers.pricing import load_catalog as load_pricing_catalog
-from candlepilot.providers.base import LLMProvider
+from candlepilot.providers.base import LLMProvider, ProviderResult
 from candlepilot.providers.openai_compatible import validate_base_url
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.provenance import MICROSTRUCTURE_SCHEMA_VERSION
@@ -293,6 +293,28 @@ def _pricing_options(catalog: ModelPricingCatalog | None) -> list[str]:
     if catalog is None:
         return []
     return sorted({provider for provider, _ in catalog.prices})
+
+
+def _provider_result_cost_usd(
+    result: ProviderResult,
+    catalog: ModelPricingCatalog | None,
+    provider_ids: Mapping[str, str],
+) -> float | None:
+    """Price a completed call by its recorded usage and selected billing vendor."""
+
+    usage = result.usage
+    cost = usage.get("cost_usd")
+    provider_id = provider_ids.get(result.provider)
+    if cost is None and catalog is not None and provider_id is not None:
+        cost = catalog.cost_usd(
+            provider_id,
+            result.model,
+            input_tokens=int(usage.get("input_tokens") or 0),
+            cached_input_tokens=int(usage.get("cached_input_tokens") or 0),
+            output_tokens=int(usage.get("output_tokens") or 0),
+            cache_write_tokens=int(usage.get("cache_creation_input_tokens") or 0),
+        )
+    return float(cost) if cost is not None else None
 
 
 def restart_command() -> tuple[list[str], dict[str, str]]:
@@ -1696,10 +1718,12 @@ def create_app(
                 decisions_done=run.decisions_done,
                 decisions_total=run.decisions_total,
                 calls_failed=run.calls_failed,
+                usage=run.usage_dict(),
                 result=_json_value(asdict(run.result)) if run.result is not None else None,
                 error=run.error,
             )
         try:
+            catalog = await pricing_catalog()
             with _timeouts(spec):
                 runs = await compare(
                     spec=spec,
@@ -1709,6 +1733,9 @@ def create_app(
                         rules=rules,
                         risk=engine.risk,
                         captures=captures,
+                        cost_for_result=lambda result: _provider_result_cost_usd(
+                            result, catalog, provider_pricing_ids
+                        ),
                     ),
                     provider_for=engine.providers.get,
                     on_progress=flush,

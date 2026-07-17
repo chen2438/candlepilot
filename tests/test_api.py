@@ -1744,7 +1744,16 @@ def test_a_running_backtest_reports_progress_over_the_api(tmp_path: Path) -> Non
             Gated.calls += 1
             if Gated.calls == 2:
                 await gate.wait()
-            return await super().generate_trade_intent(snapshot, portfolio)
+            result = await super().generate_trade_intent(snapshot, portfolio)
+            return ProviderResult(
+                result.intent,
+                result.provider,
+                "fixture-model",
+                result.duration,
+                result.raw_output,
+                {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120,
+                 "cost_usd": 0.0025},
+            )
 
     engine = TradingEngine(
         testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
@@ -1791,6 +1800,8 @@ def test_a_running_backtest_reports_progress_over_the_api(tmp_path: Path) -> Non
     # A denominator, and a numerator that is neither 0 nor already finished.
     assert mid["decisions_total"] == 12
     assert 0 < mid["progress"] < 1
+    assert mid["usage"]["total_tokens"] == 120
+    assert mid["usage"]["equivalent_cost_usd"] == 0.0025
     asyncio.run(database.close())
 
 

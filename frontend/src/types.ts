@@ -353,6 +353,16 @@ export interface BacktestModelRun {
   decisions_done: number;
   decisions_total: number;
   calls_failed: number;
+  usage: {
+    call_count: number;
+    priced_call_count: number;
+    input_tokens: number;
+    cached_input_tokens: number;
+    cache_creation_input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    equivalent_cost_usd: number | null;
+  };
   progress: number;
   error: string | null;
   result: BacktestResult | null;

@@ -2087,7 +2087,10 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
 
       <div className="table-wrap backtest-runs">
         <table>
-          <thead><tr><th>#</th><th>窗口</th><th>模型</th><th>进度</th><th>收益</th><th>胜率</th><th>回撤</th><th>交易</th><th></th></tr></thead>
+          <thead><tr><th>#</th><th>窗口</th><th>模型</th><th>进度</th>
+            <th data-tooltip="已完成模型调用返回的总 Token；运行中随 3 秒轮询更新。">Token</th>
+            <th data-tooltip="按 Provider 返回成本或所选计费厂商价格折算；有任一调用无法定价时显示未知。">成本</th>
+            <th>收益</th><th>胜率</th><th>回撤</th><th>交易</th><th></th></tr></thead>
           <tbody>
             {runs.flatMap((run) => run.models.map((model, index) => (
               <tr key={`${run.id}-${model.provider}`}>
@@ -2121,6 +2124,14 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                 </td>
                 <td>{Math.round(model.progress * 100)}%
                   {model.calls_failed > 0 && <small className="negative">{model.calls_failed} 次失败</small>}</td>
+                <td>
+                  {(model.usage?.total_tokens ?? 0).toLocaleString("zh-CN")}
+                </td>
+                <td>
+                  {model.usage?.equivalent_cost_usd === null || model.usage?.equivalent_cost_usd === undefined
+                    ? "—"
+                    : `$${model.usage.equivalent_cost_usd.toFixed(6)}`}
+                </td>
                 <td className={model.result && Number(model.result.total_return) >= 0 ? "positive" : "negative"}>
                   {model.result ? `${(Number(model.result.total_return) * 100).toFixed(2)}%` : "—"}</td>
                 <td>{model.result ? `${(Number(model.result.win_rate) * 100).toFixed(0)}%` : "—"}</td>
@@ -2136,7 +2147,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
               openDecisions?.startsWith(`${run.id}-`)
                 ? [
                   <tr key={`${run.id}-decisions`} className="run-decisions">
-                    <td colSpan={9}>
+                    <td colSpan={11}>
                       <BacktestResultDetail result={detailResult} />
                       {decisions === null
                         ? <span className="empty">读取中…</span>

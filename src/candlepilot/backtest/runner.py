@@ -25,7 +25,7 @@ from candlepilot.backtest.engine import (
 )
 from candlepilot.backtest.snapshots import INTERVAL_MILLISECONDS, HistoricalSnapshotBuilder
 from candlepilot.domain.models import TradeAction
-from candlepilot.providers.base import LLMProvider
+from candlepilot.providers.base import LLMProvider, ProviderResult
 from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
 
 MAX_BACKTEST_SYMBOLS = 5
@@ -132,8 +132,55 @@ class ModelRun:
     decisions_done: int = 0
     decisions_total: int = 0
     calls_failed: int = 0
+    usage_calls: int = 0
+    priced_calls: int = 0
+    input_tokens: int = 0
+    cached_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd_total: float = 0.0
     result: BacktestResult | None = None
     error: str | None = None
+
+    @property
+    def equivalent_cost_usd(self) -> float | None:
+        """Complete equivalent cost, never a misleading partial subtotal."""
+
+        if not self.usage_calls or self.priced_calls != self.usage_calls:
+            return None
+        return self.cost_usd_total
+
+    def record_usage(self, usage: dict[str, Any], cost_usd: float | None) -> None:
+        """Accumulate one completed provider call for live progress reporting."""
+
+        input_tokens = int(usage.get("input_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or 0)
+        self.usage_calls += 1
+        self.input_tokens += input_tokens
+        self.cached_input_tokens += int(
+            usage.get("cached_input_tokens") or usage.get("cache_read_input_tokens") or 0
+        )
+        self.cache_creation_input_tokens += int(
+            usage.get("cache_creation_input_tokens") or 0
+        )
+        self.output_tokens += output_tokens
+        self.total_tokens += int(usage.get("total_tokens") or input_tokens + output_tokens)
+        if cost_usd is not None:
+            self.priced_calls += 1
+            self.cost_usd_total += cost_usd
+
+    def usage_dict(self) -> dict[str, int | float | None]:
+        return {
+            "call_count": self.usage_calls,
+            "priced_call_count": self.priced_calls,
+            "input_tokens": self.input_tokens,
+            "cached_input_tokens": self.cached_input_tokens,
+            "cache_creation_input_tokens": self.cache_creation_input_tokens,
+            "output_tokens": self.output_tokens,
+            "total_tokens": self.total_tokens,
+            "equivalent_cost_usd": self.equivalent_cost_usd,
+        }
 
     @property
     def progress(self) -> float:
@@ -221,11 +268,13 @@ class BacktestRunner:
         rules: dict[str, SymbolRules],
         risk: AggressiveRiskPolicy,
         captures: dict[str, dict[datetime, dict[str, Any]]] | None = None,
+        cost_for_result: Callable[[ProviderResult], float | None] | None = None,
     ) -> None:
         self._spec = spec
         self._series = series
         self._rules = rules
         self._risk = risk
+        self._cost_for_result = cost_for_result
         self._builders = {
             symbol: HistoricalSnapshotBuilder(candles, (captures or {}).get(symbol))
             for symbol, candles in series.items()
@@ -339,6 +388,9 @@ class BacktestRunner:
                 progress.error = str(exc)[:200]
                 await report(entry)
                 continue
+
+            cost_usd = self._cost_for_result(result) if self._cost_for_result else None
+            progress.record_usage(result.usage, cost_usd)
 
             progress.decisions_done += 1
             intent = result.intent

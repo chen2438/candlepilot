@@ -146,6 +146,7 @@ class BacktestModelRunRow(Base):
     decisions_done: Mapped[int] = mapped_column(Integer, default=0)
     decisions_total: Mapped[int] = mapped_column(Integer, default=0)
     calls_failed: Mapped[int] = mapped_column(Integer, default=0)
+    usage_json: Mapped[str] = mapped_column(Text, default="{}")
     result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -372,6 +373,15 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             "CREATE INDEX ix_risk_decisions_created_at ON risk_decisions (created_at)",
         ),
     ),
+    (
+        9,
+        (
+            # Backtests can run for hours, so token use and equivalent cost
+            # must survive each progress poll and a process restart.
+            "ALTER TABLE backtest_model_runs "
+            "ADD COLUMN usage_json TEXT NOT NULL DEFAULT '{}'",
+        ),
+    ),
 )
 CURRENT_SCHEMA_VERSION = max(version for version, _ in MIGRATIONS)
 
@@ -405,6 +415,20 @@ class Database:
             if current is not None and version <= current:
                 continue
             for statement in statements:
+                if version == 9:
+                    columns = {
+                        row[1]
+                        for row in (
+                            await connection.execute(
+                                text("PRAGMA table_info(backtest_model_runs)")
+                            )
+                        ).all()
+                    }
+                    # create_all() gives a brand-new database the current ORM
+                    # shape before versioned migrations run. Existing v8
+                    # databases still need the ALTER; fresh ones must skip it.
+                    if not columns or "usage_json" in columns:
+                        continue
                 await connection.execute(text(statement))
             await connection.execute(
                 insert(SchemaMigrationRow).values(
@@ -1099,6 +1123,7 @@ class AuditRepository:
         decisions_done: int,
         decisions_total: int,
         calls_failed: int,
+        usage: dict[str, Any] | None = None,
         result: dict[str, Any] | None = None,
         error: str | None = None,
     ) -> None:
@@ -1114,6 +1139,8 @@ class AuditRepository:
             row.decisions_done = decisions_done
             row.decisions_total = decisions_total
             row.calls_failed = calls_failed
+            if usage is not None:
+                row.usage_json = json.dumps(usage, separators=(",", ":"))
             if result is not None:
                 row.result_json = json.dumps(result, separators=(",", ":"), default=str)
             if error is not None:
@@ -1214,6 +1241,7 @@ class AuditRepository:
             "decisions_done": row.decisions_done,
             "decisions_total": row.decisions_total,
             "calls_failed": row.calls_failed,
+            "usage": json.loads(row.usage_json or "{}"),
             "progress": (row.decisions_done / row.decisions_total)
             if row.decisions_total
             else 0.0,
