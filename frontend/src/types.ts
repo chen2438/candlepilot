@@ -49,7 +49,8 @@ export interface EngineStatus {
   supported_cadences: string[];
   run_limits: { max_run_seconds: number | null; max_run_cost_usd: number | null };
   auto_stop_reason: string | null;
-  route_exhausted_since: string | null;
+  route_failure_count: number;
+  route_failure_limit: number;
   candidates_per_cycle: number | null;
   max_candidates_per_cycle: number;
   candidate_count: number;

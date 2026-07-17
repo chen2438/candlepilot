@@ -189,8 +189,11 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         assert runtime_metrics.json()["requests_total"] >= 2
         assert runtime_metrics.json()["in_flight"] == 1
         assert client.get("/api/alerts").json()["active_count"] == 0
-        assert client.get("/api/status").json()["running"] is False
-        assert client.get("/api/status").json()["user_stream"]["enabled"] is False
+        status = client.get("/api/status").json()
+        assert status["running"] is False
+        assert status["user_stream"]["enabled"] is False
+        assert status["route_failure_count"] == 0
+        assert status["route_failure_limit"] == 3
         assert client.get("/api/testnet/events").json() == []
         assert client.get("/api/decision-events").json() == []
         assert client.get("/api/decision-events?limit=0").status_code == 422
@@ -1829,7 +1832,9 @@ def test_a_running_backtest_reports_progress_over_the_api(tmp_path: Path) -> Non
     asyncio.run(database.close())
 
 
-def test_a_run_that_lost_decisions_is_not_filed_as_completed(tmp_path: Path) -> None:
+def test_a_run_that_lost_decisions_is_not_filed_as_completed(
+    tmp_path: Path, monkeypatch
+) -> None:
     """5 of 12 calls timed out and the run still reported a tidy 0% return.
 
     The console reads this status; `completed` next to a clean comparison is
@@ -1838,13 +1843,16 @@ def test_a_run_that_lost_decisions_is_not_filed_as_completed(tmp_path: Path) -> 
 
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'bt-unreliable.db'}")
     market = BacktestMarket()
+    monkeypatch.setattr(
+        "candlepilot.backtest.runner.DECISION_PROVIDER_RETRY_DELAYS", (0, 0)
+    )
 
     class Timeouts(ApiProvider):
         calls = 0
 
         async def generate_trade_intent(self, snapshot, portfolio):
             Timeouts.calls += 1
-            if Timeouts.calls % 2 == 0:
+            if (Timeouts.calls - 1) % 4 < 3:
                 raise RuntimeError("endpoint timed out after 45s")
             return await super().generate_trade_intent(snapshot, portfolio)
 

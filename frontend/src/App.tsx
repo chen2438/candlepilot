@@ -191,7 +191,8 @@ const emptyStatus: EngineStatus = {
   active_cadences: DECISION_CADENCES,
   run_limits: { max_run_seconds: null, max_run_cost_usd: null },
   auto_stop_reason: null,
-  route_exhausted_since: null,
+  route_failure_count: 0,
+  route_failure_limit: 3,
   supported_cadences: DECISION_CADENCES,
   candidates_per_cycle: 5,
   max_candidates_per_cycle: 20,
@@ -1034,7 +1035,7 @@ export default function App() {
               })}
             </div>
             <div className="provider-route">
-              <div className="provider-config-title"><span>主备顺序</span><small>{status.running ? "运行时锁定" : "失败后冷却 60 秒并自动恢复"}</small></div>
+              <div className="provider-config-title"><span>主备顺序</span><small>{status.running ? "运行时锁定" : "失败后 5s / 15s 同决策重试"}</small></div>
               {status.provider_chain.map((name, index) => {
                 const route = status.provider_routes.find((item) => item.provider === name);
                 const health = providers.find((item) => item.provider === name);

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
@@ -31,15 +32,16 @@ from candlepilot.market.scanner import Candidate, MarketScanner
 from candlepilot.providers.base import ProviderResult
 from candlepilot.providers.cli import ProviderError, ProviderInvocationError
 from candlepilot.providers.registry import ProviderRegistry
+from candlepilot.providers.retry import (
+    DECISION_PROVIDER_MAX_ATTEMPTS,
+    DECISION_PROVIDER_RETRY_DELAYS,
+    validate_retry_delays,
+)
 from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
 from candlepilot.storage.database import AuditRepository
 
 
 PROVIDER_FAILURE_COOLDOWN = timedelta(seconds=60)
-# Every route failing is normally transient: each failure cools down for
-# PROVIDER_FAILURE_COOLDOWN and is retried. Only give up once the route has
-# stayed exhausted across several cooldown cycles, so a blip never stops a run.
-ROUTE_EXHAUSTION_STOP_AFTER = timedelta(seconds=180)
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +72,8 @@ class TradingEngine:
         scanner: MarketScanner | None = None,
         risk: AggressiveRiskPolicy | None = None,
         cadences: tuple[str, ...] | None = None,
+        provider_retry_delays: tuple[float, ...] | None = None,
+        retry_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self.providers = providers
         self.audit = audit
@@ -83,6 +87,13 @@ class TradingEngine:
         self.provider_chain: tuple[str, ...] = ()
         self.active_provider: str | None = None
         self._provider_route_states: dict[str, ProviderRouteState] = {}
+        self._provider_route_lock = asyncio.Lock()
+        self._provider_retry_delays = validate_retry_delays(
+            DECISION_PROVIDER_RETRY_DELAYS
+            if provider_retry_delays is None
+            else provider_retry_delays
+        )
+        self._retry_sleep = retry_sleep
         self.active_cadences: tuple[str, ...] = self._normalize_cadences(
             cadences if cadences is not None else SUPPORTED_CADENCES
         )
@@ -96,7 +107,7 @@ class TradingEngine:
         self.run_ended_at: datetime | None = None
         self.run_start_inference_id: int | None = None
         self.run_end_inference_id: int | None = None
-        self.route_exhausted_since: datetime | None = None
+        self.route_failure_count = 0
         self.max_run_seconds: int | None = None
         self.max_run_cost_usd: float | None = None
         self.auto_stop_reason: str | None = None
@@ -211,13 +222,11 @@ class TradingEngine:
                     f"run cost budget reached (${run_cost_usd:.4f} of "
                     f"${self.max_run_cost_usd:.4f})"
                 )
-        if self.route_exhausted_since is not None:
-            exhausted_for = now - self.route_exhausted_since
-            if exhausted_for >= ROUTE_EXHAUSTION_STOP_AFTER:
-                return (
-                    "every provider in the route failed for "
-                    f"{int(exhausted_for.total_seconds())}s"
-                )
+        if self.route_failure_count >= DECISION_PROVIDER_MAX_ATTEMPTS:
+            return (
+                "every provider in the route failed for "
+                f"{self.route_failure_count} consecutive attempts"
+            )
         return None
 
     async def start(self) -> None:
@@ -272,7 +281,7 @@ class TradingEngine:
         self.run_end_inference_id = None
         self.run_started_at = datetime.now(UTC)
         self.run_ended_at = None
-        self.route_exhausted_since = None
+        self.route_failure_count = 0
         self.auto_stop_reason = None
         self.running = True
 
@@ -388,69 +397,94 @@ class TradingEngine:
     ) -> DecisionOutcome:
         if not self.running or not self.provider_chain:
             raise RuntimeError("engine is not running")
-        now = datetime.now(UTC)
-        candidates = [
-            name
-            for name in self.provider_chain
-            if (state := self._provider_route_states.setdefault(name, ProviderRouteState())).cooldown_until is None
-            or state.cooldown_until <= now
-        ]
-        if not candidates:
-            # Avoid dropping an entire decision cycle when every route is cooling down.
+        async with self._provider_route_lock:
+            if self.route_failure_count >= DECISION_PROVIDER_MAX_ATTEMPTS:
+                raise RuntimeError("provider route failure threshold already reached")
+            now = datetime.now(UTC)
             candidates = [
-                min(
-                    self.provider_chain,
-                    key=lambda name: self._provider_route_states[name].cooldown_until
-                    or datetime.min.replace(tzinfo=UTC),
-                )
-            ]
-
-        failed_results: list[ProviderResult] = []
-        result: ProviderResult | None = None
-        for position, name in enumerate(candidates, start=1):
-            provider = self.providers.get(name)
-            try:
-                result = await provider.generate_trade_intent(snapshot, portfolio)
-            except ProviderError as exc:
-                failed_at = datetime.now(UTC)
-                state = self._provider_route_states[name]
-                state.consecutive_failures += 1
-                state.cooldown_until = failed_at + PROVIDER_FAILURE_COOLDOWN
-                state.last_error = str(exc)
-                state.last_failed_at = failed_at
-                failed_results.append(
-                    self._provider_failure_result(
-                        provider_name=name,
-                        provider=provider,
-                        error=exc,
-                        snapshot=snapshot,
-                        portfolio=portfolio,
-                        route_position=self.provider_chain.index(name) + 1,
-                        failover_continues=position < len(candidates),
+                name
+                for name in self.provider_chain
+                if (
+                    state := self._provider_route_states.setdefault(
+                        name, ProviderRouteState()
                     )
-                )
-                continue
-            state = self._provider_route_states[name]
-            state.consecutive_failures = 0
-            state.cooldown_until = None
-            state.last_error = None
-            state.last_success_at = datetime.now(UTC)
-            self.active_provider = name
-            break
+                ).cooldown_until
+                is None
+                or state.cooldown_until <= now
+            ]
+            if not candidates:
+                # The earliest route gets the first recovery attempt; subsequent
+                # retries revisit the full chain inside this same decision.
+                candidates = [
+                    min(
+                        self.provider_chain,
+                        key=lambda name: self._provider_route_states[name].cooldown_until
+                        or datetime.min.replace(tzinfo=UTC),
+                    )
+                ]
 
-        if result is not None:
-            self.route_exhausted_since = None
-            for failed_result in failed_results:
-                await self.audit.record_inference(failed_result)
-        else:
-            self.active_provider = None
-            if self.route_exhausted_since is None:
-                self.route_exhausted_since = datetime.now(UTC)
-            if not failed_results:
-                raise RuntimeError("no provider route was attempted")
-            for failed_result in failed_results[:-1]:
-                await self.audit.record_inference(failed_result)
-            result = failed_results[-1]
+            failed_results: list[ProviderResult] = []
+            result: ProviderResult | None = None
+            while self.route_failure_count < DECISION_PROVIDER_MAX_ATTEMPTS:
+                attempt_number = self.route_failure_count + 1
+                round_candidates = (
+                    candidates if attempt_number == 1 else list(self.provider_chain)
+                )
+                for position, name in enumerate(round_candidates, start=1):
+                    provider = self.providers.get(name)
+                    try:
+                        result = await provider.generate_trade_intent(snapshot, portfolio)
+                    except ProviderError as exc:
+                        failed_at = datetime.now(UTC)
+                        state = self._provider_route_states[name]
+                        state.consecutive_failures += 1
+                        state.cooldown_until = failed_at + PROVIDER_FAILURE_COOLDOWN
+                        state.last_error = str(exc)
+                        state.last_failed_at = failed_at
+                        retry_continues = (
+                            position < len(round_candidates)
+                            or attempt_number < DECISION_PROVIDER_MAX_ATTEMPTS
+                        )
+                        failed_results.append(
+                            self._provider_failure_result(
+                                provider_name=name,
+                                provider=provider,
+                                error=exc,
+                                snapshot=snapshot,
+                                portfolio=portfolio,
+                                route_position=self.provider_chain.index(name) + 1,
+                                failover_continues=retry_continues,
+                                decision_attempt=attempt_number,
+                            )
+                        )
+                        continue
+                    state = self._provider_route_states[name]
+                    state.consecutive_failures = 0
+                    state.cooldown_until = None
+                    state.last_error = None
+                    state.last_success_at = datetime.now(UTC)
+                    self.active_provider = name
+                    self.route_failure_count = 0
+                    break
+
+                if result is not None:
+                    break
+                self.active_provider = None
+                self.route_failure_count += 1
+                if self.route_failure_count < DECISION_PROVIDER_MAX_ATTEMPTS:
+                    await self._retry_sleep(
+                        self._provider_retry_delays[self.route_failure_count - 1]
+                    )
+
+            if result is not None:
+                for failed_result in failed_results:
+                    await self.audit.record_inference(failed_result)
+            else:
+                if not failed_results:
+                    raise RuntimeError("no provider route was attempted")
+                for failed_result in failed_results[:-1]:
+                    await self.audit.record_inference(failed_result)
+                result = failed_results[-1]
         inference_id = await self.audit.record_inference(result)
         evaluation_snapshot = snapshot
         evaluation_portfolio = portfolio
@@ -582,6 +616,7 @@ class TradingEngine:
         portfolio: PortfolioState,
         route_position: int,
         failover_continues: bool,
+        decision_attempt: int,
     ) -> ProviderResult:
         diagnostics = error if isinstance(error, ProviderInvocationError) else None
         usage = dict(diagnostics.usage) if diagnostics else {}
@@ -592,6 +627,8 @@ class TradingEngine:
                 "failover_attempt": True,
                 "route_position": route_position,
                 "failover_continues": failover_continues,
+                "decision_attempt": decision_attempt,
+                "decision_attempt_limit": DECISION_PROVIDER_MAX_ATTEMPTS,
             }
         )
         rationale = (

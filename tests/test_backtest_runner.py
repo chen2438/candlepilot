@@ -103,6 +103,7 @@ def _runner(spec: BacktestSpec, risk: AggressiveRiskPolicy | None = None) -> Bac
         # Snapshots are historical, so their age is measured against the
         # decision time, not the wall clock.
         risk=risk or AggressiveRiskPolicy(require_take_profit=True),
+        provider_retry_delays=(0, 0),
     )
 
 
@@ -352,8 +353,7 @@ def test_decision_fill_price_is_the_slipped_execution_price() -> None:
     assert Decimal(decisions[0].fill["price"]) == fill_candle.open * Decimal("1.001")
 
 
-def test_a_failing_call_does_not_end_the_run() -> None:
-    """One bad provider call must cost one decision, not the whole comparison."""
+def test_a_transient_failure_is_retried_inside_the_same_decision() -> None:
 
     class Flaky(_Provider):
         def __init__(self) -> None:
@@ -367,10 +367,12 @@ def test_a_failing_call_does_not_end_the_run() -> None:
             return await super().generate_trade_intent(snapshot, portfolio)
 
     run = ModelRun("flaky")
-    asyncio.run(_runner(_spec()).run(Flaky(), run))
+    provider = Flaky()
+    asyncio.run(_runner(_spec()).run(provider, run))
 
-    assert run.calls_failed == 12
+    assert run.calls_failed == 0
     assert run.decisions_done == 24
+    assert provider.calls == 47
 
 
 def test_models_are_compared_over_the_identical_window() -> None:
@@ -562,7 +564,7 @@ def test_a_decision_records_why_nothing_traded() -> None:
 
         async def generate_trade_intent(self, snapshot, portfolio):
             Flaky.calls += 1
-            if Flaky.calls == 1:
+            if Flaky.calls <= 3:
                 raise RuntimeError("endpoint timed out after 45s")
             return await super().generate_trade_intent(snapshot, portfolio)
 
@@ -572,6 +574,7 @@ def test_a_decision_records_why_nothing_traded() -> None:
     # One record per decision, no matter how the decision ended.
     assert len(seen) == run.decisions_total
     assert seen[0].outcome == "call_failed"
+    assert "3 attempts" in seen[0].detail
     assert "timed out" in seen[0].detail
     # The failed one carries no action: there was no intent to record.
     assert seen[0].action is None

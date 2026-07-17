@@ -93,6 +93,7 @@ from candlepilot.providers.pricing import load_catalog as load_pricing_catalog
 from candlepilot.providers.base import LLMProvider, ProviderResult
 from candlepilot.providers.openai_compatible import validate_base_url
 from candlepilot.providers.registry import ProviderRegistry
+from candlepilot.providers.retry import DECISION_PROVIDER_MAX_ATTEMPTS
 from candlepilot.provenance import MICROSTRUCTURE_SCHEMA_VERSION
 from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
 from candlepilot.settings_file import (
@@ -394,9 +395,8 @@ def _status(engine: TradingEngine, scheduler: TradingScheduler | None = None) ->
             "max_run_cost_usd": engine.max_run_cost_usd,
         },
         "auto_stop_reason": engine.auto_stop_reason,
-        "route_exhausted_since": engine.route_exhausted_since.isoformat()
-        if engine.route_exhausted_since
-        else None,
+        "route_failure_count": engine.route_failure_count,
+        "route_failure_limit": DECISION_PROVIDER_MAX_ATTEMPTS,
         "supported_cadences": list(SUPPORTED_CADENCES),
         "candidates_per_cycle": scheduler.candidates_per_cycle if scheduler is not None else None,
         "max_candidates_per_cycle": MAX_CANDIDATES_PER_CYCLE,

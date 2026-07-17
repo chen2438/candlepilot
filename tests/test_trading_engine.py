@@ -449,8 +449,8 @@ def test_engine_cadence_selection_validates_and_locks_when_running(tmp_path: Pat
     assert errors == {"invalid": True, "empty": True, "locked": True}
 
 
-def test_evaluate_stop_reason_covers_duration_budget_and_route_exhaustion() -> None:
-    from candlepilot.application.engine import ROUTE_EXHAUSTION_STOP_AFTER
+def test_evaluate_stop_reason_covers_duration_budget_and_route_failures() -> None:
+    from candlepilot.providers.retry import DECISION_PROVIDER_MAX_ATTEMPTS
 
     engine = TradingEngine.__new__(TradingEngine)  # pure check; no I/O needed
     now = datetime.now(UTC)
@@ -458,7 +458,7 @@ def test_evaluate_stop_reason_covers_duration_budget_and_route_exhaustion() -> N
     engine.run_started_at = now - timedelta(seconds=100)
     engine.max_run_seconds = None
     engine.max_run_cost_usd = None
-    engine.route_exhausted_since = None
+    engine.route_failure_count = 0
 
     assert engine.evaluate_stop_reason(now=now, run_cost_usd=5.0) is None
 
@@ -475,9 +475,9 @@ def test_evaluate_stop_reason_covers_duration_budget_and_route_exhaustion() -> N
     assert engine.evaluate_stop_reason(now=now, run_cost_usd=None) is None
 
     engine.max_run_cost_usd = None
-    engine.route_exhausted_since = now - ROUTE_EXHAUSTION_STOP_AFTER + timedelta(seconds=1)
-    assert engine.evaluate_stop_reason(now=now) is None  # still within grace
-    engine.route_exhausted_since = now - ROUTE_EXHAUSTION_STOP_AFTER
+    engine.route_failure_count = DECISION_PROVIDER_MAX_ATTEMPTS - 1
+    assert engine.evaluate_stop_reason(now=now) is None
+    engine.route_failure_count = DECISION_PROVIDER_MAX_ATTEMPTS
     assert "every provider" in engine.evaluate_stop_reason(now=now)
 
     # A stopped engine never reports a reason.
@@ -518,16 +518,22 @@ def test_run_limits_validate_and_lock_while_running(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_route_exhaustion_is_tracked_and_cleared(tmp_path: Path) -> None:
+def test_route_failures_retry_three_times_and_success_clears_the_count(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'exhaust.db'}")
         await database.initialize()
         market = FakeMarket()
+        retry_delays: list[float] = []
+
+        async def capture_retry(delay: float) -> None:
+            retry_delays.append(delay)
+
         engine = TradingEngine(
             testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([FailedProvider(), FakeProvider()]),
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
+            retry_sleep=capture_retry,
         )
         snapshot = MarketSnapshot(
             symbol="BTCUSDT",
@@ -545,21 +551,22 @@ def test_route_exhaustion_is_tracked_and_cleared(tmp_path: Path) -> None:
         engine.select_provider("failed-primary")
         await engine.start()
         await engine.evaluate(snapshot, portfolio, rules)
-        exhausted = engine.route_exhausted_since
+        exhausted = engine.route_failure_count
         await engine.stop()
 
         # A working provider clears the exhaustion marker on the next success.
         engine.select_provider("fake-auth")
         await engine.start()
-        engine.route_exhausted_since = datetime.now(UTC)
+        engine.route_failure_count = 2
         await engine.evaluate(snapshot, portfolio, rules)
-        cleared = engine.route_exhausted_since
+        cleared = engine.route_failure_count
         await database.close()
-        return exhausted, cleared
+        return exhausted, cleared, retry_delays
 
-    exhausted, cleared = asyncio.run(scenario())
-    assert exhausted is not None
-    assert cleared is None
+    exhausted, cleared, retry_delays = asyncio.run(scenario())
+    assert exhausted == 3
+    assert cleared == 0
+    assert retry_delays == [5.0, 15.0]
 
 
 def test_testnet_add_requests_protective_bracket_replacement(tmp_path: Path) -> None:
@@ -907,6 +914,7 @@ def test_engine_fails_over_once_to_explicit_backup_provider(tmp_path: Path) -> N
             providers=ProviderRegistry([FailedProvider(), FakeProvider()]),
             audit=AuditRepository(database.sessions),
             market=FakeMarket(),  # type: ignore[arg-type]
+            provider_retry_delays=(0, 0),
         )
         engine.select_provider("failed-primary", "fake-auth")
         await engine.start()
@@ -1044,6 +1052,7 @@ def test_engine_persists_failed_provider_audit_context(tmp_path: Path) -> None:
             providers=ProviderRegistry([AuditedFailedProvider()]),
             audit=audit,
             market=FakeMarket(),  # type: ignore[arg-type]
+            provider_retry_delays=(0, 0),
         )
         engine.select_provider("audited-failure")
         await engine.start()

@@ -26,6 +26,11 @@ from candlepilot.backtest.engine import (
 from candlepilot.backtest.snapshots import INTERVAL_MILLISECONDS, HistoricalSnapshotBuilder
 from candlepilot.domain.models import TradeAction
 from candlepilot.providers.base import LLMProvider, ProviderResult
+from candlepilot.providers.retry import (
+    DECISION_PROVIDER_MAX_ATTEMPTS,
+    DECISION_PROVIDER_RETRY_DELAYS,
+    validate_retry_delays,
+)
 from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
 
 MAX_BACKTEST_SYMBOLS = 5
@@ -277,12 +282,20 @@ class BacktestRunner:
         risk: AggressiveRiskPolicy,
         captures: dict[str, dict[datetime, dict[str, Any]]] | None = None,
         cost_for_result: Callable[[ProviderResult], float | None] | None = None,
+        provider_retry_delays: tuple[float, ...] | None = None,
+        retry_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._spec = spec
         self._series = series
         self._rules = rules
         self._risk = risk
         self._cost_for_result = cost_for_result
+        self._provider_retry_delays = validate_retry_delays(
+            DECISION_PROVIDER_RETRY_DELAYS
+            if provider_retry_delays is None
+            else provider_retry_delays
+        )
+        self._retry_sleep = retry_sleep
         self._builders = {
             symbol: HistoricalSnapshotBuilder(candles, (captures or {}).get(symbol))
             for symbol, candles in series.items()
@@ -386,14 +399,26 @@ class BacktestRunner:
                 continue
 
             portfolio = exchange.portfolio_state(self._marks(when), as_of=when)
-            try:
-                result = await provider.generate_trade_intent(snapshot, portfolio)
-            except Exception as exc:  # noqa: BLE001 - one bad call must not end the run
+            result: ProviderResult | None = None
+            last_error: Exception | None = None
+            for attempt in range(DECISION_PROVIDER_MAX_ATTEMPTS):
+                try:
+                    result = await provider.generate_trade_intent(snapshot, portfolio)
+                    break
+                except Exception as exc:  # noqa: BLE001 - retry the decision in place
+                    last_error = exc
+                    if attempt < DECISION_PROVIDER_MAX_ATTEMPTS - 1:
+                        await self._retry_sleep(self._provider_retry_delays[attempt])
+
+            if result is None:
+                assert last_error is not None
                 entry.outcome = "call_failed"
-                entry.detail = str(exc)[:200]
+                entry.detail = (
+                    f"failed after {DECISION_PROVIDER_MAX_ATTEMPTS} attempts: {last_error}"
+                )[:200]
                 progress.calls_failed += 1
                 progress.decisions_done += 1
-                progress.error = str(exc)[:200]
+                progress.error = entry.detail
                 await report(entry)
                 continue
 
