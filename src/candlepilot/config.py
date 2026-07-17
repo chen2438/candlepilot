@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -406,7 +406,7 @@ class Settings:
 
         _reject_removed_mode_env(env)
         _reject_legacy_custom_llm_env(env)
-        return cls(
+        settings = cls(
             database_url=get("CANDLEPILOT_DATABASE_URL", DEFAULT_DATABASE_URL),
             data_dir=Path(get("CANDLEPILOT_DATA_DIR", "data")),
             bind_host=get("CANDLEPILOT_HOST", "127.0.0.1"),
@@ -442,4 +442,45 @@ class Settings:
             binance_testnet_api_secret=SecretStr(get("BINANCE_TESTNET_API_SECRET") or "")
             if get("BINANCE_TESTNET_API_SECRET")
             else None,
+        )
+        validate_provider_references(settings)
+        return settings
+
+
+def validate_provider_references(
+    settings: Settings,
+    available_provider_names: Collection[str] | None = None,
+) -> None:
+    """Reject routes that reference providers absent from the same config.
+
+    The optional names let ``create_app`` validate a deliberately injected
+    provider registry in tests or embeddings. Normal configuration parsing uses
+    the two built-in CLI providers plus every Custom API id in that candidate.
+    """
+
+    if available_provider_names is None:
+        known = set(DEFAULT_PROVIDER_ALIASES.values())
+        known.update(provider.provider_name for provider in settings.custom_llm_providers)
+    else:
+        known = set(available_provider_names)
+
+    problems: list[str] = []
+    missing_route = tuple(
+        provider for provider in settings.provider_chain if provider not in known
+    )
+    if missing_route:
+        problems.append(
+            "CANDLEPILOT_PROVIDER_CHAIN references unknown provider(s): "
+            f"{', '.join(missing_route)}"
+        )
+    if settings.default_provider is not None and settings.default_provider not in known:
+        problems.append(
+            "CANDLEPILOT_DEFAULT_PROVIDER references unknown provider: "
+            f"{settings.default_provider}"
+        )
+    if problems:
+        raise ValueError(
+            "; ".join(problems)
+            + ". Update the Provider route and default before renaming or deleting "
+            "a referenced Custom API id."
         )

@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -142,6 +143,15 @@ def test_custom_llm_providers_reject_bad_definitions(monkeypatch) -> None:
 def test_provider_chain_accepts_custom_endpoint_ids(monkeypatch) -> None:
     import pytest
 
+    monkeypatch.setenv(
+        "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON",
+        json.dumps(
+            [
+                {"id": "groq", "base_url": "https://groq.example/v1"},
+                {"id": "local", "base_url": "http://127.0.0.1:1234/v1"},
+            ]
+        ),
+    )
     monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", "codex, custom:groq, openai-compatible:local")
     assert Settings.from_env().provider_chain == (
         "codex-auth",
@@ -214,6 +224,11 @@ def test_snapshot_age_default_override_and_validation(monkeypatch) -> None:
     ],
 )
 def test_default_provider_aliases(monkeypatch, configured, expected) -> None:
+    if expected == "openai-compatible:main":
+        monkeypatch.setenv(
+            "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON",
+            '[{"id":"main","base_url":"https://main.example/v1"}]',
+        )
     monkeypatch.setenv("CANDLEPILOT_DEFAULT_PROVIDER", configured)
     assert Settings.from_env().default_provider == expected
 
@@ -231,6 +246,10 @@ def test_default_provider_rejects_unknown_value(monkeypatch) -> None:
 
 def test_provider_chain_accepts_aliases_and_preserves_order(monkeypatch) -> None:
     monkeypatch.setenv(
+        "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON",
+        '[{"id":"main","base_url":"https://main.example/v1"}]',
+    )
+    monkeypatch.setenv(
         "CANDLEPILOT_PROVIDER_CHAIN", "codex,claude-code,custom:main"
     )
     assert Settings.from_env().provider_chain == (
@@ -244,6 +263,33 @@ def test_provider_chain_rejects_duplicates(monkeypatch) -> None:
     monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", "codex,codex-auth")
     with pytest.raises(ValueError, match="duplicates"):
         Settings.from_env()
+
+
+def test_provider_references_must_exist_in_the_same_candidate() -> None:
+    custom = '[{"id":"main","base_url":"https://main.example/v1"}]'
+
+    valid = Settings.from_mapping(
+        {
+            "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON": custom,
+            "CANDLEPILOT_PROVIDER_CHAIN": "custom:main,codex",
+            "CANDLEPILOT_DEFAULT_PROVIDER": "custom:main",
+        }
+    )
+    assert valid.provider_chain == ("openai-compatible:main", "codex-auth")
+
+    with pytest.raises(ValueError) as error:
+        Settings.from_mapping(
+            {
+                "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON": custom,
+                "CANDLEPILOT_PROVIDER_CHAIN": "custom:removed,codex",
+                "CANDLEPILOT_DEFAULT_PROVIDER": "custom:old-default",
+            }
+        )
+    message = str(error.value)
+    assert "CANDLEPILOT_PROVIDER_CHAIN" in message
+    assert "openai-compatible:removed" in message
+    assert "CANDLEPILOT_DEFAULT_PROVIDER" in message
+    assert "openai-compatible:old-default" in message
 
 
 def test_from_env_reads_loaded_dotenv(tmp_path: Path, monkeypatch) -> None:

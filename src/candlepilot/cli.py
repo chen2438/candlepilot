@@ -24,8 +24,7 @@ from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.storage.database import AuditRepository, Database
 
 
-async def _doctor() -> int:
-    settings = Settings.from_env()
+async def _doctor(settings: Settings) -> int:
     providers = await ProviderRegistry.from_settings(settings).health()
     market: dict[str, Any]
     try:
@@ -75,8 +74,9 @@ async def _testnet_reconciliation(settings: Settings) -> dict[str, Any] | None:
     }
 
 
-async def _acceptance(required_hours: float, lookback_hours: float) -> int:
-    settings = Settings.from_env()
+async def _acceptance(
+    settings: Settings, required_hours: float, lookback_hours: float
+) -> int:
     database = Database(settings.database_url)
     await database.initialize()
     audit = AuditRepository(database.sessions)
@@ -131,18 +131,20 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> None:
     load_dotenv()
     args = _parser().parse_args()
-    if args.command == "doctor":
-        raise SystemExit(asyncio.run(_doctor()))
-    if args.command == "acceptance":
-        raise SystemExit(
-            asyncio.run(_acceptance(args.required_hours, args.lookback_hours))
-        )
     try:
         settings = Settings.from_env()
     except ValueError as exc:
         # A rejected .env is a user-fixable mistake, not a crash. Print what is
         # wrong instead of a traceback through the config parser.
         raise SystemExit(str(exc)) from exc
+    if args.command == "doctor":
+        raise SystemExit(asyncio.run(_doctor(settings)))
+    if args.command == "acceptance":
+        raise SystemExit(
+            asyncio.run(
+                _acceptance(settings, args.required_hours, args.lookback_hours)
+            )
+        )
     if settings.bind_host not in {"127.0.0.1", "localhost", "::1"}:
         raise SystemExit("CandlePilot v0.1 only permits a localhost bind address")
     # Binance testnet is the only account this system trades, so a missing key is

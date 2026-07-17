@@ -2,7 +2,7 @@
 
 > 本文件是 CandlePilot 的**唯一权威功能文档**，记录系统当前的全部能力、接口与边界。
 > `STATUS.md` 与 `PLAN.md` 已弃用，后续变更只同步更新本文件。
-> 最后更新：2026-07-17（Custom API Key 按需显式查看）
+> 最后更新：2026-07-17（Provider 配置引用完整性强校验）
 
 ---
 
@@ -97,10 +97,9 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
   `rationale_truncated=true`，同时完整原始输出仍留在本地审计。方向、杠杆、风险、价格与保护单
   等交易关键字段不做自动修正，任何不合规仍安全降级。
 - **有序主备路由**：控制台或 `CANDLEPILOT_PROVIDER_CHAIN` 可配置任意长度且不重复的 Provider
-  顺序，例如 `codex → claude-code → openai-compatible`。启动时并行检查整条路由，只要至少一个
-  节点已就绪即可启动，并选择顺序最靠前的就绪节点承载。若 Custom Provider 已被删除但 `.env`
-  路由仍引用它，启动时记录告警并忽略缺失节点，保留其余有效顺序；若全部节点都已删除则以空路由
-  启动，让用户仍能进入本地控制台修正配置，而不是在应用启动前崩溃。
+  顺序，例如 `codex → claude-code → custom:main`。启动时并行检查整条路由，只要至少一个节点已
+  就绪即可启动，并选择顺序最靠前的就绪节点承载。每个配置名必须对应实际注册的 Provider；失效
+  引用会在保存或启动时明确拒绝，不会跳过节点或静默改选另一条实际路由。
 - **故障冷却与恢复**：一次分析按顺序尝试未冷却节点；调用失败的节点立即冷却 60 秒，本次继续
   尝试后续节点。冷却到期后自动回到优先顺序参与下一次调用，成功即恢复为承载节点；如果所有
   节点都在冷却，系统会尝试最早到期的一个节点，避免整个决策周期静默丢失。路由在引擎运行时
@@ -524,6 +523,14 @@ Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功
   不篡改 `os.environ`），并补充引擎/调度器构造期才会做的范围检查（周期取值、每周期标的数、
   仅 localhost 绑定）。**任何不合法的值都会在文件被修改前拒绝**，不会写出一个下次启动直接
   崩溃的 `.env`。
+- **Provider 引用必须完整**：`CANDLEPILOT_PROVIDER_CHAIN` 和
+  `CANDLEPILOT_DEFAULT_PROVIDER` 中的每个名称都必须对应 Codex、Claude Code 或同一候选配置中
+  实际存在的 `openai-compatible:<id>`。通用设置表单与 Custom API 表单均校验**修改后的完整
+  候选配置**；修改或删除仍被路由/默认值引用的 Custom API ID 会返回 422，文件保持不变并明确
+  列出失效字段与 Provider。需要改 ID 时，先把主备路由及默认 Provider 切换到仍存在的 Provider，
+  再修改 ID，最后按需切回新 ID。CLI 启动、`doctor` 和 `acceptance` 使用同一检查；若用户手工把
+  `.env` 改成引用失效状态，进程会明确失败，不会忽略条目、改选其他 Provider 或让界面显示一套
+  而实际运行另一套配置。
 - **Custom API 端点用表单编辑，不写 JSON**：`GET/POST /api/custom-providers` 提供逐字段的增删改
   （ID、Base URL、API Key、模型、协议、推理强度、是否需要 Key），前端负责序列化成
   `CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON`。列表 GET 只返回 `api_key_configured` 与掩码，显式
@@ -574,8 +581,8 @@ Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功
 | `CANDLEPILOT_CANDIDATES_PER_CYCLE` | 每周期分析候选池前 N 个标的，默认 5（范围 1–20）|
 | `CANDLEPILOT_MAX_RUN_SECONDS` | 单次运行时长上限（秒）；留空/非正数=不限 |
 | `CANDLEPILOT_MAX_RUN_COST_USD` | 单次运行等效成本预算（USD）；留空/非正数=不限 |
-| `CANDLEPILOT_PROVIDER_CHAIN` | 启动时默认的逗号分隔有序 Provider 路由，例如 `codex,claude-code,openai-compatible`；不允许重复，优先级高于旧的单 Provider 配置 |
-| `CANDLEPILOT_DEFAULT_PROVIDER` | 兼容旧配置的单 Provider 默认值；仅在 `CANDLEPILOT_PROVIDER_CHAIN` 留空时使用 |
+| `CANDLEPILOT_PROVIDER_CHAIN` | 启动时默认的逗号分隔有序 Provider 路由，例如 `codex,claude-code,custom:main`；不允许重复，所有 Custom API ID 必须存在，优先级高于旧的单 Provider 配置 |
+| `CANDLEPILOT_DEFAULT_PROVIDER` | 兼容旧配置的单 Provider 默认值；引用的 Custom API ID 必须存在，仅在 `CANDLEPILOT_PROVIDER_CHAIN` 留空时使用 |
 | `CANDLEPILOT_CODEX_MODEL` / `CANDLEPILOT_CODEX_REASONING_EFFORT` | Codex 模型 / 推理强度（minimal/low/medium/high）|
 | `CANDLEPILOT_CLAUDE_MODEL` / `CANDLEPILOT_CLAUDE_EFFORT` | Claude 模型 / 强度（low/medium/high/xhigh/max）|
 | `CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON` | **全部** Custom API 端点的 JSON 数组（最多 8 个），每项需唯一 `id` 与 `base_url`，注册为 `openai-compatible:<id>` |
@@ -602,7 +609,7 @@ Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功
 `POST /api/engine/clear-emergency-lock`。
 
 `POST /api/providers/select` 的新格式为
-`{"providers":["codex-auth","claude-code-auth","openai-compatible"]}`；旧的
+`{"providers":["codex-auth","claude-code-auth","openai-compatible:main"]}`；旧的
 `{"name":"codex-auth","backup":"claude-code-auth"}` 仍兼容。引擎运行时修改返回 409。
 `GET /api/status` 通过 `provider_chain`、`active_provider` 和 `provider_routes` 返回顺序、当前承载、
 冷却截止时间、最近错误与最近成功/失败时间；不返回任何凭据。

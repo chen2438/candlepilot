@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
@@ -42,6 +43,10 @@ class ApiProvider(LLMProvider):
 class ConfigurableProvider(ApiProvider):
     name = "api-fixture"
     reasoning_effort_options = ("low", "medium", "high")
+
+
+class CustomApiProvider(ApiProvider):
+    name = "openai-compatible:main"
 
 
 class BrokenProvider(LLMProvider):
@@ -708,6 +713,8 @@ def test_settings_endpoint_reads_masked_and_writes_env(tmp_path: Path, monkeypat
             {"CANDLEPILOT_HOST": "0.0.0.0"},
             {"CANDLEPILOT_MODE": "bogus"},
             {"CANDLEPILOT_PORT": "not-a-port"},
+            {"CANDLEPILOT_PROVIDER_CHAIN": "custom:missing,codex"},
+            {"CANDLEPILOT_DEFAULT_PROVIDER": "custom:missing"},
         ):
             assert client.post("/api/settings", json={"values": values}).status_code == 422, values
         assert env_path.read_text(encoding="utf-8") == before
@@ -819,38 +826,63 @@ def test_custom_providers_editor_endpoint(tmp_path: Path, monkeypatch) -> None:
     asyncio.run(database.close())
 
 
-def test_startup_keeps_known_route_entries_when_a_custom_provider_was_removed(
+def test_custom_provider_id_change_requires_route_and_default_update(
+    tmp_path: Path, monkeypatch
+) -> None:
+    env_path = tmp_path / ".env"
+    original = (
+        'CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON=[{"id":"main","base_url":"https://a.example/v1"}]\n'
+        "CANDLEPILOT_PROVIDER_CHAIN=custom:main\n"
+        "CANDLEPILOT_DEFAULT_PROVIDER=custom:main\n"
+    )
+    env_path.write_text(original, encoding="utf-8")
+    monkeypatch.setenv("CANDLEPILOT_ENV_FILE", str(env_path))
+    settings = Settings.from_mapping(read_env_file(env_path))
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'referenced-custom.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([CustomApiProvider(), ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(
+        settings=settings,
+        database=database,
+        market=market,  # type: ignore[arg-type]
+        engine=engine,
+    )
+
+    with TestClient(app) as client:
+        renamed = client.post(
+            "/api/custom-providers",
+            json={"providers": [{"id": "renamed", "base_url": "https://a.example/v1"}]},
+        )
+        assert renamed.status_code == 422
+        assert "CANDLEPILOT_PROVIDER_CHAIN" in renamed.json()["detail"]
+        assert "CANDLEPILOT_DEFAULT_PROVIDER" in renamed.json()["detail"]
+        assert env_path.read_text(encoding="utf-8") == original
+    asyncio.run(database.close())
+
+
+def test_startup_rejects_unknown_provider_references(
     tmp_path: Path,
 ) -> None:
     database, engine, _app = _backtest_app(tmp_path, "stale-route.db")
 
-    create_app(
-        settings=Settings(
-            provider_chain=("missing-custom", "api-fixture"),
-            default_provider="also-missing",
-        ),
-        database=database,
-        market=BacktestMarket(),  # type: ignore[arg-type]
-        engine=engine,
-    )
-
-    assert engine.provider_chain == ("api-fixture",)
-    asyncio.run(database.close())
-
-
-def test_startup_survives_when_every_configured_provider_was_removed(
-    tmp_path: Path,
-) -> None:
-    database, engine, _app = _backtest_app(tmp_path, "empty-stale-route.db")
-
-    create_app(
-        settings=Settings(provider_chain=("missing-custom",)),
-        database=database,
-        market=BacktestMarket(),  # type: ignore[arg-type]
-        engine=engine,
-    )
-
-    assert engine.provider_chain == ()
+    with pytest.raises(ValueError) as error:
+        create_app(
+            settings=Settings(
+                provider_chain=("missing-custom", "api-fixture"),
+                default_provider="also-missing",
+            ),
+            database=database,
+            market=BacktestMarket(),  # type: ignore[arg-type]
+            engine=engine,
+        )
+    message = str(error.value)
+    assert "missing-custom" in message
+    assert "also-missing" in message
     asyncio.run(database.close())
 
 

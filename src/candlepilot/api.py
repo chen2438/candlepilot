@@ -68,6 +68,7 @@ from candlepilot.config import (
     ENV_FILE_VARIABLE,
     MAX_CUSTOM_LLM_PROVIDERS,
     Settings,
+    validate_provider_references,
 )
 from candlepilot.domain.models import (
     SUPPORTED_CADENCES,
@@ -441,25 +442,11 @@ def create_app(
         testnet_broker=testnet_broker,
         cadences=settings.cadences,
     )
+    validate_provider_references(settings, engine.providers.names)
     if settings.provider_chain and not engine.provider_chain:
-        known = set(engine.providers.names)
-        available_route = tuple(name for name in settings.provider_chain if name in known)
-        missing_route = tuple(name for name in settings.provider_chain if name not in known)
-        if missing_route:
-            logging.getLogger(__name__).warning(
-                "provider_route_entries_ignored",
-                extra={"missing_providers": list(missing_route)},
-            )
-        if available_route:
-            engine.select_provider_chain(available_route)
+        engine.select_provider_chain(settings.provider_chain)
     if settings.default_provider is not None and engine.selected_provider is None:
-        if settings.default_provider in engine.providers.names:
-            engine.select_provider(settings.default_provider)
-        else:
-            logging.getLogger(__name__).warning(
-                "default_provider_ignored",
-                extra={"missing_provider": settings.default_provider},
-            )
+        engine.select_provider(settings.default_provider)
     if settings.max_run_seconds is not None or settings.max_run_cost_usd is not None:
         engine.select_run_limits(
             max_run_seconds=settings.max_run_seconds,
