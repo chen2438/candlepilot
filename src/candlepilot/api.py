@@ -564,6 +564,19 @@ def create_app(
         warm_pricing.cancel()
         await asyncio.gather(warm_pricing, return_exceptions=True)
         await scheduler.stop()
+        await engine.stop()
+        await collector.stop()
+        model_tasks = active_backtest_tasks()
+        if probe_task is not None and not probe_task.done():
+            probe_task.cancel()
+            model_tasks.append(probe_task)
+        for task in model_tasks:
+            task.cancel()
+        if model_tasks:
+            # Backtests write their cancelled terminal state while the audit
+            # database is still open; Provider cancellation also gets a chance
+            # to terminate its CLI process/HTTP request before resources close.
+            await asyncio.gather(*model_tasks, return_exceptions=True)
         if owns_market:
             await market.close()
         if testnet_broker is not None:

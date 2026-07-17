@@ -414,6 +414,10 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 
 ### 4.8 运维与可观测性
 
+- 应用关闭按“停止调度与引擎 → 停采集器 → 取消并等待探测/回测 → 关闭行情、Broker 与数据库”
+  的顺序执行；回测会在数据库仍可用时落为 `cancelled`，Provider 有机会终止 CLI/HTTP 调用，
+  不允许后台任务在资源关闭后继续运行。
+
 - 健康检查：`/api/health/live`（存活）、`/api/health/ready`（就绪，覆盖迁移版本与
   测试网 Broker 配置）。
 - 结构化日志：HTTP 请求 JSON 日志 + request ID。

@@ -1295,6 +1295,54 @@ def test_backtest_runs_in_the_background_and_reports_each_model(tmp_path: Path) 
     asyncio.run(database.close())
 
 
+def test_app_shutdown_cancels_background_work_before_closing_resources(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'shutdown-work.db'}")
+    market = BacktestMarket()
+
+    class NeverReturns(ApiProvider):
+        async def generate_trade_intent(self, snapshot, portfolio):
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([NeverReturns()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        assert client.post(
+            "/api/collector/start", json={"symbols": ["BTCUSDT"]}
+        ).status_code == 200
+        created = client.post(
+            "/api/backtests",
+            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
+        )
+        assert created.status_code == 202
+        run_id = created.json()["id"]
+        for _ in range(200):
+            model = client.get(f"/api/backtests/{run_id}").json()["models"][0]
+            if model["decisions_total"] > 0:
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("backtest never reached its model call")
+
+    async def state_after_shutdown():
+        run = await engine.audit.backtest_run(run_id)
+        await database.close()
+        return run
+
+    run = asyncio.run(state_after_shutdown())
+    assert app.state.collector.running is False
+    assert engine.running is False
+    assert run is not None and run["status"] == "cancelled"
+
+
 def test_backtest_rejects_an_unknown_model_before_starting(tmp_path: Path) -> None:
     database, _engine, app = _backtest_app(tmp_path, "bt-unknown.db")
 
