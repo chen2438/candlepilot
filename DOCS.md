@@ -390,6 +390,13 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 Token 与成本定义同时注明 Provider 计量差异和订阅账单边界，避免把折算值
 理解为实际扣费。
 
+提示层用 `position:fixed` + CSS 锚点定位（`anchor-name`/`position-anchor`/`position-area`）挂在
+锚点上，并以 `position-try-fallbacks` 在提示会越过视口右缘时翻转到锚点右对齐。用 `fixed` 而非
+`absolute` 是必需的：`visibility:hidden` 只隐藏、不移除布局，绝对定位的隐藏提示会把自身宽度计入
+文档可滚动溢出，使总览页在 1350 px 窗口下无悬浮也横向滚动 200 px；`fixed` 元素不参与祖先的可滚动
+溢出，从结构上消除该问题。因此控制台要求浏览器支持 CSS 锚点定位（Chrome 131+ / Safari 26+）；
+Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功能与数据不受影响。
+
 | 标签页 | 面板 | 内容 |
 |---|---|---|
 | 总览 | 引擎控制（hero）| 系统状态、分析周期、每周期标的数、启动/停止/紧急熔断；下方实时显示本次或上次运行的 Token、等效成本、调用数与时长 |

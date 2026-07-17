@@ -109,6 +109,54 @@ def test_the_backtest_form_stacks_its_labels_like_every_other_form() -> None:
     assert _declares(_bodies(".backtest-form label"), "min-width:0")
 
 
+def test_the_tooltip_layer_never_widens_the_page() -> None:
+    """`visibility:hidden` hides a box; it does not take it out of layout.
+
+    The tooltip was `position:absolute;left:0;width:max-content;max-width:320px`
+    against a `position:relative` anchor. Hidden or not, it still contributed to
+    the document's scrollable overflow, so the anchors in the right-most column
+    of `.run-usage-metrics`, `.risk-grid` and the market table pushed their
+    tooltips past the viewport and the overview tab scrolled 200px sideways with
+    nothing hovered. Hovering those anchors showed a tooltip clipped off-screen.
+
+    A fixed-position box is excluded from its ancestors' scrollable overflow, so
+    `position:fixed` is what makes the phantom scrollbar structurally impossible
+    -- `absolute` would bring it straight back. Anchor positioning is what keeps
+    a fixed box pinned to its anchor, and the fallbacks flip it inline-ward when
+    the default placement would cross the viewport edge.
+    """
+
+    for selector, body in _rules():
+        if not selector.endswith("[data-tooltip]::after"):
+            continue
+        assert not _declares(body, "position:absolute"), (
+            f"{selector!r} must not be position:absolute: a hidden absolute "
+            f"tooltip still adds its width to the document's scrollable "
+            f"overflow and scrolls the page sideways."
+        )
+
+    tooltip = _bodies("[data-tooltip]::after")
+    assert _declares(tooltip, "position:fixed")
+    # A fixed box does not follow its anchor on its own; position-area is what
+    # replaces the `left`/`bottom` offsets the absolute version relied on.
+    assert _declares(tooltip, "position-area:block-startspan-inline-end")
+    # The anchor is named rather than left implicit because Chrome resolves no
+    # implicit anchor for a pseudo-element's position-area; `anchor-scope` is
+    # what stops every anchor's `--tip` from colliding into the last one.
+    assert _declares(_bodies("[data-tooltip]"), "anchor-name:--tip")
+    assert _declares(_bodies("[data-tooltip]"), "anchor-scope:--tip")
+    assert _declares(tooltip, "position-anchor:--tip")
+    # Without a fallback the fixed box keeps its placement and runs off the right
+    # edge for the anchors in the last column of their container. The combined
+    # flip is not redundant: Chrome (148) refuses a bare `flip-inline` for the
+    # table-cell anchors placed block-end by `th[data-tooltip]::after`, so
+    # dropping it silently puts the right-most header's tooltip off-screen again.
+    assert _declares(tooltip, "position-try-fallbacks:flip-inline,flip-blockflip-inline"), (
+        "[data-tooltip]::after must offer both an inline flip and a combined "
+        "block+inline flip, or right-edge anchors render off-screen."
+    )
+
+
 def test_the_backtest_inputs_use_the_shared_field_style() -> None:
     """Unstyled inputs render as raw native widgets next to styled ones."""
 
