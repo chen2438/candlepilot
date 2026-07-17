@@ -5,6 +5,7 @@ import math
 from collections import Counter
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
@@ -583,6 +584,23 @@ class AuditRepository:
         )
         async with self.sessions.begin() as session:
             session.add(row)
+            prior_events = (
+                await session.scalars(
+                    select(UserStreamEventRow)
+                    .where(
+                        UserStreamEventRow.event_type == "ORDER_TRADE_UPDATE",
+                        func.json_extract(UserStreamEventRow.payload_json, "$.o.c")
+                        == report.client_order_id,
+                    )
+                    .order_by(UserStreamEventRow.event_time.asc(), UserStreamEventRow.id.asc())
+                )
+            ).all()
+            for prior_event in prior_events:
+                self._apply_order_update(
+                    row,
+                    json.loads(prior_event.payload_json),
+                    self._utc(prior_event.event_time),
+                )
         return row.id
 
     async def record_execution_attempt(
@@ -744,7 +762,63 @@ class AuditRepository:
         )
         async with self.sessions.begin() as session:
             session.add(row)
+            if event.event_type == "ORDER_TRADE_UPDATE":
+                order = event.payload.get("o", {})
+                client_order_id = order.get("c")
+                if client_order_id:
+                    execution = await session.scalar(
+                        select(ExecutionRow).where(
+                            ExecutionRow.client_order_id == str(client_order_id)
+                        )
+                    )
+                    if execution is not None:
+                        self._apply_order_update(execution, event.payload, event.event_time)
         return row.id
+
+    @staticmethod
+    def _apply_order_update(
+        row: ExecutionRow, payload: dict[str, Any], event_time: datetime
+    ) -> None:
+        """Advance one REST execution report from a Binance order event."""
+
+        order = payload.get("o", {})
+        status = str(order.get("X", ""))
+        supported = {
+            "NEW",
+            "PARTIALLY_FILLED",
+            "FILLED",
+            "CANCELED",
+            "REJECTED",
+            "EXPIRED",
+            "EXPIRED_IN_MATCH",
+        }
+        if status not in supported:
+            return
+        terminal = {"FILLED", "CANCELED", "REJECTED", "EXPIRED", "EXPIRED_IN_MATCH"}
+        if row.status in terminal and status != row.status:
+            return
+        if row.status == "PARTIALLY_FILLED" and status == "NEW":
+            return
+
+        previous = ExecutionReport.model_validate_json(row.report_json)
+        incoming_filled = Decimal(str(order.get("z", previous.filled_quantity)))
+        filled = max(previous.filled_quantity, incoming_filled)
+        raw_average = Decimal(str(order.get("ap", "0")))
+        average = (
+            raw_average
+            if raw_average > 0 and incoming_filled >= previous.filled_quantity
+            else previous.average_price
+        )
+        updated = ExecutionReport(
+            client_order_id=previous.client_order_id,
+            status=status,
+            filled_quantity=filled,
+            average_price=average,
+            message="Binance user stream order update",
+            timestamp=event_time,
+        )
+        row.status = status
+        row.report_json = updated.model_dump_json()
 
     async def recent_user_events(self, limit: int = 100) -> list[dict[str, Any]]:
         async with self.sessions() as session:

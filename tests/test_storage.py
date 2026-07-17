@@ -4,6 +4,7 @@ from pathlib import Path
 
 from decimal import Decimal
 
+from candlepilot.broker.user_stream import UserStreamEvent
 from candlepilot.domain.models import (
     ExecutionAttempt,
     ExecutionReport,
@@ -140,6 +141,79 @@ def test_execution_and_risk_queries_filter_and_order(tmp_path: Path) -> None:
     assert len(rejections) == 1
     assert rejections[0]["reason"] == "missing stop"
     assert rejections[0]["inference_id"] == 7
+
+
+def test_order_events_advance_the_execution_audit_to_final_status(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'execution-updates.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        now = datetime.now(UTC)
+        await repository.record_execution(
+            "BTCUSDT", ExecutionReport(client_order_id="cp-live", status="NEW")
+        )
+        await repository.record_user_event(
+            UserStreamEvent(
+                "ORDER_TRADE_UPDATE",
+                now,
+                now,
+                "BTCUSDT",
+                {"o": {"c": "cp-live", "X": "PARTIALLY_FILLED", "z": "0.4", "ap": "99"}},
+            )
+        )
+        await repository.record_user_event(
+            UserStreamEvent(
+                "ORDER_TRADE_UPDATE",
+                now + timedelta(seconds=1),
+                now + timedelta(seconds=1),
+                "BTCUSDT",
+                {"o": {"c": "cp-live", "X": "FILLED", "z": "1", "ap": "100"}},
+            )
+        )
+        await repository.record_user_event(
+            UserStreamEvent(
+                "ORDER_TRADE_UPDATE",
+                now + timedelta(seconds=2),
+                now + timedelta(seconds=2),
+                "BTCUSDT",
+                {"o": {"c": "cp-live", "X": "NEW", "z": "0", "ap": "0"}},
+            )
+        )
+        result = (await repository.recent_executions())[0]
+        await database.close()
+        return result
+
+    result = asyncio.run(scenario())
+    assert result["status"] == "FILLED"
+    assert result["report"]["filled_quantity"] == "1"
+    assert result["report"]["average_price"] == "100"
+
+
+def test_execution_record_catches_up_when_the_user_event_arrives_first(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'execution-race.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        now = datetime.now(UTC)
+        await repository.record_user_event(
+            UserStreamEvent(
+                "ORDER_TRADE_UPDATE",
+                now,
+                now,
+                "ETHUSDT",
+                {"o": {"c": "cp-race", "X": "CANCELED", "z": "0", "ap": "0"}},
+            )
+        )
+        await repository.record_execution(
+            "ETHUSDT", ExecutionReport(client_order_id="cp-race", status="NEW")
+        )
+        result = (await repository.recent_executions())[0]
+        await database.close()
+        return result
+
+    result = asyncio.run(scenario())
+    assert result["status"] == "CANCELED"
+    assert result["report"]["timestamp"] is not None
 
 
 def test_decision_events_join_inference_and_risk_outcomes(tmp_path: Path) -> None:

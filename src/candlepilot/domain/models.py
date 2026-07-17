@@ -168,7 +168,15 @@ class OrderPlan(StrictModel):
 
 class ExecutionReport(StrictModel):
     client_order_id: str
-    status: Literal["NEW", "PARTIALLY_FILLED", "FILLED", "CANCELED", "REJECTED"]
+    status: Literal[
+        "NEW",
+        "PARTIALLY_FILLED",
+        "FILLED",
+        "CANCELED",
+        "REJECTED",
+        "EXPIRED",
+        "EXPIRED_IN_MATCH",
+    ]
     filled_quantity: NonNegativeDecimal = Decimal("0")
     average_price: Decimal | None = Field(default=None, gt=0)
     message: str = ""
