@@ -140,6 +140,7 @@ class ModelRun:
     output_tokens: int = 0
     total_tokens: int = 0
     cost_usd_total: float = 0.0
+    duration_ms_total: float = 0.0
     result: BacktestResult | None = None
     error: str | None = None
 
@@ -151,7 +152,9 @@ class ModelRun:
             return None
         return self.cost_usd_total
 
-    def record_usage(self, usage: dict[str, Any], cost_usd: float | None) -> None:
+    def record_usage(
+        self, usage: dict[str, Any], cost_usd: float | None, duration_ms: float = 0.0
+    ) -> None:
         """Accumulate one completed provider call for live progress reporting."""
 
         input_tokens = int(usage.get("input_tokens") or 0)
@@ -166,6 +169,7 @@ class ModelRun:
         )
         self.output_tokens += output_tokens
         self.total_tokens += int(usage.get("total_tokens") or input_tokens + output_tokens)
+        self.duration_ms_total += max(0.0, duration_ms)
         if cost_usd is not None:
             self.priced_calls += 1
             self.cost_usd_total += cost_usd
@@ -180,6 +184,10 @@ class ModelRun:
             "output_tokens": self.output_tokens,
             "total_tokens": self.total_tokens,
             "equivalent_cost_usd": self.equivalent_cost_usd,
+            "duration_ms_total": self.duration_ms_total,
+            "average_duration_ms": (
+                self.duration_ms_total / self.usage_calls if self.usage_calls else 0.0
+            ),
         }
 
     @property
@@ -390,7 +398,9 @@ class BacktestRunner:
                 continue
 
             cost_usd = self._cost_for_result(result) if self._cost_for_result else None
-            progress.record_usage(result.usage, cost_usd)
+            progress.record_usage(
+                result.usage, cost_usd, result.duration.total_seconds() * 1000
+            )
 
             progress.decisions_done += 1
             intent = result.intent

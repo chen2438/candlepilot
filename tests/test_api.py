@@ -1749,7 +1749,7 @@ def test_a_running_backtest_reports_progress_over_the_api(tmp_path: Path) -> Non
                 result.intent,
                 result.provider,
                 "fixture-model",
-                result.duration,
+                timedelta(milliseconds=250),
                 result.raw_output,
                 {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120,
                  "cost_usd": 0.0025},
@@ -1802,6 +1802,7 @@ def test_a_running_backtest_reports_progress_over_the_api(tmp_path: Path) -> Non
     assert 0 < mid["progress"] < 1
     assert mid["usage"]["total_tokens"] == 120
     assert mid["usage"]["equivalent_cost_usd"] == 0.0025
+    assert mid["usage"]["average_duration_ms"] == 250
     asyncio.run(database.close())
 
 

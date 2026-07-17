@@ -442,6 +442,7 @@ def test_progress_accumulates_tokens_and_requires_complete_pricing() -> None:
                 "total_tokens": 120,
             },
             price,
+            250,
         )
 
     assert run.total_tokens == 240
@@ -449,6 +450,7 @@ def test_progress_accumulates_tokens_and_requires_complete_pricing() -> None:
     assert run.usage_calls == 2
     assert run.priced_calls == 1
     assert run.equivalent_cost_usd is None
+    assert run.usage_dict()["average_duration_ms"] == 250
 
 
 def test_compare_reports_each_model_while_it_works() -> None:

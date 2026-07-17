@@ -1550,6 +1550,18 @@ function formatDuration(seconds: number): string {
   return `${rest}s`;
 }
 
+function backtestElapsed(run: BacktestRun): string {
+  const end = run.ended_at ? new Date(run.ended_at).getTime() : Date.now();
+  const start = new Date(run.created_at).getTime();
+  return formatDuration(Math.max(0, Math.floor((end - start) / 1000)));
+}
+
+function formatAverageDecision(milliseconds: number | undefined): string {
+  if (!milliseconds) return "—";
+  const seconds = milliseconds / 1000;
+  return seconds < 60 ? `${seconds.toFixed(2)}s` : formatDuration(Math.round(seconds));
+}
+
 function RunUsage({ session }: { session: RunSessionMetrics }) {
   const active = session.state === "running";
   const title = active ? "本次运行用量" : session.state === "completed" ? "上次运行用量" : "运行用量";
@@ -2088,13 +2100,14 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
       <div className="table-wrap backtest-runs">
         <table>
           <thead><tr><th>#</th><th>窗口</th><th>模型</th><th>进度</th>
+            <th data-tooltip="该模型已成功返回的决策调用平均耗时；不含历史行情读取、撮合和数据库写入。">平均决策</th>
             <th data-tooltip="已完成模型调用返回的总 Token；运行中随 3 秒轮询更新。">Token</th>
             <th data-tooltip="按 Provider 返回成本或所选计费厂商价格折算；有任一调用无法定价时显示未知。">成本</th>
             <th>收益</th><th>胜率</th><th>回撤</th><th>交易</th><th></th></tr></thead>
           <tbody>
             {runs.flatMap((run) => run.models.map((model, index) => (
               <tr key={`${run.id}-${model.provider}`}>
-                {index === 0 && <td rowSpan={run.models.length}><strong>{run.id}</strong><small className={`run-status ${run.status}`}>{RUN_STATUS[run.status]}</small></td>}
+                {index === 0 && <td rowSpan={run.models.length}><strong>{run.id}</strong><small className={`run-status ${run.status}`}>{RUN_STATUS[run.status]}</small><small data-tooltip="任务从创建到结束的墙钟耗时；运行中随列表轮询继续计时。">耗时 {backtestElapsed(run)}</small></td>}
                 {index === 0 && <td rowSpan={run.models.length}>
                   <small className="run-window">
                     <span>{run.spec.symbols.join(" ")}</span>
@@ -2124,6 +2137,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                 </td>
                 <td>{Math.round(model.progress * 100)}%
                   {model.calls_failed > 0 && <small className="negative">{model.calls_failed} 次失败</small>}</td>
+                <td>{formatAverageDecision(model.usage?.average_duration_ms)}</td>
                 <td>
                   {(model.usage?.total_tokens ?? 0).toLocaleString("zh-CN")}
                 </td>
@@ -2147,7 +2161,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
               openDecisions?.startsWith(`${run.id}-`)
                 ? [
                   <tr key={`${run.id}-decisions`} className="run-decisions">
-                    <td colSpan={11}>
+                    <td colSpan={12}>
                       <BacktestResultDetail result={detailResult} />
                       {decisions === null
                         ? <span className="empty">读取中…</span>

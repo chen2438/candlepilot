@@ -362,6 +362,8 @@ export interface BacktestModelRun {
     output_tokens: number;
     total_tokens: number;
     equivalent_cost_usd: number | null;
+    duration_ms_total: number;
+    average_duration_ms: number;
   };
   progress: number;
   error: string | null;
