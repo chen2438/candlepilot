@@ -1682,7 +1682,7 @@ function CollectorPanel({ status, onChange }: { status: CollectorStatus | null; 
             <span key={item.symbol}>
               <strong>{item.symbol.replace("USDT", "")}</strong>
               {item.capture_count} 条
-              <small>{new Date(item.first_capture_at).toLocaleString("zh-CN", { hour12: false })} 起</small>
+              <small>{formatLocalDateTime(new Date(item.first_capture_at))} 起</small>
             </span>
           ))}
         </div>
@@ -1693,15 +1693,15 @@ function CollectorPanel({ status, onChange }: { status: CollectorStatus | null; 
 
 function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth[]; engineRunning: boolean }) {
   const [form, setForm] = useState(() => {
-    const end = new Date();
-    end.setMinutes(0, 0, 0);
-    end.setHours(end.getHours() - 1);
-    const start = new Date(end.getTime() - 4 * 60 * 60 * 1000);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
     return {
       symbols: "BTCUSDT",
       cadences: ["5m"] as string[],
-      start: localDateTime(start),
-      end: localDateTime(end),
+      start: formatLocalDateTime(yesterday),
+      end: formatLocalDateTime(today),
       providers: [] as string[],
       initialEquity: "10000",
       feeRate: "0.0005",
@@ -1720,12 +1720,13 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
   const [openDecisions, setOpenDecisions] = useState<string | null>(null);
   const [decisions, setDecisions] = useState<BacktestDecision[] | null>(null);
   const [detailResult, setDetailResult] = useState<BacktestResult | null>(null);
+  const localTimeZone = useMemo(() => localTimeZoneLabel(), []);
 
   const body = useCallback(() => ({
     symbols: form.symbols.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),
     cadences: form.cadences,
-    start: new Date(form.start).toISOString(),
-    end: new Date(form.end).toISOString(),
+    start: parseLocalDateTime(form.start).toISOString(),
+    end: parseLocalDateTime(form.end).toISOString(),
     providers: form.providers,
     use_recorded_book: useRecordedBook,
     ...(timeout.trim() ? { timeout_seconds: Number(timeout) } : {}),
@@ -1928,17 +1929,22 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
         </div>
       )}
 
+      <div className="backtest-timezone">
+        时间格式：YYYY/MM/DD HH:mm · 浏览器本地时区：<strong>{localTimeZone}</strong>
+      </div>
       <div className="backtest-form">
         <label><span>标的（逗号分隔，最多 5 个）</span>
           <input value={form.symbols} disabled={busy !== null}
             onChange={(e) => setForm({ ...form, symbols: e.target.value })} />
         </label>
-        <label><span>起</span>
-          <input type="datetime-local" value={form.start} disabled={busy !== null}
+        <label><span>起（本地时间）</span>
+          <input type="text" value={form.start} placeholder="YYYY/MM/DD HH:mm"
+            inputMode="numeric" disabled={busy !== null}
             onChange={(e) => setForm({ ...form, start: e.target.value })} />
         </label>
-        <label><span>止（最长 3 天）</span>
-          <input type="datetime-local" value={form.end} disabled={busy !== null}
+        <label><span>止（本地时间 · 最长 3 天）</span>
+          <input type="text" value={form.end} placeholder="YYYY/MM/DD HH:mm"
+            inputMode="numeric" disabled={busy !== null}
             onChange={(e) => setForm({ ...form, end: e.target.value })} />
         </label>
         <label><span>初始权益</span>
@@ -2088,7 +2094,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                 {index === 0 && <td rowSpan={run.models.length}><strong>{run.id}</strong><small className={`run-status ${run.status}`}>{RUN_STATUS[run.status]}</small></td>}
                 {index === 0 && <td rowSpan={run.models.length}>
                   <small>{run.spec.symbols.join(" ")}<br />{run.spec.cadences.join(" ")}<br />
-                    {new Date(run.spec.start).toLocaleString("zh-CN", { hour12: false })}</small>
+                    {formatLocalDateTime(new Date(run.spec.start))}</small>
                   {run.spec.use_recorded_book
                     ? <small className="run-real">真实回测 · 含订单流</small>
                     : <small>普通回测 · 无订单流</small>}
@@ -2137,7 +2143,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                             <tbody>
                               {decisions.map((item) => (
                                 <tr key={item.id}>
-                                  <td>{new Date(item.decided_at).toLocaleString("zh-CN", { hour12: false })}</td>
+                                  <td>{formatLocalDateTime(new Date(item.decided_at))}</td>
                                   <td>{item.symbol} · {item.cadence}</td>
                                   <td><span className={`decision-outcome ${DECISION_OUTCOME_CLASS[item.outcome]}`}>
                                     {BACKTEST_OUTCOME[item.outcome]}</span></td>
@@ -2195,9 +2201,39 @@ const RUN_STATUS: Record<BacktestRun["status"], string> = {
   cancelled: "已取消",
 };
 
-function localDateTime(date: Date): string {
+function formatLocalDateTime(date: Date): string {
   const pad = (value: number) => String(value).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return `${String(date.getFullYear()).padStart(4, "0")}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function parseLocalDateTime(value: string): Date {
+  const match = /^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}):(\d{2})$/.exec(value.trim());
+  if (!match) throw new Error("日期时间格式必须为 YYYY/MM/DD HH:mm（浏览器本地时间）");
+  const [, yearText, monthText, dayText, hourText, minuteText] = match;
+  const [year, month, day, hour, minute] = [
+    yearText, monthText, dayText, hourText, minuteText,
+  ].map(Number);
+  const date = new Date(year, month - 1, day, hour, minute, 0, 0);
+  if (
+    date.getFullYear() !== year
+    || date.getMonth() !== month - 1
+    || date.getDate() !== day
+    || date.getHours() !== hour
+    || date.getMinutes() !== minute
+  ) {
+    throw new Error(`无效的本地日期时间：${value}`);
+  }
+  return date;
+}
+
+function localTimeZoneLabel(date = new Date()): string {
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || "系统本地时区";
+  const offset = -date.getTimezoneOffset();
+  const sign = offset >= 0 ? "+" : "-";
+  const absolute = Math.abs(offset);
+  const hours = String(Math.floor(absolute / 60)).padStart(2, "0");
+  const minutes = String(absolute % 60).padStart(2, "0");
+  return `${zone} · UTC${sign}${hours}:${minutes}`;
 }
 
 function PanelTitle({ code, title, meta }: { code: string; title: string; meta: string }) {
