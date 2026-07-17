@@ -10,6 +10,7 @@ from candlepilot.backtest.probe import (
     ProviderProbe,
     probe_instants,
     probe_provider,
+    slowest_probe,
 )
 from candlepilot.backtest.runner import BacktestSpec
 from candlepilot.backtest.snapshots import HistoricalSnapshotBuilder
@@ -151,6 +152,21 @@ def test_a_suggestion_leaves_room_over_the_slowest_call() -> None:
     # 40 * 1.5: five samples cannot describe a tail, so the suggestion is a
     # starting point above the worst seen rather than a computed bound.
     assert probe.suggested_timeout_seconds == 60
+
+
+def test_the_slowest_participating_probe_sets_the_estimate_latency() -> None:
+    probes = {
+        "fast": ProviderProbe(
+            provider="fast",
+            calls=[ProbeCall(seconds=value, ok=True) for value in (0.4, 0.5, 0.6)],
+        ),
+        "slow": ProviderProbe(
+            provider="slow",
+            calls=[ProbeCall(seconds=value, ok=True) for value in (1.0, 1.4, 1.2)],
+        ),
+    }
+
+    assert slowest_probe(probes, ("fast", "slow")) == ("slow", 1.4)
 
 
 def test_an_endpoint_that_never_answers_gets_no_suggestion() -> None:

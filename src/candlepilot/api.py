@@ -33,6 +33,7 @@ from candlepilot.backtest.probe import (
     PROBE_DECISIONS,
     ProviderProbe,
     probe_provider,
+    slowest_probe,
 )
 from candlepilot.backtest.runner import (
     MAX_BACKTEST_MODELS,
@@ -1665,12 +1666,7 @@ def create_app(
                 ),
             )
 
-        slowest_provider = max(
-            spec.providers,
-            key=lambda name: probes[name].slowest_ok_seconds or 0.0,
-        )
-        seconds_per_call = probes[slowest_provider].slowest_ok_seconds
-        assert seconds_per_call is not None
+        slowest_provider, seconds_per_call = slowest_probe(probes, spec.providers)
         projected = estimate(spec, seconds_per_call=seconds_per_call)
         payload = {
             **projected.as_dict(),

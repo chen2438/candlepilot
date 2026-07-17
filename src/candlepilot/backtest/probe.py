@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -98,6 +99,21 @@ class ProviderProbe:
             return None
         suggested = math.ceil(slowest * TIMEOUT_HEADROOM)
         return max(MIN_SUGGESTED_TIMEOUT, min(MAX_SUGGESTED_TIMEOUT, suggested))
+
+
+def slowest_probe(
+    probes: Mapping[str, ProviderProbe], providers: Sequence[str]
+) -> tuple[str, float]:
+    """The participating provider with the slowest successful sample."""
+
+    provider = max(
+        providers,
+        key=lambda name: probes[name].slowest_ok_seconds or 0.0,
+    )
+    seconds = probes[provider].slowest_ok_seconds
+    if seconds is None:
+        raise ValueError(f"{provider} has no successful probe call")
+    return provider, seconds
 
 
 def probe_instants(spec: BacktestSpec, count: int = PROBE_DECISIONS) -> list[datetime]:
