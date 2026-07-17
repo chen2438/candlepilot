@@ -2,6 +2,7 @@ import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } fro
 import type {
   AccountPortfolio,
   AccountPosition,
+  BacktestDecision,
   BacktestEstimate,
   BacktestRun,
   Candidate,
@@ -89,6 +90,10 @@ const HISTORY_CATEGORIES: Array<{ key: string; label: string; hint: string }> = 
   { key: "executions", label: "订单与成交", hint: "" },
   { key: "user_events", label: "测试网事件", hint: "用户数据流" },
   { key: "alerts", label: "告警历史", hint: "" },
+  { key: "backtests", label: "回测记录", hint: "运行、逐模型结果与每条决策" },
+  // Last, and worded plainly: the others are records of things that happened,
+  // this one is data that can never be obtained again.
+  { key: "book_captures", label: "盘口采集", hint: "币安不提供历史盘口，删掉无法重录" },
   { key: "market_cache", label: "行情缓存", hint: "Parquet" },
   { key: "pricing_cache", label: "定价缓存", hint: "models.dev" },
 ];
@@ -1540,6 +1545,8 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
   const [showDiff, setShowDiff] = useState(false);
   const [probe, setProbe] = useState<ProbeStatus | null>(null);
   const [timeout, setTimeoutSeconds] = useState("");
+  const [openDecisions, setOpenDecisions] = useState<string | null>(null);
+  const [decisions, setDecisions] = useState<BacktestDecision[] | null>(null);
 
   const body = useCallback(() => ({
     symbols: form.symbols.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),
@@ -1627,6 +1634,23 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally { setBusy(null); }
+  };
+
+  const toggleDecisions = async (runId: number, provider: string) => {
+    const key = `${runId}-${provider}`;
+    if (openDecisions === key) { setOpenDecisions(null); return; }
+    // Clear first: showing the previous model's decisions under a new header
+    // while the fetch lands is worse than showing nothing.
+    setOpenDecisions(key);
+    setDecisions(null);
+    try {
+      setDecisions(await api<BacktestDecision[]>(
+        `/api/backtests/${runId}/decisions?provider=${encodeURIComponent(provider)}`,
+      ));
+    } catch (reason) {
+      setDecisions([]);
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
   };
 
   const cancel = async (id: number) => {
@@ -1815,8 +1839,20 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                   {run.spec.use_recorded_book
                     ? <small className="run-real">真实回测 · 含订单流</small>
                     : <small>普通回测 · 无订单流</small>}
+                  {run.spec.timeout_seconds
+                    ? <small>超时 {run.spec.timeout_seconds}s</small>
+                    : null}
                 </td>}
-                <td>{providerLabel(model.provider)}</td>
+                <td>
+                  <button
+                    className="run-expand"
+                    onClick={() => void toggleDecisions(run.id, model.provider)}
+                    title="展开这个模型的每一条决策"
+                  >
+                    {openDecisions === `${run.id}-${model.provider}` ? "▾" : "▸"}
+                    {providerLabel(model.provider)}
+                  </button>
+                </td>
                 <td>{Math.round(model.progress * 100)}%
                   {model.calls_failed > 0 && <small className="negative">{model.calls_failed} 次失败</small>}</td>
                 <td className={model.result && Number(model.result.total_return) >= 0 ? "positive" : "negative"}>
@@ -1830,7 +1866,40 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                   {run.status === "failed" && run.error && <small className="negative" title={run.error}>失败</small>}
                 </td>}
               </tr>
-            )))}
+            )).concat(
+              openDecisions?.startsWith(`${run.id}-`)
+                ? [
+                  <tr key={`${run.id}-decisions`} className="run-decisions">
+                    <td colSpan={9}>
+                      {decisions === null
+                        ? <span className="empty">读取中…</span>
+                        : !decisions.length
+                          ? <span className="empty">这个模型还没有决策记录。</span>
+                          : <table className="decision-log">
+                            <thead><tr><th>时间</th><th>标的</th><th>结果</th><th>动作</th><th>置信</th><th>说明</th></tr></thead>
+                            <tbody>
+                              {decisions.map((item) => (
+                                <tr key={item.id}>
+                                  <td>{new Date(item.decided_at).toLocaleString("zh-CN", { hour12: false })}</td>
+                                  <td>{item.symbol} · {item.cadence}</td>
+                                  <td><span className={`decision-outcome ${DECISION_OUTCOME_CLASS[item.outcome]}`}>
+                                    {BACKTEST_OUTCOME[item.outcome]}</span></td>
+                                  <td>{item.action ?? "—"}
+                                    {item.fill && <small>{item.fill.side} @ {item.fill.price} × {item.fill.quantity}</small>}</td>
+                                  <td>{item.confidence !== null ? `${Math.round(item.confidence * 100)}%` : "—"}</td>
+                                  <td className="decision-why">
+                                    {item.detail && <small className="negative">{item.detail}</small>}
+                                    {item.rationale}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>}
+                    </td>
+                  </tr>,
+                ]
+                : [],
+            ))}
             {!runs.length && <tr><td colSpan={9} className="empty">还没有回测。选好标的、窗口和模型后先估算耗时。</td></tr>}
           </tbody>
         </table>
@@ -1838,6 +1907,26 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
     </article>
   );
 }
+
+// Zero trades has four different causes; these are the words that tell them
+// apart, so they say what happened rather than grading it.
+const BACKTEST_OUTCOME: Record<BacktestDecision["outcome"], string> = {
+  traded: "已成交",
+  rejected: "风控否决",
+  hold: "持有",
+  no_snapshot: "无快照",
+  call_failed: "调用失败",
+};
+
+// Reuse the live panel's colours: approved/rejected/analysis_only already mean
+// exactly these three things on the overview tab.
+const DECISION_OUTCOME_CLASS: Record<BacktestDecision["outcome"], string> = {
+  traded: "approved",
+  rejected: "rejected",
+  hold: "analysis_only",
+  no_snapshot: "analysis_only",
+  call_failed: "rejected",
+};
 
 const RUN_STATUS: Record<BacktestRun["status"], string> = {
   running: "进行中",

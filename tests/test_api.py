@@ -1656,3 +1656,79 @@ def test_probing_is_refused_while_the_engine_runs(tmp_path: Path) -> None:
         )
         assert response.status_code == 409
     asyncio.run(database.close())
+
+
+def test_every_backtest_decision_is_readable_afterwards(tmp_path: Path) -> None:
+    """A run reported totals only, so "0 trades" had no explanation.
+
+    Held, vetoed and failed all produce the same zero; the stored decisions are
+    what separate them.
+    """
+
+    database, _engine, app = _backtest_app(tmp_path, "bt-decisions.db")
+
+    with TestClient(app) as client:
+        assert (
+            client.post(
+                "/api/backtests",
+                json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
+            ).status_code
+            == 202
+        )
+        run = _await_run(client)
+        decisions = client.get("/api/backtests/1/decisions").json()
+
+    # One per decision the run counted -- including the tail, which the final
+    # batch has to flush.
+    assert len(decisions) == run["models"][0]["decisions_total"] == 12
+    first = decisions[0]
+    assert first["symbol"] == "BTCUSDT"
+    assert first["cadence"] == "5m"
+    # The api fixture always holds, so the reason for zero trades is legible.
+    assert {item["outcome"] for item in decisions} == {"hold"}
+    assert first["rationale"] == "fixture"
+    assert first["provider"] == "api-fixture"
+    assert first["decided_at"]
+    # In decision order, not insertion race order.
+    stamps = [item["decided_at"] for item in decisions]
+    assert stamps == sorted(stamps)
+    asyncio.run(database.close())
+
+
+def test_decisions_are_filtered_to_one_model(tmp_path: Path) -> None:
+    database, _engine, app = _backtest_app(tmp_path, "bt-decisions-filter.db")
+
+    with TestClient(app) as client:
+        client.post(
+            "/api/backtests",
+            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
+        )
+        _await_run(client)
+        mine = client.get("/api/backtests/1/decisions?provider=api-fixture").json()
+        other = client.get("/api/backtests/1/decisions?provider=nobody").json()
+        missing = client.get("/api/backtests/999/decisions")
+
+    assert len(mine) == 12
+    assert other == []
+    assert missing.status_code == 404
+    asyncio.run(database.close())
+
+
+def test_clearing_backtests_takes_the_decisions_with_them(tmp_path: Path) -> None:
+    """Decisions cascade from the run; a stale orphan would outlive its parent."""
+
+    database, _engine, app = _backtest_app(tmp_path, "bt-decisions-clear.db")
+
+    with TestClient(app) as client:
+        client.post(
+            "/api/backtests",
+            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
+        )
+        _await_run(client)
+        assert len(client.get("/api/backtests/1/decisions").json()) == 12
+
+        cleared = client.post("/api/history/clear", json={"categories": ["backtests"]})
+        assert cleared.status_code == 200
+        assert client.get("/api/backtests").json() == []
+        assert client.get("/api/backtests/1/decisions").status_code == 404
+    asyncio.run(database.close())

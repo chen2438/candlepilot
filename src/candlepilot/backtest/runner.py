@@ -154,6 +154,40 @@ class ModelRun:
         return self.failure_rate <= MAX_FAILURE_RATE
 
 
+@dataclass
+class BacktestDecision:
+    """What one model did at one instant, and what came of it.
+
+    The run's totals cannot answer "why zero trades": a model that held all
+    day, one the risk policy vetoed every time, and one whose calls timed out
+    all report the same zero. `outcome` is the field that separates them.
+    """
+
+    decided_at: datetime
+    symbol: str
+    cadence: str
+    #: traded | rejected | hold | no_snapshot | call_failed
+    outcome: str = "hold"
+    action: str | None = None
+    confidence: float | None = None
+    rationale: str | None = None
+    detail: str | None = None
+    fill: dict[str, Any] | None = None
+
+    def as_row(self) -> dict[str, Any]:
+        return {
+            "decided_at": self.decided_at,
+            "symbol": self.symbol,
+            "cadence": self.cadence,
+            "outcome": self.outcome,
+            "action": self.action,
+            "confidence": self.confidence,
+            "rationale": self.rationale,
+            "detail": self.detail,
+            "fill": self.fill,
+        }
+
+
 def unreliable_models(runs: Sequence[ModelRun]) -> list[ModelRun]:
     """Models that lost too many decisions for their result to stand.
 
@@ -216,7 +250,8 @@ class BacktestRunner:
         provider: LLMProvider,
         progress: ModelRun,
         *,
-        on_progress: Callable[[ModelRun], Awaitable[None]] | None = None,
+        on_progress: Callable[[ModelRun, BacktestDecision | None], Awaitable[None]]
+        | None = None,
     ) -> BacktestResult:
         """Replay the window. ``on_progress`` is awaited after each decision.
 
@@ -224,6 +259,11 @@ class BacktestRunner:
         once the run returns learns nothing while the run is the thing it wants
         to watch, and every decision here waits on a model call, so one small
         write per decision costs nothing next to it.
+
+        The decision travels with the progress rather than on a hook of its
+        own: they are produced together and written in the same trip, and two
+        callbacks would let a reader see a counter move with no decision behind
+        it.
         """
 
         exchange = SimulatedExchange(self._spec.config)
@@ -238,11 +278,11 @@ class BacktestRunner:
         # Publish the total before the first call: until it lands, progress has
         # no denominator and every reader has to show 0%.
         if on_progress is not None:
-            await on_progress(progress)
+            await on_progress(progress, None)
 
-        async def report() -> None:
+        async def report(decision: BacktestDecision | None = None) -> None:
             if on_progress is not None:
-                await on_progress(progress)
+                await on_progress(progress, decision)
 
         for when, cadence, symbol in schedule:
             # Settle first: a trigger that was touched before this decision has
@@ -252,28 +292,38 @@ class BacktestRunner:
             if candle is not None:
                 exchange.settle_candle(symbol, candle)
 
+            entry = BacktestDecision(decided_at=when, symbol=symbol, cadence=cadence)
+
             try:
                 snapshot = self._builders[symbol].build(symbol, cadence, when)
-            except ValueError:
+            except ValueError as exc:
+                entry.outcome = "no_snapshot"
+                entry.detail = str(exc)[:200]
                 progress.decisions_done += 1
-                await report()
+                await report(entry)
                 continue
 
             portfolio = exchange.portfolio_state(self._marks(when))
             try:
                 result = await provider.generate_trade_intent(snapshot, portfolio)
             except Exception as exc:  # noqa: BLE001 - one bad call must not end the run
+                entry.outcome = "call_failed"
+                entry.detail = str(exc)[:200]
                 progress.calls_failed += 1
                 progress.decisions_done += 1
                 progress.error = str(exc)[:200]
-                await report()
+                await report(entry)
                 continue
 
             progress.decisions_done += 1
-            await report()
             intent = result.intent
+            entry.action = intent.action.value
+            entry.confidence = intent.confidence
+            entry.rationale = intent.rationale
             if intent.action == TradeAction.HOLD:
+                entry.outcome = "hold"
                 curve.append(EquityPoint(when, exchange.equity(self._marks(when))))
+                await report(entry)
                 continue
 
             # The live risk policy, not a copy of it: the daily-loss breaker,
@@ -283,14 +333,35 @@ class BacktestRunner:
                 intent, snapshot, portfolio, self._rules[symbol], now=when
             )
             if evaluation.order is None or not evaluation.decision.accepted:
+                entry.outcome = "rejected"
+                entry.detail = evaluation.decision.reason[:200]
                 curve.append(EquityPoint(when, exchange.equity(self._marks(when))))
+                await report(entry)
                 continue
 
             fill_candle = self._next_candle(symbol, cadence, when)
             if fill_candle is None:
+                # Accepted with no bar left to fill against: the window ended.
+                entry.outcome = "rejected"
+                entry.detail = "no candle left in the window to fill against"
+                await report(entry)
                 continue
             exchange.execute(evaluation.order, fill_candle, leverage=intent.leverage)
+            entry.outcome = "traded"
+            entry.fill = {
+                "price": str(fill_candle.open),
+                "quantity": str(evaluation.order.quantity),
+                "side": evaluation.order.side,
+                "leverage": intent.leverage,
+                "stop_loss": str(evaluation.order.stop_price)
+                if evaluation.order.stop_price is not None
+                else None,
+                "take_profit": str(evaluation.order.take_profit_price)
+                if evaluation.order.take_profit_price is not None
+                else None,
+            }
             curve.append(EquityPoint(when, exchange.equity(self._marks(when))))
+            await report(entry)
 
         exchange.close_all(self._marks(self._spec.end), self._spec.end)
         curve.append(EquityPoint(self._spec.end, exchange.equity({})))
@@ -302,7 +373,8 @@ async def compare(
     spec: BacktestSpec,
     runner_for: Callable[[str], BacktestRunner],
     provider_for: Callable[[str], LLMProvider],
-    on_progress: Callable[[ModelRun], Awaitable[None]] | None = None,
+    on_progress: Callable[[ModelRun, BacktestDecision | None], Awaitable[None]]
+    | None = None,
 ) -> list[ModelRun]:
     """Run every model over the same window, concurrently.
 
@@ -327,7 +399,7 @@ async def compare(
         # The final report carries the result and any error, which the
         # per-decision ones cannot have seen.
         if on_progress is not None:
-            await on_progress(run)
+            await on_progress(run, None)
 
     await asyncio.gather(*(one(run) for run in runs))
     return runs

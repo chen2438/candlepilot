@@ -147,6 +147,34 @@ class BacktestModelRunRow(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class BacktestDecisionRow(Base):
+    """One decision a model made inside a backtest.
+
+    The totals alone cannot tell a model that held all day from one the risk
+    policy vetoed every time from one whose calls timed out: all three report
+    zero trades. `outcome` is what separates them.
+    """
+
+    __tablename__ = "backtest_decisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("backtest_runs.id", ondelete="CASCADE"), index=True
+    )
+    provider: Mapped[str] = mapped_column(String(64))
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    symbol: Mapped[str] = mapped_column(String(32))
+    cadence: Mapped[str] = mapped_column(String(8))
+    #: traded | rejected | hold | no_snapshot | call_failed
+    outcome: Mapped[str] = mapped_column(String(16))
+    action: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: The veto reason, the call's error -- whatever explains the outcome.
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fill_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class BookCaptureRow(Base):
     """One recorded order-book state.
 
@@ -297,6 +325,24 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             "ON book_captures (symbol, captured_at)",
             "CREATE INDEX IF NOT EXISTS ix_book_captures_captured_at "
             "ON book_captures (captured_at)",
+        ),
+    ),
+    (
+        7,
+        (
+            # A backtest only reported its totals, so a 0% return over 0 trades
+            # was indistinguishable from a model that held all day, one whose
+            # every intent the risk policy vetoed, and one whose calls failed.
+            "CREATE TABLE IF NOT EXISTS backtest_decisions ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "run_id INTEGER NOT NULL REFERENCES backtest_runs(id) ON DELETE CASCADE, "
+            "provider VARCHAR(64) NOT NULL, decided_at DATETIME NOT NULL, "
+            "symbol VARCHAR(32) NOT NULL, cadence VARCHAR(8) NOT NULL, "
+            "outcome VARCHAR(16) NOT NULL, action VARCHAR(16), "
+            "confidence REAL, rationale TEXT, detail TEXT, fill_json TEXT)",
+            # Read back per run, in decision order, filtered to one model.
+            "CREATE INDEX IF NOT EXISTS ix_backtest_decisions_run "
+            "ON backtest_decisions (run_id, provider, id)",
         ),
     ),
 )
@@ -903,6 +949,51 @@ class AuditRepository:
             for provider in providers:
                 session.add(BacktestModelRunRow(run_id=run.id, provider=provider))
             return run.id
+
+    async def record_backtest_decisions(
+        self, run_id: int, provider: str, rows: list[dict[str, Any]]
+    ) -> None:
+        """Append a batch of a model's decisions.
+
+        Batched rather than written per decision: the runner already awaits a
+        progress write on every call, and this is the same trip.
+        """
+
+        if not rows:
+            return
+        async with self.sessions.begin() as session:
+            await session.execute(
+                insert(BacktestDecisionRow),
+                [{"run_id": run_id, "provider": provider, **row} for row in rows],
+            )
+
+    async def backtest_decisions(
+        self, run_id: int, *, provider: str | None = None, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        """One model's decisions for a run, oldest first."""
+
+        query = select(BacktestDecisionRow).where(BacktestDecisionRow.run_id == run_id)
+        if provider is not None:
+            query = query.where(BacktestDecisionRow.provider == provider)
+        query = query.order_by(BacktestDecisionRow.id).limit(limit)
+        async with self.sessions() as session:
+            rows = (await session.scalars(query)).all()
+        return [
+            {
+                "id": row.id,
+                "provider": row.provider,
+                "decided_at": self._utc(row.decided_at).isoformat(),
+                "symbol": row.symbol,
+                "cadence": row.cadence,
+                "outcome": row.outcome,
+                "action": row.action,
+                "confidence": row.confidence,
+                "rationale": row.rationale,
+                "detail": row.detail,
+                "fill": json.loads(row.fill_json) if row.fill_json else None,
+            }
+            for row in rows
+        ]
 
     async def update_backtest_progress(
         self,

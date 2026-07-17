@@ -389,3 +389,24 @@ export interface ProbeStatus {
   ceiling_seconds: number;
   providers: ProviderProbe[];
 }
+
+export interface BacktestDecision {
+  id: number;
+  provider: string;
+  decided_at: string;
+  symbol: string;
+  cadence: string;
+  outcome: "traded" | "rejected" | "hold" | "no_snapshot" | "call_failed";
+  action: string | null;
+  confidence: number | null;
+  rationale: string | null;
+  detail: string | null;
+  fill: null | {
+    price: string;
+    quantity: string;
+    side: string;
+    leverage: number;
+    stop_loss: string | null;
+    take_profit: string | null;
+  };
+}

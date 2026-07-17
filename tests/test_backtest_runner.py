@@ -7,6 +7,7 @@ import pytest
 from candlepilot.backtest.engine import BacktestConfig, Candle
 from candlepilot.backtest.runner import (
     MAX_FAILURE_RATE,
+    BacktestDecision,
     BacktestSpec,
     BacktestRunner,
     ModelRun,
@@ -259,7 +260,7 @@ def test_progress_is_reported_while_the_run_is_still_running() -> None:
     spec = _spec()
     seen: list[tuple[int, int]] = []
 
-    async def record(run: ModelRun) -> None:
+    async def record(run: ModelRun, decision: BacktestDecision | None) -> None:
         seen.append((run.decisions_done, run.decisions_total))
 
     run = ModelRun("model-a")
@@ -283,7 +284,7 @@ def test_compare_reports_each_model_while_it_works() -> None:
     providers = {"model-a": _Provider("model-a"), "model-b": _Provider("model-b")}
     mid_run: list[str] = []
 
-    async def record(run: ModelRun) -> None:
+    async def record(run: ModelRun, decision: BacktestDecision | None) -> None:
         if run.result is None and 0 < run.decisions_done < run.decisions_total:
             mid_run.append(run.provider)
 
@@ -346,3 +347,64 @@ def test_one_degraded_model_poisons_the_comparison() -> None:
     assert [run.provider for run in degraded] == ["model-b"]
     # The clean model still reports: the run is flagged, not discarded.
     assert next(run for run in runs if run.provider == "model-a").result is not None
+
+
+def test_a_decision_records_why_nothing_traded() -> None:
+    """Zero trades has three different causes and the totals show one number.
+
+    A model that held, a model the risk policy vetoed, and a model whose calls
+    failed all report trade_count 0. Only the per-decision outcome tells them
+    apart.
+    """
+
+    spec = _spec()
+    seen: list[BacktestDecision] = []
+
+    async def record(run: ModelRun, decision: BacktestDecision | None) -> None:
+        if decision is not None:
+            seen.append(decision)
+
+    class Flaky(_Provider):
+        calls = 0
+
+        async def generate_trade_intent(self, snapshot, portfolio):
+            Flaky.calls += 1
+            if Flaky.calls == 1:
+                raise RuntimeError("endpoint timed out after 45s")
+            return await super().generate_trade_intent(snapshot, portfolio)
+
+    run = ModelRun("model-a")
+    asyncio.run(_runner(spec).run(Flaky("model-a"), run, on_progress=record))
+
+    # One record per decision, no matter how the decision ended.
+    assert len(seen) == run.decisions_total
+    assert seen[0].outcome == "call_failed"
+    assert "timed out" in seen[0].detail
+    # The failed one carries no action: there was no intent to record.
+    assert seen[0].action is None
+    assert {item.outcome for item in seen} <= {
+        "traded", "rejected", "hold", "no_snapshot", "call_failed",
+    }
+    # Every decision is anchored in time and instrument.
+    assert all(item.symbol == "BTCUSDT" and item.cadence == "5m" for item in seen)
+
+
+def test_a_traded_decision_records_the_fill_it_got() -> None:
+    """"It opened long" is not reviewable without the price and the stop."""
+
+    spec = _spec()
+    seen: list[BacktestDecision] = []
+
+    async def record(run: ModelRun, decision: BacktestDecision | None) -> None:
+        if decision is not None:
+            seen.append(decision)
+
+    asyncio.run(_runner(spec).run(_Provider("model-a"), ModelRun("model-a"), on_progress=record))
+
+    traded = [item for item in seen if item.outcome == "traded"]
+    assert traded, "the buyer never traded"
+    fill = traded[0].fill
+    assert fill is not None
+    assert set(fill) == {"price", "quantity", "side", "leverage", "stop_loss", "take_profit"}
+    assert Decimal(fill["price"]) > 0
+    assert traded[0].rationale and traded[0].confidence is not None

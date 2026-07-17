@@ -39,6 +39,7 @@ from candlepilot.backtest.runner import (
     MAX_BACKTEST_SYMBOLS,
     MAX_ESTIMATED_HOURS,
     MAX_FAILURE_RATE,
+    BacktestDecision,
     BacktestRunner,
     BacktestSpec,
     ModelRun,
@@ -220,6 +221,12 @@ _CURATED_MODEL_ALIASES: dict[str, tuple[str, ...]] = {
     "claude-code-auth": ("sonnet", "opus", "haiku", "fable"),
 }
 _MODEL_ID_PREFIX: dict[str, str] = {"openai": "gpt-5", "anthropic": "claude-"}
+
+#: Decisions buffered before a batch insert.
+#:
+#: Small enough that a cancelled run keeps almost everything it decided, large
+#: enough that the write is not a round trip per model call.
+DECISION_BATCH = 25
 
 
 def _capture_features(row: dict[str, Any]) -> dict[str, float]:
@@ -1593,7 +1600,24 @@ def create_app(
             )
             return
 
-        async def flush(run: ModelRun) -> None:
+        # Decisions are buffered per model and written in batches: one INSERT
+        # per decision would double the round trips the progress write already
+        # costs, for rows nobody reads until the run is worth looking at.
+        pending: dict[str, list[dict[str, Any]]] = {}
+
+        async def drain(provider: str) -> None:
+            rows = pending.pop(provider, [])
+            if rows:
+                await engine.audit.record_backtest_decisions(run_id, provider, rows)
+
+        async def flush(run: ModelRun, decision: BacktestDecision | None) -> None:
+            if decision is not None:
+                row = decision.as_row()
+                fill = row.pop("fill")
+                row["fill_json"] = json.dumps(fill) if fill else None
+                pending.setdefault(run.provider, []).append(row)
+                if len(pending[run.provider]) >= DECISION_BATCH:
+                    await drain(run.provider)
             await engine.audit.update_backtest_progress(
                 run_id,
                 run.provider,
@@ -1603,6 +1627,10 @@ def create_app(
                 result=_json_value(asdict(run.result)) if run.result is not None else None,
                 error=run.error,
             )
+            # The final report has no decision, and is where the last partial
+            # batch has to land or the tail of every run goes missing.
+            if decision is None:
+                await drain(run.provider)
 
         try:
             with _timeouts(spec):
@@ -1774,6 +1802,23 @@ def create_app(
         if run is None:
             raise HTTPException(status_code=404, detail="backtest not found")
         return _json_value(run)
+
+    @app.get("/api/backtests/{run_id}/decisions")
+    async def get_backtest_decisions(
+        run_id: int, provider: str | None = None, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        """Every decision one model made, in order.
+
+        The run's totals cannot say why a model made no trades; these can.
+        """
+
+        if await engine.audit.backtest_run(run_id) is None:
+            raise HTTPException(status_code=404, detail="backtest not found")
+        return _json_value(
+            await engine.audit.backtest_decisions(
+                run_id, provider=provider, limit=max(1, min(limit, 2000))
+            )
+        )
 
     @app.post("/api/backtests/{run_id}/cancel")
     async def cancel_backtest(run_id: int) -> dict[str, Any]:
