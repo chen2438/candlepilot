@@ -256,3 +256,29 @@ def test_exchange_info_carries_the_price_tick_into_symbol_rules() -> None:
     assert rules.tick_size == Decimal("0.10")
     assert rules.quantity_step == Decimal("0.001")
     assert rules.min_notional == Decimal("5")
+
+
+def test_the_snapshot_takes_only_the_cadences_the_engine_can_ask_for() -> None:
+    """The guard accepted "1m" for a paper backfill that no longer exists.
+
+    TradingEngine._normalize_cadences rejects anything outside
+    SUPPORTED_CADENCES, so a "1m" snapshot is unreachable from the two call
+    sites; leaving it accepted here only invited someone to wire it back up.
+    """
+
+    adapter = BinancePublicClient(client=httpx.AsyncClient(base_url="https://example.test"))
+
+    async def rejected_by_the_guard(cadence: str) -> bool:
+        try:
+            await adapter.market_snapshot("BTCUSDT", cadence)
+        except ValueError as exc:
+            return str(exc) == "unsupported decision cadence"
+        except Exception:
+            # Anything else means the cadence got past the guard and only the
+            # unreachable base_url stopped it, which is what we want to see.
+            return False
+        return False
+
+    assert asyncio.run(rejected_by_the_guard("1m"))
+    for cadence in DECISION_FEATURE_INTERVALS:
+        assert not asyncio.run(rejected_by_the_guard(cadence))

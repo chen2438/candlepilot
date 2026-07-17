@@ -369,9 +369,8 @@ DECISION_OUTCOMES = (
 
 
 class AuditRepository:
-    # History tables safe to clear. Excludes runtime_state (paper account,
-    # emergency lock) and schema_migrations so deletion never weakens recovery
-    # or safety state.
+    # History tables safe to clear. Excludes runtime_state (the emergency lock)
+    # and schema_migrations so deletion never weakens recovery or safety state.
     HISTORY_TABLES: dict[str, type[Base]] = {
         "inferences": InferenceRow,
         "risk_decisions": RiskRow,

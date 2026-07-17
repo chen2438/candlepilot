@@ -13,9 +13,7 @@ from candlepilot.domain.models import MarketSnapshot
 #: Every setup rule in the prompt is written against these, and nothing goes in
 #: here without a rule that reads it: an interval the rules never name is one
 #: the model has to invent a use for, and it will invent a different one each
-#: call. 1m was dropped for exactly that reason -- it is still the paper
-#: mark-to-market interval, but that path builds its own bare snapshot straight
-#: off the stream and never asks for these features.
+#: call. 1m was dropped for exactly that reason: no setup rule names it.
 DECISION_FEATURE_INTERVALS = ("5m", "15m", "30m")
 
 #: Interval supplying daily structure levels, and only those.

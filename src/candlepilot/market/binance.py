@@ -47,7 +47,7 @@ class FundingRate:
 
 
 class BinancePublicClient:
-    """Read-only USD-M futures client used for discovery and paper trading."""
+    """Read-only USD-M futures client used for discovery, features and backtests."""
 
     def __init__(
         self,
@@ -272,11 +272,11 @@ class BinancePublicClient:
         return await self._get("/fapi/v1/aggTrades", symbol=symbol, limit=limit)
 
     async def market_snapshot(self, symbol: str, cadence: str) -> MarketSnapshot:
-        if cadence not in {"1m", "5m", "15m", "30m"}:
+        if cadence not in {"5m", "15m", "30m"}:
             raise ValueError("unsupported decision cadence")
         # `cadence` only labels which decision the snapshot feeds; the feature
-        # ladder is the same either way. The paper backfill asks for "1m" and
-        # reads nothing but mark/bid/ask off the result.
+        # ladder below is the same either way, so the two stay separate concepts
+        # even though they currently list the same intervals.
         feature_intervals = (*DECISION_FEATURE_INTERVALS, DAILY_STRUCTURE_INTERVAL)
         results = await asyncio.gather(
             *(self.klines(symbol, interval, 200) for interval in feature_intervals),

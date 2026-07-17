@@ -268,11 +268,14 @@ def _reject_legacy_custom_llm_env(env: Mapping[str, str]) -> None:
 
 
 def _parse_custom_llm_providers(raw: str | None) -> tuple[CustomLlmProvider, ...]:
-    """Parse extra custom endpoints from ``CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON``.
+    """Parse the custom endpoints from ``CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON``.
 
-    The legacy flat ``CANDLEPILOT_CUSTOM_LLM_*`` vars still define the unsuffixed
-    ``openai-compatible`` provider; entries here are additional and each needs a
-    unique ``id`` that becomes ``openai-compatible:<id>``.
+    This is the only source of Custom API providers. The flat
+    ``CANDLEPILOT_CUSTOM_LLM_*`` vars it replaced are rejected by
+    :func:`_reject_legacy_custom_llm_env`, and no unsuffixed
+    ``openai-compatible`` provider survives them, so an endpoint that is not
+    listed here does not exist. Each entry needs a unique ``id``, which becomes
+    the provider ``openai-compatible:<id>``.
     """
 
     if raw is None or not raw.strip():
