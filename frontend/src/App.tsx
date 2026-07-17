@@ -262,13 +262,6 @@ function providerIcon(name: string): string {
   return "AI";
 }
 
-function providerConfigLabel(name: string): string {
-  if (name === "codex-auth") return "Codex";
-  if (name === "claude-code-auth") return "Claude";
-  if (name === "openai-compatible") return "Custom API";
-  return customProviderId(name) ?? name;
-}
-
 function inferenceConfigLabel(decision: DecisionEvent): string {
   const model = decision.model ?? "默认模型";
   const provenance = decision.provenance;
@@ -830,24 +823,78 @@ export default function App() {
             <div className="provider-list">
               {providers.map((provider) => {
                 const routeIndex = status.provider_chain.indexOf(provider.provider);
-                return <button
+                const options = provider.model_options ?? [];
+                const model = configDraft[provider.provider]?.model ?? provider.model ?? "";
+                const effort = configDraft[provider.provider]?.effort ?? provider.reasoning_effort ?? "";
+                const custom = configDraft[provider.provider]?.custom ?? (model !== "" && !options.includes(model));
+                const draft = { model, effort, custom };
+                const dirty = model !== (provider.model ?? "") || effort !== (provider.reasoning_effort ?? "");
+                const update = (next: Partial<typeof draft>) =>
+                  setConfigDraft((current) => ({ ...current, [provider.provider]: { ...draft, ...next } }));
+                return <div
                   key={provider.provider}
                   className={`provider-card ${routeIndex >= 0 ? "selected" : ""}`}
-                  disabled={status.running || busy !== null || (routeIndex === 0 && status.provider_chain.length === 1)}
-                  onClick={() => toggleProviderRoute(provider.provider)}
-                  title={routeIndex >= 0 ? "点击从路由中移除" : "点击加入路由末尾；当前不可用也可预先配置"}
                 >
-                  <span className={`provider-icon ${provider.authenticated ? "ready" : ""}`}>
-                    {providerIcon(provider.provider)}
-                  </span>
-                  <span className="provider-text">
-                    <strong>{providerLabel(provider.provider)}</strong>
-                    <small>{provider.version ?? provider.detail}</small>
-                  </span>
-                  <span className={`status-pill ${provider.authenticated ? "ok" : "off"}`}>
-                    {routeIndex >= 0 ? `#${routeIndex + 1} · ` : ""}{provider.authenticated ? "READY" : provider.available ? "LOGIN" : "MISSING"}
-                  </span>
-                </button>
+                  <button
+                    className="provider-card-main"
+                    disabled={status.running || busy !== null || (routeIndex === 0 && status.provider_chain.length === 1)}
+                    onClick={() => toggleProviderRoute(provider.provider)}
+                    title={routeIndex >= 0 ? "点击从路由中移除" : "点击加入路由末尾；当前不可用也可预先配置"}
+                  >
+                    <span className={`provider-icon ${provider.authenticated ? "ready" : ""}`}>
+                      {providerIcon(provider.provider)}
+                    </span>
+                    <span className="provider-text">
+                      <strong>{providerLabel(provider.provider)}</strong>
+                      <small>{provider.version ?? provider.detail}</small>
+                    </span>
+                    <span className={`status-pill ${provider.authenticated ? "ok" : "off"}`}>
+                      {routeIndex >= 0 ? `#${routeIndex + 1} · ` : ""}{provider.authenticated ? "READY" : provider.available ? "LOGIN" : "MISSING"}
+                    </span>
+                  </button>
+                  <div className="provider-card-config">
+                    <label>
+                      <span>模型</span>
+                      <div className="config-model-cell">
+                        <select
+                          value={custom ? "__custom__" : model}
+                          disabled={status.running}
+                          onChange={(event) => event.target.value === "__custom__" ? update({ custom: true }) : update({ model: event.target.value, custom: false })}
+                        >
+                          <option value="">默认模型</option>
+                          {options.map((option) => <option key={option} value={option}>{option}</option>)}
+                          <option value="__custom__">自定义…</option>
+                        </select>
+                        {custom && <input
+                          className="config-model-custom"
+                          placeholder="输入模型名"
+                          value={model}
+                          disabled={status.running}
+                          onChange={(event) => update({ model: event.target.value })}
+                        />}
+                      </div>
+                    </label>
+                    <label>
+                      <span>推理强度</span>
+                      <select value={effort} disabled={status.running} onChange={(event) => update({ effort: event.target.value })}>
+                        <option value="">默认强度</option>
+                        {provider.reasoning_effort_options.map((option) => <option key={option} value={option}>{option}</option>)}
+                      </select>
+                    </label>
+                    <div className="provider-card-actions">
+                      <button className="text-button" disabled={status.running || busy !== null || !dirty}
+                        onClick={() => applyProviderConfig(provider.provider, { model, effort })}>应用</button>
+                      <button className="text-button" disabled={status.running || busy !== null || dirty || !provider.authenticated}
+                        title={dirty ? "请先应用配置再测试" : "用当前配置发起一次真实调用"}
+                        onClick={() => testProvider(provider.provider)}>
+                        {busy === `test-${provider.provider}` ? "测试中…" : "测试"}
+                      </button>
+                    </div>
+                    {testResult[provider.provider] && <span className={`config-test-result ${testResult[provider.provider].ok ? "ok" : "err"}`}>
+                      {testResult[provider.provider].text}
+                    </span>}
+                  </div>
+                </div>;
               })}
             </div>
             <div className="provider-route">
@@ -867,72 +914,6 @@ export default function App() {
             </div>
             <div className="provider-foot">
               <span>实际承载</span><strong>{activeProvider ? providerLabel(activeProvider.provider) : status.running ? "等待可用 Provider" : "引擎未运行"}</strong>
-            </div>
-            <div className="provider-config">
-              <div className="provider-config-title"><span>模型与推理强度</span><small>{status.running ? "运行时锁定" : "留空=Provider 默认"}</small></div>
-              {providers.map((provider) => {
-                const options = provider.model_options ?? [];
-                const model = configDraft[provider.provider]?.model ?? provider.model ?? "";
-                const effort = configDraft[provider.provider]?.effort ?? provider.reasoning_effort ?? "";
-                const custom = configDraft[provider.provider]?.custom ?? (model !== "" && !options.includes(model));
-                const draft = { model, effort, custom };
-                const dirty = model !== (provider.model ?? "") || effort !== (provider.reasoning_effort ?? "");
-                const update = (next: Partial<typeof draft>) =>
-                  setConfigDraft((current) => ({ ...current, [provider.provider]: { ...draft, ...next } }));
-                return (
-                  <div className="provider-config-row" key={provider.provider}>
-                    <span className="config-name">{providerConfigLabel(provider.provider)}</span>
-                    <div className="config-model-cell">
-                      <select
-                        value={custom ? "__custom__" : model}
-                        disabled={status.running}
-                        onChange={(event) => event.target.value === "__custom__" ? update({ custom: true }) : update({ model: event.target.value, custom: false })}
-                      >
-                        <option value="">默认模型</option>
-                        {options.map((option) => (
-                          <option key={option} value={option}>{option}</option>
-                        ))}
-                        <option value="__custom__">自定义…</option>
-                      </select>
-                      {custom && (
-                        <input
-                          className="config-model-custom"
-                          placeholder="输入模型名"
-                          value={model}
-                          disabled={status.running}
-                          onChange={(event) => update({ model: event.target.value })}
-                        />
-                      )}
-                    </div>
-                    <select
-                      value={effort}
-                      disabled={status.running}
-                      onChange={(event) => update({ effort: event.target.value })}
-                    >
-                      <option value="">默认强度</option>
-                      {provider.reasoning_effort_options.map((option) => (
-                        <option key={option} value={option}>{option}</option>
-                      ))}
-                    </select>
-                    <button
-                      className="text-button"
-                      disabled={status.running || busy !== null || !dirty}
-                      onClick={() => applyProviderConfig(provider.provider, { model, effort })}
-                    >应用</button>
-                    <button
-                      className="text-button"
-                      disabled={status.running || busy !== null || dirty || !provider.authenticated}
-                      title={dirty ? "请先应用配置再测试" : "用当前配置发起一次真实调用"}
-                      onClick={() => testProvider(provider.provider)}
-                    >{busy === `test-${provider.provider}` ? "测试中…" : "测试"}</button>
-                    {testResult[provider.provider] && (
-                      <span className={`config-test-result ${testResult[provider.provider].ok ? "ok" : "err"}`}>
-                        {testResult[provider.provider].text}
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
             </div>
           </article>
 
