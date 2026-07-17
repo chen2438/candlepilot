@@ -1671,28 +1671,53 @@ def create_app(
             backtest_tasks.pop(run_id, None)
 
     async def _run_probe(spec: BacktestSpec) -> None:
+        # Every provider is published before anything is awaited, and each is
+        # filled in as its calls land. A probe that only appears once it has
+        # finished is indistinguishable from a hung one for as long as it takes
+        # -- and at the ceiling, three calls is nine minutes.
+        for name in spec.providers:
+            probes[name] = ProviderProbe(provider=name)
+
+        def fail_all(reason: str) -> None:
+            for name in spec.providers:
+                probes[name].error = reason[:200]
+                probes[name].done = True
+
         try:
             series, _rules = await _load_series(spec)
+        except asyncio.CancelledError:
+            fail_all("cancelled")
+            raise
         except Exception as exc:  # noqa: BLE001 - surface it on every provider
-            for name in spec.providers:
-                probes[name] = ProviderProbe(
-                    provider=name, error=f"history load failed: {exc}"[:200]
-                )
+            fail_all(f"history load failed: {exc}")
             return
+
         symbol = spec.symbols[0]
         builder = HistoricalSnapshotBuilder(series[symbol])
         portfolio = SimulatedExchange(spec.config).portfolio_state({})
         for name in spec.providers:
+            probe = probes[name]
             try:
-                probes[name] = await probe_provider(
+                await probe_provider(
                     engine.providers.get(name),
                     spec=spec,
                     builder=builder,
                     symbol=symbol,
                     portfolio=portfolio,
+                    into=probe,
                 )
+            except asyncio.CancelledError:
+                # This one was interrupted and the ones after it never started.
+                # Marked unconditionally: probe_provider's `finally` has already
+                # set done on the way out, so keying off that would leave a
+                # cancelled probe looking like one that simply finished early.
+                for pending in spec.providers[spec.providers.index(name) :]:
+                    probes[pending].error = "cancelled"
+                    probes[pending].done = True
+                raise
             except Exception as exc:  # noqa: BLE001 - one endpoint, not the set
-                probes[name] = ProviderProbe(provider=name, error=str(exc)[:200])
+                probe.error = str(exc)[:200]
+                probe.done = True
 
     @app.post("/api/backtests/probe", status_code=202)
     async def start_probe(request: BacktestRequest) -> dict[str, Any]:
@@ -1729,6 +1754,15 @@ def create_app(
                     "provider": item.provider,
                     "error": item.error,
                     "failures": item.failures,
+                    "done": item.done,
+                    # How long the call in flight has been waiting. The only
+                    # thing that moves while a slow endpoint thinks, and so the
+                    # only thing that says the probe is alive.
+                    "in_flight_seconds": (
+                        round(item.in_flight_seconds, 1)
+                        if item.in_flight_seconds is not None
+                        else None
+                    ),
                     "calls": [
                         {"seconds": round(call.seconds, 1), "ok": call.ok, "error": call.error}
                         for call in item.calls
@@ -1743,6 +1777,19 @@ def create_app(
                 for item in probes.values()
             ],
         }
+
+    @app.post("/api/backtests/probe/cancel")
+    async def cancel_probe() -> dict[str, Any]:
+        """Stop waiting on an endpoint that is not going to answer.
+
+        Three calls at the ceiling is nine minutes; without this the only way
+        out of a probe against a dead endpoint is to restart the backend.
+        """
+
+        if probe_task is None or probe_task.done():
+            raise HTTPException(status_code=409, detail="no probe is running")
+        probe_task.cancel()
+        return {"cancelled": True}
 
     @app.post("/api/backtests", status_code=202)
     async def start_backtest(request: BacktestRequest) -> dict[str, Any]:

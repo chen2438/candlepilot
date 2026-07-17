@@ -1732,3 +1732,104 @@ def test_clearing_backtests_takes_the_decisions_with_them(tmp_path: Path) -> Non
         assert client.get("/api/backtests").json() == []
         assert client.get("/api/backtests/1/decisions").status_code == 404
     asyncio.run(database.close())
+
+
+def test_a_running_probe_shows_each_call_as_it_lands(tmp_path: Path) -> None:
+    """The probe published nothing until all three calls were done.
+
+    At PROBE_CEILING_SECONDS that is nine minutes of a spinner that looks the
+    same as a hang -- against the one thing whose slowness is the whole point.
+    """
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'probe-live.db'}")
+    market = BacktestMarket()
+    gate = asyncio.Event()
+
+    class Gated(ApiProvider):
+        calls = 0
+
+        async def generate_trade_intent(self, snapshot, portfolio):
+            Gated.calls += 1
+            if Gated.calls == 2:
+                await gate.wait()
+            return await super().generate_trade_intent(snapshot, portfolio)
+
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([Gated()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    mid: dict[str, object] = {}
+
+    with TestClient(app) as client:
+        client.post(
+            "/api/backtests/probe",
+            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
+        )
+        # Held at call 2, so exactly one call has landed and one is waiting.
+        for _ in range(300):
+            body = client.get("/api/backtests/probe").json()
+            if body["providers"] and body["providers"][0]["calls"]:
+                mid = body["providers"][0]
+                break
+            time.sleep(0.02)
+        gate.set()
+
+    assert mid, "the probe published nothing while it was running"
+    assert len(mid["calls"]) == 1
+    assert mid["done"] is False
+    # The elapsed clock is the only thing that moves while an endpoint thinks.
+    assert mid["in_flight_seconds"] is not None
+    asyncio.run(database.close())
+
+
+def test_a_probe_can_be_abandoned(tmp_path: Path) -> None:
+    """Three calls at the ceiling is nine minutes; there has to be a way out."""
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'probe-cancel.db'}")
+    market = BacktestMarket()
+    forever = asyncio.Event()
+
+    class Hangs(ApiProvider):
+        async def generate_trade_intent(self, snapshot, portfolio):
+            await forever.wait()
+            raise AssertionError("unreachable")
+
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([Hangs()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        assert client.post("/api/backtests/probe/cancel").status_code == 409
+        client.post(
+            "/api/backtests/probe",
+            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
+        )
+        # Wait for a call to actually be in flight. Cancelling on `running`
+        # alone lands during the history load instead, which is a different
+        # path -- and the one this test used to pass on while the real one was
+        # broken.
+        for _ in range(300):
+            body = client.get("/api/backtests/probe").json()
+            if body["providers"] and body["providers"][0]["in_flight_seconds"] is not None:
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("no call ever went in flight")
+        assert client.post("/api/backtests/probe/cancel").json() == {"cancelled": True}
+        for _ in range(300):
+            if not client.get("/api/backtests/probe").json()["running"]:
+                break
+            time.sleep(0.02)
+        body = client.get("/api/backtests/probe").json()
+
+    assert body["running"] is False
+    assert body["providers"][0]["error"] == "cancelled"
+    assert body["providers"][0]["done"] is True
+    asyncio.run(database.close())

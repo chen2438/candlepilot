@@ -1598,12 +1598,23 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
 
   useEffect(() => { void refreshProbe(); }, [refreshProbe]);
 
-  // Poll only while the probe is in flight; each call is a real inference.
+  // Poll only while the probe is in flight. Fast, because the elapsed counter
+  // is the only thing that moves while an endpoint thinks -- and whether it is
+  // moving is the entire question a waiting user has.
   useEffect(() => {
     if (!probe?.running) return;
-    const timer = window.setInterval(() => void refreshProbe(), 2000);
+    const timer = window.setInterval(() => void refreshProbe(), 1000);
     return () => window.clearInterval(timer);
   }, [probe, refreshProbe]);
+
+  const cancelProbe = async () => {
+    try {
+      await api("/api/backtests/probe/cancel", { method: "POST" });
+      await refreshProbe();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
 
   const startProbe = async () => {
     setBusy("probe"); setError(null);
@@ -1762,6 +1773,11 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
             disabled={busy !== null || !form.providers.length || engineRunning || probe?.running}
             onClick={() => void startProbe()}
           >{probe?.running ? "试跑中…" : "开始试跑"}</button>
+          {probe?.running && (
+            <button className="text-button danger-text" onClick={() => void cancelProbe()}>
+              停止试跑
+            </button>
+          )}
           <small>
             用这个窗口的真实 payload 调每个模型 {probe?.decisions ?? 3} 次，量出它实际要多久。
             试跑期间超时放宽到 {probe?.ceiling_seconds ?? 180}s——用当前超时去试只会复现超时，
@@ -1771,28 +1787,47 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
         {probe?.providers.map((item) => (
           <div className="probe-row" key={item.provider}>
             <span className="probe-name">{providerLabel(item.provider)}</span>
-            {item.error
-              ? <span className="negative">{item.error}</span>
-              : <>
-                  <span className="probe-calls">
-                    {item.calls.map((call, index) => (
-                      <b key={index} className={call.ok ? "" : "negative"}
-                        title={call.error ?? ""}>
-                        {call.ok ? `${call.seconds}s` : "失败"}
-                      </b>
-                    ))}
-                  </span>
-                  {item.suggested_timeout_seconds !== null ? (
-                    <button
-                      className="text-button"
-                      onClick={() => setTimeoutSeconds(String(item.suggested_timeout_seconds))}
-                    >建议 {item.suggested_timeout_seconds}s · 点击采用</button>
-                  ) : (
-                    <span className="negative">
-                      {probe.decisions} 次全部失败——这个端点跑不动这次回测，调大超时也没用
-                    </span>
-                  )}
-                </>}
+            <span className="probe-calls">
+              {/* One slot per call: landed, in flight, or still queued. A row
+                  that only appears when it is done cannot be told from a hang. */}
+              {Array.from({ length: probe.decisions }, (_, index) => {
+                const call = item.calls[index];
+                if (call) {
+                  return <b key={index} className={call.ok ? "" : "negative"} title={call.error ?? ""}>
+                    {call.ok ? `${call.seconds}s` : "失败"}
+                  </b>;
+                }
+                if (index === item.calls.length && item.in_flight_seconds !== null) {
+                  return <b key={index} className="probe-waiting">
+                    {item.in_flight_seconds}s…
+                  </b>;
+                }
+                return <b key={index} className="probe-queued">·</b>;
+              })}
+            </span>
+            {item.error && <span className="negative">{item.error}</span>}
+            {!item.done && !item.error && (
+              <small className="probe-progress">
+                第 {Math.min(item.calls.length + 1, probe.decisions)}/{probe.decisions} 次
+                {item.in_flight_seconds !== null
+                  ? `已等 ${item.in_flight_seconds}s（上限 ${probe.ceiling_seconds}s）`
+                  : "准备中"}
+              </small>
+            )}
+            {item.done && !item.error && item.suggested_timeout_seconds !== null && (
+              <button
+                className="text-button"
+                onClick={() => setTimeoutSeconds(String(item.suggested_timeout_seconds))}
+              >建议 {item.suggested_timeout_seconds}s · 点击采用</button>
+            )}
+            {/* Only when every call actually ran and failed. A probe that was
+                cut short has no calls to have failed, and saying they did would
+                blame the endpoint for something the user did. */}
+            {item.done && !item.error && item.failures === probe.decisions && (
+              <span className="negative">
+                {probe.decisions} 次全部失败——这个端点跑不动这次回测，调大超时也没用
+              </span>
+            )}
           </div>
         ))}
         <label className="probe-timeout">

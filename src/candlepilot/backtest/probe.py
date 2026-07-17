@@ -52,11 +52,28 @@ class ProbeCall:
 
 @dataclass
 class ProviderProbe:
-    """What one endpoint did with `PROBE_DECISIONS` real decisions."""
+    """What one endpoint did with `PROBE_DECISIONS` real decisions.
+
+    Filled in as the calls land rather than returned at the end. A probe waits
+    on the very thing it is measuring, and at `PROBE_CEILING_SECONDS` a silent
+    one can run for nine minutes before it admits to anything -- long enough to
+    look identical to a hang.
+    """
 
     provider: str
     calls: list[ProbeCall] = field(default_factory=list)
     error: str | None = None
+    #: `time.monotonic()` when the in-flight call started, if one is in flight.
+    started_at: float | None = None
+    done: bool = False
+
+    @property
+    def in_flight_seconds(self) -> float | None:
+        """How long the current call has been waiting, for a live readout."""
+
+        if self.started_at is None:
+            return None
+        return time.monotonic() - self.started_at
 
     @property
     def slowest_ok_seconds(self) -> float | None:
@@ -101,17 +118,23 @@ async def probe_provider(
     symbol: str,
     portfolio: PortfolioState,
     ceiling: float = PROBE_CEILING_SECONDS,
+    into: ProviderProbe | None = None,
 ) -> ProviderProbe:
     """Time `PROBE_DECISIONS` real calls against `provider`.
 
     The provider's own timeout is raised to `ceiling` for the duration and put
     back afterwards, so a probe can outlive the setting it exists to question.
+
+    Pass `into` to have each call appended to an object the caller already
+    published: the point of a probe is watching an endpoint answer, and a
+    reader that only sees the verdict cannot tell a slow call from a dead one.
     """
 
-    result = ProviderProbe(provider=provider.name)
+    result = into if into is not None else ProviderProbe(provider=provider.name)
     instants = probe_instants(spec)
     if not instants:
         result.error = "the window holds no decision instants to probe"
+        result.done = True
         return result
 
     previous = provider.timeout
@@ -124,6 +147,7 @@ async def probe_provider(
                 result.error = f"no snapshot at {when.isoformat()}: {exc}"[:200]
                 return result
             started = time.monotonic()
+            result.started_at = started
             try:
                 await provider.generate_trade_intent(snapshot, portfolio)
             except Exception as exc:  # noqa: BLE001 - a failed probe is a result
@@ -135,7 +159,11 @@ async def probe_provider(
                     )
                 )
                 continue
+            finally:
+                result.started_at = None
             result.calls.append(ProbeCall(seconds=time.monotonic() - started, ok=True))
     finally:
         provider.timeout = previous
+        result.started_at = None
+        result.done = True
     return result

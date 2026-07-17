@@ -378,6 +378,8 @@ export interface ProviderProbe {
   provider: string;
   error: string | null;
   failures: number;
+  done: boolean;
+  in_flight_seconds: number | null;
   calls: ProbeCall[];
   slowest_ok_seconds: number | null;
   suggested_timeout_seconds: number | null;
