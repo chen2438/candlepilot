@@ -183,7 +183,25 @@ class AggressiveRiskPolicy:
         )
 
         per_unit_loss = abs(entry - stop) + (entry * self.slippage_fraction)
-        risk_budget = portfolio.equity * min(intent.risk_fraction, self.max_risk_fraction)
+        requested_risk_budget = portfolio.equity * min(
+            intent.risk_fraction, self.max_risk_fraction
+        )
+        risk_budget = requested_risk_budget
+        if intent.action == TradeAction.ADD:
+            assert existing is not None
+            direction = Decimal("1") if existing.side == "LONG" else Decimal("-1")
+            existing_loss_per_unit = max(
+                Decimal("0"),
+                (existing.entry_price - stop) * direction,
+            ) + (existing.entry_price * self.slippage_fraction)
+            existing_risk = existing.quantity * existing_loss_per_unit
+            remaining_hard_risk = max(
+                Decimal("0"),
+                (portfolio.equity * self.max_risk_fraction) - existing_risk,
+            )
+            risk_budget = min(requested_risk_budget, remaining_hard_risk)
+            if risk_budget <= 0:
+                return self._reject("existing position exhausts the symbol risk limit")
         risk_quantity = risk_budget / per_unit_loss
         remaining_margin = max(
             Decimal("0"),

@@ -85,6 +85,41 @@ def test_testnet_policy_requires_take_profit_on_open() -> None:
     assert AggressiveRiskPolicy().evaluate(intent, _snapshot(), _portfolio(), RULES).decision.accepted
 
 
+def test_add_subtracts_existing_position_risk_from_the_hard_limit() -> None:
+    intent = _intent(TradeAction.ADD)
+    portfolio = _portfolio(
+        open_positions=1,
+        margin_used="1904.76",
+        positions=_position(
+            "LONG", "95.239", stop_loss="98", take_profit="104"
+        ),
+    )
+
+    result = AggressiveRiskPolicy().evaluate(intent, _snapshot(), portfolio, RULES)
+
+    assert not result.decision.accepted
+    assert result.order is None
+    assert "exhausts the symbol risk limit" in result.decision.reason
+
+
+def test_add_uses_only_the_remaining_combined_risk_budget() -> None:
+    intent = _intent(TradeAction.ADD).model_copy(update={"risk_fraction": Decimal("0.02")})
+    portfolio = _portfolio(
+        open_positions=1,
+        margin_used="500",
+        positions=_position("LONG", "25", stop_loss="98", take_profit="104"),
+    )
+
+    result = AggressiveRiskPolicy().evaluate(intent, _snapshot(), portfolio, RULES)
+
+    assert result.decision.accepted
+    assert result.order is not None
+    existing_risk = Decimal("25") * (Decimal("2") + Decimal("0.1"))
+    new_risk = result.order.quantity * (Decimal("2") + Decimal("0.1"))
+    assert existing_risk + new_risk <= Decimal("200")
+    assert existing_risk + new_risk > Decimal("199.99")
+
+
 def test_rejects_take_profit_on_wrong_side_of_entry() -> None:
     long_bad = _intent().model_copy(update={"take_profit": Decimal("99")})  # below entry
     long_result = AggressiveRiskPolicy().evaluate(long_bad, _snapshot(), _portfolio(), RULES)
