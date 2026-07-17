@@ -113,6 +113,40 @@ class ExecutionAttemptRow(Base):
     )
 
 
+class BacktestRunRow(Base):
+    __tablename__ = "backtest_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    spec_json: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), index=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class BacktestModelRunRow(Base):
+    """One model's pass over a run's window.
+
+    Split from the run so progress can be written per model while the others are
+    still going: a comparison is only useful if you can watch it fill in.
+    """
+
+    __tablename__ = "backtest_model_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("backtest_runs.id", ondelete="CASCADE"), index=True
+    )
+    provider: Mapped[str] = mapped_column(String(64))
+    decisions_done: Mapped[int] = mapped_column(Integer, default=0)
+    decisions_total: Mapped[int] = mapped_column(Integer, default=0)
+    calls_failed: Mapped[int] = mapped_column(Integer, default=0)
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class RuntimeStateRow(Base):
     __tablename__ = "runtime_state"
 
@@ -214,6 +248,26 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             "DELETE FROM runtime_state WHERE key = 'paper_account'",
         ),
     ),
+    (
+        5,
+        (
+            "CREATE TABLE IF NOT EXISTS backtest_runs ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, spec_json TEXT NOT NULL, "
+            "status VARCHAR(16) NOT NULL, error TEXT, "
+            "created_at DATETIME NOT NULL, ended_at DATETIME)",
+            "CREATE INDEX IF NOT EXISTS ix_backtest_runs_status ON backtest_runs (status)",
+            "CREATE INDEX IF NOT EXISTS ix_backtest_runs_created_at "
+            "ON backtest_runs (created_at)",
+            "CREATE TABLE IF NOT EXISTS backtest_model_runs ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "run_id INTEGER NOT NULL REFERENCES backtest_runs(id) ON DELETE CASCADE, "
+            "provider VARCHAR(64) NOT NULL, decisions_done INTEGER NOT NULL DEFAULT 0, "
+            "decisions_total INTEGER NOT NULL DEFAULT 0, "
+            "calls_failed INTEGER NOT NULL DEFAULT 0, result_json TEXT, error TEXT)",
+            "CREATE INDEX IF NOT EXISTS ix_backtest_model_runs_run_id "
+            "ON backtest_model_runs (run_id)",
+        ),
+    ),
 )
 CURRENT_SCHEMA_VERSION = max(version for version, _ in MIGRATIONS)
 
@@ -293,6 +347,8 @@ class AuditRepository:
         "executions": ExecutionRow,
         "user_events": UserStreamEventRow,
         "alerts": AlertEventRow,
+        # Model runs cascade from the run, so clearing the parent is enough.
+        "backtests": BacktestRunRow,
     }
 
     def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
@@ -720,6 +776,136 @@ class AuditRepository:
                 not_(succeeded),
             ),
         }[outcome]
+
+    async def create_backtest_run(
+        self, spec: dict[str, Any], providers: list[str]
+    ) -> int:
+        async with self.sessions.begin() as session:
+            run = BacktestRunRow(
+                spec_json=json.dumps(spec, separators=(",", ":"), default=str),
+                status="running",
+            )
+            session.add(run)
+            await session.flush()
+            for provider in providers:
+                session.add(BacktestModelRunRow(run_id=run.id, provider=provider))
+            return run.id
+
+    async def update_backtest_progress(
+        self,
+        run_id: int,
+        provider: str,
+        *,
+        decisions_done: int,
+        decisions_total: int,
+        calls_failed: int,
+        result: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
+        async with self.sessions.begin() as session:
+            row = await session.scalar(
+                select(BacktestModelRunRow).where(
+                    BacktestModelRunRow.run_id == run_id,
+                    BacktestModelRunRow.provider == provider,
+                )
+            )
+            if row is None:
+                return
+            row.decisions_done = decisions_done
+            row.decisions_total = decisions_total
+            row.calls_failed = calls_failed
+            if result is not None:
+                row.result_json = json.dumps(result, separators=(",", ":"), default=str)
+            if error is not None:
+                row.error = error
+
+    async def finish_backtest_run(
+        self, run_id: int, *, status: str, error: str | None = None
+    ) -> None:
+        async with self.sessions.begin() as session:
+            run = await session.get(BacktestRunRow, run_id)
+            if run is None:
+                return
+            run.status = status
+            run.error = error
+            run.ended_at = datetime.now(UTC)
+
+    async def backtest_run(self, run_id: int) -> dict[str, Any] | None:
+        async with self.sessions() as session:
+            run = await session.get(BacktestRunRow, run_id)
+            if run is None:
+                return None
+            models = (
+                await session.scalars(
+                    select(BacktestModelRunRow)
+                    .where(BacktestModelRunRow.run_id == run_id)
+                    .order_by(BacktestModelRunRow.id)
+                )
+            ).all()
+        return self._backtest_dict(run, list(models), detail=True)
+
+    async def recent_backtest_runs(self, limit: int = 20) -> list[dict[str, Any]]:
+        async with self.sessions() as session:
+            runs = (
+                await session.scalars(
+                    select(BacktestRunRow).order_by(BacktestRunRow.id.desc()).limit(limit)
+                )
+            ).all()
+            if not runs:
+                return []
+            models = (
+                await session.scalars(
+                    select(BacktestModelRunRow)
+                    .where(BacktestModelRunRow.run_id.in_([run.id for run in runs]))
+                    .order_by(BacktestModelRunRow.id)
+                )
+            ).all()
+        by_run: dict[int, list[BacktestModelRunRow]] = {}
+        for model in models:
+            by_run.setdefault(model.run_id, []).append(model)
+        return [
+            self._backtest_dict(run, by_run.get(run.id, []), detail=False) for run in runs
+        ]
+
+    def _backtest_dict(
+        self,
+        run: BacktestRunRow,
+        models: list[BacktestModelRunRow],
+        *,
+        detail: bool,
+    ) -> dict[str, Any]:
+        return {
+            "id": run.id,
+            "status": run.status,
+            "error": run.error,
+            "spec": json.loads(run.spec_json),
+            "created_at": self._utc(run.created_at),
+            "ended_at": self._utc(run.ended_at) if run.ended_at is not None else None,
+            "models": [self._model_run_dict(model, detail=detail) for model in models],
+        }
+
+    @staticmethod
+    def _model_run_dict(row: BacktestModelRunRow, *, detail: bool) -> dict[str, Any]:
+        result = json.loads(row.result_json) if row.result_json else None
+        if result is not None and not detail:
+            # The list view only needs the headline numbers; trades and the
+            # curve are megabytes on a three-day run.
+            result = {
+                key: value
+                for key, value in result.items()
+                if key not in ("trades", "equity_curve")
+            }
+        return {
+            "provider": row.provider,
+            "decisions_done": row.decisions_done,
+            "decisions_total": row.decisions_total,
+            "calls_failed": row.calls_failed,
+            "progress": (row.decisions_done / row.decisions_total)
+            if row.decisions_total
+            else 0.0,
+            "result": result,
+            "error": row.error,
+        }
 
     async def recent_decision_events(
         self,

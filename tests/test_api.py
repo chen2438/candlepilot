@@ -1,6 +1,7 @@
 import asyncio
 import json
-from datetime import timedelta
+import time
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -1142,4 +1143,153 @@ def test_decision_events_reject_filters_they_cannot_honour(tmp_path: Path) -> No
         assert client.get("/api/decision-events?cadence=7m").status_code == 422
         assert client.get("/api/decision-events?before_id=0").status_code == 422
         assert client.get("/api/decision-events?limit=501").status_code == 422
+    asyncio.run(database.close())
+
+
+class BacktestMarket(ApiMarket):
+    """History deep enough for the warm-up every decision needs."""
+
+    async def exchange_info(self):
+        from candlepilot.market.binance import ContractInfo
+        from candlepilot.risk.engine import SymbolRules
+
+        rules = SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01"))
+        return {
+            symbol: ContractInfo(symbol, datetime(2020, 1, 1, tzinfo=UTC), rules)
+            for symbol in ("BTCUSDT", "ETHUSDT")
+        }
+
+    async def historical_klines(self, symbol, interval, start, end, *, max_candles=10_000):
+        step = {"5m": 300_000, "15m": 900_000, "30m": 1_800_000, "1d": 86_400_000}[interval]
+        start_ms, end_ms = int(start.timestamp() * 1000), int(end.timestamp() * 1000)
+        rows = []
+        price = 100.0
+        for index in range((end_ms - start_ms) // step):
+            price *= 1.0005
+            open_ms = start_ms + index * step
+            rows.append(
+                [open_ms, str(price), str(price * 1.004), str(price * 0.996), str(price), "500"]
+            )
+        return rows[:max_candles]
+
+
+def _backtest_app(tmp_path: Path, name: str):
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / name}")
+    market = BacktestMarket()
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    return database, engine, app
+
+
+def _window(hours: int = 1) -> dict[str, str]:
+    end = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+    return {
+        "start": (end - timedelta(hours=hours)).isoformat(),
+        "end": end.isoformat(),
+    }
+
+
+def test_backtest_estimate_counts_calls_before_any_are_paid_for(tmp_path: Path) -> None:
+    database, _engine, app = _backtest_app(tmp_path, "bt-estimate.db")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/backtests/estimate",
+            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(2)},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        # Two hours of 5m bars.
+        assert body["decisions_per_model"] == 24
+        assert body["total_calls"] == 24
+        assert body["within_limit"] is True
+    asyncio.run(database.close())
+
+
+def test_backtest_refuses_a_window_that_could_not_finish(tmp_path: Path) -> None:
+    """A three-day multi-symbol comparison is days of real calls, not seconds."""
+
+    database, _engine, app = _backtest_app(tmp_path, "bt-limit.db")
+
+    with TestClient(app) as client:
+        end = datetime.now(UTC) - timedelta(hours=1)
+        response = client.post(
+            "/api/backtests",
+            json={
+                "symbols": ["BTCUSDT", "ETHUSDT"],
+                "cadences": ["5m", "15m", "30m"],
+                "providers": ["api-fixture"],
+                "start": (end - timedelta(days=3)).isoformat(),
+                "end": end.isoformat(),
+            },
+        )
+        assert response.status_code == 422
+        assert "calls per model" in response.json()["detail"]
+    asyncio.run(database.close())
+
+
+def test_backtest_is_refused_while_the_engine_runs(tmp_path: Path) -> None:
+    """They share a provider, and each provider serialises its own calls."""
+
+    database, engine, app = _backtest_app(tmp_path, "bt-busy.db")
+
+    with TestClient(app) as client:
+        client.post("/api/providers/select", json={"name": "api-fixture"})
+        assert client.post("/api/engine/start").json()["running"] is True
+
+        response = client.post(
+            "/api/backtests",
+            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window()},
+        )
+
+        assert response.status_code == 409
+        assert "stop the engine" in response.json()["detail"]
+    asyncio.run(database.close())
+
+
+def test_backtest_runs_in_the_background_and_reports_each_model(tmp_path: Path) -> None:
+    database, _engine, app = _backtest_app(tmp_path, "bt-run.db")
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/backtests",
+            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window()},
+        )
+        # 202: a real window is hours of calls, so it cannot be a synchronous
+        # request. The id is handed back immediately.
+        assert created.status_code == 202
+        run_id = created.json()["id"]
+        assert created.json()["estimate"]["decisions_per_model"] == 12
+
+        for _ in range(200):
+            run = client.get(f"/api/backtests/{run_id}").json()
+            if run["status"] != "running":
+                break
+            time.sleep(0.05)
+
+        assert run["status"] == "completed", run.get("error")
+        assert [model["provider"] for model in run["models"]] == ["api-fixture"]
+        model = run["models"][0]
+        assert model["decisions_done"] == model["decisions_total"] == 12
+        assert model["progress"] == 1.0
+        # The fixture provider only ever holds, so nothing traded.
+        assert model["result"]["trade_count"] == 0
+        assert client.get("/api/backtests").json()[0]["id"] == run_id
+    asyncio.run(database.close())
+
+
+def test_backtest_rejects_an_unknown_model_before_starting(tmp_path: Path) -> None:
+    database, _engine, app = _backtest_app(tmp_path, "bt-unknown.db")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/backtests",
+            json={"symbols": ["BTCUSDT"], "providers": ["nope"], **_window()},
+        )
+        assert response.status_code == 404
     asyncio.run(database.close())

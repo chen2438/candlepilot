@@ -30,8 +30,13 @@ from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
 MAX_BACKTEST_SYMBOLS = 5
 MAX_BACKTEST_MODELS = 4
 MAX_BACKTEST_DAYS = 3
-#: Refuse anything that would take longer than a working day to finish.
-MAX_ESTIMATED_CALLS = 4_000
+#: Refuse a window that would still be running tomorrow.
+#:
+#: The limit is on wall clock, not call count: the same 2,592 calls are 20
+#: minutes against a fast endpoint and 17 hours against a slow one, so a call
+#: cap would be far too loose for one and needlessly tight for the other. This
+#: is measured against the install's own latency.
+MAX_ESTIMATED_HOURS = 8.0
 
 
 @dataclass(frozen=True, slots=True)

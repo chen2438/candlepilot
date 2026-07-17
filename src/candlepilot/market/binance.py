@@ -168,7 +168,7 @@ class BinancePublicClient:
         *,
         max_candles: int = 10_000,
     ) -> list[list[Any]]:
-        if interval not in {"1m", "5m", "15m", "30m", "1h"}:
+        if interval not in {"1m", "5m", "15m", "30m", "1h", "1d"}:
             raise ValueError("unsupported kline interval")
         if start.tzinfo is None or end.tzinfo is None:
             raise ValueError("historical range must be timezone-aware")
@@ -183,6 +183,7 @@ class BinancePublicClient:
             "15m": 900_000,
             "30m": 1_800_000,
             "1h": 3_600_000,
+            "1d": 86_400_000,
         }[interval]
         cursor = int(start.timestamp() * 1000)
         end_ms = int(end.timestamp() * 1000)

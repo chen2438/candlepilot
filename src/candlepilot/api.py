@@ -26,6 +26,24 @@ from candlepilot.application.scheduler import (
     TradingScheduler,
 )
 from candlepilot.application.testnet_feed import TestnetUserFeed
+from candlepilot.backtest.engine import BacktestConfig, Candle
+from candlepilot.backtest.runner import (
+    MAX_BACKTEST_MODELS,
+    MAX_BACKTEST_SYMBOLS,
+    MAX_ESTIMATED_HOURS,
+    BacktestRunner,
+    BacktestSpec,
+    ModelRun,
+    compare,
+    estimate,
+    validate,
+)
+from candlepilot.backtest.snapshots import (
+    INTERVAL_MILLISECONDS as BACKTEST_INTERVALS,
+)
+from candlepilot.backtest.snapshots import (
+    required_history_start,
+)
 from candlepilot.broker.binance_testnet import (
     BinanceTestnetBroker,
     BinanceTestnetCredentials,
@@ -127,6 +145,21 @@ class CadenceSelection(ApiModel):
 
 class CandidatesPerCycleSelection(ApiModel):
     candidates_per_cycle: int = Field(ge=1, le=MAX_CANDIDATES_PER_CYCLE)
+
+
+class BacktestConfigInput(ApiModel):
+    initial_equity: Annotated[Decimal, Field(gt=0)] = Decimal("10000")
+    fee_rate: Annotated[Decimal, Field(ge=0, le=1)] = Decimal("0.0005")
+    slippage_fraction: Annotated[Decimal, Field(ge=0, le=1)] = Decimal("0.0005")
+
+
+class BacktestRequest(ApiModel):
+    symbols: list[str] = Field(min_length=1, max_length=MAX_BACKTEST_SYMBOLS)
+    cadences: list[str] = Field(default=["5m"], min_length=1, max_length=3)
+    start: datetime
+    end: datetime
+    providers: list[str] = Field(min_length=1, max_length=MAX_BACKTEST_MODELS)
+    config: BacktestConfigInput = Field(default_factory=BacktestConfigInput)
 
 
 class SymbolRulesInput(ApiModel):
@@ -1348,6 +1381,192 @@ def create_app(
             "execution": outcome.execution.model_dump(mode="json") if outcome.execution else None,
         }
 
+
+    backtest_tasks: dict[int, asyncio.Task[None]] = {}
+
+    async def measured_seconds_per_call() -> float:
+        """Estimate from this install's own latency, not a guess.
+
+        A backtest's cost is dominated by how slow the configured models
+        actually are here, which the audit log already knows.
+        """
+
+        metrics = await engine.audit.provider_metrics(24 * 7)
+        durations = [
+            item["average_duration_ms"] for item in metrics if item["average_duration_ms"] > 0
+        ]
+        if not durations:
+            return 25.0
+        return sum(durations) / len(durations) / 1000
+
+    def _spec_from(request: BacktestRequest) -> BacktestSpec:
+        return BacktestSpec(
+            symbols=tuple(symbol.upper() for symbol in request.symbols),
+            cadences=tuple(request.cadences),
+            start=request.start,
+            end=request.end,
+            providers=tuple(request.providers),
+            config=BacktestConfig(**request.config.model_dump()),
+        )
+
+    async def _checked_spec(request: BacktestRequest) -> BacktestSpec:
+        spec = _spec_from(request)
+        unsupported = set(spec.cadences) - set(SUPPORTED_CADENCES)
+        if unsupported:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unsupported cadences: {', '.join(sorted(unsupported))}",
+            )
+        try:
+            validate(spec)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        for provider in spec.providers:
+            try:
+                engine.providers.get(provider)
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return spec
+
+    @app.post("/api/backtests/estimate")
+    async def estimate_backtest(request: BacktestRequest) -> dict[str, Any]:
+        spec = await _checked_spec(request)
+        result = estimate(spec, seconds_per_call=await measured_seconds_per_call())
+        return {
+            **result.as_dict(),
+            "max_hours": MAX_ESTIMATED_HOURS,
+            "within_limit": result.estimated_seconds <= MAX_ESTIMATED_HOURS * 3600,
+        }
+
+    async def _load_series(
+        spec: BacktestSpec,
+    ) -> tuple[dict[str, dict[str, list[Candle]]], dict[str, SymbolRules]]:
+        contracts = await market.exchange_info()
+        history_start = required_history_start(spec.start, spec.cadences[0])
+        series: dict[str, dict[str, list[Candle]]] = {}
+        rules: dict[str, SymbolRules] = {}
+        for symbol in spec.symbols:
+            contract = contracts.get(symbol)
+            if contract is None:
+                raise HTTPException(status_code=404, detail=f"unknown symbol: {symbol}")
+            rules[symbol] = contract.rules
+            by_interval: dict[str, list[Candle]] = {}
+            for interval in BACKTEST_INTERVALS:
+                payloads = await load_backtest_candles(
+                    symbol, interval, history_start, spec.end, 100_000
+                )
+                by_interval[interval] = [
+                    Candle(
+                        timestamp=item["timestamp"],
+                        open=Decimal(item["open"]),
+                        high=Decimal(item["high"]),
+                        low=Decimal(item["low"]),
+                        close=Decimal(item["close"]),
+                        volume=Decimal(item["volume"]),
+                        funding_rate=Decimal(item.get("funding_rate", "0")),
+                    )
+                    for item in payloads
+                ]
+            series[symbol] = by_interval
+        return series, rules
+
+    async def _run_backtest(run_id: int, spec: BacktestSpec) -> None:
+        try:
+            series, rules = await _load_series(spec)
+        except Exception as exc:  # noqa: BLE001 - surface the reason on the run
+            await engine.audit.finish_backtest_run(
+                run_id, status="failed", error=f"history load failed: {exc}"[:500]
+            )
+            return
+
+        async def flush(run: ModelRun) -> None:
+            await engine.audit.update_backtest_progress(
+                run_id,
+                run.provider,
+                decisions_done=run.decisions_done,
+                decisions_total=run.decisions_total,
+                calls_failed=run.calls_failed,
+                result=_json_value(asdict(run.result)) if run.result is not None else None,
+                error=run.error,
+            )
+
+        try:
+            runs = await compare(
+                spec=spec,
+                runner_for=lambda _: BacktestRunner(
+                    spec=spec, series=series, rules=rules, risk=engine.risk
+                ),
+                provider_for=engine.providers.get,
+            )
+            for run in runs:
+                await flush(run)
+            await engine.audit.finish_backtest_run(run_id, status="completed")
+        except asyncio.CancelledError:
+            await engine.audit.finish_backtest_run(run_id, status="cancelled")
+            raise
+        except Exception as exc:  # noqa: BLE001
+            await engine.audit.finish_backtest_run(run_id, status="failed", error=str(exc)[:500])
+        finally:
+            backtest_tasks.pop(run_id, None)
+
+    @app.post("/api/backtests", status_code=202)
+    async def start_backtest(request: BacktestRequest) -> dict[str, Any]:
+        # The backtest and the live loop share a provider, and each provider
+        # serialises its own calls. Running both would starve each other, and
+        # the queueing delay would push live snapshots past the staleness limit
+        # so real trades get vetoed for a reason that is not about the market.
+        if engine.running:
+            raise HTTPException(
+                status_code=409,
+                detail="stop the engine before starting a backtest: they share the "
+                "same provider and would queue behind each other",
+            )
+        spec = await _checked_spec(request)
+        projected = estimate(spec, seconds_per_call=await measured_seconds_per_call())
+        if projected.estimated_seconds > MAX_ESTIMATED_HOURS * 3600:
+            raise HTTPException(
+                status_code=422,
+                detail=f"this window needs {projected.decisions_per_model} calls per model, "
+                f"about {projected.estimated_seconds / 3600:.1f}h at the latency measured "
+                f"here; the limit is {MAX_ESTIMATED_HOURS:g}h. Shorten the window, drop a "
+                f"symbol, or use one cadence.",
+            )
+        run_id = await engine.audit.create_backtest_run(
+            {
+                "symbols": list(spec.symbols),
+                "cadences": list(spec.cadences),
+                "start": spec.start.isoformat(),
+                "end": spec.end.isoformat(),
+                "providers": list(spec.providers),
+                "estimate": projected.as_dict(),
+            },
+            list(spec.providers),
+        )
+        backtest_tasks[run_id] = asyncio.create_task(
+            _run_backtest(run_id, spec), name=f"candlepilot-backtest-{run_id}"
+        )
+        return {"id": run_id, "status": "running", "estimate": projected.as_dict()}
+
+    @app.get("/api/backtests")
+    async def list_backtests(limit: int = 20) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 100:
+            raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
+        return [_json_value(item) for item in await engine.audit.recent_backtest_runs(limit)]
+
+    @app.get("/api/backtests/{run_id}")
+    async def get_backtest(run_id: int) -> dict[str, Any]:
+        run = await engine.audit.backtest_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="backtest not found")
+        return _json_value(run)
+
+    @app.post("/api/backtests/{run_id}/cancel")
+    async def cancel_backtest(run_id: int) -> dict[str, Any]:
+        task = backtest_tasks.get(run_id)
+        if task is None or task.done():
+            raise HTTPException(status_code=409, detail="backtest is not running")
+        task.cancel()
+        return {"id": run_id, "status": "cancelling"}
 
     @app.websocket("/ws/events")
     async def event_stream(websocket: WebSocket) -> None:
