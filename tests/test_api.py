@@ -819,6 +819,41 @@ def test_custom_providers_editor_endpoint(tmp_path: Path, monkeypatch) -> None:
     asyncio.run(database.close())
 
 
+def test_startup_keeps_known_route_entries_when_a_custom_provider_was_removed(
+    tmp_path: Path,
+) -> None:
+    database, engine, _app = _backtest_app(tmp_path, "stale-route.db")
+
+    create_app(
+        settings=Settings(
+            provider_chain=("missing-custom", "api-fixture"),
+            default_provider="also-missing",
+        ),
+        database=database,
+        market=BacktestMarket(),  # type: ignore[arg-type]
+        engine=engine,
+    )
+
+    assert engine.provider_chain == ("api-fixture",)
+    asyncio.run(database.close())
+
+
+def test_startup_survives_when_every_configured_provider_was_removed(
+    tmp_path: Path,
+) -> None:
+    database, engine, _app = _backtest_app(tmp_path, "empty-stale-route.db")
+
+    create_app(
+        settings=Settings(provider_chain=("missing-custom",)),
+        database=database,
+        market=BacktestMarket(),  # type: ignore[arg-type]
+        engine=engine,
+    )
+
+    assert engine.provider_chain == ()
+    asyncio.run(database.close())
+
+
 def test_restart_command_drops_dotenv_values_but_keeps_exports(monkeypatch) -> None:
     import candlepilot.api as api_module
     from candlepilot.api import restart_command
