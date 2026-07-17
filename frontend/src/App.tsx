@@ -339,11 +339,25 @@ export default function App() {
     }
   }, []);
 
-  const testProvider = useCallback(async (name: string) => {
+  const testProvider = useCallback(async (
+    name: string,
+    draft?: { model: string; effort: string },
+  ) => {
     setBusy(`test-${name}`);
     setError(null);
     setTestResult((current) => ({ ...current, [name]: { ok: false, text: "测试中…" } }));
     try {
+      if (draft) {
+        const next = await api<ProviderHealth[]>("/api/providers/config", {
+          method: "POST",
+          body: JSON.stringify({
+            name,
+            model: draft.model,
+            reasoning_effort: draft.effort || null,
+          }),
+        });
+        setProviders(next);
+      }
       const result = await api<{ ok: boolean; model: string | null; action?: string; duration_ms: number; detail?: string }>(
         "/api/providers/test",
         { method: "POST", body: JSON.stringify({ name }) },
@@ -889,10 +903,19 @@ export default function App() {
                     <div className="provider-card-actions">
                       <button className="text-button" disabled={status.running || busy !== null || !dirty}
                         onClick={() => applyProviderConfig(provider.provider, { model, effort })}>应用</button>
-                      <button className="text-button" disabled={status.running || busy !== null || dirty || !provider.authenticated}
-                        title={dirty ? "请先应用配置再测试" : "用当前配置发起一次真实调用"}
-                        onClick={() => testProvider(provider.provider)}>
-                        {busy === `test-${provider.provider}` ? "测试中…" : "测试"}
+                      <button className="text-button" disabled={status.running || busy !== null}
+                        title={dirty
+                          ? "应用当前模型与推理强度后立即发起真实调用"
+                          : provider.authenticated
+                            ? "用当前配置发起一次真实调用"
+                            : "发起真实调用并查看当前配置不可用的具体原因"}
+                        onClick={() => testProvider(
+                          provider.provider,
+                          dirty ? { model, effort } : undefined,
+                        )}>
+                        {busy === `test-${provider.provider}`
+                          ? "测试中…"
+                          : dirty ? "应用并测试" : "测试"}
                       </button>
                     </div>
                     {testResult[provider.provider] && <span className={`config-test-result ${testResult[provider.provider].ok ? "ok" : "err"}`}>
