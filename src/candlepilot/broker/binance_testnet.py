@@ -389,11 +389,12 @@ class BinanceTestnetBroker:
                 )
             )
         except Exception as exc:
+            cleanup_failed = False
             for client_order_id in fresh_protection:
                 try:
                     await self._cancel_algo_order(client_order_id)
                 except Exception:
-                    pass
+                    cleanup_failed = True
             rescue: ExecutionReport | None = None
             rescue_error: Exception | None = None
             try:
@@ -409,6 +410,8 @@ class BinanceTestnetBroker:
             )
             if rescue_error is not None:
                 message = f"{message}: {type(rescue_error).__name__}"
+            if cleanup_failed:
+                message = f"{message}; protective-order cleanup failed"
             raise ProtectiveStopError(
                 message,
                 entry=entry,
@@ -418,7 +421,7 @@ class BinanceTestnetBroker:
                     protected_order, entry, rescue
                 ),
                 failed_stage="PROTECTION" if rescue is not None else "RESCUE",
-                requires_emergency_lock=rescue is None,
+                requires_emergency_lock=rescue is None or cleanup_failed,
             ) from exc
         try:
             for client_order_id in stale_protection:

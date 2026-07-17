@@ -406,6 +406,59 @@ def test_take_profit_failure_triggers_emergency_reduce() -> None:
     assert rescue[0]["newOrderRespType"] == ["RESULT"]
 
 
+def test_failed_protective_cleanup_requires_an_emergency_lock() -> None:
+    from candlepilot.broker.binance_testnet import ProtectiveStopError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fapi/v1/time":
+            return httpx.Response(200, json={"serverTime": 1784040000000})
+        if request.url.path == "/fapi/v1/marginType":
+            return httpx.Response(400, json={"code": -4046, "msg": "No need to change"})
+        if request.url.path == "/fapi/v1/leverage":
+            return httpx.Response(200, json={"leverage": 3})
+        query = parse_qs(request.url.query.decode())
+        if request.method == "DELETE" and request.url.path == "/fapi/v1/algoOrder":
+            return httpx.Response(500, json={"code": -1000, "msg": "cleanup failed"})
+        if query.get("type") == ["TAKE_PROFIT_MARKET"]:
+            return httpx.Response(400, json={"code": -2021, "msg": "would trigger"})
+        client_order_id = query.get("newClientOrderId", ["cp-cleanup"])[0]
+        return httpx.Response(
+            200,
+            json={
+                "clientOrderId": client_order_id,
+                "status": "FILLED",
+                "executedQty": "1",
+                "avgPrice": "99" if client_order_id.endswith("-rescue") else "100",
+            },
+        )
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        with pytest.raises(ProtectiveStopError) as captured:
+            await broker.execute_with_stop(
+                OrderPlan(
+                    client_order_id="cp-cleanup",
+                    symbol="BTCUSDT",
+                    side="BUY",
+                    quantity=Decimal("1"),
+                    order_type=OrderType.MARKET,
+                    stop_price=Decimal("98"),
+                    take_profit_price=Decimal("104"),
+                ),
+                leverage=3,
+            )
+        await client.aclose()
+        return captured.value
+
+    failure = asyncio.run(scenario())
+    assert failure.rescue is not None
+    assert failure.requires_emergency_lock is True
+    assert "cleanup failed" in str(failure)
+
+
 @pytest.mark.parametrize(
     ("orders", "unprotected"),
     [
