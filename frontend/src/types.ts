@@ -312,6 +312,37 @@ export interface BacktestEstimate {
   within_limit: boolean;
 }
 
+export interface BacktestTrade {
+  symbol: string;
+  side: string;
+  quantity: string;
+  entry_time: string;
+  entry_price: string;
+  exit_time: string;
+  exit_price: string;
+  net_pnl: string;
+  fees: string;
+  funding: string;
+  exit_reason: string;
+}
+
+export interface BacktestResult {
+  initial_equity: string;
+  final_equity: string;
+  gross_price_pnl?: string;
+  net_pnl?: string;
+  total_return: string;
+  max_drawdown: string;
+  win_rate: string;
+  profit_factor: string | null;
+  trade_count: number;
+  total_fees: string;
+  total_funding: string;
+  run_end_trade_count?: number;
+  cancelled_pending_orders?: number;
+  trades?: BacktestTrade[];
+}
+
 export interface BacktestModelRun {
   provider: string;
   decisions_done: number;
@@ -319,17 +350,7 @@ export interface BacktestModelRun {
   calls_failed: number;
   progress: number;
   error: string | null;
-  result: null | {
-    initial_equity: string;
-    final_equity: string;
-    total_return: string;
-    max_drawdown: string;
-    win_rate: string;
-    profit_factor: string | null;
-    trade_count: number;
-    total_fees: string;
-    total_funding: string;
-  };
+  result: BacktestResult | null;
 }
 
 export interface BacktestRun {

@@ -399,9 +399,16 @@ class BacktestRunner:
 
         for symbol in self._spec.symbols:
             self._settle_until(exchange, symbol, self._spec.end, settled_through)
-        exchange.close_all(self._marks(self._spec.end), self._spec.end)
+        cancelled_pending_orders = exchange.close_all(
+            self._marks(self._spec.end), self._spec.end
+        )
         curve.append(EquityPoint(self._spec.end, exchange.equity({})))
-        return summarize(self._spec.config, exchange.trades, curve)
+        return summarize(
+            self._spec.config,
+            exchange.trades,
+            curve,
+            cancelled_pending_orders=cancelled_pending_orders,
+        )
 
 
 async def compare(

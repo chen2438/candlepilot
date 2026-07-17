@@ -90,6 +90,8 @@ class _PendingOrder:
 class BacktestResult:
     initial_equity: Decimal
     final_equity: Decimal
+    gross_price_pnl: Decimal
+    net_pnl: Decimal
     total_return: Decimal
     max_drawdown: Decimal
     win_rate: Decimal
@@ -97,6 +99,8 @@ class BacktestResult:
     trade_count: int
     total_fees: Decimal
     total_funding: Decimal
+    run_end_trade_count: int
+    cancelled_pending_orders: int
     trades: list[BacktestTrade] = field(default_factory=list)
     equity_curve: list[EquityPoint] = field(default_factory=list)
 
@@ -373,8 +377,8 @@ class SimulatedExchange:
             return target, "take_profit"
         return None, ""
 
-    def close_all(self, marks: dict[str, Decimal], when: datetime) -> None:
-        """Flatten what is still open so the run has no unrealised tail."""
+    def close_all(self, marks: dict[str, Decimal], when: datetime) -> int:
+        """Flatten open positions and return how many pending orders were cancelled."""
 
         for symbol in list(self._positions):
             position = self._positions[symbol]
@@ -384,15 +388,23 @@ class SimulatedExchange:
             fee = fill * position.quantity * self.config.fee_rate
             self.cash -= fee
             self._book(symbol, position, position.quantity, fill, when, fee, "run_end")
+        cancelled_pending_orders = len(self._pending)
         self._pending.clear()
+        return cancelled_pending_orders
 
 
 def summarize(
     config: BacktestConfig,
     trades: list[BacktestTrade],
     curve: list[EquityPoint],
+    *,
+    cancelled_pending_orders: int = 0,
 ) -> BacktestResult:
     final = curve[-1].equity if curve else config.initial_equity
+    gross_price_pnl = sum(
+        (trade.net_pnl + trade.fees + trade.funding for trade in trades),
+        Decimal("0"),
+    )
     wins = [trade for trade in trades if trade.net_pnl > 0]
     gross_win = sum((trade.net_pnl for trade in wins), Decimal("0"))
     gross_loss = -sum(
@@ -407,6 +419,8 @@ def summarize(
     return BacktestResult(
         initial_equity=config.initial_equity,
         final_equity=final,
+        gross_price_pnl=gross_price_pnl,
+        net_pnl=final - config.initial_equity,
         total_return=(final / config.initial_equity) - 1
         if config.initial_equity
         else Decimal("0"),
@@ -418,6 +432,8 @@ def summarize(
         trade_count=len(trades),
         total_fees=sum((trade.fees for trade in trades), Decimal("0")),
         total_funding=sum((trade.funding for trade in trades), Decimal("0")),
+        run_end_trade_count=sum(trade.exit_reason == "run_end" for trade in trades),
+        cancelled_pending_orders=cancelled_pending_orders,
         trades=trades,
         equity_curve=curve,
     )

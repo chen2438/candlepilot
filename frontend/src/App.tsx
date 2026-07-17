@@ -4,6 +4,7 @@ import type {
   AccountPosition,
   BacktestDecision,
   BacktestEstimate,
+  BacktestResult,
   BacktestRun,
   Candidate,
   CollectorStatus,
@@ -22,6 +23,93 @@ import type {
   SettingsPayload,
   TestnetAccountStatus,
 } from "./types";
+
+const EXIT_REASON: Record<string, string> = {
+  stop_loss: "止损",
+  take_profit: "止盈",
+  model_exit: "模型退出",
+  run_end: "回测收尾",
+};
+
+function signedUsdt(value: number) {
+  // Four decimals keep the displayed components reconcilable; rounding each
+  // leg to cents can make two correct decimals look one cent apart.
+  return `${value > 0 ? "+" : ""}${value.toFixed(4)} USDT`;
+}
+
+function BacktestResultDetail({ result }: { result: BacktestResult | null }) {
+  if (!result) return <div className="backtest-result-empty">正在读取收益明细；未完成的运行会在结束后生成。</div>;
+  const netPnl = result.net_pnl === undefined
+    ? Number(result.final_equity) - Number(result.initial_equity)
+    : Number(result.net_pnl);
+  const fees = Number(result.total_fees);
+  const fundingCost = Number(result.total_funding);
+  const grossPnl = result.gross_price_pnl === undefined
+    ? netPnl + fees + fundingCost
+    : Number(result.gross_price_pnl);
+  const forcedCloses = result.run_end_trade_count
+    ?? result.trades?.filter((trade) => trade.exit_reason === "run_end").length;
+
+  return (
+    <section className="backtest-result-detail">
+      <div className="backtest-result-heading">
+        <strong>收益构成</strong>
+        <small>净盈亏 = 价格盈亏（已含滑点） − 手续费 − 资金费成本</small>
+      </div>
+      <div className="backtest-pnl-grid">
+        <span><small>初始权益</small><strong>{Number(result.initial_equity).toFixed(2)} USDT</strong></span>
+        <span data-tooltip="所有已平仓交易按成交价计算的盈亏；成交价已经包含入场与退出滑点。">
+          <small>价格盈亏（毛）</small><strong className={grossPnl >= 0 ? "positive" : "negative"}>{signedUsdt(grossPnl)}</strong>
+        </span>
+        <span data-tooltip="开仓和退出两侧手续费的合计；这里显示它对权益的实际影响。">
+          <small>手续费影响</small><strong className="negative">{signedUsdt(-fees)}</strong>
+        </span>
+        <span data-tooltip="资金费为正表示策略支付、为负表示策略收取；这里显示它对权益的实际影响。">
+          <small>资金费影响</small><strong className={-fundingCost >= 0 ? "positive" : "negative"}>{signedUsdt(-fundingCost)}</strong>
+        </span>
+        <span data-tooltip="最终权益减初始权益；回测收尾后没有未实现盈亏。">
+          <small>净盈亏</small><strong className={netPnl >= 0 ? "positive" : "negative"}>{signedUsdt(netPnl)}</strong>
+        </span>
+        <span><small>最终权益 / 总收益</small><strong>{Number(result.final_equity).toFixed(2)} USDT</strong><em>{(Number(result.total_return) * 100).toFixed(2)}%</em></span>
+      </div>
+      <div className="backtest-closeout">
+        <strong>收尾处理</strong>
+        <span>
+          {forcedCloses === undefined
+            ? "旧记录未保存强制平仓计数"
+            : `按最后可用价格强制平仓 ${forcedCloses} 笔（含退出滑点与手续费）`}
+        </span>
+        <span>
+          {result.cancelled_pending_orders === undefined
+            ? "旧记录未保存挂单撤销计数"
+            : `撤销未成交挂单 ${result.cancelled_pending_orders} 笔（不产生盈亏）`}
+        </span>
+      </div>
+      {result.trades && result.trades.length > 0 && (
+        <div className="backtest-trades table-wrap">
+          <table>
+            <thead><tr><th>交易</th><th>入场 → 出场</th><th>价格盈亏</th><th>手续费</th><th>资金费影响</th><th>净盈亏</th><th>退出</th></tr></thead>
+            <tbody>{result.trades.map((trade, index) => {
+              const tradeNet = Number(trade.net_pnl);
+              const tradeFees = Number(trade.fees);
+              const tradeFunding = Number(trade.funding);
+              const tradeGross = tradeNet + tradeFees + tradeFunding;
+              return <tr key={`${trade.symbol}-${trade.entry_time}-${index}`}>
+                <td><strong>{trade.symbol} · {trade.side}</strong><small>{trade.quantity}</small></td>
+                <td>{Number(trade.entry_price).toFixed(4)} → {Number(trade.exit_price).toFixed(4)}</td>
+                <td className={tradeGross >= 0 ? "positive" : "negative"}>{signedUsdt(tradeGross)}</td>
+                <td className="negative">{signedUsdt(-tradeFees)}</td>
+                <td className={-tradeFunding >= 0 ? "positive" : "negative"}>{signedUsdt(-tradeFunding)}</td>
+                <td className={tradeNet >= 0 ? "positive" : "negative"}>{signedUsdt(tradeNet)}</td>
+                <td>{EXIT_REASON[trade.exit_reason] ?? trade.exit_reason}</td>
+              </tr>;
+            })}</tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
 
 const emptyStatus: EngineStatus = {
   running: false,
@@ -1548,6 +1636,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
   const [timeout, setTimeoutSeconds] = useState("");
   const [openDecisions, setOpenDecisions] = useState<string | null>(null);
   const [decisions, setDecisions] = useState<BacktestDecision[] | null>(null);
+  const [detailResult, setDetailResult] = useState<BacktestResult | null>(null);
 
   const body = useCallback(() => ({
     symbols: form.symbols.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),
@@ -1650,15 +1739,27 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
 
   const toggleDecisions = async (runId: number, provider: string) => {
     const key = `${runId}-${provider}`;
-    if (openDecisions === key) { setOpenDecisions(null); return; }
+    if (openDecisions === key) {
+      setOpenDecisions(null);
+      setDetailResult(null);
+      return;
+    }
     // Clear first: showing the previous model's decisions under a new header
     // while the fetch lands is worse than showing nothing.
     setOpenDecisions(key);
     setDecisions(null);
+    setDetailResult(null);
     try {
-      setDecisions(await api<BacktestDecision[]>(
-        `/api/backtests/${runId}/decisions?provider=${encodeURIComponent(provider)}`,
-      ));
+      const [loadedDecisions, detailedRun] = await Promise.all([
+        api<BacktestDecision[]>(
+          `/api/backtests/${runId}/decisions?provider=${encodeURIComponent(provider)}`,
+        ),
+        api<BacktestRun>(`/api/backtests/${runId}`),
+      ]);
+      setDecisions(loadedDecisions);
+      setDetailResult(
+        detailedRun.models.find((model) => model.provider === provider)?.result ?? null,
+      );
     } catch (reason) {
       setDecisions([]);
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -1883,7 +1984,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                   <button
                     className="run-expand"
                     onClick={() => void toggleDecisions(run.id, model.provider)}
-                    title="展开这个模型的每一条决策"
+                    title="展开收益构成、收尾处理与逐条决策"
                   >
                     {openDecisions === `${run.id}-${model.provider}` ? "▾" : "▸"}
                     {providerLabel(model.provider)}
@@ -1907,6 +2008,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                 ? [
                   <tr key={`${run.id}-decisions`} className="run-decisions">
                     <td colSpan={9}>
+                      <BacktestResultDetail result={detailResult} />
                       {decisions === null
                         ? <span className="empty">读取中…</span>
                         : !decisions.length

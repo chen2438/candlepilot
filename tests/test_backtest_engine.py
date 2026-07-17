@@ -159,6 +159,57 @@ def test_open_positions_are_flattened_so_no_unrealised_tail_is_counted() -> None
     assert not exchange.portfolio_state({}).positions
 
 
+def test_run_end_reports_forced_closes_and_cancelled_pending_orders() -> None:
+    exchange = SimulatedExchange(
+        BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0"))
+    )
+    exchange.execute(_order(), _candle(0), leverage=1)
+    exchange.execute(
+        _order(
+            side="SELL",
+            order_type=OrderType.LIMIT,
+            price="150",
+            stop="160",
+            take="140",
+        ),
+        _candle(0),
+        leverage=1,
+    )
+
+    cancelled = exchange.close_all(
+        {"BTCUSDT": Decimal("102")}, START + timedelta(hours=1)
+    )
+    result = summarize(
+        exchange.config,
+        exchange.trades,
+        [EquityPoint(START, exchange.cash)],
+        cancelled_pending_orders=cancelled,
+    )
+
+    assert result.run_end_trade_count == 1
+    assert result.cancelled_pending_orders == 1
+
+
+def test_result_reconciles_gross_pnl_costs_and_final_equity() -> None:
+    exchange = SimulatedExchange(
+        BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0.001"))
+    )
+    exchange.execute(_order(), _candle(0), leverage=1)
+    exchange.settle_candle("BTCUSDT", _candle(1, funding="0.001"))
+    exchange.close_all({"BTCUSDT": Decimal("102")}, START + timedelta(hours=1))
+    result = summarize(
+        exchange.config,
+        exchange.trades,
+        [EquityPoint(START, exchange.cash)],
+    )
+
+    assert result.net_pnl == result.final_equity - result.initial_equity
+    assert (
+        result.gross_price_pnl - result.total_fees - result.total_funding
+        == result.net_pnl
+    )
+
+
 def test_position_state_carries_the_context_the_model_needs() -> None:
     """The backtest portfolio must look like the live one to the model."""
 
