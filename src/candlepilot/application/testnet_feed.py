@@ -47,15 +47,23 @@ class TestnetUserFeed:
             self.last_error = str(exc)
 
     async def process(self, event: UserStreamEvent) -> None:
-        await self.audit.record_user_event(event)
+        audit_error: str | None = None
+        try:
+            await self.audit.record_user_event(event)
+        except Exception as exc:
+            # Partial-fill handling is the safety-critical consumer. A temporary
+            # audit write failure must not prevent it from cancelling the rest of
+            # an entry order.
+            audit_error = f"user event audit failed: {type(exc).__name__}"
         self.event_count += 1
         self.last_event_at = event.event_time
-        self.last_error = None
         if self.event_handler is not None:
             try:
                 await self.event_handler(event)
             except Exception as exc:
                 self.last_error = f"user event handling failed: {exc}"
+                raise RuntimeError(self.last_error) from exc
+        self.last_error = audit_error
 
     async def stop(self) -> None:
         task = self._task

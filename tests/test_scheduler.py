@@ -323,6 +323,56 @@ def test_guard_stops_the_run_when_a_limit_is_reached(tmp_path: Path) -> None:
     assert tasks == []  # the scheduler tore its own tasks down
 
 
+def test_guard_emergency_stops_when_the_user_feed_dies(tmp_path: Path) -> None:
+    class DeadFeed:
+        running = False
+
+        def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'dead-feed.db'}")
+        await database.initialize()
+        market = SchedulerMarket()
+        broker = FakeTestnetBroker()
+        engine = TradingEngine(
+            testnet_broker=broker,  # type: ignore[arg-type]
+            providers=ProviderRegistry([HoldProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider("hold")
+        await engine.start()
+        scheduler = TradingScheduler(
+            engine,
+            market,  # type: ignore[arg-type]
+            guard_interval_seconds=0.01,
+            testnet_feed=DeadFeed(),  # type: ignore[arg-type]
+        )
+        scheduler.start()
+        for _ in range(200):
+            if not engine.running:
+                break
+            await asyncio.sleep(0.01)
+        if scheduler._auto_stop_task is not None:
+            await scheduler._auto_stop_task
+        result = (
+            engine.running,
+            engine.emergency_locked,
+            engine.auto_stop_reason,
+            broker.flattened,
+        )
+        await database.close()
+        return result
+
+    running, locked, reason, flattened = asyncio.run(scenario())
+    assert running is False and locked is True and flattened is True
+    assert reason is not None and "user stream stopped" in reason
+
+
 def test_guard_only_loads_cost_when_a_budget_is_set(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'guard-cost.db'}")
@@ -435,4 +485,3 @@ def test_scheduler_refreshes_universe_periodically(tmp_path: Path) -> None:
     assert calls >= 2
     assert scheduler.universe_last_error is None
     assert scheduler._tasks == []
-

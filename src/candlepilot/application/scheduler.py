@@ -134,6 +134,11 @@ class TradingScheduler:
         while not self._stop.is_set():
             if self.engine.running:
                 try:
+                    if self.testnet_feed is not None and not self.testnet_feed.running:
+                        self.request_emergency_stop(
+                            "testnet user stream stopped; account safety state is unknown"
+                        )
+                        return
                     reason = self.engine.evaluate_stop_reason(
                         run_cost_usd=await self._run_cost()
                     )
@@ -170,9 +175,23 @@ class TradingScheduler:
             self._auto_stop(), name="candlepilot-auto-stop"
         )
 
+    def request_emergency_stop(self, reason: str) -> None:
+        if self._auto_stop_task is not None and not self._auto_stop_task.done():
+            return
+        self.engine.auto_stop_reason = reason
+        self._auto_stop_task = asyncio.create_task(
+            self._auto_emergency_stop(), name="candlepilot-auto-emergency-stop"
+        )
+
     async def _auto_stop(self) -> None:
         await self.engine.stop()
         await self.stop()
+
+    async def _auto_emergency_stop(self) -> None:
+        try:
+            await self.engine.emergency_stop()
+        finally:
+            await self.stop()
 
     async def run_cycle(self, cadence: str) -> list[DecisionOutcome]:
         if cadence not in CADENCE_SECONDS:

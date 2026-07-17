@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+from collections import deque
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -28,19 +30,27 @@ class UserStreamEvent:
 
 
 class UserEventSequencer:
-    """Reject duplicate or stale events independently for each Binance event type."""
+    """Reject exact replay duplicates without discarding same-millisecond events."""
 
     def __init__(self) -> None:
-        self._last_event_time: dict[str, int] = {}
+        self._recent: deque[str] = deque()
+        self._recent_set: set[str] = set()
+        self._capacity = 4096
         self.dropped = 0
 
     def accept(self, event: UserStreamEvent) -> bool:
         event_ms = int(event.event_time.timestamp() * 1000)
-        previous = self._last_event_time.get(event.event_type)
-        if previous is not None and event_ms <= previous:
+        encoded = json.dumps(event.payload, sort_keys=True, separators=(",", ":")).encode()
+        identity = hashlib.sha256(
+            f"{event.event_type}:{event_ms}:".encode() + encoded
+        ).hexdigest()
+        if identity in self._recent_set:
             self.dropped += 1
             return False
-        self._last_event_time[event.event_type] = event_ms
+        self._recent.append(identity)
+        self._recent_set.add(identity)
+        if len(self._recent) > self._capacity:
+            self._recent_set.remove(self._recent.popleft())
         return True
 
 

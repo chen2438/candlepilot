@@ -74,10 +74,17 @@ def test_parses_account_and_order_events() -> None:
     assert BinanceTestnetUserStream.parse_message('{"e":"listenKeyExpired"}') is None
 
 
-def test_user_stream_manages_listen_key_and_drops_stale_events() -> None:
+def test_user_stream_drops_only_exact_replays() -> None:
     methods: list[str] = []
     urls: list[str] = []
-    socket = FakeSocket([_order_event(2000), _order_event(1000), _order_event(3000, "FILLED")])
+    socket = FakeSocket(
+        [
+            _order_event(2000),
+            _order_event(1000),
+            _order_event(1000),
+            _order_event(2000, "FILLED"),
+        ]
+    )
 
     def handler(request: httpx.Request) -> httpx.Response:
         methods.append(request.method)
@@ -104,13 +111,13 @@ def test_user_stream_manages_listen_key_and_drops_stale_events() -> None:
         events = []
         async for event in stream.events():
             events.append(event)
-            if len(events) == 2:
+            if len(events) == 3:
                 await stream.stop()
         await client.aclose()
         return stream, events
 
     stream, events = asyncio.run(scenario())
-    assert [event.payload["o"]["X"] for event in events] == ["NEW", "FILLED"]
+    assert [event.payload["o"]["X"] for event in events] == ["NEW", "NEW", "FILLED"]
     assert stream.dropped_event_count == 1
     assert urls == ["wss://demo-fstream.binance.com/private/ws/private-key"]
     assert methods == ["POST", "DELETE"]
