@@ -244,3 +244,56 @@ def test_one_model_failing_still_reports_the_others() -> None:
     # taking the comparison down with it.
     assert bad.result is not None and bad.result.trade_count == 0
     assert bad.calls_failed == 24
+
+
+def test_progress_is_reported_while_the_run_is_still_running() -> None:
+    """The console polls a stored copy, so in-memory counters are invisible.
+
+    compare() was never handed on_progress, and its signature took none of the
+    run's state anyway, so nothing was written until the whole comparison
+    returned. An hour-long backtest sat at 0% and then jumped to 100%.
+    """
+
+    spec = _spec()
+    seen: list[tuple[int, int]] = []
+
+    async def record(run: ModelRun) -> None:
+        seen.append((run.decisions_done, run.decisions_total))
+
+    run = ModelRun("model-a")
+    asyncio.run(_runner(spec).run(_Provider("model-a"), run, on_progress=record))
+
+    # The denominator has to arrive before the first call, or there is nothing
+    # to show a percentage against.
+    assert seen[0] == (0, run.decisions_total)
+    assert run.decisions_total > 0
+    # One report per decision, plus the opening one.
+    assert len(seen) == run.decisions_total + 1
+    assert seen[-1] == (run.decisions_total, run.decisions_total)
+    # And it climbs rather than jumping at the end.
+    assert [done for done, _ in seen] == list(range(run.decisions_total + 1))
+
+
+def test_compare_reports_each_model_while_it_works() -> None:
+    """on_progress must reach the runner, not just fire once per finished model."""
+
+    spec = _spec(providers=("model-a", "model-b"))
+    providers = {"model-a": _Provider("model-a"), "model-b": _Provider("model-b")}
+    mid_run: list[str] = []
+
+    async def record(run: ModelRun) -> None:
+        if run.result is None and 0 < run.decisions_done < run.decisions_total:
+            mid_run.append(run.provider)
+
+    runs = asyncio.run(
+        compare(
+            spec=spec,
+            runner_for=lambda _: _runner(spec),
+            provider_for=lambda name: providers[name],
+            on_progress=record,
+        )
+    )
+
+    assert sorted(set(mid_run)) == ["model-a", "model-b"]
+    # The last report for each model carries the result the earlier ones lacked.
+    assert all(run.result is not None for run in runs)

@@ -1429,3 +1429,59 @@ def test_a_plain_backtest_does_not_need_any_captures(tmp_path: Path) -> None:
         )
         assert created.status_code == 202
     asyncio.run(database.close())
+
+
+def test_a_running_backtest_reports_progress_over_the_api(tmp_path: Path) -> None:
+    """The console polls this endpoint, so 0% here is 0% on screen.
+
+    compare() was never given on_progress and the stored row was only written
+    once the whole comparison returned, so a run that takes minutes showed 0%
+    with a 0 denominator for its entire life and then jumped straight to 100%.
+    """
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'bt-progress.db'}")
+    market = BacktestMarket()
+    gate = asyncio.Event()
+    seen: list[dict[str, object]] = []
+
+    class Gated(ApiProvider):
+        """Holds the run open at its second decision so the API can be read."""
+
+        calls = 0
+
+        async def generate_trade_intent(self, snapshot, portfolio):
+            Gated.calls += 1
+            if Gated.calls == 2:
+                await gate.wait()
+            return await super().generate_trade_intent(snapshot, portfolio)
+
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([Gated()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/backtests",
+            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
+        )
+        assert created.status_code == 202
+
+        # Wait for the run to reach the gate rather than sleeping a fixed span.
+        for _ in range(200):
+            model = client.get("/api/backtests").json()[0]["models"][0]
+            if model["decisions_total"] and model["decisions_done"] >= 1:
+                seen.append(model)
+                break
+            time.sleep(0.02)
+        gate.set()
+
+    assert seen, "the API never showed a decision while the run was in flight"
+    mid = seen[0]
+    # A denominator, and a numerator that is neither 0 nor already finished.
+    assert mid["decisions_total"] == 12
+    assert 0 < mid["progress"] < 1
+    asyncio.run(database.close())

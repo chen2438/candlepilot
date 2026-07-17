@@ -1559,7 +1559,7 @@ def create_app(
             )
 
         try:
-            runs = await compare(
+            await compare(
                 spec=spec,
                 runner_for=lambda _: BacktestRunner(
                     spec=spec,
@@ -1569,9 +1569,8 @@ def create_app(
                     captures=captures,
                 ),
                 provider_for=engine.providers.get,
+                on_progress=flush,
             )
-            for run in runs:
-                await flush(run)
             await engine.audit.finish_backtest_run(run_id, status="completed")
         except asyncio.CancelledError:
             await engine.audit.finish_backtest_run(run_id, status="cancelled")

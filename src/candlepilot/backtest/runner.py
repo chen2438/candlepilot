@@ -171,7 +171,21 @@ class BacktestRunner:
                 marks[symbol] = usable[-1].close
         return marks
 
-    async def run(self, provider: LLMProvider, progress: ModelRun) -> BacktestResult:
+    async def run(
+        self,
+        provider: LLMProvider,
+        progress: ModelRun,
+        *,
+        on_progress: Callable[[ModelRun], Awaitable[None]] | None = None,
+    ) -> BacktestResult:
+        """Replay the window. ``on_progress`` is awaited after each decision.
+
+        It has to be reported from inside this loop: a caller that only looks
+        once the run returns learns nothing while the run is the thing it wants
+        to watch, and every decision here waits on a model call, so one small
+        write per decision costs nothing next to it.
+        """
+
         exchange = SimulatedExchange(self._spec.config)
         curve: list[EquityPoint] = []
         schedule = sorted(
@@ -181,6 +195,14 @@ class BacktestRunner:
             for symbol in self._spec.symbols
         )
         progress.decisions_total = len(schedule)
+        # Publish the total before the first call: until it lands, progress has
+        # no denominator and every reader has to show 0%.
+        if on_progress is not None:
+            await on_progress(progress)
+
+        async def report() -> None:
+            if on_progress is not None:
+                await on_progress(progress)
 
         for when, cadence, symbol in schedule:
             # Settle first: a trigger that was touched before this decision has
@@ -194,6 +216,7 @@ class BacktestRunner:
                 snapshot = self._builders[symbol].build(symbol, cadence, when)
             except ValueError:
                 progress.decisions_done += 1
+                await report()
                 continue
 
             portfolio = exchange.portfolio_state(self._marks(when))
@@ -203,9 +226,11 @@ class BacktestRunner:
                 progress.calls_failed += 1
                 progress.decisions_done += 1
                 progress.error = str(exc)[:200]
+                await report()
                 continue
 
             progress.decisions_done += 1
+            await report()
             intent = result.intent
             if intent.action == TradeAction.HOLD:
                 curve.append(EquityPoint(when, exchange.equity(self._marks(when))))
@@ -237,24 +262,32 @@ async def compare(
     spec: BacktestSpec,
     runner_for: Callable[[str], BacktestRunner],
     provider_for: Callable[[str], LLMProvider],
-    on_progress: Callable[[], Awaitable[None]] | None = None,
+    on_progress: Callable[[ModelRun], Awaitable[None]] | None = None,
 ) -> list[ModelRun]:
     """Run every model over the same window, concurrently.
 
     Calls inside one provider are serialised by that provider, so the models
     only contend with each other if they share one -- which the spec forbids.
     Wall-clock is therefore the slowest model, not the sum.
+
+    ``on_progress`` is handed down to each runner, which awaits it per decision.
+    Reporting only from here would fire it once, after a run that can take hours
+    has already finished -- which is exactly what the console had to watch.
     """
 
     runs = [ModelRun(provider=name) for name in spec.providers]
 
     async def one(run: ModelRun) -> None:
         try:
-            run.result = await runner_for(run.provider).run(provider_for(run.provider), run)
+            run.result = await runner_for(run.provider).run(
+                provider_for(run.provider), run, on_progress=on_progress
+            )
         except Exception as exc:  # noqa: BLE001 - report, do not sink the comparison
             run.error = str(exc)[:500]
+        # The final report carries the result and any error, which the
+        # per-decision ones cannot have seen.
         if on_progress is not None:
-            await on_progress()
+            await on_progress(run)
 
     await asyncio.gather(*(one(run) for run in runs))
     return runs
