@@ -2007,10 +2007,12 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
         </div>
       )}
 
-      <div className="backtest-timezone">
-        时间格式：YYYY/MM/DD HH:mm · 浏览器本地时区：<strong>{localTimeZone}</strong>
-      </div>
-      <div className="backtest-form">
+      <section className="backtest-setup">
+        <div className="backtest-section-head">
+          <div><span>01</span><strong>回测参数</strong></div>
+          <small>YYYY/MM/DD HH:mm · 本地时区 <strong>{localTimeZone}</strong></small>
+        </div>
+        <div className="backtest-form">
         <label><span>标的（逗号分隔，最多 5 个）</span>
           <input value={form.symbols} disabled={busy !== null}
             onChange={(e) => setForm({ ...form, symbols: e.target.value })} />
@@ -2029,9 +2031,9 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
           <input value={form.initialEquity} disabled={busy !== null}
             onChange={(e) => setForm({ ...form, initialEquity: e.target.value })} />
         </label>
-      </div>
+        </div>
 
-      <div className="backtest-picks">
+        <div className="backtest-picks">
         <div>
           <span className="eyebrow">周期（每多选一个，耗时增加一份）</span>
           <div className="chips">
@@ -2054,20 +2056,22 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
             ))}
           </div>
         </div>
-      </div>
+        </div>
+      </section>
 
-      <label className="backtest-real">
-        <input type="checkbox" checked={useRecordedBook} disabled={busy !== null}
-          onChange={(e) => setUseRecordedBook(e.target.checked)} />
-        <span>真实回测</span>
-        <small>
-          用采集器录下的盘口，payload 与实盘完全同构。要求窗口内<strong>每个</strong>决策时刻都有记录——
-          覆盖不全会被拒绝并告诉你缺多少，因为一半决策有订单流、一半没有，
-          等于把两个策略平均成一个不提及此事的数字。
-        </small>
-      </label>
+      <div className="backtest-preflight-grid">
+        <label className="backtest-real">
+          <input type="checkbox" checked={useRecordedBook} disabled={busy !== null}
+            onChange={(e) => setUseRecordedBook(e.target.checked)} />
+          <span>真实回测</span>
+          <small>
+            用采集器录下的盘口，payload 与实盘完全同构。要求窗口内<strong>每个</strong>决策时刻都有记录——
+            覆盖不全会被拒绝并告诉你缺多少，因为一半决策有订单流、一半没有，
+            等于把两个策略平均成一个不提及此事的数字。
+          </small>
+        </label>
 
-      <div className="probe">
+        <div className="probe">
         <div className="probe-head">
           <strong>试跑 {probe?.decisions ?? 3} 次决策</strong>
           <button
@@ -2140,6 +2144,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
             onChange={(event) => setTimeoutSeconds(event.target.value)}
           />
         </label>
+        </div>
       </div>
 
       {estimate && (
@@ -2156,13 +2161,17 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
         <button className="ghost" disabled={busy !== null || !form.providers.length} onClick={() => void runEstimate()}>
           {busy === "estimate" ? "估算中…" : "先估算耗时"}
         </button>
-        <button disabled={busy !== null || !form.providers.length || engineRunning} onClick={() => void start()}>
+        <button className="primary" disabled={busy !== null || !form.providers.length || engineRunning} onClick={() => void start()}>
           {busy === "start" ? "启动中…" : "开始回测"}
         </button>
         {engineRunning && <small className="backtest-blocked">引擎运行中无法回测——两者共用同一个模型且调用严格串行，并发会让实盘快照超时被误判否决。请先停止引擎。</small>}
       </div>
       {error && <div className="error-text">{error}</div>}
 
+      <div className="backtest-results-head">
+        <div><span>02</span><strong>运行记录</strong></div>
+        <small>最近 {runs.length} 次 · 点击模型展开收益与决策明细</small>
+      </div>
       <div className="table-wrap backtest-runs">
         <table>
           <thead><tr><th>#</th><th>窗口</th><th>模型</th><th>进度</th>
