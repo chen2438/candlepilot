@@ -2308,14 +2308,13 @@ function AccountPanel({
   positions: AccountPosition[];
   orders: OrderRecord[];
 }) {
-  const isTestnet = portfolio?.source === "binance-testnet";
   const displayedPnl = portfolio?.daily_pnl ?? null;
   return (
     <article className="panel account-panel">
       <PanelTitle
         code="06"
         title="账户与订单"
-        meta={`${isTestnet ? "币安测试网账户" : "模拟账户"} · 只读`}
+        meta="币安测试网账户 · 只读"
       />
       <div className="account-metrics">
         <Metric label="权益" value={portfolio ? money(portfolio.equity) : "—"} suffix="" />
