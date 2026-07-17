@@ -646,6 +646,13 @@ def test_provider_config_sets_model_and_reasoning_effort(tmp_path: Path) -> None
             client.post("/api/providers/config", json={"name": "missing", "model": "x"}).status_code
             == 404
         )
+        assert (
+            client.post(
+                "/api/providers/config",
+                json={"name": "api-fixture", "pricing": "openai"},
+            ).status_code
+            == 422
+        )
 
         # Locked while the engine runs.
         client.post("/api/providers/select", json={"name": "api-fixture"})
@@ -656,6 +663,103 @@ def test_provider_config_sets_model_and_reasoning_effort(tmp_path: Path) -> None
             ).status_code
             == 409
         )
+    asyncio.run(database.close())
+
+
+def test_custom_provider_config_switches_runtime_pricing_catalog(tmp_path: Path) -> None:
+    from candlepilot.config import CustomLlmProvider
+    from candlepilot.providers.pricing import parse_models_dev
+
+    catalog = parse_models_dev(
+        {
+            "openai": {
+                "models": {"gpt-5.6-sol": {"cost": {"input": 1, "output": 2}}}
+            },
+            "xai": {
+                "models": {"grok-model": {"cost": {"input": 3, "output": 4}}}
+            },
+        }
+    )
+
+    async def loader(_cache_dir):
+        return catalog
+
+    settings = Settings(
+        custom_llm_providers=(
+            CustomLlmProvider(
+                id="main",
+                base_url="https://main.example/v1",
+                pricing="openai",
+            ),
+        )
+    )
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'runtime-pricing.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([CustomApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(
+        settings=settings,
+        database=database,
+        market=market,  # type: ignore[arg-type]
+        engine=engine,
+        pricing_loader=loader,
+    )
+
+    with TestClient(app) as client:
+        listed = client.get("/api/providers").json()[0]
+        assert listed["pricing"] == "openai"
+        assert listed["pricing_options"] == ["openai", "xai"]
+        assert "gpt-5.6-sol" in listed["model_options"]
+
+        switched = client.post(
+            "/api/providers/config",
+            json={
+                "name": "openai-compatible:main",
+                "model": "grok-model",
+                "pricing": "xai",
+            },
+        )
+        assert switched.status_code == 200, switched.text
+        configured = switched.json()[0]
+        assert configured["pricing"] == "xai"
+        assert configured["model"] == "grok-model"
+        assert "grok-model" in configured["model_options"]
+        assert "gpt-5.6-sol" not in configured["model_options"]
+
+        intent = TradeIntent.hold("BTCUSDT", "5m", "runtime pricing")
+        asyncio.run(
+            engine.audit.record_inference(
+                ProviderResult(
+                    intent=intent,
+                    provider="openai-compatible:main",
+                    model="grok-model",
+                    duration=timedelta(milliseconds=10),
+                    raw_output=intent.model_dump_json(),
+                    usage={
+                        "input_tokens": 1000,
+                        "output_tokens": 1000,
+                        "total_tokens": 2000,
+                    },
+                )
+            )
+        )
+        metrics = client.get("/api/metrics/providers").json()["providers"][0]
+        assert abs(float(metrics["cost_usd_total"]) - 0.007) < 1e-9
+
+        cleared = client.post(
+            "/api/providers/config",
+            json={
+                "name": "openai-compatible:main",
+                "model": "grok-model",
+                "pricing": "",
+            },
+        ).json()[0]
+        assert cleared["pricing"] is None
+        assert cleared["model_options"] == ["grok-model"]
     asyncio.run(database.close())
 
 

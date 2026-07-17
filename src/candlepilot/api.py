@@ -63,6 +63,7 @@ from candlepilot.broker.binance_testnet import (
 )
 from candlepilot.broker.user_stream import BinanceTestnetUserStream
 from candlepilot.config import (
+    CUSTOM_PROVIDER_PREFIX,
     CUSTOM_LLM_WIRE_APIS,
     DOTENV_INJECTED_KEYS,
     ENV_FILE_VARIABLE,
@@ -124,6 +125,7 @@ class ProviderConfig(ApiModel):
     name: str
     model: str | None = None
     reasoning_effort: str | None = None
+    pricing: str | None = None
 
 
 class ProviderTestRequest(ApiModel):
@@ -285,6 +287,12 @@ def _model_options(
     if current and current not in options:
         options.append(current)
     return options
+
+
+def _pricing_options(catalog: ModelPricingCatalog | None) -> list[str]:
+    if catalog is None:
+        return []
+    return sorted({provider for provider, _ in catalog.prices})
 
 
 def restart_command() -> tuple[list[str], dict[str, str]]:
@@ -722,6 +730,7 @@ def create_app(
         result = []
         for item in health:
             provider = engine.providers.get(item.provider)
+            custom = item.provider.startswith(CUSTOM_PROVIDER_PREFIX)
             result.append(
                 {
                     **item.model_dump(mode="json"),
@@ -729,6 +738,8 @@ def create_app(
                     "model": provider.model,
                     "reasoning_effort": provider.reasoning_effort,
                     "reasoning_effort_options": list(provider.reasoning_effort_options),
+                    "pricing": provider_pricing_ids.get(item.provider) if custom else None,
+                    "pricing_options": _pricing_options(catalog) if custom else [],
                     "model_options": _model_options(
                         item.provider, catalog, provider.model, provider_pricing_ids
                     ),
@@ -753,6 +764,13 @@ def create_app(
             )
         model = (config.model or "").strip() or None
         effort = (config.reasoning_effort or "").strip() or None
+        pricing_supplied = "pricing" in config.model_fields_set
+        pricing = (config.pricing or "").strip() or None
+        if pricing_supplied and not config.name.startswith(CUSTOM_PROVIDER_PREFIX):
+            raise HTTPException(
+                status_code=422,
+                detail="pricing provider can only be changed for a Custom API",
+            )
         if effort is not None and effort not in provider.reasoning_effort_options:
             raise HTTPException(
                 status_code=422,
@@ -760,6 +778,11 @@ def create_app(
             )
         provider.model = model
         provider.reasoning_effort = effort
+        if pricing_supplied:
+            if pricing is None:
+                provider_pricing_ids.pop(config.name, None)
+            else:
+                provider_pricing_ids[config.name] = pricing
         return await get_providers()
 
     @app.post("/api/providers/test")
@@ -1005,9 +1028,7 @@ def create_app(
             "providers": providers,
             "max_providers": MAX_CUSTOM_LLM_PROVIDERS,
             "wire_apis": sorted(CUSTOM_LLM_WIRE_APIS),
-            "pricing_options": sorted(
-                {provider for provider, _ in catalog.prices} if catalog else set()
-            ),
+            "pricing_options": _pricing_options(catalog),
         }
 
     @app.get("/api/custom-providers/{provider_id}/api-key")

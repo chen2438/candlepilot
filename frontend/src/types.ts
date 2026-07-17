@@ -86,6 +86,8 @@ export interface ProviderHealth {
   model: string | null;
   reasoning_effort: string | null;
   reasoning_effort_options: string[];
+  pricing: string | null;
+  pricing_options: string[];
   model_options: string[];
   capabilities: {
     subscription_auth: boolean;

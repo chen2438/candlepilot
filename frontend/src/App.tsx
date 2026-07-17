@@ -314,7 +314,12 @@ export default function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [socketOnline, setSocketOnline] = useState(false);
-  const [configDraft, setConfigDraft] = useState<Record<string, { model: string; effort: string; custom: boolean }>>({});
+  const [configDraft, setConfigDraft] = useState<Record<string, {
+    model: string;
+    effort: string;
+    custom: boolean;
+    pricing: string;
+  }>>({});
   const [historySelected, setHistorySelected] = useState<Record<string, boolean>>({});
   const [historyConfirm, setHistoryConfirm] = useState(false);
   const [historyResult, setHistoryResult] = useState<string | null>(null);
@@ -323,13 +328,21 @@ export default function App() {
   const [universeExpanded, setUniverseExpanded] = useState(false);
   const [limitDraft, setLimitDraft] = useState<{ minutes: string; budget: string } | null>(null);
 
-  const applyProviderConfig = useCallback(async (name: string, draft: { model: string; effort: string }) => {
+  const applyProviderConfig = useCallback(async (
+    name: string,
+    draft: { model: string; effort: string; pricing?: string },
+  ) => {
     setBusy("provider-config");
     setError(null);
     try {
       const next = await api<ProviderHealth[]>("/api/providers/config", {
         method: "POST",
-        body: JSON.stringify({ name, model: draft.model, reasoning_effort: draft.effort || null }),
+        body: JSON.stringify({
+          name,
+          model: draft.model,
+          reasoning_effort: draft.effort || null,
+          ...(draft.pricing === undefined ? {} : { pricing: draft.pricing || null }),
+        }),
       });
       setProviders(next);
     } catch (reason) {
@@ -341,7 +354,7 @@ export default function App() {
 
   const testProvider = useCallback(async (
     name: string,
-    draft?: { model: string; effort: string },
+    draft?: { model: string; effort: string; pricing?: string },
   ) => {
     setBusy(`test-${name}`);
     setError(null);
@@ -354,6 +367,7 @@ export default function App() {
             name,
             model: draft.model,
             reasoning_effort: draft.effort || null,
+            ...(draft.pricing === undefined ? {} : { pricing: draft.pricing || null }),
           }),
         });
         setProviders(next);
@@ -839,15 +853,23 @@ export default function App() {
         <section className="grid">
           <article className="panel provider-panel">
             <PanelTitle code="01" title="模型接入" meta="手动路由" />
+            <datalist id="runtime-pricing-providers">
+              {[...new Set(providers.flatMap((provider) => provider.pricing_options))]
+                .map((option) => <option key={option} value={option} />)}
+            </datalist>
             <div className="provider-list">
               {providers.map((provider) => {
                 const routeIndex = status.provider_chain.indexOf(provider.provider);
                 const options = provider.model_options ?? [];
                 const model = configDraft[provider.provider]?.model ?? provider.model ?? "";
                 const effort = configDraft[provider.provider]?.effort ?? provider.reasoning_effort ?? "";
+                const customProvider = customProviderId(provider.provider) !== null;
+                const pricing = configDraft[provider.provider]?.pricing ?? provider.pricing ?? "";
                 const custom = configDraft[provider.provider]?.custom ?? (model !== "" && !options.includes(model));
-                const draft = { model, effort, custom };
-                const dirty = model !== (provider.model ?? "") || effort !== (provider.reasoning_effort ?? "");
+                const draft = { model, effort, custom, pricing };
+                const dirty = model !== (provider.model ?? "")
+                  || effort !== (provider.reasoning_effort ?? "")
+                  || (customProvider && pricing !== (provider.pricing ?? ""));
                 const update = (next: Partial<typeof draft>) =>
                   setConfigDraft((current) => ({ ...current, [provider.provider]: { ...draft, ...next } }));
                 return <div
@@ -871,7 +893,7 @@ export default function App() {
                       {routeIndex >= 0 ? `#${routeIndex + 1} · ` : ""}{provider.authenticated ? "READY" : provider.available ? "LOGIN" : "MISSING"}
                     </span>
                   </button>
-                  <div className="provider-card-config">
+                  <div className={`provider-card-config ${customProvider ? "has-pricing" : ""}`}>
                     <label>
                       <span>模型</span>
                       <div className="config-model-cell">
@@ -900,9 +922,23 @@ export default function App() {
                         {provider.reasoning_effort_options.map((option) => <option key={option} value={option}>{option}</option>)}
                       </select>
                     </label>
+                    {customProvider && <label data-tooltip="models.dev 的厂商 ID，决定按谁的价折算等效成本。留空则成本未知，运行预算不会按该端点触发；永久配置请在设置页保存。">
+                      <span>计费厂商</span>
+                      <input
+                        list="runtime-pricing-providers"
+                        value={pricing}
+                        placeholder="如 xai · 留空不计成本"
+                        disabled={status.running}
+                        onChange={(event) => update({ pricing: event.target.value })}
+                      />
+                    </label>}
                     <div className="provider-card-actions">
                       <button className="text-button" disabled={status.running || busy !== null || !dirty}
-                        onClick={() => applyProviderConfig(provider.provider, { model, effort })}>应用</button>
+                        onClick={() => applyProviderConfig(provider.provider, {
+                          model,
+                          effort,
+                          ...(customProvider ? { pricing } : {}),
+                        })}>应用</button>
                       <button className="text-button" disabled={status.running || busy !== null}
                         title={dirty
                           ? "应用当前模型与推理强度后立即发起真实调用"
@@ -911,7 +947,11 @@ export default function App() {
                             : "发起真实调用并查看当前配置不可用的具体原因"}
                         onClick={() => testProvider(
                           provider.provider,
-                          dirty ? { model, effort } : undefined,
+                          dirty ? {
+                            model,
+                            effort,
+                            ...(customProvider ? { pricing } : {}),
+                          } : undefined,
                         )}>
                         {busy === `test-${provider.provider}`
                           ? "测试中…"
