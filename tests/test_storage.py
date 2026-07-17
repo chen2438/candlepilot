@@ -1,8 +1,10 @@
 import asyncio
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from decimal import Decimal
+from sqlalchemy import text
 
 from candlepilot.broker.user_stream import UserStreamEvent
 from candlepilot.domain.models import (
@@ -122,25 +124,38 @@ def test_execution_and_risk_queries_filter_and_order(tmp_path: Path) -> None:
             "ETHUSDT",
             ExecutionReport(client_order_id="cp-2", status="NEW"),
         )
+        intent = TradeIntent.hold("ETHUSDT", "5m", "risk link")
+        inference_id = await repository.record_inference(
+            ProviderResult(
+                intent=intent,
+                provider="codex-auth",
+                model="m",
+                duration=timedelta(milliseconds=1),
+                raw_output=intent.model_dump_json(),
+                usage={},
+            )
+        )
         await repository.record_risk("BTCUSDT", RiskDecision(accepted=True, reason="within limits"))
         await repository.record_risk(
-            "ETHUSDT", RiskDecision(accepted=False, reason="missing stop"), inference_id=7
+            "ETHUSDT",
+            RiskDecision(accepted=False, reason="missing stop"),
+            inference_id=inference_id,
         )
         orders = await repository.recent_executions()
         fills = await repository.recent_executions(status="FILLED")
         risk = await repository.recent_risk_decisions()
         rejections = await repository.recent_risk_decisions(accepted=False)
         await database.close()
-        return orders, fills, risk, rejections
+        return orders, fills, risk, rejections, inference_id
 
-    orders, fills, risk, rejections = asyncio.run(scenario())
+    orders, fills, risk, rejections, inference_id = asyncio.run(scenario())
     assert [item["client_order_id"] for item in orders] == ["cp-2", "cp-1"]
     assert [item["status"] for item in fills] == ["FILLED"]
     assert fills[0]["report"]["average_price"] == "100"
     assert risk[0]["symbol"] == "ETHUSDT" and risk[0]["accepted"] is False
     assert len(rejections) == 1
     assert rejections[0]["reason"] == "missing stop"
-    assert rejections[0]["inference_id"] == 7
+    assert rejections[0]["inference_id"] == inference_id
 
 
 def test_order_events_advance_the_execution_audit_to_final_status(tmp_path: Path) -> None:
@@ -535,7 +550,7 @@ def test_clear_history_is_selective_and_preserves_runtime_state(tmp_path: Path) 
         await database.initialize()
         repository = AuditRepository(database.sessions)
         intent = TradeIntent.hold("BTCUSDT", "5m", "seed")
-        await repository.record_inference(
+        inference_id = await repository.record_inference(
             ProviderResult(
                 intent=intent,
                 provider="codex-auth",
@@ -545,7 +560,11 @@ def test_clear_history_is_selective_and_preserves_runtime_state(tmp_path: Path) 
                 usage={},
             )
         )
-        await repository.record_risk("BTCUSDT", RiskDecision(accepted=True, reason="ok"))
+        await repository.record_risk(
+            "BTCUSDT",
+            RiskDecision(accepted=True, reason="ok"),
+            inference_id=inference_id,
+        )
         await repository.set_runtime_state("paper_account", "keep-me")
 
         counts = await repository.clear_history({"inferences"})
@@ -558,7 +577,8 @@ def test_clear_history_is_selective_and_preserves_runtime_state(tmp_path: Path) 
     counts, inferences, risk, preserved = asyncio.run(scenario())
     assert counts == {"inferences": 1}
     assert inferences == []
-    assert len(risk) == 1  # not selected -> untouched
+    assert len(risk) == 1  # not selected -> retained, but no dangling identity
+    assert risk[0]["inference_id"] is None
     assert preserved == "keep-me"  # runtime_state (paper account) never cleared
 
 
@@ -575,6 +595,46 @@ def test_database_migrations_are_versioned_and_idempotent(tmp_path: Path) -> Non
     # Derived, not hardcoded: the point is that re-running initialize is a
     # no-op, not that the schema happens to be at some particular version.
     assert asyncio.run(scenario()) == (CURRENT_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION)
+
+
+def test_risk_foreign_key_migration_nulls_existing_orphans(tmp_path: Path) -> None:
+    path = tmp_path / "risk-v7.db"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at DATETIME);
+        INSERT INTO schema_migrations VALUES (7, '2026-07-17 00:00:00');
+        CREATE TABLE inferences (id INTEGER PRIMARY KEY);
+        INSERT INTO inferences VALUES (1);
+        CREATE TABLE risk_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            inference_id INTEGER,
+            symbol VARCHAR(32) NOT NULL,
+            accepted INTEGER NOT NULL,
+            reason TEXT NOT NULL,
+            decision_json TEXT NOT NULL,
+            created_at DATETIME NOT NULL
+        );
+        INSERT INTO risk_decisions VALUES
+            (1, 1, 'BTCUSDT', 1, 'linked', '{}', '2026-07-17 00:00:00'),
+            (2, 99, 'ETHUSDT', 0, 'orphan', '{}', '2026-07-17 00:00:00');
+        """
+    )
+    connection.close()
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{path}")
+        async with database.engine.begin() as migration_connection:
+            await database._apply_migrations(migration_connection)
+            rows = (
+                await migration_connection.execute(
+                    text("SELECT id, inference_id FROM risk_decisions ORDER BY id")
+                )
+            ).all()
+        await database.close()
+        return rows
+
+    assert asyncio.run(scenario()) == [(1, 1), (2, None)]
 
 
 async def _seed_decisions(repository: AuditRepository) -> None:

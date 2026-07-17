@@ -74,7 +74,9 @@ class RiskRow(Base):
     __tablename__ = "risk_decisions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    inference_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    inference_id: Mapped[int | None] = mapped_column(
+        ForeignKey("inferences.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     symbol: Mapped[str] = mapped_column(String(32), index=True)
     accepted: Mapped[int] = mapped_column(Integer)
     reason: Mapped[str] = mapped_column(Text)
@@ -344,6 +346,30 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             # Read back per run, in decision order, filtered to one model.
             "CREATE INDEX IF NOT EXISTS ix_backtest_decisions_run "
             "ON backtest_decisions (run_id, provider, id)",
+        ),
+    ),
+    (
+        8,
+        (
+            # Linked risk rows remain useful when users clear only model-call
+            # history, but their old integer must not impersonate a future
+            # inference that later reuses it. SET NULL preserves the standalone
+            # risk audit without leaving a dangling identity.
+            "CREATE TABLE risk_decisions_v8 ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, inference_id INTEGER, "
+            "symbol VARCHAR(32) NOT NULL, accepted INTEGER NOT NULL, "
+            "reason TEXT NOT NULL, decision_json TEXT NOT NULL, created_at DATETIME NOT NULL, "
+            "FOREIGN KEY(inference_id) REFERENCES inferences(id) ON DELETE SET NULL)",
+            "INSERT INTO risk_decisions_v8 "
+            "(id, inference_id, symbol, accepted, reason, decision_json, created_at) "
+            "SELECT r.id, CASE WHEN i.id IS NULL THEN NULL ELSE r.inference_id END, "
+            "r.symbol, r.accepted, r.reason, r.decision_json, r.created_at "
+            "FROM risk_decisions r LEFT JOIN inferences i ON i.id = r.inference_id",
+            "DROP TABLE risk_decisions",
+            "ALTER TABLE risk_decisions_v8 RENAME TO risk_decisions",
+            "CREATE INDEX ix_risk_decisions_inference_id ON risk_decisions (inference_id)",
+            "CREATE INDEX ix_risk_decisions_symbol ON risk_decisions (symbol)",
+            "CREATE INDEX ix_risk_decisions_created_at ON risk_decisions (created_at)",
         ),
     ),
 )
