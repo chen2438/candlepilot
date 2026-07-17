@@ -175,13 +175,25 @@ class BookCollector:
             self._task = None
 
     async def _loop(self) -> None:
-        while self.running:
-            now = datetime.now(UTC)
-            boundary = next_boundary(now)
-            await self._sleep((boundary - now).total_seconds())
-            if not self.running:
-                return
-            await self.capture_once(boundary)
+        try:
+            while self.running:
+                now = datetime.now(UTC)
+                boundary = next_boundary(now)
+                await self._sleep((boundary - now).total_seconds())
+                if not self.running:
+                    return
+                try:
+                    await self.capture_once(boundary)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # A transient SQLite/filesystem failure must be visible but
+                    # must not turn the collector into a dead task that still
+                    # claims to be running. Retry naturally at the next boundary.
+                    self.error_count += 1
+                    self.last_error = f"store: {type(exc).__name__}: {exc}"
+        finally:
+            self.running = False
 
     async def capture_once(self, boundary: datetime) -> list[BookCapture]:
         """Sample every symbol and store whatever succeeded.
@@ -196,16 +208,20 @@ class BookCollector:
             return_exceptions=True,
         )
         captured: list[BookCapture] = []
+        had_error = False
         for symbol, result in zip(self.symbols, results, strict=True):
             if isinstance(result, BookCapture):
                 captured.append(result)
             else:
+                had_error = True
                 self.error_count += 1
                 self.last_error = f"{symbol}: {result}"
         if captured:
             await self._store(captured)
             self.capture_count += len(captured)
             self.last_capture_at = boundary
+            if not had_error:
+                self.last_error = None
         return captured
 
     def status(self) -> dict[str, Any]:

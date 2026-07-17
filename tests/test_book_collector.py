@@ -138,6 +138,54 @@ def test_the_collector_refuses_a_symbol_pool_it_cannot_keep_up_with() -> None:
         collector.start([])
 
 
+def test_store_failure_is_reported_and_retried_without_a_false_running_state() -> None:
+    async def scenario():
+        sleeps = 0
+        retry_wait = asyncio.Event()
+        blocker = asyncio.Event()
+
+        async def sleeper(_seconds: float) -> None:
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps > 1:
+                retry_wait.set()
+                await blocker.wait()
+
+        async def failing_store(_batch) -> None:
+            raise OSError("disk unavailable")
+
+        collector = BookCollector(
+            _Market(),  # type: ignore[arg-type]
+            store=failing_store,
+            sleeper=sleeper,
+        )
+        collector.start(["BTCUSDT"])
+        await asyncio.wait_for(retry_wait.wait(), timeout=1)
+        status_during_retry = collector.status()
+        await collector.stop()
+        return status_during_retry, collector.status()
+
+    during, stopped = asyncio.run(scenario())
+    assert during["running"] is True
+    assert during["error_count"] == 1
+    assert "OSError" in during["last_error"]
+    assert stopped["running"] is False
+
+
+def test_successful_boundary_clears_an_old_collector_error() -> None:
+    async def scenario():
+        collector = BookCollector(
+            _Market(),  # type: ignore[arg-type]
+            store=lambda _batch: asyncio.sleep(0),
+        )
+        collector.symbols = ("BTCUSDT",)
+        collector.last_error = "old failure"
+        await collector.capture_once(BOUNDARY)
+        return collector.last_error
+
+    assert asyncio.run(scenario()) is None
+
+
 def test_the_collector_needs_no_provider_and_places_no_orders() -> None:
     """The data is worth most when nothing is trading, so it must stand alone."""
 
