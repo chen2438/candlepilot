@@ -255,6 +255,11 @@ function providerLabel(name: string): string {
   return name;
 }
 
+function modelConfigSummary(model: string | null, effort: string | null, recorded = true): string {
+  if (!recorded) return "旧记录未保存模型配置";
+  return `${model ?? "Provider 默认模型"} · ${effort ? `推理 ${effort}` : "默认推理强度"}`;
+}
+
 function providerIcon(name: string): string {
   if (name === "codex-auth") return "CX";
   if (name === "claude-code-auth") return "CC";
@@ -1747,6 +1752,38 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
     }
   };
 
+  // Keep an expanded running model current. A row becomes visible only after
+  // its LLM call has completed and the server has persisted the whole decision.
+  useEffect(() => {
+    if (!openDecisions) return;
+    const active = runs.find((run) =>
+      run.models.some((model) => `${run.id}-${model.provider}` === openDecisions),
+    );
+    if (!active) return;
+    const provider = active.models.find(
+      (model) => `${active.id}-${model.provider}` === openDecisions,
+    )?.provider;
+    if (!provider) return;
+    const refresh = async () => {
+      try {
+        const [loadedDecisions, detailedRun] = await Promise.all([
+          api<BacktestDecision[]>(
+            `/api/backtests/${active.id}/decisions?provider=${encodeURIComponent(provider)}`,
+          ),
+          api<BacktestRun>(`/api/backtests/${active.id}`),
+        ]);
+        setDecisions(loadedDecisions);
+        setDetailResult(
+          detailedRun.models.find((model) => model.provider === provider)?.result ?? null,
+        );
+      } catch { /* progress polling will surface terminal run errors */ }
+    };
+    void refresh();
+    if (active.status !== "running") return;
+    const timer = window.setInterval(() => void refresh(), 3000);
+    return () => window.clearInterval(timer);
+  }, [openDecisions, runs]);
+
   const cancel = async (id: number) => {
     try {
       await api(`/api/backtests/${id}/cancel`, { method: "POST" });
@@ -1830,7 +1867,8 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
               <button key={provider.provider} className={form.providers.includes(provider.provider) ? "active" : ""}
                 disabled={busy !== null || !provider.available}
                 onClick={() => toggle("providers", provider.provider)}>
-                {providerLabel(provider.provider)}
+                <span>{providerLabel(provider.provider)}</span>
+                <small>{modelConfigSummary(provider.model, provider.reasoning_effort)}</small>
               </button>
             ))}
           </div>
@@ -1968,7 +2006,10 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                     title="展开收益构成、收尾处理与逐条决策"
                   >
                     {openDecisions === `${run.id}-${model.provider}` ? "▾" : "▸"}
-                    {providerLabel(model.provider)}
+                    <span>
+                      {providerLabel(model.provider)}
+                      <small>{modelConfigSummary(model.model, model.reasoning_effort, model.config_recorded)}</small>
+                    </span>
                   </button>
                 </td>
                 <td>{Math.round(model.progress * 100)}%

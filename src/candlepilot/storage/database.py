@@ -1053,11 +1053,7 @@ class AuditRepository:
     async def record_backtest_decisions(
         self, run_id: int, provider: str, rows: list[dict[str, Any]]
     ) -> None:
-        """Append a batch of a model's decisions.
-
-        Batched rather than written per decision: the runner already awaits a
-        progress write on every call, and this is the same trip.
-        """
+        """Append completed model decisions so running details stay current."""
 
         if not rows:
             return
@@ -1178,18 +1174,29 @@ class AuditRepository:
         *,
         detail: bool,
     ) -> dict[str, Any]:
+        spec = json.loads(run.spec_json)
+        provider_configs = spec.get("provider_configs", {})
         return {
             "id": run.id,
             "status": run.status,
             "error": run.error,
-            "spec": json.loads(run.spec_json),
+            "spec": spec,
             "created_at": self._utc(run.created_at),
             "ended_at": self._utc(run.ended_at) if run.ended_at is not None else None,
-            "models": [self._model_run_dict(model, detail=detail) for model in models],
+            "models": [
+                self._model_run_dict(
+                    model,
+                    detail=detail,
+                    config=provider_configs.get(model.provider, {}),
+                )
+                for model in models
+            ],
         }
 
     @staticmethod
-    def _model_run_dict(row: BacktestModelRunRow, *, detail: bool) -> dict[str, Any]:
+    def _model_run_dict(
+        row: BacktestModelRunRow, *, detail: bool, config: dict[str, Any]
+    ) -> dict[str, Any]:
         result = json.loads(row.result_json) if row.result_json else None
         if result is not None and not detail:
             # The list view only needs the headline numbers; trades and the
@@ -1201,6 +1208,9 @@ class AuditRepository:
             }
         return {
             "provider": row.provider,
+            "model": config.get("model"),
+            "reasoning_effort": config.get("reasoning_effort"),
+            "config_recorded": "model" in config or "reasoning_effort" in config,
             "decisions_done": row.decisions_done,
             "decisions_total": row.decisions_total,
             "calls_failed": row.calls_failed,

@@ -1265,7 +1265,10 @@ def test_backtest_is_refused_while_the_engine_runs(tmp_path: Path) -> None:
 
 
 def test_backtest_runs_in_the_background_and_reports_each_model(tmp_path: Path) -> None:
-    database, _engine, app = _backtest_app(tmp_path, "bt-run.db")
+    database, engine, app = _backtest_app(tmp_path, "bt-run.db")
+    provider = engine.providers.get("api-fixture")
+    provider.model = "fixture-model"
+    provider.reasoning_effort = "high"
 
     with TestClient(app) as client:
         created = client.post(
@@ -1287,11 +1290,58 @@ def test_backtest_runs_in_the_background_and_reports_each_model(tmp_path: Path) 
         assert run["status"] == "completed", run.get("error")
         assert [model["provider"] for model in run["models"]] == ["api-fixture"]
         model = run["models"][0]
+        assert model["model"] == "fixture-model"
+        assert model["reasoning_effort"] == "high"
+        assert model["config_recorded"] is True
+        assert run["spec"]["provider_configs"]["api-fixture"] == {
+            "model": "fixture-model",
+            "reasoning_effort": "high",
+        }
         assert model["decisions_done"] == model["decisions_total"] == 12
         assert model["progress"] == 1.0
         # The fixture provider only ever holds, so nothing traded.
         assert model["result"]["trade_count"] == 0
         assert client.get("/api/backtests").json()[0]["id"] == run_id
+    asyncio.run(database.close())
+
+
+def test_running_backtest_exposes_each_completed_decision_immediately(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'bt-live-decisions.db'}")
+    market = BacktestMarket()
+
+    class SlowProvider(ApiProvider):
+        async def generate_trade_intent(self, snapshot, portfolio):
+            await asyncio.sleep(0.15)
+            return await super().generate_trade_intent(snapshot, portfolio)
+
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([SlowProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/backtests",
+            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window()},
+        )
+        assert created.status_code == 202
+        run_id = created.json()["id"]
+        for _ in range(100):
+            decisions = client.get(f"/api/backtests/{run_id}/decisions").json()
+            run = client.get(f"/api/backtests/{run_id}").json()
+            if decisions:
+                break
+            time.sleep(0.03)
+        else:
+            raise AssertionError("the first completed decision was not exposed")
+
+        assert run["status"] == "running"
+        assert len(decisions) >= 1
+        client.post(f"/api/backtests/{run_id}/cancel")
+
     asyncio.run(database.close())
 
 

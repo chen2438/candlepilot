@@ -345,6 +345,9 @@ export interface BacktestResult {
 
 export interface BacktestModelRun {
   provider: string;
+  model: string | null;
+  reasoning_effort: string | null;
+  config_recorded: boolean;
   decisions_done: number;
   decisions_total: number;
   calls_failed: number;
@@ -363,6 +366,7 @@ export interface BacktestRun {
     start: string;
     end: string;
     providers: string[];
+    provider_configs?: Record<string, { model: string | null; reasoning_effort: string | null }>;
     use_recorded_book?: boolean;
     timeout_seconds?: number | null;
     estimate: { decisions_per_model: number; total_calls: number; estimated_hours: number };

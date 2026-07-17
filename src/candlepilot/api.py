@@ -222,13 +222,6 @@ _CURATED_MODEL_ALIASES: dict[str, tuple[str, ...]] = {
 }
 _MODEL_ID_PREFIX: dict[str, str] = {"openai": "gpt-5", "anthropic": "claude-"}
 
-#: Decisions buffered before a batch insert.
-#:
-#: Small enough that a cancelled run keeps almost everything it decided, large
-#: enough that the write is not a round trip per model call.
-DECISION_BATCH = 25
-
-
 def _capture_features(row: dict[str, Any]) -> dict[str, float]:
     """Rebuild the microstructure block from a stored capture.
 
@@ -1645,24 +1638,17 @@ def create_app(
             )
             return
 
-        # Decisions are buffered per model and written in batches: one INSERT
-        # per decision would double the round trips the progress write already
-        # costs, for rows nobody reads until the run is worth looking at.
-        pending: dict[str, list[dict[str, Any]]] = {}
-
-        async def drain(provider: str) -> None:
-            rows = pending.pop(provider, [])
-            if rows:
-                await engine.audit.record_backtest_decisions(run_id, provider, rows)
-
         async def flush(run: ModelRun, decision: BacktestDecision | None) -> None:
             if decision is not None:
                 row = decision.as_row()
                 fill = row.pop("fill")
                 row["fill_json"] = json.dumps(fill) if fill else None
-                pending.setdefault(run.provider, []).append(row)
-                if len(pending[run.provider]) >= DECISION_BATCH:
-                    await drain(run.provider)
+                # A model call takes seconds; this local write takes
+                # milliseconds. Persist the complete row now so an expanded
+                # running backtest can show it on the next three-second poll.
+                await engine.audit.record_backtest_decisions(
+                    run_id, run.provider, [row]
+                )
             await engine.audit.update_backtest_progress(
                 run_id,
                 run.provider,
@@ -1672,11 +1658,6 @@ def create_app(
                 result=_json_value(asdict(run.result)) if run.result is not None else None,
                 error=run.error,
             )
-            # The final report has no decision, and is where the last partial
-            # batch has to land or the tail of every run goes missing.
-            if decision is None:
-                await drain(run.provider)
-
         try:
             with _timeouts(spec):
                 runs = await compare(
@@ -1874,6 +1855,13 @@ def create_app(
                 "start": spec.start.isoformat(),
                 "end": spec.end.isoformat(),
                 "providers": list(spec.providers),
+                "provider_configs": {
+                    name: {
+                        "model": engine.providers.get(name).model,
+                        "reasoning_effort": engine.providers.get(name).reasoning_effort,
+                    }
+                    for name in spec.providers
+                },
                 "use_recorded_book": spec.use_recorded_book,
                 # Recorded because the failure count is meaningless without it:
                 # otherwise nothing says whether a run that lost decisions ran
