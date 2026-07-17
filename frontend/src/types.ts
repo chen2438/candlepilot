@@ -302,3 +302,49 @@ export interface TestnetAccountStatus {
   };
   fetched_at: string | null;
 }
+
+export interface BacktestEstimate {
+  decisions_per_model: number;
+  total_calls: number;
+  estimated_seconds: number;
+  estimated_hours: number;
+  max_hours: number;
+  within_limit: boolean;
+}
+
+export interface BacktestModelRun {
+  provider: string;
+  decisions_done: number;
+  decisions_total: number;
+  calls_failed: number;
+  progress: number;
+  error: string | null;
+  result: null | {
+    initial_equity: string;
+    final_equity: string;
+    total_return: string;
+    max_drawdown: string;
+    win_rate: string;
+    profit_factor: string | null;
+    trade_count: number;
+    total_fees: string;
+    total_funding: string;
+  };
+}
+
+export interface BacktestRun {
+  id: number;
+  status: "running" | "completed" | "failed" | "cancelled";
+  error: string | null;
+  spec: {
+    symbols: string[];
+    cadences: string[];
+    start: string;
+    end: string;
+    providers: string[];
+    estimate: { decisions_per_model: number; total_calls: number; estimated_hours: number };
+  };
+  created_at: string;
+  ended_at: string | null;
+  models: BacktestModelRun[];
+}

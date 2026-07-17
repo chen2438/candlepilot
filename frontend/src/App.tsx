@@ -2,6 +2,8 @@ import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } fro
 import type {
   AccountPortfolio,
   AccountPosition,
+  BacktestEstimate,
+  BacktestRun,
   Candidate,
   DecisionEvent,
   DecisionDetail,
@@ -89,11 +91,12 @@ const HISTORY_CATEGORIES: Array<{ key: string; label: string; hint: string }> = 
   { key: "pricing_cache", label: "定价缓存", hint: "models.dev" },
 ];
 
-type TabKey = "overview" | "account" | "operations" | "data" | "settings";
+type TabKey = "overview" | "account" | "backtest" | "operations" | "data" | "settings";
 
 const TABS: Array<{ key: TabKey; label: string; meta: string }> = [
   { key: "overview", label: "总览", meta: "引擎 · 接入 · 候选 · 决策" },
   { key: "account", label: "账户", meta: "持仓 · 订单" },
+  { key: "backtest", label: "回测", meta: "历史模式 · 多模型对比" },
   { key: "operations", label: "运维", meta: "模型 · 测试网" },
   { key: "data", label: "数据", meta: "删除历史数据" },
   { key: "settings", label: "设置", meta: "编辑本地 .env" },
@@ -894,6 +897,12 @@ export default function App() {
         </>)}
 
 
+        {tab === "backtest" && (
+        <section className="grid">
+          <BacktestPanel providers={providers} engineRunning={status.running} />
+        </section>
+        )}
+
         {tab === "account" && (
         <section className="grid">
           <AccountPanel
@@ -1405,6 +1414,244 @@ function RunUsage({ session }: { session: RunSessionMetrics }) {
       <p>等效成本按可用的 API 单价或 Provider 返回成本折算，订阅 Auth 的实际账单可能不同。</p>
     </section>
   );
+}
+
+const BACKTEST_VS_LIVE: Array<{ aspect: string; live: string; backtest: string }> = [
+  { aspect: "下单", live: "真实签名下单到币安测试网，交易所撮合、交易所侧止盈止损括号单", backtest: "本地仿真：下一根 K 线开盘价成交 + 滑点，不发任何订单" },
+  { aspect: "订单流", live: "20 档盘口失衡、成交流水失衡、基差、持仓量", backtest: "全部缺失——币安不提供历史盘口，无法重建。Prompt 已告知模型，不因缺流而否决形态" },
+  { aspect: "价差", live: "真实买一卖一", backtest: "无盘口即无价差（bid = ask = mark）。编一个价差会美化每笔成交" },
+  { aspect: "标的", live: "全市场动态扫描，每分钟轮换", backtest: "你指定标的池——历史上的价差/24h ticker 快照不存在，选币无法忠实重放" },
+  { aspect: "特征", live: "5m/15m/30m 全套 + 日线结构位", backtest: "同一套 FeaturePipeline，同构（减去上面缺的订单流）" },
+  { aspect: "风控", live: "AggressiveRiskPolicy", backtest: "同一个 AggressiveRiskPolicy——日亏熔断、仓位上限、tick 对齐全部生效" },
+];
+
+function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth[]; engineRunning: boolean }) {
+  const [form, setForm] = useState(() => {
+    const end = new Date();
+    end.setMinutes(0, 0, 0);
+    end.setHours(end.getHours() - 1);
+    const start = new Date(end.getTime() - 4 * 60 * 60 * 1000);
+    return {
+      symbols: "BTCUSDT",
+      cadences: ["5m"] as string[],
+      start: localDateTime(start),
+      end: localDateTime(end),
+      providers: [] as string[],
+      initialEquity: "10000",
+      feeRate: "0.0005",
+      slippage: "0.0005",
+    };
+  });
+  const [estimate, setEstimate] = useState<BacktestEstimate | null>(null);
+  const [runs, setRuns] = useState<BacktestRun[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [showDiff, setShowDiff] = useState(false);
+
+  const body = useCallback(() => ({
+    symbols: form.symbols.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),
+    cadences: form.cadences,
+    start: new Date(form.start).toISOString(),
+    end: new Date(form.end).toISOString(),
+    providers: form.providers,
+    config: {
+      initial_equity: form.initialEquity,
+      fee_rate: form.feeRate,
+      slippage_fraction: form.slippage,
+    },
+  }), [form]);
+
+  const refreshRuns = useCallback(async () => {
+    try {
+      setRuns(await api<BacktestRun[]>("/api/backtests?limit=10"));
+    } catch { /* the list is not worth an error banner */ }
+  }, []);
+
+  useEffect(() => { void refreshRuns(); }, [refreshRuns]);
+
+  // Poll only while something is unfinished, so an idle console stays quiet.
+  useEffect(() => {
+    if (!runs.some((run) => run.status === "running")) return;
+    const timer = window.setInterval(() => void refreshRuns(), 3000);
+    return () => window.clearInterval(timer);
+  }, [runs, refreshRuns]);
+
+  // The estimate is stale the moment the spec changes; showing an old one
+  // beside a new window is worse than showing none.
+  useEffect(() => { setEstimate(null); }, [form]);
+
+  const runEstimate = async () => {
+    setBusy("estimate"); setError(null);
+    try {
+      setEstimate(await api<BacktestEstimate>("/api/backtests/estimate", {
+        method: "POST", body: JSON.stringify(body()),
+      }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally { setBusy(null); }
+  };
+
+  const start = async () => {
+    setBusy("start"); setError(null);
+    try {
+      await api<{ id: number }>("/api/backtests", { method: "POST", body: JSON.stringify(body()) });
+      await refreshRuns();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally { setBusy(null); }
+  };
+
+  const cancel = async (id: number) => {
+    try {
+      await api(`/api/backtests/${id}/cancel`, { method: "POST" });
+      await refreshRuns();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
+  const toggle = (key: "cadences" | "providers", value: string) =>
+    setForm((current) => ({
+      ...current,
+      [key]: current[key].includes(value)
+        ? current[key].filter((item) => item !== value)
+        : [...current[key], value],
+    }));
+
+  return (
+    <article className="panel backtest-panel">
+      <PanelTitle code="09" title="回测" meta="历史模式 · 多模型对比" />
+
+      <div className="backtest-note">
+        <strong>回测不下单。</strong>它用历史行情重放同一套决策与风控，只有撮合是仿真的。
+        <button className="text-button" onClick={() => setShowDiff((value) => !value)}>
+          {showDiff ? "收起差异" : "与实盘的差异"}
+        </button>
+      </div>
+      {showDiff && (
+        <div className="table-wrap backtest-diff">
+          <table>
+            <thead><tr><th></th><th>实盘（币安测试网）</th><th>回测（历史模式）</th></tr></thead>
+            <tbody>
+              {BACKTEST_VS_LIVE.map((row) => (
+                <tr key={row.aspect}>
+                  <td><strong>{row.aspect}</strong></td>
+                  <td>{row.live}</td>
+                  <td>{row.backtest}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="backtest-form">
+        <label><span>标的（逗号分隔，最多 5 个）</span>
+          <input value={form.symbols} disabled={busy !== null}
+            onChange={(e) => setForm({ ...form, symbols: e.target.value })} />
+        </label>
+        <label><span>起</span>
+          <input type="datetime-local" value={form.start} disabled={busy !== null}
+            onChange={(e) => setForm({ ...form, start: e.target.value })} />
+        </label>
+        <label><span>止（最长 3 天）</span>
+          <input type="datetime-local" value={form.end} disabled={busy !== null}
+            onChange={(e) => setForm({ ...form, end: e.target.value })} />
+        </label>
+        <label><span>初始权益</span>
+          <input value={form.initialEquity} disabled={busy !== null}
+            onChange={(e) => setForm({ ...form, initialEquity: e.target.value })} />
+        </label>
+      </div>
+
+      <div className="backtest-picks">
+        <div>
+          <span className="eyebrow">周期（每多选一个，耗时增加一份）</span>
+          <div className="chips">
+            {["5m", "15m", "30m"].map((cadence) => (
+              <button key={cadence} className={form.cadences.includes(cadence) ? "active" : ""}
+                disabled={busy !== null} onClick={() => toggle("cadences", cadence)}>{cadence}</button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <span className="eyebrow">对比的模型（最多 4 个 · 并行跑，不叠加耗时）</span>
+          <div className="chips">
+            {providers.map((provider) => (
+              <button key={provider.provider} className={form.providers.includes(provider.provider) ? "active" : ""}
+                disabled={busy !== null || !provider.available}
+                onClick={() => toggle("providers", provider.provider)}>
+                {providerLabel(provider.provider)}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {estimate && (
+        <div className={`backtest-estimate ${estimate.within_limit ? "" : "over"}`}>
+          <span>每模型 <strong>{estimate.decisions_per_model}</strong> 次决策</span>
+          <span>共 <strong>{estimate.total_calls}</strong> 次模型调用</span>
+          <span>预计 <strong>{estimate.estimated_hours}</strong> 小时
+            <small>按本机实测延迟 · 上限 {estimate.max_hours}h</small></span>
+          {!estimate.within_limit && <span className="negative">超出耗时上限，请缩短窗口</span>}
+        </div>
+      )}
+
+      <div className="backtest-actions">
+        <button className="ghost" disabled={busy !== null || !form.providers.length} onClick={() => void runEstimate()}>
+          {busy === "estimate" ? "估算中…" : "先估算耗时"}
+        </button>
+        <button disabled={busy !== null || !form.providers.length || engineRunning} onClick={() => void start()}>
+          {busy === "start" ? "启动中…" : "开始回测"}
+        </button>
+        {engineRunning && <small className="backtest-blocked">引擎运行中无法回测——两者共用同一个模型且调用严格串行，并发会让实盘快照超时被误判否决。请先停止引擎。</small>}
+      </div>
+      {error && <div className="error-text">{error}</div>}
+
+      <div className="table-wrap backtest-runs">
+        <table>
+          <thead><tr><th>#</th><th>窗口</th><th>模型</th><th>进度</th><th>收益</th><th>胜率</th><th>回撤</th><th>交易</th><th></th></tr></thead>
+          <tbody>
+            {runs.flatMap((run) => run.models.map((model, index) => (
+              <tr key={`${run.id}-${model.provider}`}>
+                {index === 0 && <td rowSpan={run.models.length}><strong>{run.id}</strong><small className={`run-status ${run.status}`}>{RUN_STATUS[run.status]}</small></td>}
+                {index === 0 && <td rowSpan={run.models.length}>
+                  <small>{run.spec.symbols.join(" ")}<br />{run.spec.cadences.join(" ")}<br />
+                    {new Date(run.spec.start).toLocaleString("zh-CN", { hour12: false })}</small>
+                </td>}
+                <td>{providerLabel(model.provider)}</td>
+                <td>{Math.round(model.progress * 100)}%
+                  {model.calls_failed > 0 && <small className="negative">{model.calls_failed} 次失败</small>}</td>
+                <td className={model.result && Number(model.result.total_return) >= 0 ? "positive" : "negative"}>
+                  {model.result ? `${(Number(model.result.total_return) * 100).toFixed(2)}%` : "—"}</td>
+                <td>{model.result ? `${(Number(model.result.win_rate) * 100).toFixed(0)}%` : "—"}</td>
+                <td>{model.result ? `${(Number(model.result.max_drawdown) * 100).toFixed(2)}%` : "—"}</td>
+                <td>{model.result ? model.result.trade_count : "—"}</td>
+                {index === 0 && <td rowSpan={run.models.length}>
+                  {run.status === "running" && <button className="text-button danger-text" onClick={() => void cancel(run.id)}>取消</button>}
+                  {run.error && <small className="negative" title={run.error}>失败</small>}
+                </td>}
+              </tr>
+            )))}
+            {!runs.length && <tr><td colSpan={9} className="empty">还没有回测。选好标的、窗口和模型后先估算耗时。</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  );
+}
+
+const RUN_STATUS: Record<BacktestRun["status"], string> = {
+  running: "进行中",
+  completed: "已完成",
+  failed: "失败",
+  cancelled: "已取消",
+};
+
+function localDateTime(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function PanelTitle({ code, title, meta }: { code: string; title: string; meta: string }) {
