@@ -586,7 +586,7 @@ python scripts/check_commit_messages.py --commit HEAD
 
 首次克隆后执行 `git config core.hooksPath .githooks`，启用版本化 `commit-msg` hook。该 hook
 会在提交创建前要求 Conventional Commit 标题、空行后的 description，以及位于最后一行的
-归属 trailer。Agent 实现的提交使用 GitHub 可识别的 Codex 或 Claude Code `Co-authored-by`；
+归属 trailer。Agent 实现的提交使用 GitHub 可识别的实际模型名或 Claude Code `Co-authored-by`；
 完全由用户本人实现、没有 Agent 参与的提交使用 `Human-authored: true`，Agent 不得冒用该标记。
 包含字面量 `\\n` 的错误消息会被拒绝。GitHub Actions CI（`.github/workflows/ci.yml`）会对每次
 push/PR 的所有新增提交重复执行同一校验，即使本地 hook 被绕过也会失败；其余 CI 检查同样
@@ -626,5 +626,6 @@ git commit \
 6. 每个 Git 提交必须使用清晰的 Conventional Commit 风格标题，并在空行后提供有意义的
    description，说明改了什么、为什么改；不得只提交标题。
 7. AI 实现的提交必须追加 GitHub 可识别的共同作者 trailer，以显示共同作者及头像：
-   Codex 使用 `Co-authored-by: Codex <noreply@openai.com>`；Claude Code 使用当前对应的
-   Anthropic 共同作者身份。具体执行规则同时记录在根目录 `AGENTS.md`。
+   Codex Agent 使用当前实际模型名而非产品名，当前为
+   `Co-authored-by: GPT-5.6 Sol <noreply@openai.com>`；Claude Code 使用当前对应的 Anthropic
+   共同作者身份。具体执行规则同时记录在根目录 `AGENTS.md`。

@@ -7,7 +7,8 @@
   1. 简洁的 Conventional Commit 风格标题；
   2. 一个空行，以及说明“改了什么、为什么改”的有意义 description；
   3. 实现该变更的 Agent 共同作者 trailer。
-- Codex 提交必须以 `Co-authored-by: Codex <noreply@openai.com>` 结尾。
+- Codex Agent 提交必须使用当前实际模型名而非产品名；当前模型的提交必须以
+  `Co-authored-by: GPT-5.6 Sol <noreply@openai.com>` 结尾。
 - Claude Code 提交必须以其当前适用的 Anthropic 共同作者 trailer 结尾。
 - 完全由用户本人实现且没有 Agent 参与的提交可以改以 `Human-authored: true` 结尾；Agent 禁止
   使用或建议冒用该标记来绕过共同作者要求。
