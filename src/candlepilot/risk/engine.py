@@ -269,6 +269,10 @@ class AggressiveRiskPolicy:
         quantity = _round_down(position_quantity, rules.quantity_step)
         if intent.action == TradeAction.REDUCE:
             quantity = _round_down(quantity / 2, rules.quantity_step)
+        if quantity <= 0 or quantity < rules.min_quantity:
+            return AggressiveRiskPolicy._reject(
+                "reduce-only quantity is below the exchange minimum"
+            )
         side = "SELL" if existing_side == "LONG" else "BUY"
         price = intent.entry_price
         if intent.order_type == OrderType.LIMIT and price is not None:

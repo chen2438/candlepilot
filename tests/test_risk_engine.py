@@ -110,6 +110,36 @@ def test_pending_entries_consume_the_open_position_count_limit() -> None:
     assert "maximum open position count" in result.decision.reason
 
 
+def test_reduce_rejects_when_half_the_position_rounds_below_minimum() -> None:
+    portfolio = _portfolio(
+        open_positions=1,
+        positions=_position("LONG", "0.001"),
+    )
+
+    result = AggressiveRiskPolicy().evaluate(
+        _intent(TradeAction.REDUCE), _snapshot(), portfolio, RULES
+    )
+
+    assert not result.decision.accepted
+    assert result.order is None
+    assert "below the exchange minimum" in result.decision.reason
+
+
+def test_close_rejects_a_dust_position_below_exchange_minimum() -> None:
+    portfolio = _portfolio(
+        open_positions=1,
+        positions=_position("LONG", "0.0009"),
+    )
+
+    result = AggressiveRiskPolicy().evaluate(
+        _intent(TradeAction.CLOSE), _snapshot(), portfolio, RULES
+    )
+
+    assert not result.decision.accepted
+    assert result.order is None
+    assert "below the exchange minimum" in result.decision.reason
+
+
 def test_add_subtracts_existing_position_risk_from_the_hard_limit() -> None:
     intent = _intent(TradeAction.ADD)
     portfolio = _portfolio(
