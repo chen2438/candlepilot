@@ -248,6 +248,18 @@ def test_allows_and_marks_immediately_marketable_limit_after_refresh() -> None:
     assert result.order.price == Decimal("101")
 
 
+def test_rejects_a_resting_opening_limit_that_cannot_be_atomically_protected() -> None:
+    resting = _intent().model_copy(
+        update={"order_type": OrderType.LIMIT, "entry_price": Decimal("99")}
+    )
+
+    result = AggressiveRiskPolicy().evaluate(resting, _snapshot(), _portfolio(), RULES)
+
+    assert not result.decision.accepted
+    assert result.order is None
+    assert "cannot be attached atomically" in result.decision.reason
+
+
 def test_marketable_short_limit_uses_fresh_bid_for_margin_sizing() -> None:
     intent = _intent(TradeAction.OPEN_SHORT).model_copy(
         update={"order_type": OrderType.LIMIT, "entry_price": Decimal("99")}
@@ -365,14 +377,14 @@ def test_limit_entry_snaps_toward_our_own_side_of_the_book() -> None:
         tick_size=Decimal("0.5"),
     )
     intent = _intent().model_copy(
-        update={"order_type": OrderType.LIMIT, "entry_price": Decimal("99.7")}
+        update={"order_type": OrderType.LIMIT, "entry_price": Decimal("100.7")}
     )
 
     result = AggressiveRiskPolicy().evaluate(intent, _snapshot(), _portfolio(), rules)
 
     assert result.decision.accepted and result.order is not None
     # A long never bids up to reach the grid.
-    assert result.order.price == Decimal("99.5")
+    assert result.order.price == Decimal("100.5")
 
 
 def test_stop_that_snaps_to_zero_is_rejected_rather_than_sent() -> None:

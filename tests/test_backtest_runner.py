@@ -270,21 +270,26 @@ def test_higher_cadences_cannot_duplicate_funding_settlement() -> None:
     assert multi.total_funding == base.total_funding
 
 
-def test_unreached_limit_is_pending_and_cannot_stack_another_entry() -> None:
+def test_unreached_reduce_only_limit_is_pending_and_blocks_another_order() -> None:
     class RestingLimit(_Provider):
+        def __init__(self, name: str) -> None:
+            super().__init__(name)
+            self.calls = 0
+
         async def generate_trade_intent(self, snapshot, portfolio):
+            self.calls += 1
+            if self.calls == 1:
+                return await super().generate_trade_intent(snapshot, portfolio)
             intent = TradeIntent(
                 symbol=snapshot.symbol,
                 cadence=snapshot.cadence,
-                action=TradeAction.OPEN_LONG,
+                action=TradeAction.CLOSE,
                 confidence=0.8,
-                leverage=2,
-                risk_fraction="0.01",
+                leverage=1,
+                risk_fraction="0",
                 order_type="LIMIT",
-                entry_price=snapshot.mark_price * Decimal("0.5"),
-                stop_loss=snapshot.mark_price * Decimal("0.4"),
-                take_profit=snapshot.mark_price * Decimal("1.1"),
-                rationale="resting fixture",
+                entry_price=snapshot.mark_price * Decimal("2"),
+                rationale="resting exit fixture",
             )
             return ProviderResult(intent, self.name, "m", timedelta(0), "{}", {})
 
@@ -300,10 +305,11 @@ def test_unreached_limit_is_pending_and_cannot_stack_another_entry() -> None:
         )
     )
 
-    assert result.trade_count == 0
-    assert decisions[0].outcome == "pending"
-    assert decisions[0].fill is not None and decisions[0].fill["status"] == "NEW"
-    assert all(item.outcome == "rejected" for item in decisions[1:-1])
+    assert result.trade_count == 1  # The still-open position is closed at run end.
+    assert decisions[0].outcome == "traded"
+    assert decisions[1].outcome == "pending"
+    assert decisions[1].fill is not None and decisions[1].fill["status"] == "NEW"
+    assert all(item.outcome == "rejected" for item in decisions[2:])
 
 
 def test_decision_fill_price_is_the_slipped_execution_price() -> None:

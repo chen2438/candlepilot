@@ -352,7 +352,7 @@ class BacktestRunner:
                 continue
             if exchange.has_pending(symbol):
                 entry.outcome = "rejected"
-                entry.detail = "resting limit entry already pending"
+                entry.detail = "resting limit order already pending"
                 curve.append(EquityPoint(when, exchange.equity(self._marks(when))))
                 await report(entry)
                 continue

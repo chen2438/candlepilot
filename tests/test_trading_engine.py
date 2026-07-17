@@ -5,6 +5,7 @@ from pathlib import Path
 
 from candlepilot.application.engine import TradingEngine
 from candlepilot.domain.models import (
+    ExecutionReport,
     MarketSnapshot,
     OrderType,
     PortfolioState,
@@ -766,6 +767,51 @@ def test_testnet_execution_failure_is_audited_with_rescue_loss(tmp_path: Path) -
         events[0]["execution"]["client_order_id"],
         f"{events[0]['execution']['client_order_id']}-rescue",
     }
+
+
+def test_terminal_exchange_rejection_is_not_audited_as_success(tmp_path: Path) -> None:
+    class RejectingBroker(FakeTestnetBroker):
+        async def execute_with_stop(self, order, **_):
+            return ExecutionReport(
+                client_order_id=order.client_order_id,
+                status="REJECTED",
+                message="fixture rejection",
+            )
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'terminal-rejection.db'}")
+        await database.initialize()
+        audit = AuditRepository(database.sessions)
+        engine = TradingEngine(
+            testnet_broker=RejectingBroker(),  # type: ignore[arg-type]
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=audit,
+            market=FakeMarket(),  # type: ignore[arg-type]
+        )
+        engine.select_provider("fake-auth")
+        await engine.start()
+        outcome = await engine.evaluate(
+            MarketSnapshot(
+                symbol="BTCUSDT",
+                cadence="5m",
+                timestamp=datetime.now(UTC),
+                mark_price="100",
+                bid="99.9",
+                ask="100.1",
+                quote_volume_24h="1000000",
+            ),
+            PortfolioState(equity="10000", available_balance="8000"),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")),
+        )
+        events = await audit.recent_decision_events()
+        await database.close()
+        return outcome, events
+
+    outcome, events = asyncio.run(scenario())
+    assert outcome.execution is not None and outcome.execution.status == "REJECTED"
+    assert events[0]["outcome"] == "execution_failed"
+    assert events[0]["execution"]["status"] == "FAILED"
+    assert events[0]["execution"]["stage"] == "ENTRY"
 
 
 def test_unrescued_protection_failure_emergency_locks_engine(tmp_path: Path) -> None:

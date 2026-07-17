@@ -549,14 +549,19 @@ class TradingEngine:
                     await self.emergency_stop()
             else:
                 await self.audit.record_execution(snapshot.symbol, execution)
+                completed = execution.status in {"NEW", "PARTIALLY_FILLED", "FILLED"}
                 await self.audit.record_execution_attempt(
                     snapshot.symbol,
                     ExecutionAttempt(
                         inference_id=inference_id,
                         client_order_id=evaluation.order.client_order_id,
-                        status="SUCCEEDED",
-                        stage="COMPLETE",
-                        message="entry accepted and required execution checks completed",
+                        status="SUCCEEDED" if completed else "FAILED",
+                        stage="COMPLETE" if completed else "ENTRY",
+                        message=(
+                            "order accepted and required execution checks completed"
+                            if completed
+                            else f"exchange returned terminal status {execution.status}"
+                        ),
                         entry_report=execution,
                     ),
                 )

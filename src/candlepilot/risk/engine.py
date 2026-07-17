@@ -190,6 +190,11 @@ class AggressiveRiskPolicy:
             (requested_side == "LONG" and snapshot.ask <= entry)
             or (requested_side == "SHORT" and snapshot.bid >= entry)
         )
+        if intent.order_type == OrderType.LIMIT and not immediately_marketable:
+            return self._reject(
+                "resting limit entries are not supported because protection "
+                "cannot be attached atomically"
+            )
 
         per_unit_loss = abs(entry - stop) + (entry * self.slippage_fraction)
         requested_risk_budget = portfolio.equity * min(

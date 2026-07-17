@@ -332,17 +332,56 @@ class BinanceTestnetBroker:
         entry = await self._place_order(order)
         if entry.status not in {"NEW", "PARTIALLY_FILLED", "FILLED"}:
             return entry
+        if entry.status in {"NEW", "PARTIALLY_FILLED"}:
+            try:
+                cancellation = await self._signed_request(
+                    "DELETE",
+                    "/fapi/v1/order",
+                    {
+                        "symbol": order.symbol,
+                        "origClientOrderId": order.client_order_id,
+                    },
+                )
+            except Exception as exc:
+                raise OrderStatusUnknown(order.client_order_id) from exc
+            canceled_quantity = Decimal(
+                str(cancellation.get("executedQty", entry.filled_quantity))
+            )
+            canceled_average = Decimal(
+                str(cancellation.get("avgPrice", entry.average_price or "0"))
+            )
+            entry = entry.model_copy(
+                update={
+                    "filled_quantity": max(entry.filled_quantity, canceled_quantity),
+                    "average_price": canceled_average
+                    if canceled_average > 0
+                    else entry.average_price,
+                }
+            )
+            if entry.filled_quantity == 0:
+                return entry.model_copy(
+                    update={
+                        "status": "CANCELED",
+                        "message": "unfilled opening limit canceled before protection",
+                        "timestamp": datetime.now(UTC),
+                    }
+                )
+        protected_order = (
+            order.model_copy(update={"quantity": entry.filled_quantity})
+            if entry.status == "PARTIALLY_FILLED" and entry.filled_quantity > 0
+            else order
+        )
         exit_side = "SELL" if order.side == "BUY" else "BUY"
         fresh_protection: list[str] = []
         try:
             fresh_protection.append(
                 await self._place_protective(
-                    order, exit_side, "STOP_MARKET", order.stop_price, "sl"
+                    protected_order, exit_side, "STOP_MARKET", order.stop_price, "sl"
                 )
             )
             fresh_protection.append(
                 await self._place_protective(
-                    order,
+                    protected_order,
                     exit_side,
                     "TAKE_PROFIT_MARKET",
                     order.take_profit_price,
@@ -358,7 +397,7 @@ class BinanceTestnetBroker:
             rescue: ExecutionReport | None = None
             rescue_error: Exception | None = None
             try:
-                rescue = await self._emergency_reduce(order, exit_side)
+                rescue = await self._emergency_reduce(protected_order, exit_side)
             except Exception as emergency_exc:
                 rescue_error = emergency_exc
             error_code = exc.code if isinstance(exc, BinanceApiError) else None
@@ -375,7 +414,9 @@ class BinanceTestnetBroker:
                 entry=entry,
                 rescue=rescue,
                 exchange_error_code=error_code,
-                estimated_loss_usdt=self._estimated_rescue_loss(order, entry, rescue),
+                estimated_loss_usdt=self._estimated_rescue_loss(
+                    protected_order, entry, rescue
+                ),
                 failed_stage="PROTECTION" if rescue is not None else "RESCUE",
                 requires_emergency_lock=rescue is None,
             ) from exc

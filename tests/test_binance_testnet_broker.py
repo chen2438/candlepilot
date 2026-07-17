@@ -132,6 +132,116 @@ def test_testnet_opening_requires_take_profit() -> None:
     asyncio.run(scenario())
 
 
+def test_unfilled_opening_limit_is_canceled_without_creating_fake_protection() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/fapi/v1/time":
+            return httpx.Response(200, json={"serverTime": 1784040000000})
+        if request.url.path == "/fapi/v1/marginType":
+            return httpx.Response(400, json={"code": -4046, "msg": "No need to change"})
+        if request.url.path == "/fapi/v1/leverage":
+            return httpx.Response(200, json={"leverage": 3})
+        if request.method == "DELETE":
+            return httpx.Response(200, json={"status": "CANCELED"})
+        return httpx.Response(
+            200,
+            json={
+                "clientOrderId": "cp-limit",
+                "status": "NEW",
+                "executedQty": "0",
+                "avgPrice": "0",
+            },
+        )
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        report = await broker.execute_with_stop(
+            OrderPlan(
+                client_order_id="cp-limit",
+                symbol="BTCUSDT",
+                side="BUY",
+                quantity=Decimal("1"),
+                order_type=OrderType.LIMIT,
+                price=Decimal("101"),
+                stop_price=Decimal("98"),
+                take_profit_price=Decimal("104"),
+            ),
+            leverage=3,
+        )
+        await client.aclose()
+        return report
+
+    report = asyncio.run(scenario())
+    assert report.status == "CANCELED"
+    assert any(
+        request.method == "DELETE" and request.url.path == "/fapi/v1/order"
+        for request in requests
+    )
+    assert not any(request.url.path == "/fapi/v1/algoOrder" for request in requests)
+
+
+def test_partial_opening_fill_cancels_remainder_before_installing_protection() -> None:
+    lifecycle: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        lifecycle.append((request.method, request.url.path))
+        if request.url.path == "/fapi/v1/time":
+            return httpx.Response(200, json={"serverTime": 1784040000000})
+        if request.url.path == "/fapi/v1/marginType":
+            return httpx.Response(400, json={"code": -4046, "msg": "No need to change"})
+        if request.url.path == "/fapi/v1/leverage":
+            return httpx.Response(200, json={"leverage": 3})
+        if request.method == "DELETE":
+            return httpx.Response(
+                200,
+                json={"status": "CANCELED", "executedQty": "0.4", "avgPrice": "100"},
+            )
+        if request.url.path == "/fapi/v1/algoOrder":
+            return httpx.Response(200, json={"status": "NEW"})
+        return httpx.Response(
+            200,
+            json={
+                "clientOrderId": "cp-partial",
+                "status": "PARTIALLY_FILLED",
+                "executedQty": "0.4",
+                "avgPrice": "100",
+            },
+        )
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        report = await broker.execute_with_stop(
+            OrderPlan(
+                client_order_id="cp-partial",
+                symbol="BTCUSDT",
+                side="BUY",
+                quantity=Decimal("1"),
+                order_type=OrderType.LIMIT,
+                price=Decimal("101"),
+                stop_price=Decimal("98"),
+                take_profit_price=Decimal("104"),
+            ),
+            leverage=3,
+        )
+        await client.aclose()
+        return report
+
+    report = asyncio.run(scenario())
+    cancel_index = lifecycle.index(("DELETE", "/fapi/v1/order"))
+    protection_index = lifecycle.index(("POST", "/fapi/v1/algoOrder"))
+    assert cancel_index < protection_index
+    assert report.status == "PARTIALLY_FILLED"
+    assert report.filled_quantity == Decimal("0.4")
+
+
 def test_add_replaces_existing_candlepilot_bracket_after_new_pair_is_active() -> None:
     requests: list[httpx.Request] = []
 
