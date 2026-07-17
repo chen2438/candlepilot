@@ -147,6 +147,22 @@ class BacktestModelRunRow(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class BookCaptureRow(Base):
+    """One recorded order-book state.
+
+    The only source of order flow for a past window: Binance keeps no history
+    of the book, so anything not written down here is gone.
+    """
+
+    __tablename__ = "book_captures"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    schema_version: Mapped[str] = mapped_column(String(32))
+    payload_json: Mapped[str] = mapped_column(Text)
+
+
 class RuntimeStateRow(Base):
     __tablename__ = "runtime_state"
 
@@ -268,6 +284,21 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             "ON backtest_model_runs (run_id)",
         ),
     ),
+    (
+        6,
+        (
+            "CREATE TABLE IF NOT EXISTS book_captures ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, symbol VARCHAR(32) NOT NULL, "
+            "captured_at DATETIME NOT NULL, schema_version VARCHAR(32) NOT NULL, "
+            "payload_json TEXT NOT NULL)",
+            # One capture per symbol per boundary: a restarted collector must
+            # not double-write the instant it resumes on.
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_book_captures_symbol_time "
+            "ON book_captures (symbol, captured_at)",
+            "CREATE INDEX IF NOT EXISTS ix_book_captures_captured_at "
+            "ON book_captures (captured_at)",
+        ),
+    ),
 )
 CURRENT_SCHEMA_VERSION = max(version for version, _ in MIGRATIONS)
 
@@ -349,6 +380,7 @@ class AuditRepository:
         "alerts": AlertEventRow,
         # Model runs cascade from the run, so clearing the parent is enough.
         "backtests": BacktestRunRow,
+        "book_captures": BookCaptureRow,
     }
 
     def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
@@ -776,6 +808,88 @@ class AuditRepository:
                 not_(succeeded),
             ),
         }[outcome]
+
+    async def store_book_captures(self, captures: list[dict[str, Any]]) -> int:
+        """Write a boundary's captures, ignoring any already recorded.
+
+        A restarted collector resumes on a boundary it may have already
+        written; the unique index makes that a no-op rather than a duplicate.
+        """
+
+        if not captures:
+            return 0
+        written = 0
+        async with self.sessions.begin() as session:
+            for item in captures:
+                existing = await session.scalar(
+                    select(BookCaptureRow.id).where(
+                        BookCaptureRow.symbol == item["symbol"],
+                        BookCaptureRow.captured_at == item["captured_at"],
+                    )
+                )
+                if existing is not None:
+                    continue
+                session.add(
+                    BookCaptureRow(
+                        symbol=item["symbol"],
+                        captured_at=item["captured_at"],
+                        schema_version=item["schema_version"],
+                        payload_json=json.dumps(
+                            item["payload"], separators=(",", ":"), default=str
+                        ),
+                    )
+                )
+                written += 1
+        return written
+
+    async def book_captures(
+        self, symbol: str, start: datetime, end: datetime
+    ) -> list[dict[str, Any]]:
+        async with self.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(BookCaptureRow)
+                    .where(
+                        BookCaptureRow.symbol == symbol,
+                        BookCaptureRow.captured_at >= start,
+                        BookCaptureRow.captured_at <= end,
+                    )
+                    .order_by(BookCaptureRow.captured_at)
+                )
+            ).all()
+        return [
+            {
+                "symbol": row.symbol,
+                "captured_at": self._utc(row.captured_at),
+                "schema_version": row.schema_version,
+                **json.loads(row.payload_json),
+            }
+            for row in rows
+        ]
+
+    async def book_capture_summary(self) -> list[dict[str, Any]]:
+        """What has been recorded so far, per symbol."""
+
+        async with self.sessions() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        BookCaptureRow.symbol,
+                        func.count(BookCaptureRow.id),
+                        func.min(BookCaptureRow.captured_at),
+                        func.max(BookCaptureRow.captured_at),
+                    ).group_by(BookCaptureRow.symbol)
+                )
+            ).all()
+        return [
+            {
+                "symbol": symbol,
+                "capture_count": count,
+                "first_capture_at": self._utc(first),
+                "last_capture_at": self._utc(last),
+            }
+            for symbol, count, first, last in rows
+        ]
 
     async def create_backtest_run(
         self, spec: dict[str, Any], providers: list[str]

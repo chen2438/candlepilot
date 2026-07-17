@@ -253,6 +253,24 @@ class BinancePublicClient:
             cursor = next_cursor
         return events[:max_events]
 
+    # The microstructure endpoints, named. market_snapshot and the book
+    # collector both need exactly these, and a live capture and a recorded one
+    # have to come from the same place or the recording is of something else.
+    async def book_ticker(self, symbol: str) -> dict[str, Any]:
+        return await self._get("/fapi/v1/ticker/bookTicker", symbol=symbol)
+
+    async def premium_index(self, symbol: str) -> dict[str, Any]:
+        return await self._get("/fapi/v1/premiumIndex", symbol=symbol)
+
+    async def depth(self, symbol: str, limit: int = 20) -> dict[str, Any]:
+        return await self._get("/fapi/v1/depth", symbol=symbol, limit=limit)
+
+    async def open_interest(self, symbol: str) -> dict[str, Any]:
+        return await self._get("/fapi/v1/openInterest", symbol=symbol)
+
+    async def agg_trades(self, symbol: str, limit: int = 1000) -> list[dict[str, Any]]:
+        return await self._get("/fapi/v1/aggTrades", symbol=symbol, limit=limit)
+
     async def market_snapshot(self, symbol: str, cadence: str) -> MarketSnapshot:
         if cadence not in {"1m", "5m", "15m", "30m"}:
             raise ValueError("unsupported decision cadence")
@@ -262,12 +280,12 @@ class BinancePublicClient:
         feature_intervals = (*DECISION_FEATURE_INTERVALS, DAILY_STRUCTURE_INTERVAL)
         results = await asyncio.gather(
             *(self.klines(symbol, interval, 200) for interval in feature_intervals),
-            self._get("/fapi/v1/ticker/bookTicker", symbol=symbol),
+            self.book_ticker(symbol),
             self._get("/fapi/v1/ticker/24hr", symbol=symbol),
-            self._get("/fapi/v1/premiumIndex", symbol=symbol),
-            self._get("/fapi/v1/depth", symbol=symbol, limit=20),
-            self._get("/fapi/v1/openInterest", symbol=symbol),
-            self._get("/fapi/v1/aggTrades", symbol=symbol, limit=1000),
+            self.premium_index(symbol),
+            self.depth(symbol),
+            self.open_interest(symbol),
+            self.agg_trades(symbol),
         )
         rows_by_interval = dict(
             zip(feature_intervals, results[: len(feature_intervals)], strict=True)

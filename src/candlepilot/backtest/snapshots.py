@@ -9,6 +9,7 @@ supply.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -29,15 +30,13 @@ INTERVAL_MILLISECONDS: dict[str, int] = {
     "1d": 86_400_000,
 }
 
-#: Live-only fields, and why each one cannot be reconstructed.
+#: Fields that only a recorded book can supply.
 #:
-#: Binance publishes no historical order book, so book_imbalance is gone for
-#: good. basis_bps needs the index price series, open interest is retained for
-#: 30 days, and the trade tape would be a separate paginated fetch per decision.
-#: The prompt is told these are absent rather than being fed a plausible
-#: substitute: every model in a comparison faces the same gap, so the ranking
-#: still means something, but a fabricated book would not.
-ABSENT_LIVE_FEATURES = (
+#: Binance publishes no order-book history, so downloaded candles can never
+#: carry these. They are absent from a plain backtest -- and the prompt is told
+#: so rather than being fed a substitute -- but present in a real backtest,
+#: where the collector wrote the book down as it happened.
+FLOW_FEATURES = (
     "book_imbalance",
     "recent_trade_imbalance",
     "recent_trade_seconds",
@@ -63,6 +62,20 @@ def required_history_start(start: datetime, cadence: str) -> datetime:
     return start - max(intraday, daily)
 
 
+def coverage(required: list[datetime], recorded: set[datetime]) -> Coverage:
+    """Which decision instants have a recorded book behind them.
+
+    A partially covered window is the trap worth refusing: half the decisions
+    would see order flow and half would not, which is two different strategies
+    averaged into one number that does not mention it.
+    """
+
+    missing = tuple(when for when in required if when not in recorded)
+    return Coverage(
+        required=len(required), recorded=len(required) - len(missing), missing=missing
+    )
+
+
 def _rows(candles: list[Candle]) -> list[list[Any]]:
     """Render candles as Binance kline rows, all marked closed."""
 
@@ -81,15 +94,40 @@ def _rows(candles: list[Candle]) -> list[list[Any]]:
     ]
 
 
+@dataclass(frozen=True, slots=True)
+class Coverage:
+    """How much of a window the recorded book actually covers."""
+
+    required: int
+    recorded: int
+    missing: tuple[datetime, ...]
+
+    @property
+    def complete(self) -> bool:
+        return not self.missing
+
+    @property
+    def fraction(self) -> float:
+        return self.recorded / self.required if self.required else 0.0
+
+
 class HistoricalSnapshotBuilder:
     """Assembles a decision snapshot as of a point in time, with no lookahead.
 
     Every series is truncated to bars that had already closed when the decision
     was due. A bar is only usable once its close time has passed, so the cutoff
     is the open of the bar being decided on.
+
+    With ``captures`` supplied, the snapshot also carries the order-book state
+    that was recorded at that instant, making the payload identical to what live
+    sent. Without them the flow fields are simply absent, and the prompt says so.
     """
 
-    def __init__(self, series: dict[str, list[Candle]]) -> None:
+    def __init__(
+        self,
+        series: dict[str, list[Candle]],
+        captures: dict[datetime, dict[str, Any]] | None = None,
+    ) -> None:
         missing = set(DECISION_FEATURE_INTERVALS) - set(series)
         if missing:
             raise ValueError(
@@ -98,6 +136,7 @@ class HistoricalSnapshotBuilder:
         if DAILY_STRUCTURE_INTERVAL not in series:
             raise ValueError("historical snapshots need 1d candles for the daily levels")
         self._series = series
+        self._captures = captures or {}
         self._pipeline = FeaturePipeline()
 
     def _closed_before(self, interval: str, cutoff: datetime) -> list[Candle]:
@@ -127,18 +166,35 @@ class HistoricalSnapshotBuilder:
             )
         features.update(self._pipeline.daily_structure(_rows(daily), mark_price=mark))
 
+        recorded = self._captures.get(decided_at)
+        if recorded is None:
+            # No book was recorded here, so there is no spread to model either.
+            # Quoting the mark on both sides says the spread is unknown rather
+            # than inventing a favourable one.
+            return MarketSnapshot(
+                symbol=symbol,
+                cadence=cadence,  # type: ignore[arg-type]
+                timestamp=decided_at,
+                mark_price=mark,
+                bid=mark,
+                ask=mark,
+                quote_volume_24h=self._quote_volume_24h(decided_at),
+                funding_rate=self._funding_rate(cadence, decided_at),
+                features=features,
+            )
+
+        # A recorded book makes this payload identical to the live one: real
+        # spread, real mark, and the flow fields history cannot otherwise give.
+        features.update(recorded["features"])
         return MarketSnapshot(
             symbol=symbol,
             cadence=cadence,  # type: ignore[arg-type]
             timestamp=decided_at,
-            mark_price=mark,
-            # History carries no book, so there is no spread to model. Quoting
-            # the mark on both sides is the honest version of that: it says the
-            # spread is unknown rather than inventing a favourable one.
-            bid=mark,
-            ask=mark,
+            mark_price=recorded["mark_price"],
+            bid=recorded["bid"],
+            ask=recorded["ask"],
             quote_volume_24h=self._quote_volume_24h(decided_at),
-            funding_rate=self._funding_rate(cadence, decided_at),
+            funding_rate=recorded["funding_rate"],
             features=features,
         )
 

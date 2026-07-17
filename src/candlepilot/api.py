@@ -42,6 +42,7 @@ from candlepilot.backtest.snapshots import (
     INTERVAL_MILLISECONDS as BACKTEST_INTERVALS,
 )
 from candlepilot.backtest.snapshots import (
+    coverage,
     required_history_start,
 )
 from candlepilot.broker.binance_testnet import (
@@ -60,6 +61,11 @@ from candlepilot.config import (
 from candlepilot.domain.models import MarketSnapshot, PortfolioState
 from candlepilot.market.binance import BinancePublicClient
 from candlepilot.market.cache import HistoricalMarketCache
+from candlepilot.market.collector import (
+    MAX_COLLECTED_SYMBOLS,
+    BookCollector,
+    aligned_capture_times,
+)
 from candlepilot.market.history import build_backtest_candles
 from candlepilot.observability import AlertNotifier, OperationalMetrics, evaluate_alerts
 from candlepilot.providers.pricing import (
@@ -69,6 +75,7 @@ from candlepilot.providers.pricing import PROVIDER_IDS, ModelPricingCatalog
 from candlepilot.providers.pricing import load_catalog as load_pricing_catalog
 from candlepilot.providers.openai_compatible import validate_base_url
 from candlepilot.providers.registry import ProviderRegistry
+from candlepilot.provenance import MICROSTRUCTURE_SCHEMA_VERSION
 from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
 from candlepilot.settings_file import (
     CUSTOM_PROVIDERS_ENV,
@@ -160,6 +167,13 @@ class BacktestRequest(ApiModel):
     end: datetime
     providers: list[str] = Field(min_length=1, max_length=MAX_BACKTEST_MODELS)
     config: BacktestConfigInput = Field(default_factory=BacktestConfigInput)
+    # Only possible over a window the collector covered; the coverage is
+    # checked up front rather than degrading decision by decision.
+    use_recorded_book: bool = False
+
+
+class CollectorStart(ApiModel):
+    symbols: list[str] = Field(min_length=1, max_length=MAX_COLLECTED_SYMBOLS)
 
 
 class SymbolRulesInput(ApiModel):
@@ -188,6 +202,29 @@ _CURATED_MODEL_ALIASES: dict[str, tuple[str, ...]] = {
     "claude-code-auth": ("sonnet", "opus", "haiku", "fable"),
 }
 _MODEL_ID_PREFIX: dict[str, str] = {"openai": "gpt-5", "anthropic": "claude-"}
+
+
+def _capture_features(row: dict[str, Any]) -> dict[str, float]:
+    """Rebuild the microstructure block from a stored capture.
+
+    The book is recomputed from the raw depth that was kept, so a change to that
+    formula is picked up here for free. The tape summary can only be restored,
+    which is what MICROSTRUCTURE_SCHEMA_VERSION guards.
+    """
+
+    from candlepilot.market.features import FeaturePipeline
+
+    derived = FeaturePipeline.microstructure(
+        mark_price=Decimal(row["mark_price"]),
+        index_price=Decimal(row["index_price"]),
+        open_interest=Decimal(row["open_interest"]),
+        bids=row["depth"]["bids"],
+        asks=row["depth"]["asks"],
+        trades=[],
+    )
+    derived["recent_trade_imbalance"] = float(row["trade_imbalance"])
+    derived["recent_trade_seconds"] = float(row["trade_seconds"])
+    return derived
 
 
 def pricing_provider_ids(settings: Settings) -> dict[str, str]:
@@ -508,6 +545,31 @@ def create_app(
         if owns_database:
             await database.close()
 
+    async def _store_captures(captures: list[Any]) -> None:
+        await engine.audit.store_book_captures(
+            [
+                {
+                    "symbol": item.symbol,
+                    "captured_at": item.captured_at,
+                    "schema_version": item.schema_version,
+                    "payload": {
+                        "bid": str(item.bid),
+                        "ask": str(item.ask),
+                        "mark_price": str(item.mark_price),
+                        "index_price": str(item.index_price),
+                        "funding_rate": str(item.funding_rate),
+                        "depth": item.depth,
+                        "trade_imbalance": item.trade_imbalance,
+                        "trade_seconds": item.trade_seconds,
+                        "open_interest": str(item.open_interest),
+                    },
+                }
+                for item in captures
+            ]
+        )
+
+    collector = BookCollector(market, store=_store_captures)
+
     app = FastAPI(
         title="CandlePilot API",
         version="0.1.0",
@@ -516,6 +578,7 @@ def create_app(
     )
     app.state.engine = engine
     app.state.database = database
+    app.state.collector = collector
     app.state.scheduler = scheduler
     app.state.history_cache = history_cache
     app.state.testnet_feed = testnet_feed
@@ -1407,6 +1470,7 @@ def create_app(
             end=request.end,
             providers=tuple(request.providers),
             config=BacktestConfig(**request.config.model_dump()),
+            use_recorded_book=request.use_recorded_book,
         )
 
     async def _checked_spec(request: BacktestRequest) -> BacktestSpec:
@@ -1470,7 +1534,11 @@ def create_app(
             series[symbol] = by_interval
         return series, rules
 
-    async def _run_backtest(run_id: int, spec: BacktestSpec) -> None:
+    async def _run_backtest(
+        run_id: int,
+        spec: BacktestSpec,
+        captures: dict[str, dict[datetime, dict[str, Any]]],
+    ) -> None:
         try:
             series, rules = await _load_series(spec)
         except Exception as exc:  # noqa: BLE001 - surface the reason on the run
@@ -1494,7 +1562,11 @@ def create_app(
             runs = await compare(
                 spec=spec,
                 runner_for=lambda _: BacktestRunner(
-                    spec=spec, series=series, rules=rules, risk=engine.risk
+                    spec=spec,
+                    series=series,
+                    rules=rules,
+                    risk=engine.risk,
+                    captures=captures,
                 ),
                 provider_for=engine.providers.get,
             )
@@ -1531,6 +1603,9 @@ def create_app(
                 f"here; the limit is {MAX_ESTIMATED_HOURS:g}h. Shorten the window, drop a "
                 f"symbol, or use one cadence.",
             )
+        # Coverage is checked before the run is created: a real backtest that
+        # cannot be real should fail the request, not fail an hour in.
+        captures = await _recorded_book(spec) if spec.use_recorded_book else {}
         run_id = await engine.audit.create_backtest_run(
             {
                 "symbols": list(spec.symbols),
@@ -1538,12 +1613,13 @@ def create_app(
                 "start": spec.start.isoformat(),
                 "end": spec.end.isoformat(),
                 "providers": list(spec.providers),
+                "use_recorded_book": spec.use_recorded_book,
                 "estimate": projected.as_dict(),
             },
             list(spec.providers),
         )
         backtest_tasks[run_id] = asyncio.create_task(
-            _run_backtest(run_id, spec), name=f"candlepilot-backtest-{run_id}"
+            _run_backtest(run_id, spec, captures), name=f"candlepilot-backtest-{run_id}"
         )
         return {"id": run_id, "status": "running", "estimate": projected.as_dict()}
 
@@ -1567,6 +1643,77 @@ def create_app(
             raise HTTPException(status_code=409, detail="backtest is not running")
         task.cancel()
         return {"id": run_id, "status": "cancelling"}
+
+    @app.get("/api/collector")
+    async def collector_status() -> dict[str, Any]:
+        return {
+            **collector.status(),
+            "max_symbols": MAX_COLLECTED_SYMBOLS,
+            "recorded": _json_value(await engine.audit.book_capture_summary()),
+        }
+
+    @app.post("/api/collector/start")
+    async def start_collector(request: CollectorStart) -> dict[str, Any]:
+        # No provider, no orders: this can run while the engine trades, and it
+        # is worth running when nothing does.
+        try:
+            collector.start(request.symbols)
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return collector.status()
+
+    @app.post("/api/collector/stop")
+    async def stop_collector() -> dict[str, Any]:
+        await collector.stop()
+        return collector.status()
+
+    async def _recorded_book(
+        spec: BacktestSpec,
+    ) -> dict[str, dict[datetime, dict[str, Any]]]:
+        """Load the captures a real backtest needs, refusing a holed window.
+
+        A partly covered window is the trap: some decisions would see order flow
+        and some would not, averaging two different strategies into one number
+        that never mentions it.
+        """
+
+        required = aligned_capture_times(spec.start, spec.end)
+        captures: dict[str, dict[datetime, dict[str, Any]]] = {}
+        for symbol in spec.symbols:
+            rows = await engine.audit.book_captures(symbol, spec.start, spec.end)
+            stale = {
+                row["schema_version"]
+                for row in rows
+                if row["schema_version"] != MICROSTRUCTURE_SCHEMA_VERSION
+            }
+            if stale:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{symbol} has captures recorded as {', '.join(sorted(stale))} "
+                    f"but this build derives {MICROSTRUCTURE_SCHEMA_VERSION}; those numbers "
+                    "no longer mean the same thing and cannot be replayed",
+                )
+            by_time = {row["captured_at"]: row for row in rows}
+            gaps = coverage(required, set(by_time))
+            if not gaps.complete:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{symbol} has order-book captures for {gaps.recorded} of "
+                    f"{gaps.required} decision instants ({gaps.fraction:.0%}). A real "
+                    "backtest needs every instant, or half the decisions would see flow "
+                    "and half would not. Record the window first, or run a plain backtest.",
+                )
+            captures[symbol] = {
+                when: {
+                    "mark_price": Decimal(row["mark_price"]),
+                    "bid": Decimal(row["bid"]),
+                    "ask": Decimal(row["ask"]),
+                    "funding_rate": Decimal(row["funding_rate"]),
+                    "features": _capture_features(row),
+                }
+                for when, row in by_time.items()
+            }
+        return captures
 
     @app.websocket("/ws/events")
     async def event_stream(websocket: WebSocket) -> None:

@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 from candlepilot.backtest.engine import (
     BacktestConfig,
@@ -47,6 +48,11 @@ class BacktestSpec:
     end: datetime
     providers: tuple[str, ...]
     config: BacktestConfig = field(default_factory=BacktestConfig)
+    #: Use the recorded order book, making the payload identical to live.
+    #:
+    #: Only possible where the collector was running, so the window is checked
+    #: for full coverage up front and refused if it has holes.
+    use_recorded_book: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,13 +146,15 @@ class BacktestRunner:
         series: dict[str, dict[str, list[Candle]]],
         rules: dict[str, SymbolRules],
         risk: AggressiveRiskPolicy,
+        captures: dict[str, dict[datetime, dict[str, Any]]] | None = None,
     ) -> None:
         self._spec = spec
         self._series = series
         self._rules = rules
         self._risk = risk
         self._builders = {
-            symbol: HistoricalSnapshotBuilder(candles) for symbol, candles in series.items()
+            symbol: HistoricalSnapshotBuilder(candles, (captures or {}).get(symbol))
+            for symbol, candles in series.items()
         }
 
     def _next_candle(self, symbol: str, cadence: str, after: datetime) -> Candle | None:

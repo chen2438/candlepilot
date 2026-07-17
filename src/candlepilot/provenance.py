@@ -14,6 +14,14 @@ from pydantic import BaseModel
 DECISION_PROMPT_VERSION = "trade-intent-v8"
 MARKET_SNAPSHOT_SCHEMA_VERSION = "market-snapshot-v1"
 BACKTEST_DATA_SCHEMA_VERSION = "backtest-candles-v1"
+#: Version of the microstructure derivation recorded by the collector.
+#:
+#: The trade tape is summarised at capture time rather than stored -- it is 97%
+#: of the volume -- so a recorded imbalance cannot be recomputed later. Bump
+#: this whenever FeaturePipeline.microstructure changes what those numbers mean,
+#: and the real backtest will refuse the stale captures instead of quietly
+#: mixing two definitions into one result.
+MICROSTRUCTURE_SCHEMA_VERSION = "microstructure-v1"
 
 
 def _json_default(value: Any) -> Any:
