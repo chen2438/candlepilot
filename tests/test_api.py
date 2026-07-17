@@ -1489,6 +1489,22 @@ def test_a_running_backtest_reports_progress_over_the_api(tmp_path: Path) -> Non
                 seen.append(model)
                 break
             time.sleep(0.02)
+        assert client.post("/api/engine/start").status_code == 409
+        assert client.post(
+            "/api/backtests",
+            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
+        ).status_code == 409
+        assert client.post(
+            "/api/backtests/probe",
+            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
+        ).status_code == 409
+        assert client.post(
+            "/api/providers/test", json={"name": "api-fixture"}
+        ).status_code == 409
+        assert client.post(
+            "/api/providers/config",
+            json={"name": "api-fixture", "model": None, "reasoning_effort": None},
+        ).status_code == 409
         gate.set()
 
     assert seen, "the API never showed a decision while the run was in flight"
@@ -1776,6 +1792,14 @@ def test_a_running_probe_shows_each_call_as_it_lands(tmp_path: Path) -> None:
                 mid = body["providers"][0]
                 break
             time.sleep(0.02)
+        assert client.post("/api/engine/start").status_code == 409
+        assert client.post(
+            "/api/backtests",
+            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
+        ).status_code == 409
+        assert client.post(
+            "/api/providers/test", json={"name": "api-fixture"}
+        ).status_code == 409
         gate.set()
 
     assert mid, "the probe published nothing while it was running"

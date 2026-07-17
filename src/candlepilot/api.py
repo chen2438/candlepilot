@@ -738,6 +738,11 @@ def create_app(
             raise HTTPException(
                 status_code=409, detail="cannot change model settings while the engine runs"
             )
+        if background_model_work():
+            raise HTTPException(
+                status_code=409,
+                detail="cannot change model settings while a probe or backtest runs",
+            )
         model = (config.model or "").strip() or None
         effort = (config.reasoning_effort or "").strip() or None
         if effort is not None and effort not in provider.reasoning_effort_options:
@@ -758,6 +763,10 @@ def create_app(
         if engine.running:
             raise HTTPException(
                 status_code=409, detail="cannot test a provider while the engine runs"
+            )
+        if background_model_work():
+            raise HTTPException(
+                status_code=409, detail="cannot test a provider while a probe or backtest runs"
             )
         # A one-off call with a synthetic snapshot proves the applied model and
         # reasoning effort authenticate and return a schema-valid TradeIntent.
@@ -1110,6 +1119,11 @@ def create_app(
 
     @app.post("/api/engine/start")
     async def start_engine() -> dict[str, Any]:
+        if background_model_work():
+            raise HTTPException(
+                status_code=409,
+                detail="cannot start the engine while a probe or backtest runs",
+            )
         try:
             await engine.start()
             scheduler.start()
@@ -1484,6 +1498,12 @@ def create_app(
     probes: dict[str, ProviderProbe] = {}
     probe_task: asyncio.Task[None] | None = None
 
+    def active_backtest_tasks() -> list[asyncio.Task[None]]:
+        return [task for task in backtest_tasks.values() if not task.done()]
+
+    def background_model_work() -> bool:
+        return bool(active_backtest_tasks() or (probe_task and not probe_task.done()))
+
     def _set_probe_task(task: asyncio.Task[None]) -> None:
         nonlocal probe_task
         probe_task = task
@@ -1747,6 +1767,8 @@ def create_app(
             )
         if probe_task and not probe_task.done():
             raise HTTPException(status_code=409, detail="a probe is already running")
+        if active_backtest_tasks():
+            raise HTTPException(status_code=409, detail="a backtest is already running")
         spec = await _checked_spec(request)
         for name in spec.providers:
             probes.pop(name, None)
@@ -1815,6 +1837,10 @@ def create_app(
                 detail="stop the engine before starting a backtest: they share the "
                 "same provider and would queue behind each other",
             )
+        if probe_task and not probe_task.done():
+            raise HTTPException(status_code=409, detail="cancel the running probe first")
+        if active_backtest_tasks():
+            raise HTTPException(status_code=409, detail="a backtest is already running")
         spec = await _checked_spec(request)
         projected = estimate(spec, seconds_per_call=await measured_seconds_per_call())
         if projected.estimated_seconds > MAX_ESTIMATED_HOURS * 3600:
