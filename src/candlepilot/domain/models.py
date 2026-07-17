@@ -144,6 +144,7 @@ class PortfolioState(StrictModel):
     open_positions: int = Field(default=0, ge=0)
     margin_used: NonNegativeDecimal = Decimal("0")
     positions: dict[str, PositionState] = Field(default_factory=dict)
+    pending_entry_symbols: tuple[str, ...] = ()
 
 
 class RiskDecision(StrictModel):

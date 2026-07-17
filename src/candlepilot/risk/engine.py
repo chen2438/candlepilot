@@ -107,7 +107,16 @@ class AggressiveRiskPolicy:
         existing = portfolio.positions.get(intent.symbol)
         existing_side = existing.side if existing is not None else None
         opening = intent.action in {TradeAction.OPEN_LONG, TradeAction.OPEN_SHORT, TradeAction.ADD}
-        if opening and existing_side is None and portfolio.open_positions >= self.max_positions:
+        if opening and intent.symbol in portfolio.pending_entry_symbols:
+            return self._reject("a pending entry order already exists for this symbol")
+        pending_without_positions = sum(
+            symbol not in portfolio.positions for symbol in portfolio.pending_entry_symbols
+        )
+        if (
+            opening
+            and existing_side is None
+            and portfolio.open_positions + pending_without_positions >= self.max_positions
+        ):
             return self._reject("maximum open position count reached")
         requested_side = (
             existing_side

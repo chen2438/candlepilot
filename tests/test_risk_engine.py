@@ -85,6 +85,31 @@ def test_testnet_policy_requires_take_profit_on_open() -> None:
     assert AggressiveRiskPolicy().evaluate(intent, _snapshot(), _portfolio(), RULES).decision.accepted
 
 
+def test_rejects_an_entry_when_the_symbol_already_has_a_pending_order() -> None:
+    result = AggressiveRiskPolicy().evaluate(
+        _intent(),
+        _snapshot(),
+        _portfolio(pending_entry_symbols=("BTCUSDT",)),
+        RULES,
+    )
+
+    assert not result.decision.accepted
+    assert result.order is None
+    assert "pending entry order" in result.decision.reason
+
+
+def test_pending_entries_consume_the_open_position_count_limit() -> None:
+    result = AggressiveRiskPolicy(max_positions=1).evaluate(
+        _intent(),
+        _snapshot(),
+        _portfolio(pending_entry_symbols=("ETHUSDT",)),
+        RULES,
+    )
+
+    assert not result.decision.accepted
+    assert "maximum open position count" in result.decision.reason
+
+
 def test_add_subtracts_existing_position_risk_from_the_hard_limit() -> None:
     intent = _intent(TradeAction.ADD)
     portfolio = _portfolio(

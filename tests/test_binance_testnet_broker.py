@@ -357,7 +357,13 @@ def test_reconciliation_reports_pending_entry_orders() -> None:
                 ],
             )
         if request.url.path == "/fapi/v1/openAlgoOrders":
-            return httpx.Response(200, json=[])
+            return httpx.Response(
+                200,
+                json=[
+                    {"symbol": "SOLUSDT", "closePosition": False},
+                    {"symbol": "XRPUSDT", "closePosition": True},
+                ],
+            )
         return httpx.Response(404, json={"code": -1, "msg": "not found"})
 
     async def scenario():
@@ -370,8 +376,40 @@ def test_reconciliation_reports_pending_entry_orders() -> None:
         return report
 
     report = asyncio.run(scenario())
-    assert report.pending_entry_symbols == ("ETHUSDT",)
-    assert report.open_order_count == 2
+    assert report.pending_entry_symbols == ("ETHUSDT", "SOLUSDT")
+    assert report.open_order_count == 4
+
+
+def test_pending_entry_symbols_reads_live_non_reduce_only_orders() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fapi/v1/openOrders":
+            return httpx.Response(
+                200,
+                json=[
+                    {"symbol": "ETHUSDT", "reduceOnly": False},
+                    {"symbol": "BTCUSDT", "reduceOnly": True},
+                    {"symbol": "ETHUSDT", "reduceOnly": False},
+                ],
+            )
+        assert request.url.path == "/fapi/v1/openAlgoOrders"
+        return httpx.Response(
+            200,
+            json=[
+                {"symbol": "SOLUSDT", "closePosition": False},
+                {"symbol": "XRPUSDT", "closePosition": True},
+            ],
+        )
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        symbols = await broker.pending_entry_symbols()
+        await client.aclose()
+        return symbols
+
+    assert asyncio.run(scenario()) == ("ETHUSDT", "SOLUSDT")
 
 
 def test_daily_income_sums_trading_components_and_excludes_transfers() -> None:

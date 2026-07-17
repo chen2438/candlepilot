@@ -337,8 +337,14 @@ class TradingEngine:
             if callable(daily_income_loader)
             else asyncio.sleep(0, result=Decimal("0"))
         )
-        account, levels, realized_today = await asyncio.gather(
-            broker.account(), broker.protective_levels(), daily_income
+        pending_loader = getattr(broker, "pending_entry_symbols", None)
+        pending_entries = (
+            pending_loader()
+            if callable(pending_loader)
+            else asyncio.sleep(0, result=())
+        )
+        account, levels, realized_today, pending_entry_symbols = await asyncio.gather(
+            broker.account(), broker.protective_levels(), daily_income, pending_entries
         )
         raw_positions = {
             str(item["symbol"]): item
@@ -371,6 +377,7 @@ class TradingEngine:
             open_positions=len(positions),
             margin_used=account.get("totalInitialMargin", "0"),
             positions=positions,
+            pending_entry_symbols=tuple(pending_entry_symbols),
         )
 
     async def evaluate(

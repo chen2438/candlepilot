@@ -64,6 +64,9 @@ class FakeTestnetBroker:
     async def protective_levels(self):
         return {}
 
+    async def pending_entry_symbols(self):
+        return ()
+
     async def configure_symbol(self, symbol, leverage):
         return None
 

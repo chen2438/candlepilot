@@ -207,6 +207,24 @@ class BinanceTestnetBroker:
     async def account(self) -> dict[str, Any]:
         return await self._signed_request("GET", "/fapi/v3/account", {})
 
+    async def pending_entry_symbols(self) -> tuple[str, ...]:
+        """Return symbols with a live non-reduce-only order on the exchange."""
+
+        open_orders, open_algo_orders = await asyncio.gather(
+            self._signed_request("GET", "/fapi/v1/openOrders", {}),
+            self._signed_request("GET", "/fapi/v1/openAlgoOrders", {}),
+        )
+        return tuple(
+            sorted(
+                {
+                    str(item["symbol"])
+                    for item in [*open_orders, *open_algo_orders]
+                    if item.get("reduceOnly") not in {True, "true", "TRUE"}
+                    and item.get("closePosition") not in {True, "true", "TRUE"}
+                }
+            )
+        )
+
     async def reconcile_account(self) -> ReconciliationReport:
         await self.sync_time()
         account, open_orders, open_algo_orders = await asyncio.gather(
@@ -233,8 +251,9 @@ class BinanceTestnetBroker:
             sorted(
                 {
                     str(item["symbol"])
-                    for item in open_orders
+                    for item in [*open_orders, *open_algo_orders]
                     if item.get("reduceOnly") not in {True, "true", "TRUE"}
+                    and item.get("closePosition") not in {True, "true", "TRUE"}
                 }
             )
         )
