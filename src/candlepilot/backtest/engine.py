@@ -10,7 +10,7 @@ a backtest that re-implements them measures the re-implementation.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from candlepilot.domain.models import (
@@ -110,8 +110,12 @@ class SimulatedExchange:
         self.cash = self.config.initial_equity
         self._positions: dict[str, _Position] = {}
         self.trades: list[BacktestTrade] = []
+        self._daily_date: date | None = None
+        self._daily_start_equity = self.config.initial_equity
 
-    def portfolio_state(self, marks: dict[str, Decimal]) -> PortfolioState:
+    def portfolio_state(
+        self, marks: dict[str, Decimal], *, as_of: datetime | None = None
+    ) -> PortfolioState:
         unrealized = Decimal("0")
         margin_used = Decimal("0")
         positions: dict[str, PositionState] = {}
@@ -131,10 +135,19 @@ class SimulatedExchange:
                 take_profit=position.take_profit,
             )
         equity = self.cash + unrealized
+        if as_of is not None:
+            if as_of.tzinfo is None:
+                raise ValueError("portfolio time must be timezone-aware")
+            current_date = as_of.astimezone(UTC).date()
+            if self._daily_date is None:
+                self._daily_date = current_date
+            elif current_date != self._daily_date:
+                self._daily_date = current_date
+                self._daily_start_equity = equity
         return PortfolioState(
             equity=max(Decimal("0.00000001"), equity),
             available_balance=max(Decimal("0"), equity - margin_used),
-            daily_pnl=equity - self.config.initial_equity,
+            daily_pnl=equity - self._daily_start_equity,
             open_positions=len(self._positions),
             margin_used=margin_used,
             positions=positions,

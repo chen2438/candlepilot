@@ -29,7 +29,11 @@ def build_backtest_candles(
     rates_by_open: dict[int, Decimal] = {}
     for event in funding_events:
         event_ms = int(event.timestamp.timestamp() * 1000)
-        candle_open = event_ms - (event_ms % interval_ms)
+        # A funding timestamp on a bar boundary is charged before orders opened
+        # from the just-closed bar's decision. Attach it to the candle ending at
+        # that instant, not the candle beginning there, so settlement happens
+        # before the new decision and cannot charge a position opened afterwards.
+        candle_open = ((event_ms - 1) // interval_ms) * interval_ms
         rates_by_open[candle_open] = rates_by_open.get(candle_open, Decimal("0")) + event.rate
 
     return [

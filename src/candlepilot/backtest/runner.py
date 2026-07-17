@@ -240,10 +240,32 @@ class BacktestRunner:
     def _marks(self, at: datetime) -> dict[str, Decimal]:
         marks: dict[str, Decimal] = {}
         for symbol, candles in self._series.items():
-            usable = [item for item in candles["5m"] if item.timestamp <= at]
+            span = timedelta(milliseconds=INTERVAL_MILLISECONDS["5m"])
+            usable = [item for item in candles["5m"] if item.timestamp + span <= at]
             if usable:
                 marks[symbol] = usable[-1].close
         return marks
+
+    def _settle_until(
+        self,
+        exchange: SimulatedExchange,
+        symbol: str,
+        through: datetime,
+        settled_through: dict[str, datetime],
+    ) -> None:
+        """Settle each completed 5m bar exactly once before decisions at ``through``."""
+
+        span = timedelta(milliseconds=INTERVAL_MILLISECONDS["5m"])
+        previous = settled_through.get(symbol)
+        for candle in self._series[symbol]["5m"]:
+            if candle.timestamp < self._spec.start:
+                continue
+            if previous is not None and candle.timestamp <= previous:
+                continue
+            if candle.timestamp + span > through:
+                break
+            exchange.settle_candle(symbol, candle)
+            settled_through[symbol] = candle.timestamp
 
     async def run(
         self,
@@ -269,11 +291,13 @@ class BacktestRunner:
         exchange = SimulatedExchange(self._spec.config)
         curve: list[EquityPoint] = []
         schedule = sorted(
-            (when, cadence, symbol)
+            (when, symbol, cadence)
             for cadence in self._spec.cadences
             for when in decision_times(self._spec, cadence)
             for symbol in self._spec.symbols
         )
+        settled_through: dict[str, datetime] = {}
+        settled_decision_key: tuple[datetime, str] | None = None
         progress.decisions_total = len(schedule)
         # Publish the total before the first call: until it lands, progress has
         # no denominator and every reader has to show 0%.
@@ -284,13 +308,14 @@ class BacktestRunner:
             if on_progress is not None:
                 await on_progress(progress, decision)
 
-        for when, cadence, symbol in schedule:
-            # Settle first: a trigger that was touched before this decision has
-            # to be booked before the model is asked what to do next, or it
-            # reasons about a position the exchange already closed.
-            candle = self._next_candle(symbol, cadence, when)
-            if candle is not None:
-                exchange.settle_candle(symbol, candle)
+        for when, symbol, cadence in schedule:
+            # Kline timestamps are opens. Settle only bars whose close is at or
+            # before this decision, and only once even when several cadences
+            # produce decisions for the same symbol at the same instant.
+            decision_key = (when, symbol)
+            if decision_key != settled_decision_key:
+                self._settle_until(exchange, symbol, when, settled_through)
+                settled_decision_key = decision_key
 
             entry = BacktestDecision(decided_at=when, symbol=symbol, cadence=cadence)
 
@@ -303,7 +328,7 @@ class BacktestRunner:
                 await report(entry)
                 continue
 
-            portfolio = exchange.portfolio_state(self._marks(when))
+            portfolio = exchange.portfolio_state(self._marks(when), as_of=when)
             try:
                 result = await provider.generate_trade_intent(snapshot, portfolio)
             except Exception as exc:  # noqa: BLE001 - one bad call must not end the run
@@ -339,8 +364,8 @@ class BacktestRunner:
                 await report(entry)
                 continue
 
-            fill_candle = self._next_candle(symbol, cadence, when)
-            if fill_candle is None:
+            fill_candle = self._next_candle(symbol, "5m", when)
+            if fill_candle is None or fill_candle.timestamp >= self._spec.end:
                 # Accepted with no bar left to fill against: the window ended.
                 entry.outcome = "rejected"
                 entry.detail = "no candle left in the window to fill against"
@@ -363,6 +388,8 @@ class BacktestRunner:
             curve.append(EquityPoint(when, exchange.equity(self._marks(when))))
             await report(entry)
 
+        for symbol in self._spec.symbols:
+            self._settle_until(exchange, symbol, self._spec.end, settled_through)
         exchange.close_all(self._marks(self._spec.end), self._spec.end)
         curve.append(EquityPoint(self._spec.end, exchange.equity({})))
         return summarize(self._spec.config, exchange.trades, curve)

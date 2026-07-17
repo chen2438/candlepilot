@@ -118,6 +118,18 @@ def test_position_state_carries_the_context_the_model_needs() -> None:
     assert position.leverage == 3
 
 
+def test_daily_pnl_resets_when_the_utc_date_changes() -> None:
+    exchange = SimulatedExchange()
+    exchange.portfolio_state({}, as_of=START)
+    exchange.cash = Decimal("9200")
+
+    same_day = exchange.portfolio_state({}, as_of=START + timedelta(hours=12))
+    next_day = exchange.portfolio_state({}, as_of=START + timedelta(days=1))
+
+    assert same_day.daily_pnl == Decimal("-800")
+    assert next_day.daily_pnl == Decimal("0")
+
+
 def test_profit_factor_is_undefined_rather_than_zero_without_losses() -> None:
     """Zero would read as the worst possible score for a flawless run."""
 

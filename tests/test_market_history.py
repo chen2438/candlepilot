@@ -27,10 +27,22 @@ def test_multiple_funding_events_in_one_candle_are_summed() -> None:
     start = datetime(2026, 1, 1, tzinfo=UTC)
     start_ms = int(start.timestamp() * 1000)
     events = [
-        FundingRate(start, Decimal("0.0001")),
+        FundingRate(start.replace(minute=2), Decimal("0.0001")),
         FundingRate(start.replace(minute=1), Decimal("-0.00004")),
     ]
 
     candles = build_backtest_candles([_row(start_ms)], events, "5m")
 
     assert candles[0]["funding_rate"] == "0.00006"
+
+
+def test_boundary_funding_is_settled_before_the_new_candle_opens() -> None:
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    start_ms = int(start.timestamp() * 1000)
+    event = FundingRate(start, Decimal("0.0001"))
+
+    candles = build_backtest_candles(
+        [_row(start_ms - 300_000), _row(start_ms)], [event], "5m"
+    )
+
+    assert [item["funding_rate"] for item in candles] == ["0.0001", "0"]

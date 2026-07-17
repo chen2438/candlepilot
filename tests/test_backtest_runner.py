@@ -182,6 +182,94 @@ def test_a_run_produces_trades_and_a_curve() -> None:
     assert result.final_equity == result.equity_curve[-1].equity
 
 
+def test_marks_use_only_five_minute_bars_closed_by_the_decision() -> None:
+    runner = _runner(_spec())
+    when = WINDOW_START + timedelta(minutes=5)
+    candles = runner._series["BTCUSDT"]["5m"]
+    expected = next(candle.close for candle in candles if candle.timestamp == WINDOW_START)
+    future = next(
+        candle.close for candle in candles if candle.timestamp == WINDOW_START + timedelta(minutes=5)
+    )
+
+    mark = runner._marks(when)["BTCUSDT"]
+
+    assert mark == expected
+    assert mark != future
+
+
+def test_entry_bar_protection_is_settled_before_the_next_decision() -> None:
+    spec = _spec(end=WINDOW_START + timedelta(minutes=15))
+    runner = _runner(spec)
+    candles = runner._series["BTCUSDT"]["5m"]
+    index = next(
+        i for i, candle in enumerate(candles) if candle.timestamp == WINDOW_START + timedelta(minutes=5)
+    )
+    entry_bar = candles[index]
+    candles[index] = Candle(
+        timestamp=entry_bar.timestamp,
+        open=entry_bar.open,
+        high=entry_bar.open * Decimal("2"),
+        low=entry_bar.low,
+        close=entry_bar.close,
+        volume=entry_bar.volume,
+    )
+
+    result = asyncio.run(runner.run(_Provider("model-a"), ModelRun("model-a")))
+
+    assert result.trades
+    assert result.trades[0].exit_reason == "take_profit"
+    assert result.trades[0].exit_time == WINDOW_START + timedelta(minutes=5)
+
+
+def test_higher_cadences_cannot_duplicate_funding_settlement() -> None:
+    base_spec = _spec(end=WINDOW_START + timedelta(minutes=35))
+    multi_spec = _spec(
+        end=WINDOW_START + timedelta(minutes=35),
+        cadences=("5m", "15m", "30m"),
+    )
+    base_runner = _runner(base_spec)
+    multi_runner = _runner(multi_spec)
+    for runner in (base_runner, multi_runner):
+        by_interval = runner._series["BTCUSDT"]
+        base = by_interval["5m"]
+        base_index = next(
+            i
+            for i, candle in enumerate(base)
+            if candle.timestamp == WINDOW_START + timedelta(minutes=5)
+        )
+        candle = base[base_index]
+        base[base_index] = Candle(
+            candle.timestamp,
+            candle.open,
+            candle.high,
+            candle.low,
+            candle.close,
+            candle.volume,
+            Decimal("0.001"),
+        )
+        # These exaggerated rates must be irrelevant: settlement is driven by
+        # the finest series once, not once per decision cadence.
+        for interval in ("15m", "30m"):
+            source = by_interval[interval]
+            source_index = next(i for i, item in enumerate(source) if item.timestamp >= WINDOW_START)
+            item = source[source_index]
+            source[source_index] = Candle(
+                item.timestamp,
+                item.open,
+                item.high,
+                item.low,
+                item.close,
+                item.volume,
+                Decimal("1"),
+            )
+
+    base = asyncio.run(base_runner.run(_Provider("a"), ModelRun("a")))
+    multi = asyncio.run(multi_runner.run(_Provider("b"), ModelRun("b")))
+
+    assert base.total_funding > 0
+    assert multi.total_funding == base.total_funding
+
+
 def test_a_failing_call_does_not_end_the_run() -> None:
     """One bad provider call must cost one decision, not the whole comparison."""
 
