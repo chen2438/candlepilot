@@ -656,6 +656,33 @@ def test_testnet_add_requests_protective_bracket_replacement(tmp_path: Path) -> 
     assert replacement is True
 
 
+def test_start_refuses_pending_entry_orders(tmp_path: Path) -> None:
+    import pytest
+
+    from candlepilot.application.engine import AccountReconciliationError
+    from candlepilot.broker.binance_testnet import ReconciliationReport
+
+    class PendingEntryBroker:
+        async def reconcile_account(self):
+            return ReconciliationReport((), 1, (), ("ETHUSDT",))
+
+    async def scenario() -> None:
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'pending-entry.db'}")
+        await database.initialize()
+        engine = TradingEngine(
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=FakeMarket(),  # type: ignore[arg-type]
+            testnet_broker=PendingEntryBroker(),  # type: ignore[arg-type]
+        )
+        engine.select_provider("fake-auth")
+        with pytest.raises(AccountReconciliationError, match="pending entry orders: ETHUSDT"):
+            await engine.start()
+        await database.close()
+
+    asyncio.run(scenario())
+
+
 def test_testnet_execution_failure_is_audited_with_rescue_loss(tmp_path: Path) -> None:
     from candlepilot.broker.binance_testnet import ProtectiveStopError, ReconciliationReport
     from candlepilot.domain.models import ExecutionReport

@@ -235,6 +235,11 @@ class TradingEngine:
             raise AccountReconciliationError(
                 f"testnet positions lack protective stops: {symbols}"
             )
+        if report.pending_entry_symbols:
+            symbols = ", ".join(report.pending_entry_symbols)
+            raise AccountReconciliationError(
+                f"testnet account has pending entry orders: {symbols}"
+            )
         health_results = await asyncio.gather(
             *(self.providers.get(name).health_check() for name in self.provider_chain),
             return_exceptions=True,

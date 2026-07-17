@@ -75,6 +75,7 @@ class ReconciliationReport:
     position_symbols: tuple[str, ...]
     open_order_count: int
     unprotected_symbols: tuple[str, ...]
+    pending_entry_symbols: tuple[str, ...] = ()
 
 
 class BinanceTestnetBroker:
@@ -195,10 +196,20 @@ class BinanceTestnetBroker:
             )
         }
         unprotected = tuple(sorted(positions - protected))
+        pending_entries = tuple(
+            sorted(
+                {
+                    str(item["symbol"])
+                    for item in open_orders
+                    if item.get("reduceOnly") not in {True, "true", "TRUE"}
+                }
+            )
+        )
         return ReconciliationReport(
             position_symbols=tuple(sorted(positions)),
             open_order_count=len(open_orders) + len(open_algo_orders),
             unprotected_symbols=unprotected,
+            pending_entry_symbols=pending_entries,
         )
 
     async def protective_levels(self) -> dict[str, ProtectiveLevels]:
@@ -502,22 +513,47 @@ class BinanceTestnetBroker:
 
     async def emergency_flatten(self) -> None:
         await self.sync_time()
-        account = await self.account()
-        for position in account.get("positions", []):
-            quantity = Decimal(str(position.get("positionAmt", "0")))
-            if quantity == 0:
-                continue
-            symbol = position["symbol"]
-            await self.cancel_all(symbol)
-            await self._signed_request(
-                "POST",
-                "/fapi/v1/order",
-                {
-                    "symbol": symbol,
-                    "side": "SELL" if quantity > 0 else "BUY",
-                    "type": "MARKET",
-                    "quantity": abs(quantity),
-                    "reduceOnly": True,
-                    "newClientOrderId": f"cp-kill-{int(time.time() * 1000)}",
-                },
-            )
+        account, open_orders, open_algo_orders = await asyncio.gather(
+            self.account(),
+            self._signed_request("GET", "/fapi/v1/openOrders", {}),
+            self._signed_request("GET", "/fapi/v1/openAlgoOrders", {}),
+        )
+        positions = {
+            str(position["symbol"]): Decimal(str(position.get("positionAmt", "0")))
+            for position in account.get("positions", [])
+            if Decimal(str(position.get("positionAmt", "0"))) != 0
+        }
+        order_symbols = {
+            str(order["symbol"])
+            for order in [*open_orders, *open_algo_orders]
+            if order.get("symbol")
+        }
+
+        failures: list[str] = []
+        for symbol in sorted(order_symbols | positions.keys()):
+            try:
+                await self.cancel_all(symbol)
+            except Exception as exc:
+                failures.append(f"cancel {symbol}: {type(exc).__name__}")
+
+        # Cancellation failure must not prevent the more important attempt to
+        # flatten known exposure. The lock remains active and the aggregate error
+        # is surfaced after every position has had its close attempted.
+        for symbol, quantity in positions.items():
+            try:
+                await self._signed_request(
+                    "POST",
+                    "/fapi/v1/order",
+                    {
+                        "symbol": symbol,
+                        "side": "SELL" if quantity > 0 else "BUY",
+                        "type": "MARKET",
+                        "quantity": abs(quantity),
+                        "reduceOnly": True,
+                        "newClientOrderId": f"cp-kill-{int(time.time() * 1000)}",
+                    },
+                )
+            except Exception as exc:
+                failures.append(f"flatten {symbol}: {type(exc).__name__}")
+        if failures:
+            raise RuntimeError("emergency account cleanup incomplete: " + "; ".join(failures))

@@ -71,6 +71,7 @@ async def _testnet_reconciliation(settings: Settings) -> dict[str, Any] | None:
         "position_symbols": list(report.position_symbols),
         "open_order_count": report.open_order_count,
         "unprotected_symbols": list(report.unprotected_symbols),
+        "pending_entry_symbols": list(report.pending_entry_symbols),
     }
 
 

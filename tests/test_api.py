@@ -386,6 +386,7 @@ def test_testnet_account_status_is_sanitized_and_includes_reconciliation(
             "position_symbols": ["BTCUSDT"],
             "open_order_count": 1,
             "unprotected_symbols": [],
+            "pending_entry_symbols": [],
         }
 
         portfolio = client.get("/api/account/portfolio").json()

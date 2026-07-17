@@ -342,6 +342,82 @@ def test_reconciles_protective_stops(orders, unprotected) -> None:
     assert report.open_order_count == len(orders)
 
 
+def test_reconciliation_reports_pending_entry_orders() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fapi/v1/time":
+            return httpx.Response(200, json={"serverTime": 1784040000000})
+        if request.url.path == "/fapi/v3/account":
+            return httpx.Response(200, json={"positions": []})
+        if request.url.path == "/fapi/v1/openOrders":
+            return httpx.Response(
+                200,
+                json=[
+                    {"symbol": "ETHUSDT", "reduceOnly": False},
+                    {"symbol": "BTCUSDT", "reduceOnly": True},
+                ],
+            )
+        if request.url.path == "/fapi/v1/openAlgoOrders":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404, json={"code": -1, "msg": "not found"})
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        report = await broker.reconcile_account()
+        await client.aclose()
+        return report
+
+    report = asyncio.run(scenario())
+    assert report.pending_entry_symbols == ("ETHUSDT",)
+    assert report.open_order_count == 2
+
+
+def test_emergency_flatten_cancels_orphan_orders_before_closing_positions() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/fapi/v1/time":
+            return httpx.Response(200, json={"serverTime": 1784040000000})
+        if request.url.path == "/fapi/v3/account":
+            return httpx.Response(
+                200,
+                json={"positions": [{"symbol": "BTCUSDT", "positionAmt": "1"}]},
+            )
+        if request.url.path == "/fapi/v1/openOrders" and request.method == "GET":
+            return httpx.Response(200, json=[{"symbol": "ETHUSDT"}])
+        if request.url.path == "/fapi/v1/openAlgoOrders" and request.method == "GET":
+            return httpx.Response(200, json=[{"symbol": "SOLUSDT"}])
+        return httpx.Response(200, json={"status": "FILLED"})
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        await broker.emergency_flatten()
+        await client.aclose()
+
+    asyncio.run(scenario())
+    cancellations = {
+        parse_qs(request.url.query.decode())["symbol"][0]
+        for request in requests
+        if request.method == "DELETE"
+    }
+    assert cancellations == {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
+    flatten = next(
+        request
+        for request in requests
+        if request.method == "POST" and request.url.path == "/fapi/v1/order"
+    )
+    assert parse_qs(flatten.url.query.decode())["symbol"] == ["BTCUSDT"]
+    assert max(
+        index for index, request in enumerate(requests) if request.method == "DELETE"
+    ) < requests.index(flatten)
+
+
 def test_recovers_timed_out_order_by_client_id() -> None:
     query_attempts = 0
 
