@@ -2093,8 +2093,12 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
               <tr key={`${run.id}-${model.provider}`}>
                 {index === 0 && <td rowSpan={run.models.length}><strong>{run.id}</strong><small className={`run-status ${run.status}`}>{RUN_STATUS[run.status]}</small></td>}
                 {index === 0 && <td rowSpan={run.models.length}>
-                  <small>{run.spec.symbols.join(" ")}<br />{run.spec.cadences.join(" ")}<br />
-                    {formatLocalDateTime(new Date(run.spec.start))}</small>
+                  <small className="run-window">
+                    <span>{run.spec.symbols.join(" ")}</span>
+                    <span>{run.spec.cadences.join(" ")}</span>
+                    <span><b>开始</b>{formatLocalDateTime(new Date(run.spec.start))}</span>
+                    <span><b>结束</b>{formatLocalDateTime(new Date(run.spec.end))}</span>
+                  </small>
                   {run.spec.use_recorded_book
                     ? <small className="run-real">真实回测 · 含订单流</small>
                     : <small>普通回测 · 无订单流</small>}
