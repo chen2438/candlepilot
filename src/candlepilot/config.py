@@ -10,7 +10,6 @@ from pathlib import Path
 
 from pydantic import SecretStr
 
-from candlepilot.domain.models import TradingMode
 
 
 DEFAULT_DATABASE_URL = "sqlite+aiosqlite:///./candlepilot.db"
@@ -233,6 +232,23 @@ LEGACY_CUSTOM_LLM_ENV = (
 )
 
 
+def _reject_removed_mode_env(env: Mapping[str, str]) -> None:
+    """Fail loudly on the removed runtime mode.
+
+    Binance testnet is the only mode now. Ignoring a stale CANDLEPILOT_MODE
+    would let someone keep believing they are on a simulated account when every
+    order goes to the exchange, which is the one misreading worth an error.
+    """
+
+    if not env.get("CANDLEPILOT_MODE", "").strip():
+        return
+    raise ValueError(
+        "CANDLEPILOT_MODE was removed: the simulated and backtest run modes are "
+        "gone and Binance testnet is the only account traded. Delete the line "
+        "from .env. Backtests are now an on-demand analysis, not a run mode."
+    )
+
+
 def _reject_legacy_custom_llm_env(env: Mapping[str, str]) -> None:
     """Fail loudly on the removed single-endpoint variables.
 
@@ -326,7 +342,6 @@ def _parse_custom_llm_providers(raw: str | None) -> tuple[CustomLlmProvider, ...
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-    mode: TradingMode = TradingMode.PAPER
     database_url: str = DEFAULT_DATABASE_URL
     data_dir: Path = Path("data")
     bind_host: str = "127.0.0.1"
@@ -369,9 +384,9 @@ class Settings:
             value = env.get(key, default)
             return value if value is not None else None
 
+        _reject_removed_mode_env(env)
         _reject_legacy_custom_llm_env(env)
         return cls(
-            mode=TradingMode(get("CANDLEPILOT_MODE", TradingMode.PAPER.value)),
             database_url=get("CANDLEPILOT_DATABASE_URL", DEFAULT_DATABASE_URL),
             data_dir=Path(get("CANDLEPILOT_DATA_DIR", "data")),
             bind_host=get("CANDLEPILOT_HOST", "127.0.0.1"),

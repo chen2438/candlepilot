@@ -40,7 +40,6 @@ async def _doctor() -> int:
     except BinanceError as exc:
         market = {"available": False, "error": str(exc)}
     report = {
-        "mode": settings.mode.value,
         "bind": f"http://{settings.bind_host}:{settings.bind_port}",
         "providers": [provider.model_dump(mode="json") for provider in providers],
         "binance_market": market,
@@ -97,7 +96,6 @@ async def _acceptance(required_hours: float, lookback_hours: float) -> int:
         required_hours=required_hours,
     )
     payload = asdict(report)
-    payload["mode"] = settings.mode.value
     payload["lookback_hours"] = lookback_hours
     print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
     return 0 if report.passed else 1
@@ -138,12 +136,26 @@ def main() -> None:
         raise SystemExit(
             asyncio.run(_acceptance(args.required_hours, args.lookback_hours))
         )
-    settings = Settings.from_env()
+    try:
+        settings = Settings.from_env()
+    except ValueError as exc:
+        # A rejected .env is a user-fixable mistake, not a crash. Print what is
+        # wrong instead of a traceback through the config parser.
+        raise SystemExit(str(exc)) from exc
     if settings.bind_host not in {"127.0.0.1", "localhost", "::1"}:
         raise SystemExit("CandlePilot v0.1 only permits a localhost bind address")
+    # Binance testnet is the only account this system trades, so a missing key is
+    # a dead start. Say so here rather than letting it surface as a traceback out
+    # of uvicorn's import of the app factory.
+    if not (settings.binance_testnet_api_key and settings.binance_testnet_api_secret):
+        raise SystemExit(
+            "BINANCE_TESTNET_API_KEY and BINANCE_TESTNET_API_SECRET are required.\n"
+            "Create a key at https://testnet.binancefuture.com and add both to .env."
+        )
     configure_structured_logging()
     uvicorn.run(
-        "candlepilot.api:app",
+        "candlepilot.api:create_app",
+        factory=True,
         host=settings.bind_host,
         port=settings.bind_port,
         reload=False,

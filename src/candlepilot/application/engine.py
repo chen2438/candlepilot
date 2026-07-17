@@ -24,9 +24,7 @@ from candlepilot.domain.models import (
     RiskDecision,
     TradeAction,
     TradeIntent,
-    TradingMode,
 )
-from candlepilot.execution.paper import PaperExecutor
 from candlepilot.market.binance import BinancePublicClient
 from candlepilot.market.scanner import Candidate, MarketScanner
 from candlepilot.providers.base import ProviderResult
@@ -65,23 +63,20 @@ class TradingEngine:
     def __init__(
         self,
         *,
-        mode: TradingMode,
         providers: ProviderRegistry,
         audit: AuditRepository,
         market: BinancePublicClient,
+        testnet_broker: BinanceTestnetBroker,
         scanner: MarketScanner | None = None,
         risk: AggressiveRiskPolicy | None = None,
-        paper_executor: PaperExecutor | None = None,
-        testnet_broker: BinanceTestnetBroker | None = None,
         cadences: tuple[str, ...] | None = None,
     ) -> None:
-        self.mode = mode
         self.providers = providers
         self.audit = audit
         self.market = market
         self.scanner = scanner or MarketScanner()
-        self.risk = risk or AggressiveRiskPolicy(require_take_profit=mode == TradingMode.TESTNET)
-        self.paper_executor = paper_executor or PaperExecutor(state_store=audit)
+        # The exchange brackets every entry, so a take profit is not optional.
+        self.risk = risk or AggressiveRiskPolicy(require_take_profit=True)
         self.testnet_broker = testnet_broker
         self.selected_provider: str | None = None
         self.backup_provider: str | None = None
@@ -233,16 +228,13 @@ class TradingEngine:
             raise RuntimeError("engine is emergency locked")
         if not self.provider_chain:
             raise RuntimeError("at least one authenticated LLM provider must be selected")
-        if self.mode == TradingMode.TESTNET and self.testnet_broker is None:
-            raise RuntimeError("Binance testnet credentials are not configured")
-        if self.mode == TradingMode.TESTNET and self.testnet_broker is not None:
-            report = await self.testnet_broker.reconcile_account()
-            self.testnet_reconciliation = report
-            if report.unprotected_symbols:
-                symbols = ", ".join(report.unprotected_symbols)
-                raise AccountReconciliationError(
-                    f"testnet positions lack protective stops: {symbols}"
-                )
+        report = await self.testnet_broker.reconcile_account()
+        self.testnet_reconciliation = report
+        if report.unprotected_symbols:
+            symbols = ", ".join(report.unprotected_symbols)
+            raise AccountReconciliationError(
+                f"testnet positions lack protective stops: {symbols}"
+            )
         health_results = await asyncio.gather(
             *(self.providers.get(name).health_check() for name in self.provider_chain),
             return_exceptions=True,
@@ -299,10 +291,7 @@ class TradingEngine:
         await self.audit.set_runtime_state(
             "emergency_locked_until", self.emergency_locked_until.isoformat()
         )
-        if self.mode == TradingMode.TESTNET and self.testnet_broker is not None:
-            await self.testnet_broker.emergency_flatten()
-        else:
-            await self.paper_executor.emergency_flatten()
+        await self.testnet_broker.emergency_flatten()
 
     async def clear_emergency_lock(self) -> None:
         if self.running:
@@ -313,7 +302,6 @@ class TradingEngine:
 
     async def restore_runtime_state(self, *, now: datetime | None = None) -> None:
         now = now or datetime.now(UTC)
-        await self.paper_executor.restore()
         stored = await self.audit.get_runtime_state("emergency_locked_until")
         if stored is None:
             self.emergency_locked = False
@@ -337,11 +325,7 @@ class TradingEngine:
         return self.candidates
 
     async def current_portfolio(self) -> PortfolioState:
-        if self.mode in {TradingMode.PAPER, TradingMode.BACKTEST}:
-            return self.paper_executor.portfolio_state()
         broker = self.testnet_broker
-        if broker is None:
-            raise RuntimeError("testnet broker is unavailable")
         account, levels = await asyncio.gather(broker.account(), broker.protective_levels())
         raw_positions = {
             str(item["symbol"]): item
@@ -464,12 +448,6 @@ class TradingEngine:
                 evaluation_snapshot = await self.market.market_snapshot(
                     snapshot.symbol, snapshot.cadence
                 )
-                if self.mode in {TradingMode.PAPER, TradingMode.BACKTEST}:
-                    protective_reports = await self.paper_executor.mark_to_market(
-                        evaluation_snapshot
-                    )
-                    for report in protective_reports:
-                        await self.audit.record_execution(snapshot.symbol, report)
                 evaluation_portfolio = await self.current_portfolio()
             except Exception as exc:
                 rejection = RiskDecision(
@@ -496,20 +474,11 @@ class TradingEngine:
         execution = None
         if evaluation.order is not None and evaluation.decision.accepted:
             try:
-                if self.mode == TradingMode.TESTNET:
-                    if self.testnet_broker is None:
-                        raise RuntimeError("Binance testnet broker is unavailable")
-                    execution = await self.testnet_broker.execute_with_stop(
-                        evaluation.order,
-                        leverage=result.intent.leverage,
-                        replace_existing_protection=result.intent.action == TradeAction.ADD,
-                    )
-                else:
-                    execution = await self.paper_executor.execute(
-                        evaluation.order,
-                        evaluation_snapshot,
-                        leverage=result.intent.leverage,
-                    )
+                execution = await self.testnet_broker.execute_with_stop(
+                    evaluation.order,
+                    leverage=result.intent.leverage,
+                    replace_existing_protection=result.intent.action == TradeAction.ADD,
+                )
             except ProtectiveStopError as exc:
                 await self.audit.record_execution(snapshot.symbol, exc.entry)
                 if exc.rescue is not None:

@@ -21,7 +21,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from candlepilot.application.engine import SUPPORTED_CADENCES, TradingEngine
-from candlepilot.application.paper_feed import PaperMarketFeed
 from candlepilot.application.scheduler import (
     MAX_CANDIDATES_PER_CYCLE,
     TradingScheduler,
@@ -40,7 +39,7 @@ from candlepilot.config import (
     MAX_CUSTOM_LLM_PROVIDERS,
     Settings,
 )
-from candlepilot.domain.models import MarketSnapshot, PortfolioState, TradingMode
+from candlepilot.domain.models import MarketSnapshot, PortfolioState
 from candlepilot.market.binance import BinancePublicClient
 from candlepilot.market.cache import HistoricalMarketCache
 from candlepilot.market.history import build_backtest_candles
@@ -261,10 +260,8 @@ def _json_value(value: Any) -> Any:
 
 
 def _status(engine: TradingEngine, scheduler: TradingScheduler | None = None) -> dict[str, Any]:
-    paper_feed = scheduler.paper_feed if scheduler is not None else None
     testnet_feed = scheduler.testnet_feed if scheduler is not None else None
     return {
-        "mode": engine.mode.value,
         "running": engine.running,
         "emergency_locked": engine.emergency_locked,
         "emergency_locked_until": engine.emergency_locked_until.isoformat()
@@ -291,17 +288,6 @@ def _status(engine: TradingEngine, scheduler: TradingScheduler | None = None) ->
         "universe_refreshed_at": engine.universe_refreshed_at.isoformat()
         if engine.universe_refreshed_at
         else None,
-        "market_stream": {
-            "enabled": paper_feed is not None,
-            "running": paper_feed.running if paper_feed is not None else False,
-            "symbol_count": len(paper_feed.symbols) if paper_feed is not None else 0,
-            "event_count": paper_feed.event_count if paper_feed is not None else 0,
-            "backfill_count": paper_feed.backfill_count if paper_feed is not None else 0,
-            "last_backfill_at": paper_feed.last_backfill_at.isoformat()
-            if paper_feed is not None and paper_feed.last_backfill_at
-            else None,
-            "last_error": paper_feed.last_error if paper_feed is not None else None,
-        },
         "user_stream": {
             "enabled": testnet_feed is not None,
             "running": testnet_feed.running if testnet_feed is not None else False,
@@ -347,10 +333,16 @@ def create_app(
             settings.binance_testnet_api_secret,
         )
         testnet_broker = BinanceTestnetBroker(credentials)
-        if settings.mode == TradingMode.TESTNET:
-            testnet_stream = BinanceTestnetUserStream(credentials)
+        testnet_stream = BinanceTestnetUserStream(credentials)
+    elif engine is None:
+        # Binance testnet is the only account this system trades. There is no
+        # simulated fallback to quietly drop into, so say what is missing rather
+        # than starting something that cannot trade.
+        raise RuntimeError(
+            "BINANCE_TESTNET_API_KEY and BINANCE_TESTNET_API_SECRET are required; "
+            "create a key at https://testnet.binancefuture.com and put it in .env"
+        )
     engine = engine or TradingEngine(
-        mode=settings.mode,
         providers=ProviderRegistry.from_settings(settings),
         audit=AuditRepository(database.sessions),
         market=market,
@@ -361,7 +353,6 @@ def create_app(
             max_margin_fraction=settings.max_margin_fraction,
             daily_loss_fraction=settings.daily_loss_fraction,
             max_snapshot_age_seconds=settings.max_snapshot_age_seconds,
-            require_take_profit=settings.mode == TradingMode.TESTNET,
         ),
         testnet_broker=testnet_broker,
         cadences=settings.cadences,
@@ -376,22 +367,6 @@ def create_app(
             max_run_cost_usd=settings.max_run_cost_usd,
         )
 
-    async def load_paper_backfill(symbols: list[str]) -> list[MarketSnapshot]:
-        results = await asyncio.gather(
-            *(market.market_snapshot(symbol, "1m") for symbol in symbols),
-            return_exceptions=True,
-        )
-        return [result for result in results if isinstance(result, MarketSnapshot)]
-
-    paper_feed = (
-        PaperMarketFeed(
-            engine.paper_executor,
-            engine.audit,
-            backfill_loader=load_paper_backfill,
-        )
-        if engine.mode == TradingMode.PAPER and owns_market
-        else None
-    )
     testnet_feed = (
         TestnetUserFeed(
             testnet_stream,
@@ -417,7 +392,6 @@ def create_app(
         market,
         candidates_per_cycle=settings.candidates_per_cycle,
         run_cost_loader=current_run_cost_usd,
-        paper_feed=paper_feed,
         testnet_feed=testnet_feed,
     )
     history_cache = HistoricalMarketCache(settings.data_dir / "market")
@@ -504,14 +478,13 @@ def create_app(
     app = FastAPI(
         title="CandlePilot API",
         version="0.1.0",
-        description="Local-only API for paper and Binance testnet trading",
+        description="Local-only API for Binance testnet trading and historical backtests",
         lifespan=lifespan,
     )
     app.state.engine = engine
     app.state.database = database
     app.state.scheduler = scheduler
     app.state.history_cache = history_cache
-    app.state.paper_feed = paper_feed
     app.state.testnet_feed = testnet_feed
     app.state.operational_metrics = operational_metrics
 
@@ -597,12 +570,9 @@ def create_app(
             }
         except Exception as exc:
             checks["database"] = {"ready": False, "error": str(exc)}
-        broker_required = engine.mode == TradingMode.TESTNET
-        checks["testnet_broker"] = {
-            "ready": not broker_required or engine.testnet_broker is not None,
-            "required": broker_required,
-            "configured": engine.testnet_broker is not None,
-        }
+        # No broker check: it is a required constructor argument and create_app
+        # refuses to build without credentials, so an engine without one cannot
+        # reach this endpoint.
         ready = all(check["ready"] for check in checks.values())
         return JSONResponse(
             status_code=200 if ready else 503,
@@ -764,7 +734,7 @@ def create_app(
             else (),
             user_stream_error=status["user_stream"]["last_error"],
             testnet_broker_missing=(
-                engine.mode == TradingMode.TESTNET and engine.testnet_broker is None
+                engine.testnet_broker is None
             ),
         )
         async with alert_lock:
@@ -1129,7 +1099,6 @@ def create_app(
     async def refresh_universe() -> list[dict[str, Any]]:
         try:
             await engine.refresh_universe()
-            await scheduler.sync_market_feed()
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"market refresh failed: {exc}") from exc
         return await get_universe()
@@ -1206,7 +1175,6 @@ def create_app(
             return {
                 "enabled": False,
                 "active": False,
-                "mode": engine.mode.value,
                 "account": None,
                 "positions": [],
                 "reconciliation": reconciliation,
@@ -1234,8 +1202,7 @@ def create_app(
             ) from exc
         return {
             "enabled": True,
-            "active": engine.mode == TradingMode.TESTNET,
-            "mode": engine.mode.value,
+            "active": True,
             "account": {
                 # The USD-M futures /fapi/v3/account response has no canTrade
                 # field (futures permission lives on the API key). Report margin
@@ -1255,120 +1222,92 @@ def create_app(
 
     @app.get("/api/account/portfolio")
     async def get_account_portfolio() -> dict[str, Any]:
-        if engine.mode == TradingMode.TESTNET:
-            broker = engine.testnet_broker
-            if broker is None:
-                raise HTTPException(status_code=503, detail="testnet broker is not configured")
-            try:
-                account = await testnet_account()
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=502, detail=f"testnet account query failed: {exc}"
-                ) from exc
-            positions = [
-                item
-                for item in account.get("positions", [])
-                if Decimal(str(item.get("positionAmt", "0"))) != 0
-            ]
-            return _json_value(
-                {
-                    "mode": engine.mode.value,
-                    "source": "binance-testnet",
-                    "initial_equity": None,
-                    "cash": str(account.get("totalWalletBalance", "0")),
-                    "equity": str(
-                        account.get(
-                            "totalMarginBalance",
-                            account.get("totalWalletBalance", "0"),
-                        )
-                    ),
-                    "available_balance": str(account.get("availableBalance", "0")),
-                    "daily_pnl": None,
-                    "unrealized_pnl": str(account.get("totalUnrealizedProfit", "0")),
-                    "open_positions": len(positions),
-                    "margin_used": str(account.get("totalInitialMargin", "0")),
-                }
-            )
-
-        executor = engine.paper_executor
-        state = executor.portfolio_state()
+        try:
+            account = await testnet_account()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502, detail=f"testnet account query failed: {exc}"
+            ) from exc
+        positions = [
+            item
+            for item in account.get("positions", [])
+            if Decimal(str(item.get("positionAmt", "0"))) != 0
+        ]
         return _json_value(
             {
-                "mode": engine.mode.value,
-                "source": "paper",
-                "initial_equity": executor.initial_equity,
-                "cash": executor.cash,
-                "equity": state.equity,
-                "available_balance": state.available_balance,
-                "daily_pnl": state.daily_pnl,
-                "unrealized_pnl": state.equity - executor.cash,
-                "open_positions": state.open_positions,
-                "margin_used": state.margin_used,
+                "source": "binance-testnet",
+                "initial_equity": None,
+                "cash": str(account.get("totalWalletBalance", "0")),
+                "equity": str(
+                    account.get(
+                        "totalMarginBalance",
+                        account.get("totalWalletBalance", "0"),
+                    )
+                ),
+                "available_balance": str(account.get("availableBalance", "0")),
+                "daily_pnl": None,
+                "unrealized_pnl": str(account.get("totalUnrealizedProfit", "0")),
+                "open_positions": len(positions),
+                "margin_used": str(account.get("totalInitialMargin", "0")),
             }
         )
 
     @app.get("/api/account/positions")
     async def get_account_positions() -> list[dict[str, Any]]:
-        if engine.mode == TradingMode.TESTNET:
-            broker = engine.testnet_broker
-            if broker is None:
-                raise HTTPException(status_code=503, detail="testnet broker is not configured")
-            try:
-                account, levels = await asyncio.gather(
-                    testnet_account(), testnet_protective_levels()
-                )
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=502, detail=f"testnet account query failed: {exc}"
-                ) from exc
-
-            positions: list[dict[str, Any]] = []
-            reconciliation = engine.testnet_reconciliation
-            unprotected = (
-                set(reconciliation.unprotected_symbols) if reconciliation is not None else None
+        try:
+            account, levels = await asyncio.gather(
+                testnet_account(), testnet_protective_levels()
             )
-            for item in account.get("positions", []):
-                amount = Decimal(str(item.get("positionAmt", "0")))
-                if amount == 0:
-                    continue
-                quantity = abs(amount)
-                mark_price = Decimal(str(item.get("markPrice", "0")))
-                leverage = int(item.get("leverage", 1))
-                notional = quantity * mark_price
-                margin = item.get("positionInitialMargin", item.get("initialMargin"))
-                if margin is None:
-                    margin = notional / leverage if leverage > 0 else Decimal("0")
-                symbol = str(item.get("symbol", ""))
-                protection_status = (
-                    "unknown"
-                    if unprotected is None
-                    else "missing"
-                    if symbol in unprotected
-                    else "exchange"
-                )
-                # protection_status stays the reconciliation signal: it also
-                # counts reduce-only stops, which the level read deliberately
-                # ignores. The prices are the live triggers of our own brackets.
-                guard = levels.get(symbol, ProtectiveLevels())
-                positions.append(
-                    {
-                        "symbol": symbol,
-                        "side": "LONG" if amount > 0 else "SHORT",
-                        "quantity": str(quantity),
-                        "average_price": str(item.get("entryPrice", "0")),
-                        "mark_price": str(mark_price),
-                        "leverage": leverage,
-                        "unrealized_pnl": str(item.get("unrealizedProfit", "0")),
-                        "notional": str(notional),
-                        "margin_used": str(margin),
-                        "stop_loss": guard.stop_loss,
-                        "take_profit": guard.take_profit,
-                        "protection_source": protection_status,
-                    }
-                )
-            return [_json_value(item) for item in positions]
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502, detail=f"testnet account query failed: {exc}"
+            ) from exc
 
-        return [_json_value(item) for item in engine.paper_executor.position_snapshots()]
+        positions: list[dict[str, Any]] = []
+        reconciliation = engine.testnet_reconciliation
+        unprotected = (
+            set(reconciliation.unprotected_symbols) if reconciliation is not None else None
+        )
+        for item in account.get("positions", []):
+            amount = Decimal(str(item.get("positionAmt", "0")))
+            if amount == 0:
+                continue
+            quantity = abs(amount)
+            mark_price = Decimal(str(item.get("markPrice", "0")))
+            leverage = int(item.get("leverage", 1))
+            notional = quantity * mark_price
+            margin = item.get("positionInitialMargin", item.get("initialMargin"))
+            if margin is None:
+                margin = notional / leverage if leverage > 0 else Decimal("0")
+            symbol = str(item.get("symbol", ""))
+            protection_status = (
+                "unknown"
+                if unprotected is None
+                else "missing"
+                if symbol in unprotected
+                else "exchange"
+            )
+            # protection_status stays the reconciliation signal: it also
+            # counts reduce-only stops, which the level read deliberately
+            # ignores. The prices are the live triggers of our own brackets.
+            guard = levels.get(symbol, ProtectiveLevels())
+            positions.append(
+                {
+                    "symbol": symbol,
+                    "side": "LONG" if amount > 0 else "SHORT",
+                    "quantity": str(quantity),
+                    "average_price": str(item.get("entryPrice", "0")),
+                    "mark_price": str(mark_price),
+                    "leverage": leverage,
+                    "unrealized_pnl": str(item.get("unrealizedProfit", "0")),
+                    "notional": str(notional),
+                    "margin_used": str(margin),
+                    "stop_loss": guard.stop_loss,
+                    "take_profit": guard.take_profit,
+                    "protection_source": protection_status,
+                }
+            )
+        return [_json_value(item) for item in positions]
 
     @app.get("/api/orders")
     async def get_orders(limit: int = 100, status: str | None = None) -> list[dict[str, Any]]:
@@ -1431,5 +1370,3 @@ def create_app(
 
     return app
 
-
-app = create_app()

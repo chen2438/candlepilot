@@ -19,7 +19,6 @@ import type {
 } from "./types";
 
 const emptyStatus: EngineStatus = {
-  mode: "paper-production-data",
   running: false,
   emergency_locked: false,
   emergency_locked_until: null,
@@ -37,13 +36,13 @@ const emptyStatus: EngineStatus = {
   max_candidates_per_cycle: 20,
   candidate_count: 0,
   universe_refreshed_at: null,
-  market_stream: {
+  user_stream: {
     enabled: false,
     running: false,
-    symbol_count: 0,
     event_count: 0,
-    backfill_count: 0,
-    last_backfill_at: null,
+    last_event_at: null,
+    reconnect_count: 0,
+    dropped_event_count: 0,
     last_error: null,
   },
 };
@@ -106,7 +105,7 @@ const METRIC_DEFINITIONS: Record<string, string> = {
   "日亏熔断": "当日净亏损达到当日起始权益的 8% 时，硬风控拒绝新增风险仓位。",
   "权益": "账户现金或钱包余额加上按最新标记价计算的未实现盈亏。",
   "可用余额": "扣除当前保证金占用后，仍可用于新订单保证金的账户余额。",
-  "占用保证金": "当前非零持仓占用的保证金合计；模拟账户按名义价值除以杠杆估算。",
+  "占用保证金": "当前非零持仓占用的保证金合计，由交易所返回。",
   "持仓数": "当前数量非零的单向净仓标的数量。",
   "调用量": "过去 24 小时写入本地推理审计的该 Provider 调用记录数，包括失败并降级的记录。",
   "平均延迟": "过去 24 小时该 Provider 单次模型调用耗时的算术平均值。",
@@ -578,12 +577,12 @@ export default function App() {
         </div>
         <div className="environment">
           <span className="eyebrow">环境</span>
-          <strong>{status.mode === "paper-production-data" ? "生产行情 · 模拟成交" : status.mode}</strong>
-          <small>{status.market_stream.running ? `币安实时 · ${status.market_stream.symbol_count} 标的 · ${status.market_stream.event_count} 事件 · ${status.market_stream.backfill_count} 回补` : status.market_stream.enabled ? "币安实时流待启动" : "REST 行情"}</small>
+          <strong>币安测试网 · 真实撮合</strong>
+          <small>{status.user_stream.running ? `账户流实时 · ${status.user_stream.event_count} 事件` : "账户流待启动 · REST 行情"}</small>
         </div>
         <div className="live-state">
           <span className={`dot ${socketOnline ? "online" : ""}`} />
-          {socketOnline ? status.market_stream.running ? "BINANCE MARKET LIVE" : "LOCAL STREAM ONLINE" : "STREAM OFFLINE"}
+          {socketOnline ? "CONSOLE ONLINE" : "CONSOLE OFFLINE"}
         </div>
       </header>
 

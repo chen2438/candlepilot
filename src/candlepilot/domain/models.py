@@ -17,12 +17,6 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
 
 
-class TradingMode(StrEnum):
-    BACKTEST = "backtest"
-    PAPER = "paper-production-data"
-    TESTNET = "binance-testnet"
-
-
 class TradeAction(StrEnum):
     HOLD = "HOLD"
     OPEN_LONG = "OPEN_LONG"

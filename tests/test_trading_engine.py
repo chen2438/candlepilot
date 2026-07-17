@@ -12,7 +12,6 @@ from candlepilot.domain.models import (
     ProviderHealth,
     TradeAction,
     TradeIntent,
-    TradingMode,
 )
 from candlepilot.market.scanner import MarketCandidateInput
 from candlepilot.providers.base import LLMProvider, ProviderResult
@@ -20,6 +19,7 @@ from candlepilot.providers.cli import ProviderError, ProviderInvocationError
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.risk.engine import SymbolRules
 from candlepilot.storage.database import AuditRepository, Database
+from conftest import FakeTestnetBroker
 
 
 class FakeProvider(LLMProvider):
@@ -170,7 +170,7 @@ def test_engine_requires_provider_and_audits_paper_fill(tmp_path: Path) -> None:
         await database.initialize()
         audit = AuditRepository(database.sessions)
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([FakeProvider()]),
             audit=audit,
             market=FakeMarket(),  # type: ignore[arg-type]
@@ -217,7 +217,7 @@ def test_engine_refreshes_market_and_rejects_crossed_price_before_execution(
         audit = AuditRepository(database.sessions)
         market = FakeMarket(mark_price=Decimal("105"))
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([FakeProvider()]),
             audit=audit,
             market=market,  # type: ignore[arg-type]
@@ -255,8 +255,9 @@ def test_engine_executes_against_refreshed_market_after_slow_analysis(tmp_path: 
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'fresh-execution.db'}")
         await database.initialize()
         market = FakeMarket(mark_price=Decimal("101"))
+        broker = FakeTestnetBroker()
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=broker,  # type: ignore[arg-type]
             providers=ProviderRegistry([FakeProvider()]),
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
@@ -277,12 +278,18 @@ def test_engine_executes_against_refreshed_market_after_slow_analysis(tmp_path: 
             SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")),
         )
         await database.close()
-        return outcome, market.snapshot_calls
+        return outcome, market.snapshot_calls, broker.orders
 
-    outcome, snapshot_calls = asyncio.run(scenario())
+    outcome, snapshot_calls, orders = asyncio.run(scenario())
     assert outcome.risk.accepted and outcome.execution is not None
-    assert outcome.execution.average_price == Decimal("101.15055")
     assert snapshot_calls == 1
+    # The analysis snapshot said 100, the refreshed market says 101. The stop
+    # stays where the model put it -- it reasoned off the analysis snapshot --
+    # but the size must come from the refreshed price: risking 100 over a 3.101
+    # per-unit loss is 32.247, where the stale price would have sized 47.619.
+    # The fill itself comes back from the exchange, so it is not ours to assert.
+    assert orders[0].stop_price == Decimal("98.00")
+    assert orders[0].quantity == Decimal("32.247")
 
 
 def test_engine_executes_and_audits_marketable_limit_after_refresh(tmp_path: Path) -> None:
@@ -291,7 +298,7 @@ def test_engine_executes_and_audits_marketable_limit_after_refresh(tmp_path: Pat
         await database.initialize()
         audit = AuditRepository(database.sessions)
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([MarketableLimitProvider()]),
             audit=audit,
             market=FakeMarket(),  # type: ignore[arg-type]
@@ -330,7 +337,7 @@ def test_engine_rejects_expired_analysis_before_market_refresh(tmp_path: Path) -
         await database.initialize()
         market = FakeMarket()
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([FakeProvider()]),
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
@@ -371,7 +378,7 @@ def test_engine_audits_market_refresh_failure_without_execution(tmp_path: Path) 
         audit = AuditRepository(database.sessions)
         market = FailingMarket()
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([FakeProvider()]),
             audit=audit,
             market=market,  # type: ignore[arg-type]
@@ -409,7 +416,7 @@ def test_engine_cadence_selection_validates_and_locks_when_running(tmp_path: Pat
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'cadence-engine.db'}")
         await database.initialize()
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([FakeProvider()]),
             audit=AuditRepository(database.sessions),
             market=FakeMarket(),  # type: ignore[arg-type]
@@ -484,7 +491,7 @@ def test_run_limits_validate_and_lock_while_running(tmp_path: Path) -> None:
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'limits.db'}")
         await database.initialize()
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([FakeProvider()]),
             audit=AuditRepository(database.sessions),
             market=FakeMarket(),  # type: ignore[arg-type]
@@ -516,7 +523,7 @@ def test_route_exhaustion_is_tracked_and_cleared(tmp_path: Path) -> None:
         await database.initialize()
         market = FakeMarket()
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([FailedProvider(), FakeProvider()]),
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
@@ -552,27 +559,6 @@ def test_route_exhaustion_is_tracked_and_cleared(tmp_path: Path) -> None:
     exhausted, cleared = asyncio.run(scenario())
     assert exhausted is not None
     assert cleared is None
-
-
-def test_testnet_mode_refuses_to_start_without_credentials(tmp_path: Path) -> None:
-    async def scenario():
-        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'testnet.db'}")
-        await database.initialize()
-        engine = TradingEngine(
-            mode=TradingMode.TESTNET,
-            providers=ProviderRegistry([FakeProvider()]),
-            audit=AuditRepository(database.sessions),
-            market=FakeMarket(),  # type: ignore[arg-type]
-        )
-        engine.select_provider("fake-auth")
-        try:
-            await engine.start()
-            raise AssertionError("testnet should require broker credentials")
-        except RuntimeError as exc:
-            assert "credentials" in str(exc)
-        await database.close()
-
-    asyncio.run(scenario())
 
 
 def test_testnet_add_requests_protective_bracket_replacement(tmp_path: Path) -> None:
@@ -635,7 +621,6 @@ def test_testnet_add_requests_protective_bracket_replacement(tmp_path: Path) -> 
         await database.initialize()
         broker = CapturingBroker()
         engine = TradingEngine(
-            mode=TradingMode.TESTNET,
             providers=ProviderRegistry([AddProvider()]),
             audit=AuditRepository(database.sessions),
             market=FakeMarket(),  # type: ignore[arg-type]
@@ -718,7 +703,6 @@ def test_testnet_execution_failure_is_audited_with_rescue_loss(tmp_path: Path) -
         await database.initialize()
         audit = AuditRepository(database.sessions)
         engine = TradingEngine(
-            mode=TradingMode.TESTNET,
             providers=ProviderRegistry([FakeProvider()]),
             audit=audit,
             market=FakeMarket(),  # type: ignore[arg-type]
@@ -803,7 +787,6 @@ def test_unrescued_protection_failure_emergency_locks_engine(tmp_path: Path) -> 
         audit = AuditRepository(database.sessions)
         broker = UnrescuedProtectionBroker()
         engine = TradingEngine(
-            mode=TradingMode.TESTNET,
             providers=ProviderRegistry([FakeProvider()]),
             audit=audit,
             market=FakeMarket(),  # type: ignore[arg-type]
@@ -847,7 +830,7 @@ def test_engine_fails_over_once_to_explicit_backup_provider(tmp_path: Path) -> N
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'fallback.db'}")
         await database.initialize()
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([FailedProvider(), FakeProvider()]),
             audit=AuditRepository(database.sessions),
             market=FakeMarket(),  # type: ignore[arg-type]
@@ -883,7 +866,7 @@ def test_ordered_provider_route_cools_down_and_recovers_primary(tmp_path: Path) 
         audit = AuditRepository(database.sessions)
         flaky = FlakyProvider()
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([flaky, FakeProvider()]),
             audit=audit,
             market=FakeMarket(),  # type: ignore[arg-type]
@@ -949,7 +932,7 @@ def test_engine_starts_on_ready_fallback_when_primary_is_unavailable(tmp_path: P
         await database.initialize()
         unavailable = UnavailableProvider()
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([unavailable, FakeProvider()]),
             audit=AuditRepository(database.sessions),
             market=FakeMarket(),  # type: ignore[arg-type]
@@ -984,7 +967,7 @@ def test_engine_persists_failed_provider_audit_context(tmp_path: Path) -> None:
         await database.initialize()
         audit = AuditRepository(database.sessions)
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([AuditedFailedProvider()]),
             audit=audit,
             market=FakeMarket(),  # type: ignore[arg-type]
@@ -1029,7 +1012,7 @@ def test_emergency_lock_persists_and_expires_at_next_utc_day(tmp_path: Path) -> 
         await database.initialize()
         audit = AuditRepository(database.sessions)
         first = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([FakeProvider()]),
             audit=audit,
             market=FakeMarket(),  # type: ignore[arg-type]
@@ -1038,7 +1021,7 @@ def test_emergency_lock_persists_and_expires_at_next_utc_day(tmp_path: Path) -> 
         await first.emergency_stop(now=stopped_at)
 
         restored = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([FakeProvider()]),
             audit=audit,
             market=FakeMarket(),  # type: ignore[arg-type]
@@ -1095,7 +1078,6 @@ def test_testnet_portfolio_carries_entry_price_and_live_bracket(tmp_path: Path) 
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'testnet-portfolio.db'}")
         await database.initialize()
         engine = TradingEngine(
-            mode=TradingMode.TESTNET,
             providers=ProviderRegistry([FakeProvider()]),
             audit=AuditRepository(database.sessions),
             market=FakeMarket(),  # type: ignore[arg-type]

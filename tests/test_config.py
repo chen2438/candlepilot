@@ -275,3 +275,17 @@ def test_custom_llm_settings_reject_unsafe_extra_headers(monkeypatch, value: str
     monkeypatch.setenv("CANDLEPILOT_CUSTOM_LLM_EXTRA_HEADERS_JSON", value)
     with pytest.raises(ValueError, match="(?i)headers?"):
         Settings.from_env()
+
+
+def test_removed_runtime_mode_is_rejected_rather_than_ignored() -> None:
+    """A stale CANDLEPILOT_MODE must not read as "still simulated".
+
+    Every order now goes to the exchange. Silently ignoring the key would let
+    someone keep believing they configured a simulated account.
+    """
+
+    with pytest.raises(ValueError, match="CANDLEPILOT_MODE was removed"):
+        Settings.from_mapping({"CANDLEPILOT_MODE": "paper-production-data"})
+
+    # An empty value is just leftover formatting, not a belief about the mode.
+    assert Settings.from_mapping({"CANDLEPILOT_MODE": ""}) is not None

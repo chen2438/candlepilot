@@ -37,7 +37,6 @@ export interface SettingsPayload {
 }
 
 export interface EngineStatus {
-  mode: string;
   running: boolean;
   emergency_locked: boolean;
   emergency_locked_until: string | null;
@@ -55,13 +54,13 @@ export interface EngineStatus {
   max_candidates_per_cycle: number;
   candidate_count: number;
   universe_refreshed_at: string | null;
-  market_stream: {
+  user_stream: {
     enabled: boolean;
     running: boolean;
-    symbol_count: number;
     event_count: number;
-    backfill_count: number;
-    last_backfill_at: string | null;
+    last_event_at: string | null;
+    reconnect_count: number;
+    dropped_event_count: number;
     last_error: string | null;
   };
 }
@@ -190,8 +189,7 @@ export interface DecisionDetail extends DecisionEvent {
 }
 
 export interface AccountPortfolio {
-  mode: string;
-  source: "paper" | "binance-testnet";
+  source: "binance-testnet";
   initial_equity: string | null;
   cash: string;
   equity: string;
@@ -271,7 +269,6 @@ export interface RunSessionMetrics {
 export interface TestnetAccountStatus {
   enabled: boolean;
   active: boolean;
-  mode: string;
   account: null | {
     can_trade: boolean;
     total_wallet_balance: string;

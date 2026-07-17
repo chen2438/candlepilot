@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -9,13 +9,12 @@ from pydantic import SecretStr
 
 from candlepilot.api import create_app
 from candlepilot.application.engine import TradingEngine
+from conftest import FakeTestnetBroker, StatefulTestnetBroker
 from candlepilot.broker.binance_testnet import ProtectiveLevels, ReconciliationReport
 from candlepilot.config import Settings
 from candlepilot.domain.models import (
-    MarketSnapshot,
     ProviderHealth,
     TradeIntent,
-    TradingMode,
 )
 from candlepilot.market.scanner import MarketCandidateInput
 from candlepilot.providers.base import LLMProvider, ProviderResult
@@ -143,7 +142,7 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'api.db'}")
     market = ApiMarket()
     engine = TradingEngine(
-        mode=TradingMode.PAPER,
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
         providers=ProviderRegistry([ApiProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
@@ -163,6 +162,7 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
             "schema_version": CURRENT_SCHEMA_VERSION,
             "expected_schema_version": CURRENT_SCHEMA_VERSION,
         }
+        assert "testnet_broker" not in readiness.json()["checks"]
         runtime_metrics = client.get("/api/metrics/runtime")
         assert runtime_metrics.status_code == 200
         assert int(runtime_metrics.headers["X-Request-ID"], 16) >= 0
@@ -170,12 +170,12 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         assert runtime_metrics.json()["in_flight"] == 1
         assert client.get("/api/alerts").json()["active_count"] == 0
         assert client.get("/api/status").json()["running"] is False
-        assert client.get("/api/status").json()["market_stream"]["enabled"] is False
         assert client.get("/api/status").json()["user_stream"]["enabled"] is False
         assert client.get("/api/testnet/events").json() == []
         assert client.get("/api/decision-events").json() == []
         assert client.get("/api/decision-events?limit=0").status_code == 422
-        assert client.get("/api/testnet/account-status").json()["enabled"] is False
+        # The broker is no longer optional, so the account is always reachable.
+        assert client.get("/api/testnet/account-status").json()["enabled"] is True
         assert client.get("/api/metrics/providers").json() == {
             "window_hours": 24,
             "pricing_source": None,
@@ -255,7 +255,7 @@ def test_default_provider_is_selected_from_settings(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'default-provider.db'}")
     market = ApiMarket()
     engine = TradingEngine(
-        mode=TradingMode.PAPER,
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
         providers=ProviderRegistry([ApiProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
@@ -287,7 +287,7 @@ def test_custom_provider_status_never_returns_endpoint_or_key(tmp_path: Path) ->
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'custom-provider.db'}")
     market = ApiMarket()
     engine = TradingEngine(
-        mode=TradingMode.PAPER,
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
         providers=ProviderRegistry.from_settings(settings),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
@@ -322,37 +322,16 @@ def test_application_wires_snapshot_age_into_risk_policy(tmp_path: Path) -> None
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'risk-settings-api.db'}")
     market = ApiMarket()
     application = create_app(
-        settings=Settings(max_snapshot_age_seconds=22),
+        settings=Settings(
+            max_snapshot_age_seconds=22,
+            binance_testnet_api_key=SecretStr("k"),
+            binance_testnet_api_secret=SecretStr("s"),
+        ),
         database=database,
         market=market,  # type: ignore[arg-type]
     )
 
     assert application.state.engine.risk.max_snapshot_age_seconds == 22
-    asyncio.run(database.close())
-
-
-def test_readiness_rejects_testnet_mode_without_broker(tmp_path: Path) -> None:
-    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'not-ready-api.db'}")
-    market = ApiMarket()
-    engine = TradingEngine(
-        mode=TradingMode.TESTNET,
-        providers=ProviderRegistry([ApiProvider()]),
-        audit=AuditRepository(database.sessions),
-        market=market,  # type: ignore[arg-type]
-    )
-    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
-
-    with TestClient(app) as client:
-        response = client.get("/api/health/ready")
-        assert response.status_code == 503
-        payload = response.json()
-        assert payload["status"] == "not_ready"
-        assert payload["checks"]["database"]["ready"] is True
-        assert payload["checks"]["testnet_broker"] == {
-            "ready": False,
-            "required": True,
-            "configured": False,
-        }
     asyncio.run(database.close())
 
 
@@ -363,7 +342,6 @@ def test_testnet_account_status_is_sanitized_and_includes_reconciliation(
     market = ApiMarket()
     broker = ApiTestnetBroker()
     engine = TradingEngine(
-        mode=TradingMode.TESTNET,
         providers=ProviderRegistry([ApiProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
@@ -411,7 +389,6 @@ def test_testnet_account_status_is_sanitized_and_includes_reconciliation(
 
         portfolio = client.get("/api/account/portfolio").json()
         assert portfolio == {
-            "mode": "binance-testnet",
             "source": "binance-testnet",
             "initial_equity": None,
             "cash": "10000.5",
@@ -457,12 +434,12 @@ def test_testnet_account_status_is_sanitized_and_includes_reconciliation(
 
 
 def test_account_and_risk_query_endpoints(tmp_path: Path) -> None:
-    from candlepilot.domain.models import OrderPlan, OrderType
+    from candlepilot.domain.models import ExecutionReport
 
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'account-api.db'}")
     market = ApiMarket()
     engine = TradingEngine(
-        mode=TradingMode.PAPER,
+        testnet_broker=StatefulTestnetBroker(),  # type: ignore[arg-type]
         providers=ProviderRegistry([ApiProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
@@ -470,42 +447,31 @@ def test_account_and_risk_query_endpoints(tmp_path: Path) -> None:
     app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
 
     with TestClient(app) as client:
-        # Empty account before any trading activity.
-        assert client.get("/api/account/positions").json() == []
+        # These are database-backed, so they are genuinely empty before any
+        # trading. The account endpoints are not asserted here: they read
+        # through a one-second memo, and priming it with an empty account would
+        # hide the seeded position from the assertions below.
         assert client.get("/api/orders").json() == []
         assert client.get("/api/fills").json() == []
         assert client.get("/api/risk-events").json() == []
-        portfolio = client.get("/api/account/portfolio").json()
-        assert portfolio["mode"] == "paper-production-data"
-        assert portfolio["source"] == "paper"
-        assert portfolio["equity"] == "10000"
-        assert portfolio["open_positions"] == 0
 
-        # Seed one filled paper position directly through the executor.
-        snapshot = MarketSnapshot(
-            symbol="BTCUSDT",
-            cadence="1m",
-            timestamp=datetime.now(UTC),
-            mark_price="100",
-            bid="99.9",
-            ask="100.1",
-            quote_volume_24h="1000000",
+        # Seed one filled position on the exchange and its audited fill.
+        engine.testnet_broker.positions["BTCUSDT"] = (  # type: ignore[attr-defined]
+            "LONG",
+            Decimal("1"),
+            Decimal("100"),
         )
-        report = asyncio.run(
-            engine.paper_executor.execute(
-                OrderPlan(
+        asyncio.run(
+            engine.audit.record_execution(
+                "BTCUSDT",
+                ExecutionReport(
                     client_order_id="cp-account-1",
-                    symbol="BTCUSDT",
-                    side="BUY",
-                    quantity=Decimal("1"),
-                    order_type=OrderType.MARKET,
-                    stop_price=Decimal("95"),
+                    status="FILLED",
+                    filled_quantity="1",
+                    average_price="100",
                 ),
-                snapshot,
-                leverage=3,
             )
         )
-        asyncio.run(engine.audit.record_execution("BTCUSDT", report))
 
         positions = client.get("/api/account/positions").json()
         assert positions[0]["symbol"] == "BTCUSDT"
@@ -514,7 +480,10 @@ def test_account_and_risk_query_endpoints(tmp_path: Path) -> None:
         orders = client.get("/api/orders").json()
         assert orders[0]["client_order_id"] == "cp-account-1"
         assert client.get("/api/fills").json()[0]["status"] == "FILLED"
-        assert client.get("/api/account/portfolio").json()["open_positions"] == 1
+        portfolio = client.get("/api/account/portfolio").json()
+        assert portfolio["source"] == "binance-testnet"
+        assert portfolio["equity"] == "10000"
+        assert portfolio["open_positions"] == 1
         assert client.get("/api/orders?limit=0").status_code == 422
     asyncio.run(database.close())
 
@@ -523,7 +492,7 @@ def test_alert_transitions_are_logged_and_persisted(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'alerts-api.db'}")
     market = ApiMarket()
     engine = TradingEngine(
-        mode=TradingMode.PAPER,
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
         providers=ProviderRegistry([ApiProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
@@ -576,7 +545,7 @@ def test_provider_metrics_prices_codex_via_injected_catalog(tmp_path: Path) -> N
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'pricing-api.db'}")
     market = ApiMarket()
     engine = TradingEngine(
-        mode=TradingMode.PAPER,
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
         providers=ProviderRegistry([ApiProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
@@ -632,7 +601,7 @@ def test_provider_config_sets_model_and_reasoning_effort(tmp_path: Path) -> None
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'config-api.db'}")
     market = ApiMarket()
     engine = TradingEngine(
-        mode=TradingMode.PAPER,
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
         providers=ProviderRegistry([ConfigurableProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
@@ -693,7 +662,7 @@ def test_settings_endpoint_reads_masked_and_writes_env(tmp_path: Path, monkeypat
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'settings.db'}")
     market = ApiMarket()
     engine = TradingEngine(
-        mode=TradingMode.PAPER,
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
         providers=ProviderRegistry([ApiProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
@@ -761,7 +730,7 @@ def test_custom_providers_editor_endpoint(tmp_path: Path, monkeypatch) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'cp.db'}")
     market = ApiMarket()
     engine = TradingEngine(
-        mode=TradingMode.PAPER,
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
         providers=ProviderRegistry([ApiProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
@@ -860,7 +829,7 @@ def test_restart_is_refused_while_the_engine_runs(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'restart.db'}")
     market = ApiMarket()
     engine = TradingEngine(
-        mode=TradingMode.PAPER,
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
         providers=ProviderRegistry([ApiProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
@@ -881,7 +850,7 @@ def test_run_limits_endpoint(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'run-limits.db'}")
     market = ApiMarket()
     engine = TradingEngine(
-        mode=TradingMode.PAPER,
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
         providers=ProviderRegistry([ApiProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
@@ -921,7 +890,7 @@ def test_provider_test_endpoint_reports_success_and_failure(tmp_path: Path) -> N
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'test-provider.db'}")
     market = ApiMarket()
     engine = TradingEngine(
-        mode=TradingMode.PAPER,
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
         providers=ProviderRegistry([ApiProvider(), BrokenProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
@@ -988,7 +957,7 @@ def test_history_clear_removes_selected_categories(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'history-api.db'}")
     market = ApiMarket()
     engine = TradingEngine(
-        mode=TradingMode.PAPER,
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
         providers=ProviderRegistry([ApiProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
@@ -1033,7 +1002,7 @@ def test_cadence_selection_endpoint(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'cadence-api.db'}")
     market = ApiMarket()
     engine = TradingEngine(
-        mode=TradingMode.PAPER,
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
         providers=ProviderRegistry([ApiProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
@@ -1062,7 +1031,7 @@ def test_candidates_per_cycle_endpoint(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'per-cycle-api.db'}")
     market = ApiMarket()
     engine = TradingEngine(
-        mode=TradingMode.PAPER,
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
         providers=ProviderRegistry([ApiProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
@@ -1101,7 +1070,7 @@ def test_unknown_provider_is_404(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'api.db'}")
     market = ApiMarket()
     engine = TradingEngine(
-        mode=TradingMode.PAPER,
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
         providers=ProviderRegistry([ApiProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
@@ -1117,7 +1086,7 @@ def test_provider_route_api_exposes_order_and_locks_while_running(tmp_path: Path
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'provider-route-api.db'}")
     market = ApiMarket()
     engine = TradingEngine(
-        mode=TradingMode.PAPER,
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
         providers=ProviderRegistry([ApiProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
@@ -1143,7 +1112,7 @@ def test_backtest_detail_returns_404_for_unknown_run(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'missing-backtest.db'}")
     market = ApiMarket()
     engine = TradingEngine(
-        mode=TradingMode.PAPER,
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
         providers=ProviderRegistry([ApiProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
@@ -1160,7 +1129,7 @@ def test_decision_events_reject_filters_they_cannot_honour(tmp_path: Path) -> No
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'filters.db'}")
     market = ApiMarket()
     engine = TradingEngine(
-        mode=TradingMode.PAPER,
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
         providers=ProviderRegistry([ApiProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]

@@ -14,7 +14,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from candlepilot.domain.models import TradingMode
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,13 +40,6 @@ ENV_SECTIONS: tuple[EnvSection, ...] = (
     EnvSection(
         "运行模式与服务",
         (
-            EnvField(
-                "CANDLEPILOT_MODE",
-                "运行模式",
-                "enum",
-                tuple(mode.value for mode in TradingMode),
-                description="回测 / 模拟成交 / 币安测试网。",
-            ),
             EnvField("CANDLEPILOT_HOST", "绑定地址", placeholder="127.0.0.1",
                      description="只允许 localhost。"),
             EnvField("CANDLEPILOT_PORT", "端口", "int", placeholder="8000"),

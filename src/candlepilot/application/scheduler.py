@@ -5,9 +5,8 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from candlepilot.application.engine import DecisionOutcome, TradingEngine
-from candlepilot.application.paper_feed import PaperMarketFeed
 from candlepilot.application.testnet_feed import TestnetUserFeed
-from candlepilot.domain.models import PortfolioState, TradingMode
+from candlepilot.domain.models import PortfolioState
 from candlepilot.market.binance import BinancePublicClient
 
 
@@ -37,7 +36,6 @@ class TradingScheduler:
         universe_refresh_seconds: float = 60,
         guard_interval_seconds: float = 5,
         run_cost_loader: Callable[[], Awaitable[float | None]] | None = None,
-        paper_feed: PaperMarketFeed | None = None,
         testnet_feed: TestnetUserFeed | None = None,
     ) -> None:
         if universe_refresh_seconds <= 0:
@@ -50,7 +48,6 @@ class TradingScheduler:
         self.universe_refresh_seconds = universe_refresh_seconds
         self.guard_interval_seconds = guard_interval_seconds
         self.run_cost_loader = run_cost_loader
-        self.paper_feed = paper_feed
         self.testnet_feed = testnet_feed
         self._tasks: list[asyncio.Task[None]] = []
         self._symbol_locks: dict[str, asyncio.Lock] = {}
@@ -85,8 +82,6 @@ class TradingScheduler:
 
     async def stop(self) -> None:
         self._stop.set()
-        if self.paper_feed is not None:
-            await self.paper_feed.stop()
         if self.testnet_feed is not None:
             await self.testnet_feed.stop()
         for task in self._tasks:
@@ -118,7 +113,6 @@ class TradingScheduler:
             if self.engine.running:
                 try:
                     await self.engine.refresh_universe()
-                    await self.sync_market_feed()
                     self.universe_last_error = None
                 except Exception as exc:
                     self.universe_last_error = str(exc)
@@ -180,13 +174,6 @@ class TradingScheduler:
         await self.engine.stop()
         await self.stop()
 
-    async def sync_market_feed(self) -> None:
-        if self.paper_feed is None or self.engine.mode != TradingMode.PAPER:
-            return
-        symbols = [candidate.symbol for candidate in self.engine.candidates]
-        symbols.extend(self.engine.paper_executor.position_symbols)
-        await self.paper_feed.start(list(dict.fromkeys(symbols)))
-
     async def run_cycle(self, cadence: str) -> list[DecisionOutcome]:
         if cadence not in CADENCE_SECONDS:
             raise ValueError("unsupported cadence")
@@ -209,10 +196,6 @@ class TradingScheduler:
             lock = self._symbol_locks.setdefault(symbol, asyncio.Lock())
             async with lock:
                 snapshot = await self.market.market_snapshot(symbol, cadence)
-                if self.engine.mode in {TradingMode.PAPER, TradingMode.BACKTEST}:
-                    protective_reports = await self.engine.paper_executor.mark_to_market(snapshot)
-                    for report in protective_reports:
-                        await self.engine.audit.record_execution(symbol, report)
                 portfolio = await self._portfolio()
                 outcomes.append(
                     await self.engine.evaluate(snapshot, portfolio, contract.rules)

@@ -208,7 +208,11 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
         # never matched what live sends -- single timeframe, unprefixed, no
         # daily levels -- so keeping them would invite comparing them against
         # the rewrite's numbers as though the two measured the same thing.
-        ("DROP TABLE IF EXISTS backtests",),
+        (
+            "DROP TABLE IF EXISTS backtests",
+            # The simulated account is gone too: testnet is the only account now.
+            "DELETE FROM runtime_state WHERE key = 'paper_account'",
+        ),
     ),
 )
 CURRENT_SCHEMA_VERSION = max(version for version, _ in MIGRATIONS)
@@ -652,13 +656,6 @@ class AuditRepository:
             row = await session.get(RuntimeStateRow, key)
             if row is not None:
                 await session.delete(row)
-
-    async def save_paper_state(self, state: dict[str, Any]) -> None:
-        await self.set_runtime_state("paper_account", json.dumps(state, separators=(",", ":")))
-
-    async def load_paper_state(self) -> dict[str, Any] | None:
-        value = await self.get_runtime_state("paper_account")
-        return json.loads(value) if value is not None else None
 
     async def recent_intents(self, limit: int = 100) -> list[dict[str, Any]]:
         async with self.sessions() as session:

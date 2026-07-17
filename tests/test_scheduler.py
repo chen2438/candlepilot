@@ -5,13 +5,14 @@ from pathlib import Path
 
 from candlepilot.application.engine import TradingEngine
 from candlepilot.application.scheduler import TradingScheduler
-from candlepilot.domain.models import MarketSnapshot, ProviderHealth, TradeIntent, TradingMode
+from candlepilot.domain.models import MarketSnapshot, ProviderHealth, TradeIntent
 from candlepilot.market.binance import ContractInfo
 from candlepilot.market.scanner import MarketCandidateInput
 from candlepilot.providers.base import LLMProvider, ProviderResult
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.risk.engine import SymbolRules
 from candlepilot.storage.database import AuditRepository, Database
+from conftest import FakeTestnetBroker, StatefulTestnetBroker
 
 
 class HoldProvider(LLMProvider):
@@ -41,6 +42,9 @@ class ConflictingProvider(LLMProvider):
             leverage=2,
             risk_fraction="0.01",
             stop_loss="98" if long else "102",
+            # Every entry is bracketed on the exchange, so a take profit is not
+            # optional the way it was for the simulated executor.
+            take_profit="104" if long else "96",
             rationale="conflict fixture",
         )
         await asyncio.sleep(0.01)
@@ -105,7 +109,7 @@ def test_scheduler_runs_ranked_candidate_cycle(tmp_path: Path) -> None:
         await database.initialize()
         market = SchedulerMarket()
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([HoldProvider()]),
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
@@ -128,7 +132,7 @@ def test_scheduler_only_runs_selected_cadences(tmp_path: Path) -> None:
         await database.initialize()
         market = SchedulerMarket()
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([HoldProvider()]),
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
@@ -162,7 +166,7 @@ def test_scheduler_candidates_per_cycle_validates_and_locks_when_running(
         await database.initialize()
         market = SchedulerMarket()
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([HoldProvider()]),
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
@@ -225,7 +229,7 @@ def test_scheduler_limits_cycle_to_candidates_per_cycle(tmp_path: Path) -> None:
 
         market = MultiSymbolMarket()
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([HoldProvider()]),
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
@@ -244,7 +248,6 @@ def test_scheduler_limits_cycle_to_candidates_per_cycle(tmp_path: Path) -> None:
 def test_scheduler_always_analyzes_open_positions_outside_candidate_limit(
     tmp_path: Path,
 ) -> None:
-    from candlepilot.domain.models import OrderPlan, OrderType
 
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'held-symbol.db'}")
@@ -263,22 +266,14 @@ def test_scheduler_always_analyzes_open_positions_outside_candidate_limit(
                 }
 
         market = HeldSymbolMarket()
+        # ETHUSDT is already held on the exchange but is not a candidate.
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=StatefulTestnetBroker(  # type: ignore[arg-type]
+                {"ETHUSDT": ("LONG", Decimal("1"), Decimal("100"))}
+            ),
             providers=ProviderRegistry([HoldProvider()]),
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
-        )
-        await engine.paper_executor.execute(
-            OrderPlan(
-                client_order_id="held-eth",
-                symbol="ETHUSDT",
-                side="BUY",
-                quantity=Decimal("1"),
-                order_type=OrderType.MARKET,
-                stop_price=Decimal("90"),
-            ),
-            await market.market_snapshot("ETHUSDT", "5m"),
         )
         engine.select_provider("hold")
         await engine.start()
@@ -296,7 +291,7 @@ def test_guard_stops_the_run_when_a_limit_is_reached(tmp_path: Path) -> None:
         await database.initialize()
         market = SchedulerMarket()
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([HoldProvider()]),
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
@@ -334,7 +329,7 @@ def test_guard_only_loads_cost_when_a_budget_is_set(tmp_path: Path) -> None:
         await database.initialize()
         market = SchedulerMarket()
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([HoldProvider()]),
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
@@ -386,8 +381,10 @@ def test_concurrent_cadences_cannot_open_opposing_positions(tmp_path: Path) -> N
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'conflict.db'}")
         await database.initialize()
         market = SchedulerMarket()
+        # The opposing-entry rule reads open positions back out of the account,
+        # so the first fill has to be visible to the second cadence.
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=StatefulTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([ConflictingProvider()]),
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
@@ -399,7 +396,7 @@ def test_concurrent_cadences_cannot_open_opposing_positions(tmp_path: Path) -> N
         cycles = await asyncio.gather(
             scheduler.run_cycle("5m"), scheduler.run_cycle("15m")
         )
-        portfolio = engine.paper_executor.portfolio_state()
+        portfolio = await engine.current_portfolio()
         await database.close()
         return cycles, portfolio
 
@@ -410,40 +407,13 @@ def test_concurrent_cadences_cannot_open_opposing_positions(tmp_path: Path) -> N
     assert portfolio.open_positions == 1
 
 
-def test_paper_account_tracks_open_position() -> None:
-    from candlepilot.domain.models import OrderPlan, OrderType
-    from candlepilot.execution.paper import PaperExecutor
-
-    async def scenario():
-        executor = PaperExecutor()
-        snapshot = await SchedulerMarket().market_snapshot("BTCUSDT", "5m")
-        await executor.execute(
-            OrderPlan(
-                client_order_id="paper-1",
-                symbol="BTCUSDT",
-                side="BUY",
-                quantity=Decimal("1"),
-                order_type=OrderType.MARKET,
-                stop_price=Decimal("98"),
-            ),
-            snapshot,
-            leverage=5,
-        )
-        return executor.portfolio_state()
-
-    portfolio = asyncio.run(scenario())
-    assert portfolio.open_positions == 1
-    assert portfolio.positions["BTCUSDT"].side == "LONG"
-    assert portfolio.margin_used > 0
-
-
 def test_scheduler_refreshes_universe_periodically(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'universe-scheduler.db'}")
         await database.initialize()
         market = SchedulerMarket()
         engine = TradingEngine(
-            mode=TradingMode.PAPER,
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
             providers=ProviderRegistry([HoldProvider()]),
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
@@ -466,86 +436,3 @@ def test_scheduler_refreshes_universe_periodically(tmp_path: Path) -> None:
     assert scheduler.universe_last_error is None
     assert scheduler._tasks == []
 
-
-def test_scheduler_marks_and_stops_paper_position(tmp_path: Path) -> None:
-    from candlepilot.domain.models import OrderPlan, OrderType
-
-    async def scenario():
-        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'paper-mark.db'}")
-        await database.initialize()
-        market = SchedulerMarket()
-        engine = TradingEngine(
-            mode=TradingMode.PAPER,
-            providers=ProviderRegistry([HoldProvider()]),
-            audit=AuditRepository(database.sessions),
-            market=market,  # type: ignore[arg-type]
-        )
-        engine.select_provider("hold")
-        await engine.start()
-        await engine.paper_executor.execute(
-            OrderPlan(
-                client_order_id="scheduled-entry",
-                symbol="BTCUSDT",
-                side="BUY",
-                quantity=Decimal("1"),
-                order_type=OrderType.MARKET,
-                stop_price=Decimal("98"),
-            ),
-            await market.market_snapshot("BTCUSDT", "5m"),
-        )
-        market.mark_price = Decimal("97")
-        scheduler = TradingScheduler(engine, market)  # type: ignore[arg-type]
-        await scheduler.run_cycle("5m")
-        orders = engine.paper_executor.orders
-        portfolio = engine.paper_executor.portfolio_state()
-        await database.close()
-        return orders, portfolio
-
-    orders, portfolio = asyncio.run(scenario())
-    assert any(report.message == "paper stop_loss" for report in orders)
-    assert portfolio.open_positions == 0
-
-
-def test_market_feed_tracks_candidates_and_open_positions(tmp_path: Path) -> None:
-    from candlepilot.domain.models import OrderPlan, OrderType
-
-    async def scenario():
-        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'feed-sync.db'}")
-        await database.initialize()
-        market = SchedulerMarket()
-        engine = TradingEngine(
-            mode=TradingMode.PAPER,
-            providers=ProviderRegistry([HoldProvider()]),
-            audit=AuditRepository(database.sessions),
-            market=market,  # type: ignore[arg-type]
-        )
-        await engine.paper_executor.execute(
-            OrderPlan(
-                client_order_id="eth-position",
-                symbol="ETHUSDT",
-                side="BUY",
-                quantity=Decimal("1"),
-                order_type=OrderType.MARKET,
-                stop_price=Decimal("90"),
-            ),
-            MarketSnapshot(
-                symbol="ETHUSDT",
-                cadence="1m",
-                timestamp=datetime.now(UTC),
-                mark_price="100",
-                bid="99.9",
-                ask="100.1",
-                quote_volume_24h="1000000",
-            ),
-        )
-        await engine.refresh_universe()
-        feed = FakePaperFeed()
-        scheduler = TradingScheduler(engine, market, paper_feed=feed)  # type: ignore[arg-type]
-        await scheduler.sync_market_feed()
-        await scheduler.stop()
-        await database.close()
-        return feed
-
-    feed = asyncio.run(scenario())
-    assert feed.started == [["BTCUSDT", "ETHUSDT"]]
-    assert feed.stopped
