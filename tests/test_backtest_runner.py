@@ -270,6 +270,65 @@ def test_higher_cadences_cannot_duplicate_funding_settlement() -> None:
     assert multi.total_funding == base.total_funding
 
 
+def test_unreached_limit_is_pending_and_cannot_stack_another_entry() -> None:
+    class RestingLimit(_Provider):
+        async def generate_trade_intent(self, snapshot, portfolio):
+            intent = TradeIntent(
+                symbol=snapshot.symbol,
+                cadence=snapshot.cadence,
+                action=TradeAction.OPEN_LONG,
+                confidence=0.8,
+                leverage=2,
+                risk_fraction="0.01",
+                order_type="LIMIT",
+                entry_price=snapshot.mark_price * Decimal("0.5"),
+                stop_loss=snapshot.mark_price * Decimal("0.4"),
+                take_profit=snapshot.mark_price * Decimal("1.1"),
+                rationale="resting fixture",
+            )
+            return ProviderResult(intent, self.name, "m", timedelta(0), "{}", {})
+
+    decisions: list[BacktestDecision] = []
+
+    async def capture(_run: ModelRun, decision: BacktestDecision | None) -> None:
+        if decision is not None:
+            decisions.append(decision)
+
+    result = asyncio.run(
+        _runner(_spec(end=WINDOW_START + timedelta(minutes=20))).run(
+            RestingLimit("limit"), ModelRun("limit"), on_progress=capture
+        )
+    )
+
+    assert result.trade_count == 0
+    assert decisions[0].outcome == "pending"
+    assert decisions[0].fill is not None and decisions[0].fill["status"] == "NEW"
+    assert all(item.outcome == "rejected" for item in decisions[1:-1])
+
+
+def test_decision_fill_price_is_the_slipped_execution_price() -> None:
+    spec = _spec(
+        end=WINDOW_START + timedelta(minutes=10),
+        config=BacktestConfig(slippage_fraction=Decimal("0.001"), fee_rate=Decimal("0")),
+    )
+    runner = _runner(spec)
+    decisions: list[BacktestDecision] = []
+
+    async def capture(_run: ModelRun, decision: BacktestDecision | None) -> None:
+        if decision is not None:
+            decisions.append(decision)
+
+    asyncio.run(runner.run(_Provider("market"), ModelRun("market"), on_progress=capture))
+    fill_candle = next(
+        candle
+        for candle in runner._series["BTCUSDT"]["5m"]
+        if candle.timestamp == WINDOW_START + timedelta(minutes=5)
+    )
+
+    assert decisions[0].fill is not None
+    assert Decimal(decisions[0].fill["price"]) == fill_candle.open * Decimal("1.001")
+
+
 def test_a_failing_call_does_not_end_the_run() -> None:
     """One bad provider call must cost one decision, not the whole comparison."""
 
@@ -493,6 +552,15 @@ def test_a_traded_decision_records_the_fill_it_got() -> None:
     assert traded, "the buyer never traded"
     fill = traded[0].fill
     assert fill is not None
-    assert set(fill) == {"price", "quantity", "side", "leverage", "stop_loss", "take_profit"}
+    assert set(fill) == {
+        "status",
+        "price",
+        "quantity",
+        "side",
+        "leverage",
+        "stop_loss",
+        "take_profit",
+    }
+    assert fill["status"] == "FILLED"
     assert Decimal(fill["price"]) > 0
     assert traded[0].rationale and traded[0].confidence is not None

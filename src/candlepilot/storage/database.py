@@ -165,7 +165,7 @@ class BacktestDecisionRow(Base):
     decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     symbol: Mapped[str] = mapped_column(String(32))
     cadence: Mapped[str] = mapped_column(String(8))
-    #: traded | rejected | hold | no_snapshot | call_failed
+    #: traded | pending | rejected | hold | no_snapshot | call_failed
     outcome: Mapped[str] = mapped_column(String(16))
     action: Mapped[str | None] = mapped_column(String(16), nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -1402,4 +1402,3 @@ class AuditRepository:
                 }
             )
         return results
-

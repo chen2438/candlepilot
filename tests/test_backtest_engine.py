@@ -25,13 +25,22 @@ def _candle(index: int, *, open_=100, high=101, low=99, close=100, funding="0") 
     )
 
 
-def _order(side="BUY", *, quantity="1", stop="98", take="104") -> OrderPlan:
+def _order(
+    side="BUY",
+    *,
+    quantity="1",
+    stop="98",
+    take="104",
+    order_type=OrderType.MARKET,
+    price=None,
+) -> OrderPlan:
     return OrderPlan(
         client_order_id="cp-test",
         symbol="BTCUSDT",
         side=side,
         quantity=Decimal(quantity),
-        order_type=OrderType.MARKET,
+        order_type=order_type,
+        price=Decimal(price) if price else None,
         stop_price=Decimal(stop) if stop else None,
         take_profit_price=Decimal(take) if take else None,
     )
@@ -65,6 +74,54 @@ def test_entries_fill_on_the_next_candle_not_the_decided_one() -> None:
 
     # Filled at the next bar's open, not the decision bar's close.
     assert report.average_price == Decimal("103")
+
+
+def test_resting_limit_waits_until_a_later_candle_touches_its_price() -> None:
+    exchange = SimulatedExchange(
+        BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0"))
+    )
+    order = _order(order_type=OrderType.LIMIT, price="50", stop="40", take="60")
+
+    report = exchange.execute(order, _candle(1, open_=100, high=110, low=90), leverage=1)
+    exchange.settle_candle("BTCUSDT", _candle(1, open_=100, high=110, low=90))
+    before_touch = exchange.portfolio_state({})
+    exchange.settle_candle("BTCUSDT", _candle(2, open_=55, high=58, low=45, close=52))
+    after_touch = exchange.portfolio_state({"BTCUSDT": Decimal("52")})
+
+    assert report.status == "NEW" and report.filled_quantity == 0
+    assert not before_touch.positions
+    assert after_touch.positions["BTCUSDT"].entry_price == Decimal("50")
+
+
+def test_marketable_limit_fills_at_open_without_breaching_its_limit() -> None:
+    exchange = SimulatedExchange(
+        BacktestConfig(slippage_fraction=Decimal("0.001"), fee_rate=Decimal("0"))
+    )
+    report = exchange.execute(
+        _order(order_type=OrderType.LIMIT, price="105"),
+        _candle(1, open_=100),
+        leverage=1,
+    )
+
+    assert report.status == "FILLED"
+    assert report.average_price == Decimal("100.100")
+    assert report.average_price <= Decimal("105")
+
+
+def test_resting_limit_that_reaches_its_stop_in_the_fill_bar_is_stopped() -> None:
+    exchange = SimulatedExchange(
+        BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0"))
+    )
+    exchange.execute(
+        _order(order_type=OrderType.LIMIT, price="95", stop="92", take="105"),
+        _candle(1, open_=100),
+        leverage=1,
+    )
+
+    exchange.settle_candle("BTCUSDT", _candle(1, open_=100, high=110, low=90))
+
+    assert exchange.trades[0].entry_price == Decimal("95")
+    assert exchange.trades[0].exit_reason == "stop_loss"
 
 
 def test_slippage_and_fees_are_charged_against_the_trade() -> None:

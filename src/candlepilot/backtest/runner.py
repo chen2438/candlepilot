@@ -166,7 +166,7 @@ class BacktestDecision:
     decided_at: datetime
     symbol: str
     cadence: str
-    #: traded | rejected | hold | no_snapshot | call_failed
+    #: traded | pending | rejected | hold | no_snapshot | call_failed
     outcome: str = "hold"
     action: str | None = None
     confidence: float | None = None
@@ -350,6 +350,12 @@ class BacktestRunner:
                 curve.append(EquityPoint(when, exchange.equity(self._marks(when))))
                 await report(entry)
                 continue
+            if exchange.has_pending(symbol):
+                entry.outcome = "rejected"
+                entry.detail = "resting limit entry already pending"
+                curve.append(EquityPoint(when, exchange.equity(self._marks(when))))
+                await report(entry)
+                continue
 
             # The live risk policy, not a copy of it: the daily-loss breaker,
             # the position cap, tick alignment and exchange minimums all have to
@@ -371,10 +377,13 @@ class BacktestRunner:
                 entry.detail = "no candle left in the window to fill against"
                 await report(entry)
                 continue
-            exchange.execute(evaluation.order, fill_candle, leverage=intent.leverage)
-            entry.outcome = "traded"
+            execution = exchange.execute(
+                evaluation.order, fill_candle, leverage=intent.leverage
+            )
+            entry.outcome = "traded" if execution.status == "FILLED" else "pending"
             entry.fill = {
-                "price": str(fill_candle.open),
+                "status": execution.status,
+                "price": str(execution.average_price or evaluation.order.price),
                 "quantity": str(evaluation.order.quantity),
                 "side": evaluation.order.side,
                 "leverage": intent.leverage,

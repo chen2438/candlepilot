@@ -79,6 +79,13 @@ class _Position:
     funding: Decimal = Decimal("0")
 
 
+@dataclass(slots=True)
+class _PendingOrder:
+    order: OrderPlan
+    submitted_at: datetime
+    leverage: int
+
+
 @dataclass(frozen=True, slots=True)
 class BacktestResult:
     initial_equity: Decimal
@@ -109,6 +116,7 @@ class SimulatedExchange:
         self.config = config or BacktestConfig()
         self.cash = self.config.initial_equity
         self._positions: dict[str, _Position] = {}
+        self._pending: dict[str, _PendingOrder] = {}
         self.trades: list[BacktestTrade] = []
         self._daily_date: date | None = None
         self._daily_start_equity = self.config.initial_equity
@@ -160,23 +168,56 @@ class SimulatedExchange:
         drift = price * self.config.slippage_fraction
         return price + drift if side == "BUY" else price - drift
 
-    def execute(self, order: OrderPlan, candle: Candle, *, leverage: int) -> ExecutionReport:
-        """Fill an accepted order at the open of the next candle."""
+    def has_pending(self, symbol: str) -> bool:
+        return symbol in self._pending
 
-        fill = self._slipped(candle.open, order.side)
+    def execute(self, order: OrderPlan, candle: Candle, *, leverage: int) -> ExecutionReport:
+        """Fill marketable orders at the open; keep resting limits pending."""
+
+        if order.order_type.value == "LIMIT":
+            assert order.price is not None
+            marketable = (order.side == "BUY" and order.price >= candle.open) or (
+                order.side == "SELL" and order.price <= candle.open
+            )
+            if not marketable:
+                self._pending[order.symbol] = _PendingOrder(
+                    order=order, submitted_at=candle.timestamp, leverage=leverage
+                )
+                return ExecutionReport(
+                    client_order_id=order.client_order_id,
+                    status="NEW",
+                    message="simulated resting limit",
+                    timestamp=candle.timestamp,
+                )
+
+        return self._fill(order, candle.open, candle.timestamp, leverage=leverage)
+
+    def _fill(
+        self,
+        order: OrderPlan,
+        base_price: Decimal,
+        when: datetime,
+        *,
+        leverage: int,
+    ) -> ExecutionReport:
+        fill = self._slipped(base_price, order.side)
+        if order.order_type.value == "LIMIT":
+            assert order.price is not None
+            fill = min(fill, order.price) if order.side == "BUY" else max(fill, order.price)
+
         fee = fill * order.quantity * self.config.fee_rate
         self.cash -= fee
         if order.reduce_only:
-            self._reduce(order, fill, candle.timestamp, fee)
+            self._reduce(order, fill, when, fee)
         else:
-            self._open_or_add(order, fill, candle.timestamp, leverage, fee)
+            self._open_or_add(order, fill, when, leverage, fee)
         return ExecutionReport(
             client_order_id=order.client_order_id,
             status="FILLED",
             filled_quantity=order.quantity,
             average_price=fill,
             message="simulated fill",
-            timestamp=candle.timestamp,
+            timestamp=when,
         )
 
     def _open_or_add(
@@ -261,24 +302,61 @@ class SimulatedExchange:
         """Charge funding and close the position if a trigger was touched."""
 
         position = self._positions.get(symbol)
-        if position is None:
-            return
-        direction = Decimal("1") if position.side == "LONG" else Decimal("-1")
-        position.funding += (
-            position.quantity * candle.close * candle.funding_rate * direction
-        )
+        if position is not None:
+            direction = Decimal("1") if position.side == "LONG" else Decimal("-1")
+            position.funding += (
+                position.quantity * candle.close * candle.funding_rate * direction
+            )
 
-        trigger, reason = self._touched(position, candle)
-        if trigger is None:
+            trigger, reason = self._touched(position, candle)
+            if trigger is not None:
+                exit_side = "SELL" if position.side == "LONG" else "BUY"
+                fill = self._slipped(trigger, exit_side)
+                fee = fill * position.quantity * self.config.fee_rate
+                self.cash -= fee
+                self._book(
+                    symbol, position, position.quantity, fill, candle.timestamp, fee, reason
+                )
+
+        pending = self._pending.get(symbol)
+        if pending is None or candle.timestamp < pending.submitted_at:
             return
-        exit_side = "SELL" if position.side == "LONG" else "BUY"
-        fill = self._slipped(trigger, exit_side)
-        fee = fill * position.quantity * self.config.fee_rate
-        self.cash -= fee
-        self._book(symbol, position, position.quantity, fill, candle.timestamp, fee, reason)
+        order = pending.order
+        assert order.price is not None
+        touched = candle.low <= order.price if order.side == "BUY" else candle.high >= order.price
+        if not touched:
+            return
+        if order.reduce_only and symbol not in self._positions:
+            del self._pending[symbol]
+            return
+        marketable_at_open = (order.side == "BUY" and order.price >= candle.open) or (
+            order.side == "SELL" and order.price <= candle.open
+        )
+        base_price = candle.open if marketable_at_open else order.price
+        del self._pending[symbol]
+        self._fill(order, base_price, candle.timestamp, leverage=pending.leverage)
+
+        # A resting entry and its target can both lie inside one OHLC bar, but
+        # the bar cannot prove the target happened after the entry. Never grant
+        # that ambiguous profit. A stop remains conservative and is applied.
+        opened = self._positions.get(symbol)
+        if opened is not None and not order.reduce_only:
+            trigger, reason = self._touched(
+                opened, candle, allow_target=marketable_at_open
+            )
+            if trigger is not None:
+                exit_side = "SELL" if opened.side == "LONG" else "BUY"
+                fill = self._slipped(trigger, exit_side)
+                fee = fill * opened.quantity * self.config.fee_rate
+                self.cash -= fee
+                self._book(
+                    symbol, opened, opened.quantity, fill, candle.timestamp, fee, reason
+                )
 
     @staticmethod
-    def _touched(position: _Position, candle: Candle) -> tuple[Decimal | None, str]:
+    def _touched(
+        position: _Position, candle: Candle, *, allow_target: bool = True
+    ) -> tuple[Decimal | None, str]:
         stop, target = position.stop_loss, position.take_profit
         if position.side == "LONG":
             stopped = candle.low <= stop
@@ -291,7 +369,7 @@ class SimulatedExchange:
         # a winner and inflate every number downstream of it.
         if stopped:
             return stop, "stop_loss"
-        if took:
+        if took and allow_target:
             return target, "take_profit"
         return None, ""
 
@@ -306,6 +384,7 @@ class SimulatedExchange:
             fee = fill * position.quantity * self.config.fee_rate
             self.cash -= fee
             self._book(symbol, position, position.quantity, fill, when, fee, "run_end")
+        self._pending.clear()
 
 
 def summarize(

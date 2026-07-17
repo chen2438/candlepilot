@@ -398,12 +398,13 @@ export interface BacktestDecision {
   decided_at: string;
   symbol: string;
   cadence: string;
-  outcome: "traded" | "rejected" | "hold" | "no_snapshot" | "call_failed";
+  outcome: "traded" | "pending" | "rejected" | "hold" | "no_snapshot" | "call_failed";
   action: string | null;
   confidence: number | null;
   rationale: string | null;
   detail: string | null;
   fill: null | {
+    status: "NEW" | "FILLED";
     price: string;
     quantity: string;
     side: string;

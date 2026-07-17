@@ -1948,6 +1948,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
 // apart, so they say what happened rather than grading it.
 const BACKTEST_OUTCOME: Record<BacktestDecision["outcome"], string> = {
   traded: "已成交",
+  pending: "限价挂单",
   rejected: "风控否决",
   hold: "持有",
   no_snapshot: "无快照",
@@ -1958,6 +1959,7 @@ const BACKTEST_OUTCOME: Record<BacktestDecision["outcome"], string> = {
 // exactly these three things on the overview tab.
 const DECISION_OUTCOME_CLASS: Record<BacktestDecision["outcome"], string> = {
   traded: "approved",
+  pending: "analysis_only",
   rejected: "rejected",
   hold: "analysis_only",
   no_snapshot: "analysis_only",
