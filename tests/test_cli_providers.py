@@ -501,3 +501,62 @@ def test_cancel_terminates_active_cli_process(tmp_path: Path) -> None:
     assert cancelled
     assert task_cancelled
     assert duration < 3
+
+
+@pytest.mark.parametrize("provider_type", [CodexAuthProvider, ClaudeCodeAuthProvider])
+def test_cli_cancel_targets_the_running_call_not_a_serialized_waiter(
+    monkeypatch, provider_type
+) -> None:
+    async def scenario():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+        intent = {
+            "symbol": "BTCUSDT",
+            "cadence": "5m",
+            "action": "HOLD",
+            "confidence": 0,
+            "leverage": 1,
+            "risk_fraction": "0",
+            "order_type": "MARKET",
+            "entry_price": None,
+            "stop_loss": None,
+            "take_profit": None,
+            "ttl_seconds": 60,
+            "rationale": "no edge",
+        }
+
+        async def fake_process(argv, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                started.set()
+                await release.wait()
+            if "exec" in argv:
+                output = json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "agent_message", "text": json.dumps(intent)},
+                    }
+                )
+            else:
+                output = json.dumps({"result": json.dumps(intent), "usage": {}})
+            return output, ""
+
+        monkeypatch.setattr(cli_module, "_run_process", fake_process)
+        provider = provider_type(executable=Path("/fake-provider"))
+        running = asyncio.create_task(provider.generate_trade_intent(_market(), _portfolio()))
+        await started.wait()
+        queued = asyncio.create_task(provider.generate_trade_intent(_market(), _portfolio()))
+        await asyncio.sleep(0)
+
+        cancelled = await provider.cancel()
+        release.set()
+        queued_result = await queued
+        return cancelled, running.cancelled(), queued_result.intent.action, calls
+
+    cancelled, running_cancelled, queued_action, calls = asyncio.run(scenario())
+    assert cancelled is True
+    assert running_cancelled is True
+    assert queued_action == TradeAction.HOLD
+    assert calls == 2

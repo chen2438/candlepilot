@@ -261,6 +261,51 @@ def test_custom_provider_http_errors_do_not_expose_key_or_url() -> None:
     assert caught.value.input_payload["market"]["symbol"] == "BTCUSDT"
 
 
+def test_cancel_targets_the_running_request_not_a_serialized_waiter() -> None:
+    async def scenario():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                started.set()
+                await release.wait()
+            return httpx.Response(
+                200,
+                json={
+                    "status": "completed",
+                    "output_text": json.dumps(_intent()),
+                    "usage": {},
+                },
+            )
+
+        provider = OpenAICompatibleProvider(
+            base_url="https://llm.example/v1",
+            api_key=SecretStr("secret"),
+            model="vendor-model",
+            wire_api="responses",
+            transport=httpx.MockTransport(handler),
+        )
+        running = asyncio.create_task(provider.generate_trade_intent(_market(), _portfolio()))
+        await started.wait()
+        queued = asyncio.create_task(provider.generate_trade_intent(_market(), _portfolio()))
+        await asyncio.sleep(0)
+
+        cancelled = await provider.cancel()
+        release.set()
+        queued_result = await queued
+        return cancelled, running.cancelled(), queued_result.intent.action, calls
+
+    cancelled, running_cancelled, queued_action, calls = asyncio.run(scenario())
+    assert cancelled is True
+    assert running_cancelled is True
+    assert queued_action == TradeAction.HOLD
+    assert calls == 2
+
+
 def test_parse_chat_completion_rejects_missing_content() -> None:
     with pytest.raises(ProviderError, match="no assistant message"):
         parse_chat_completion({"choices": []})

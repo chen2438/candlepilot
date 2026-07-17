@@ -508,13 +508,12 @@ class CodexAuthProvider(LLMProvider):
             snapshot.model_dump(mode="json"),
             schema_version=MARKET_SNAPSHOT_SCHEMA_VERSION,
         )
-        self._active_task = asyncio.current_task()
         try:
-            try:
-                async with self._semaphore:
-                    with tempfile.TemporaryDirectory(
-                        prefix="candlepilot-codex-"
-                    ) as directory:
+            async with self._semaphore:
+                active = asyncio.current_task()
+                self._active_task = active
+                try:
+                    with tempfile.TemporaryDirectory(prefix="candlepilot-codex-") as directory:
                         root = Path(directory)
                         schema_path = root / "trade-intent.schema.json"
                         schema_path.write_text(
@@ -543,21 +542,22 @@ class CodexAuthProvider(LLMProvider):
                             stdin=prompt,
                             timeout=self.timeout,
                         )
-            except ProviderError as exc:
-                raise ProviderInvocationError(
-                    str(exc),
-                    model=model,
-                    duration=timedelta(seconds=time.monotonic() - started),
-                    raw_output="",
-                    usage={},
-                    prompt_version=DECISION_PROMPT_VERSION,
-                    data_version=data_version,
-                    provider_version=self._provider_version,
-                    input_payload=input_payload,
-                    prompt=prompt,
-                ) from exc
-        finally:
-            self._active_task = None
+                finally:
+                    if self._active_task is active:
+                        self._active_task = None
+        except ProviderError as exc:
+            raise ProviderInvocationError(
+                str(exc),
+                model=model,
+                duration=timedelta(seconds=time.monotonic() - started),
+                raw_output="",
+                usage={},
+                prompt_version=DECISION_PROMPT_VERSION,
+                data_version=data_version,
+                provider_version=self._provider_version,
+                input_payload=input_payload,
+                prompt=prompt,
+            ) from exc
         result_text, usage = parse_codex_events(stdout)
         if result_text is None:
             raise ProviderInvocationError(
@@ -683,13 +683,12 @@ class ClaudeCodeAuthProvider(LLMProvider):
             snapshot.model_dump(mode="json"),
             schema_version=MARKET_SNAPSHOT_SCHEMA_VERSION,
         )
-        self._active_task = asyncio.current_task()
         try:
-            try:
-                async with self._semaphore:
-                    with tempfile.TemporaryDirectory(
-                        prefix="candlepilot-claude-"
-                    ) as directory:
+            async with self._semaphore:
+                active = asyncio.current_task()
+                self._active_task = active
+                try:
+                    with tempfile.TemporaryDirectory(prefix="candlepilot-claude-") as directory:
                         # Not plan mode: plan mode makes Claude call ExitPlanMode (or
                         # explain the plan workflow) instead of answering, which burns
                         # the single turn and yields error_max_turns. A small turn
@@ -721,21 +720,22 @@ class ClaudeCodeAuthProvider(LLMProvider):
                             cwd=Path(directory),
                             timeout=self.timeout,
                         )
-            except ProviderError as exc:
-                raise ProviderInvocationError(
-                    str(exc),
-                    model=self.model,
-                    duration=timedelta(seconds=time.monotonic() - started),
-                    raw_output="",
-                    usage={},
-                    prompt_version=DECISION_PROMPT_VERSION,
-                    data_version=data_version,
-                    provider_version=self._provider_version,
-                    input_payload=input_payload,
-                    prompt=prompt,
-                ) from exc
-        finally:
-            self._active_task = None
+                finally:
+                    if self._active_task is active:
+                        self._active_task = None
+        except ProviderError as exc:
+            raise ProviderInvocationError(
+                str(exc),
+                model=self.model,
+                duration=timedelta(seconds=time.monotonic() - started),
+                raw_output="",
+                usage={},
+                prompt_version=DECISION_PROMPT_VERSION,
+                data_version=data_version,
+                provider_version=self._provider_version,
+                input_payload=input_payload,
+                prompt=prompt,
+            ) from exc
         model = self.model
         usage: dict[str, Any] = {}
         try:

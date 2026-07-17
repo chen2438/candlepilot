@@ -296,27 +296,30 @@ class OpenAICompatibleProvider(LLMProvider):
             assert self.api_key is not None
             headers["Authorization"] = f"Bearer {self.api_key.get_secret_value()}"
 
-        self._active_task = asyncio.current_task()
         try:
             async with self._semaphore:
-                async with httpx.AsyncClient(
-                    timeout=self.timeout,
-                    follow_redirects=False,
-                    transport=self._transport,
-                ) as client:
-                    response = await client.post(
-                        endpoint,
-                        headers=headers,
-                        json=request,
-                    )
+                active = asyncio.current_task()
+                self._active_task = active
+                try:
+                    async with httpx.AsyncClient(
+                        timeout=self.timeout,
+                        follow_redirects=False,
+                        transport=self._transport,
+                    ) as client:
+                        response = await client.post(
+                            endpoint,
+                            headers=headers,
+                            json=request,
+                        )
+                finally:
+                    if self._active_task is active:
+                        self._active_task = None
         except httpx.TimeoutException as exc:
             raise invocation_error(
                 f"OpenAI-compatible endpoint timed out after {self.timeout:g}s"
             ) from exc
         except httpx.HTTPError as exc:
             raise invocation_error("OpenAI-compatible endpoint could not be reached") from exc
-        finally:
-            self._active_task = None
 
         if response.is_redirect:
             raise invocation_error("OpenAI-compatible endpoint redirects are not allowed")
