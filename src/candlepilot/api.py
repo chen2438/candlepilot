@@ -38,14 +38,12 @@ from candlepilot.backtest.runner import (
     MAX_BACKTEST_MODELS,
     MAX_BACKTEST_SYMBOLS,
     MAX_ESTIMATED_HOURS,
-    MAX_FAILURE_RATE,
     BacktestDecision,
     BacktestRunner,
     BacktestSpec,
     ModelRun,
     compare,
     estimate,
-    unreliable_models,
     validate,
 )
 from candlepilot.backtest.snapshots import (
@@ -1751,22 +1749,23 @@ def create_app(
                     provider_for=engine.providers.get,
                     on_progress=flush,
                 )
-            # A run that lost decisions did not measure the window it claims to,
-            # so it must not be filed next to one that did.
-            degraded = unreliable_models(runs)
-            if degraded:
+            unavailable = [run for run in runs if run.provider_failed]
+            if unavailable:
+                effective_end = min(
+                    run.last_successful_at or spec.start for run in unavailable
+                )
                 await engine.audit.finish_backtest_run(
                     run_id,
-                    status="unreliable",
+                    status="failed",
                     error="; ".join(
-                        f"{run.provider} lost {run.calls_failed} of "
-                        f"{run.decisions_done} decisions "
-                        f"({run.failure_rate:.0%}, limit {MAX_FAILURE_RATE:.0%})"
-                        for run in degraded
+                        f"{run.provider} became unavailable after "
+                        f"{DECISION_PROVIDER_MAX_ATTEMPTS} attempts"
+                        for run in unavailable
                     )[:500],
+                    effective_end=effective_end,
                 )
-            else:
-                await engine.audit.finish_backtest_run(run_id, status="completed")
+                return
+            await engine.audit.finish_backtest_run(run_id, status="completed")
         except asyncio.CancelledError:
             await engine.audit.finish_backtest_run(run_id, status="cancelled")
             raise

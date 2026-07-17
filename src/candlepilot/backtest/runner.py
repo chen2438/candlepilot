@@ -9,7 +9,8 @@ estimate before running, run in the background, and report progress.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Sequence
+import copy
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -43,19 +44,6 @@ MAX_BACKTEST_DAYS = 3
 #: cap would be far too loose for one and needlessly tight for the other. This
 #: is measured against the install's own latency.
 MAX_ESTIMATED_HOURS = 8.0
-
-#: The share of a model's decisions that may fail before its numbers stop
-#: meaning anything.
-#:
-#: A failed call is not a HOLD, it is a decision that never happened: the model
-#: never saw that bar, so the run scored a strategy that sat out an arbitrary
-#: slice of the window. One in ten is already generous -- a run that loses more
-#: than that is not comparable against a model that lost none, which is the
-#: whole point of running them side by side. Reporting it as `completed` next to
-#: a clean run is the failure worth preventing, so a run above this is marked
-#: unreliable instead.
-MAX_FAILURE_RATE = 0.10
-
 
 @dataclass(frozen=True, slots=True)
 class BacktestSpec:
@@ -148,6 +136,8 @@ class ModelRun:
     duration_ms_total: float = 0.0
     result: BacktestResult | None = None
     error: str | None = None
+    provider_failed: bool = False
+    last_successful_at: datetime | None = None
 
     @property
     def equivalent_cost_usd(self) -> float | None:
@@ -201,19 +191,6 @@ class ModelRun:
             return 0.0
         return self.decisions_done / self.decisions_total
 
-    @property
-    def failure_rate(self) -> float:
-        if not self.decisions_done:
-            return 0.0
-        return self.calls_failed / self.decisions_done
-
-    @property
-    def reliable(self) -> bool:
-        """Whether this model's numbers describe the window it was given."""
-
-        return self.failure_rate <= MAX_FAILURE_RATE
-
-
 @dataclass
 class BacktestDecision:
     """What one model did at one instant, and what came of it.
@@ -246,16 +223,6 @@ class BacktestDecision:
             "detail": self.detail,
             "fill": self.fill,
         }
-
-
-def unreliable_models(runs: Sequence[ModelRun]) -> list[ModelRun]:
-    """Models that lost too many decisions for their result to stand.
-
-    Any one of them poisons the comparison, not just its own row: the whole
-    point is ranking models against each other over one window.
-    """
-
-    return [run for run in runs if run.result is not None and not run.reliable]
 
 
 def decision_times(spec: BacktestSpec, cadence: str) -> list[datetime]:
@@ -368,6 +335,8 @@ class BacktestRunner:
         )
         settled_through: dict[str, datetime] = {}
         settled_decision_key: tuple[datetime, str] | None = None
+        last_success_exchange = copy.deepcopy(exchange)
+        previous_call_succeeded = False
         progress.decisions_total = len(schedule)
         # Publish the total before the first call: until it lands, progress has
         # no denominator and every reader has to show 0%.
@@ -379,6 +348,11 @@ class BacktestRunner:
                 await on_progress(progress, decision)
 
         for when, symbol, cadence in schedule:
+            if previous_call_succeeded:
+                # Capture the fully processed result of the preceding successful
+                # call before this decision can settle any later market data.
+                last_success_exchange = copy.deepcopy(exchange)
+                previous_call_succeeded = False
             # Kline timestamps are opens. Settle only bars whose close is at or
             # before this decision, and only once even when several cadences
             # produce decisions for the same symbol at the same instant.
@@ -414,13 +388,16 @@ class BacktestRunner:
                 assert last_error is not None
                 entry.outcome = "call_failed"
                 entry.detail = (
-                    f"failed after {DECISION_PROVIDER_MAX_ATTEMPTS} attempts: {last_error}"
+                    "provider unavailable after "
+                    f"{DECISION_PROVIDER_MAX_ATTEMPTS} attempts: {last_error}"
                 )[:200]
                 progress.calls_failed += 1
                 progress.decisions_done += 1
                 progress.error = entry.detail
+                progress.provider_failed = True
+                exchange = last_success_exchange
                 await report(entry)
-                continue
+                break
 
             cost_usd = self._cost_for_result(result) if self._cost_for_result else None
             progress.record_usage(
@@ -428,6 +405,8 @@ class BacktestRunner:
             )
 
             progress.decisions_done += 1
+            progress.last_successful_at = when
+            previous_call_succeeded = True
             intent = result.intent
             entry.action = intent.action.value
             entry.confidence = intent.confidence
@@ -484,12 +463,16 @@ class BacktestRunner:
             curve.append(EquityPoint(when, exchange.equity(self._marks(when))))
             await report(entry)
 
-        for symbol in self._spec.symbols:
-            self._settle_until(exchange, symbol, self._spec.end, settled_through)
+        effective_end = self._spec.end
+        if progress.provider_failed:
+            effective_end = progress.last_successful_at or self._spec.start
+        if not progress.provider_failed:
+            for symbol in self._spec.symbols:
+                self._settle_until(exchange, symbol, effective_end, settled_through)
         cancelled_pending_orders = exchange.close_all(
-            self._marks(self._spec.end), self._spec.end
+            self._marks(effective_end), effective_end
         )
-        curve.append(EquityPoint(self._spec.end, exchange.equity({})))
+        curve.append(EquityPoint(effective_end, exchange.equity({})))
         return summarize(
             self._spec.config,
             exchange.trades,
@@ -531,5 +514,25 @@ async def compare(
         if on_progress is not None:
             await on_progress(run, None)
 
-    await asyncio.gather(*(one(run) for run in runs))
+    tasks = {asyncio.create_task(one(run)): run for run in runs}
+    pending = set(tasks)
+    try:
+        while pending:
+            done, pending = await asyncio.wait(
+                pending, return_when=asyncio.FIRST_COMPLETED
+            )
+            failed = [tasks[task] for task in done if tasks[task].provider_failed]
+            if not failed:
+                continue
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            break
+    finally:
+        unfinished = [task for task in tasks if not task.done()]
+        for task in unfinished:
+            task.cancel()
+        if unfinished:
+            await asyncio.gather(*unfinished, return_exceptions=True)
     return runs

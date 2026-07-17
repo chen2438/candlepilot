@@ -6,7 +6,6 @@ import pytest
 
 from candlepilot.backtest.engine import BacktestConfig, Candle
 from candlepilot.backtest.runner import (
-    MAX_FAILURE_RATE,
     BacktestDecision,
     BacktestSpec,
     BacktestRunner,
@@ -14,7 +13,6 @@ from candlepilot.backtest.runner import (
     compare,
     decision_times,
     estimate,
-    unreliable_models,
     validate,
 )
 from candlepilot.backtest.snapshots import INTERVAL_MILLISECONDS
@@ -396,13 +394,26 @@ def test_models_are_compared_over_the_identical_window() -> None:
     assert seen_a == seen_b
 
 
-def test_one_model_failing_still_reports_the_others() -> None:
+def test_one_provider_failing_stops_the_comparison() -> None:
+    class Slow(_Provider):
+        def __init__(self) -> None:
+            super().__init__("model-a")
+            self.cancelled = False
+
+        async def generate_trade_intent(self, snapshot, portfolio):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
     class Broken(_Provider):
         async def generate_trade_intent(self, snapshot, portfolio):
             raise RuntimeError("model is down")
 
     spec = _spec(providers=("model-a", "broken"))
-    providers = {"model-a": _Provider("model-a"), "broken": Broken("broken")}
+    slow = Slow()
+    providers = {"model-a": slow, "broken": Broken("broken")}
 
     runs = asyncio.run(
         compare(
@@ -412,13 +423,14 @@ def test_one_model_failing_still_reports_the_others() -> None:
         )
     )
 
-    good = next(run for run in runs if run.provider == "model-a")
     bad = next(run for run in runs if run.provider == "broken")
-    assert good.result is not None
-    # Every call failed, so the run completes with nothing traded rather than
-    # taking the comparison down with it.
+    assert slow.cancelled
     assert bad.result is not None and bad.result.trade_count == 0
-    assert bad.calls_failed == 24
+    assert bad.calls_failed == 1
+    assert bad.decisions_done == 1
+    assert bad.provider_failed
+    assert bad.last_successful_at is None
+    assert bad.result.equity_curve[-1].timestamp == spec.start
 
 
 def test_progress_is_reported_while_the_run_is_still_running() -> None:
@@ -497,53 +509,6 @@ def test_compare_reports_each_model_while_it_works() -> None:
     assert all(run.result is not None for run in runs)
 
 
-def test_a_run_that_lost_too_many_decisions_is_not_reliable() -> None:
-    """A failed call is not a HOLD -- it is a bar the model never saw.
-
-    Reporting such a run as completed, next to a model that lost none, invites
-    comparing two different windows as though they were one.
-    """
-
-    clean = ModelRun("model-a", decisions_done=100, calls_failed=0)
-    edge = ModelRun("model-b", decisions_done=100, calls_failed=10)
-    degraded = ModelRun("model-c", decisions_done=100, calls_failed=11)
-
-    assert clean.reliable
-    # Exactly at the limit still counts, so the constant reads as "at most".
-    assert edge.failure_rate == MAX_FAILURE_RATE
-    assert edge.reliable
-    assert not degraded.reliable
-
-
-def test_only_models_that_produced_a_result_are_judged() -> None:
-    """A model that raised has an error already; it is not 'unreliable' too."""
-
-    crashed = ModelRun("model-a", decisions_done=10, calls_failed=10, error="died")
-    assert unreliable_models([crashed]) == []
-
-
-def test_one_degraded_model_poisons_the_comparison() -> None:
-    spec = _spec(providers=("model-a", "model-b"))
-
-    class Broken(_Provider):
-        async def generate_trade_intent(self, snapshot, portfolio):
-            raise RuntimeError("timed out")
-
-    providers = {"model-a": _Provider("model-a"), "model-b": Broken("model-b")}
-    runs = asyncio.run(
-        compare(
-            spec=spec,
-            runner_for=lambda _: _runner(spec),
-            provider_for=lambda name: providers[name],
-        )
-    )
-
-    degraded = unreliable_models(runs)
-    assert [run.provider for run in degraded] == ["model-b"]
-    # The clean model still reports: the run is flagged, not discarded.
-    assert next(run for run in runs if run.provider == "model-a").result is not None
-
-
 def test_a_decision_records_why_nothing_traded() -> None:
     """Zero trades has three different causes and the totals show one number.
 
@@ -569,10 +534,11 @@ def test_a_decision_records_why_nothing_traded() -> None:
             return await super().generate_trade_intent(snapshot, portfolio)
 
     run = ModelRun("model-a")
-    asyncio.run(_runner(spec).run(Flaky("model-a"), run, on_progress=record))
+    result = asyncio.run(_runner(spec).run(Flaky("model-a"), run, on_progress=record))
 
-    # One record per decision, no matter how the decision ended.
-    assert len(seen) == run.decisions_total
+    assert len(seen) == 1
+    assert run.decisions_done == 1
+    assert run.provider_failed
     assert seen[0].outcome == "call_failed"
     assert "3 attempts" in seen[0].detail
     assert "timed out" in seen[0].detail
@@ -583,6 +549,7 @@ def test_a_decision_records_why_nothing_traded() -> None:
     }
     # Every decision is anchored in time and instrument.
     assert all(item.symbol == "BTCUSDT" and item.cadence == "5m" for item in seen)
+    assert result.equity_curve[-1].timestamp == spec.start
 
 
 def test_a_traded_decision_records_the_fill_it_got() -> None:

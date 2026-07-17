@@ -389,6 +389,7 @@ export interface BacktestRun {
     cadences: string[];
     start: string;
     end: string;
+    requested_end?: string;
     providers: string[];
     provider_configs?: Record<string, { model: string | null; reasoning_effort: string | null }>;
     use_recorded_book?: boolean;

@@ -2192,6 +2192,9 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                     <span>{run.spec.cadences.join(" ")}</span>
                     <span><b>开始</b>{formatLocalDateTime(new Date(run.spec.start))}</span>
                     <span><b>结束</b>{formatLocalDateTime(new Date(run.spec.end))}</span>
+                    {run.spec.requested_end && <span className="negative">
+                      Provider 失效提前结束 · 原计划 {formatLocalDateTime(new Date(run.spec.requested_end))}
+                    </span>}
                   </small>
                   {run.spec.use_recorded_book
                     ? <small className="run-real">真实回测 · 含订单流</small>

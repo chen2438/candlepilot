@@ -1832,14 +1832,10 @@ def test_a_running_backtest_reports_progress_over_the_api(tmp_path: Path) -> Non
     asyncio.run(database.close())
 
 
-def test_a_run_that_lost_decisions_is_not_filed_as_completed(
+def test_a_provider_failure_stops_and_truncates_the_backtest(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """5 of 12 calls timed out and the run still reported a tidy 0% return.
-
-    The console reads this status; `completed` next to a clean comparison is
-    what makes a number nobody should trust look like one they can.
-    """
+    """Three failed attempts stop at the last decision the Provider completed."""
 
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'bt-unreliable.db'}")
     market = BacktestMarket()
@@ -1852,7 +1848,7 @@ def test_a_run_that_lost_decisions_is_not_filed_as_completed(
 
         async def generate_trade_intent(self, snapshot, portfolio):
             Timeouts.calls += 1
-            if (Timeouts.calls - 1) % 4 < 3:
+            if Timeouts.calls in {2, 3, 4}:
                 raise RuntimeError("endpoint timed out after 45s")
             return await super().generate_trade_intent(snapshot, portfolio)
 
@@ -1863,21 +1859,29 @@ def test_a_run_that_lost_decisions_is_not_filed_as_completed(
         market=market,  # type: ignore[arg-type]
     )
     app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    window = _window(1)
 
     with TestClient(app) as client:
         assert (
             client.post(
                 "/api/backtests",
-                json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
+                json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **window},
             ).status_code
             == 202
         )
         run = _await_run(client)
 
-    assert run["status"] == "unreliable"
-    assert "lost 6 of 12 decisions" in run["error"]
-    # The result is still reported -- flagged, not hidden.
+    assert run["status"] == "failed"
+    assert "became unavailable after 3 attempts" in run["error"]
+    assert run["spec"]["requested_end"] == window["end"]
+    expected_end = datetime.fromisoformat(window["start"]) + timedelta(minutes=5)
+    assert datetime.fromisoformat(run["spec"]["end"]) == expected_end
     assert run["models"][0]["result"] is not None
+    assert run["models"][0]["decisions_done"] == 2
+    assert run["models"][0]["calls_failed"] == 1
+    assert datetime.fromisoformat(
+        run["models"][0]["result"]["equity_curve"][-1]["timestamp"]
+    ) == expected_end
     asyncio.run(database.close())
 
 

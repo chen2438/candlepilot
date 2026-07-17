@@ -1147,7 +1147,12 @@ class AuditRepository:
                 row.error = error
 
     async def finish_backtest_run(
-        self, run_id: int, *, status: str, error: str | None = None
+        self,
+        run_id: int,
+        *,
+        status: str,
+        error: str | None = None,
+        effective_end: datetime | None = None,
     ) -> None:
         async with self.sessions.begin() as session:
             run = await session.get(BacktestRunRow, run_id)
@@ -1155,6 +1160,11 @@ class AuditRepository:
                 return
             run.status = status
             run.error = error
+            if effective_end is not None:
+                spec = json.loads(run.spec_json)
+                spec.setdefault("requested_end", spec["end"])
+                spec["end"] = effective_end.isoformat()
+                run.spec_json = json.dumps(spec, separators=(",", ":"))
             run.ended_at = datetime.now(UTC)
 
     async def backtest_run(self, run_id: int) -> dict[str, Any] | None:
