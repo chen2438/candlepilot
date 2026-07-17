@@ -205,15 +205,15 @@ def test_market_snapshot_includes_microstructure() -> None:
             transport=httpx.MockTransport(handler), base_url="https://example.test"
         )
         adapter = BinancePublicClient(client=client)
-        snapshot = await adapter.market_snapshot("BTCUSDT", "30m")
+        snapshot = await adapter.market_snapshot("BTCUSDT", "4h")
         await client.aclose()
         return snapshot
 
     snapshot = asyncio.run(scenario())
-    assert snapshot.cadence == "30m"
+    assert snapshot.cadence == "4h"
     # 1m is not fetched: no setup rule reads it, so paying a klines request per
     # symbol per cycle for it bought only payload noise. 1d is, for its levels.
-    assert requested_intervals == ["5m", "15m", "30m", "1d"]
+    assert requested_intervals == ["5m", "15m", "30m", "1h", "4h", "1d"]
     assert snapshot.features["basis_bps"] == 50.0
     assert snapshot.features["book_imbalance"] == 0.5
     # Every per-interval reading is prefixed exactly once. An unprefixed copy
@@ -230,6 +230,7 @@ def test_market_snapshot_includes_microstructure() -> None:
     assert snapshot.features["recent_trade_imbalance"] == 1.0
     assert snapshot.features["open_interest"] == 42.0
     assert snapshot.features["5m_ema_spread"] == snapshot.features["30m_ema_spread"]
+    assert snapshot.features["1h_ema_spread"] == snapshot.features["4h_ema_spread"]
     assert not [name for name in snapshot.features if name.startswith("1m_")]
     # The daily bar contributes levels only -- no daily RSI, EMA or volume ratio.
     assert {name for name in snapshot.features if name.startswith("1d_")} == {

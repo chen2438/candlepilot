@@ -10,7 +10,7 @@ from candlepilot.domain.models import PortfolioState
 from candlepilot.market.binance import BinancePublicClient
 
 
-CADENCE_SECONDS = {"5m": 300, "15m": 900, "30m": 1_800}
+CADENCE_SECONDS = {"5m": 300, "15m": 900, "30m": 1_800, "1h": 3_600, "4h": 14_400}
 
 DEFAULT_CANDIDATES_PER_CYCLE = 5
 MAX_CANDIDATES_PER_CYCLE = 20
@@ -127,8 +127,8 @@ class TradingScheduler:
     async def _run_guard(self) -> None:
         """Stop the run once a limit is hit or every provider route has failed.
 
-        Polls independently of the cadence timers so a 30m cadence cannot delay a
-        duration or budget stop by half an hour.
+        Polls independently of the cadence timers so a long cadence cannot delay a
+        duration or budget stop by hours.
         """
 
         while not self._stop.is_set():

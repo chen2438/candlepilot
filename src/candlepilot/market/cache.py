@@ -83,7 +83,7 @@ class HistoricalMarketCache:
     ) -> Path:
         if not symbol.isalnum() or not symbol.endswith("USDT"):
             raise ValueError("invalid cache symbol")
-        if interval not in {"1m", "5m", "15m", "30m", "1h", "1d"}:
+        if interval not in {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}:
             raise ValueError("invalid cache interval")
         start_ms = int(start.timestamp() * 1000)
         end_ms = int(end.timestamp() * 1000)

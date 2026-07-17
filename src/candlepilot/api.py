@@ -181,7 +181,7 @@ class BacktestConfigInput(ApiModel):
 
 class BacktestRequest(ApiModel):
     symbols: list[str] = Field(min_length=1, max_length=MAX_BACKTEST_SYMBOLS)
-    cadences: list[str] = Field(default=["5m"], min_length=1, max_length=3)
+    cadences: list[str] = Field(default=["5m"], min_length=1, max_length=5)
     start: datetime
     end: datetime
     providers: list[str] = Field(min_length=1, max_length=MAX_BACKTEST_MODELS)
@@ -1238,7 +1238,7 @@ def create_app(
     @app.get("/api/market/klines")
     async def get_historical_klines(
         symbol: str,
-        cadence: Literal["1m", "5m", "15m", "30m"],
+        cadence: Literal["1m", "5m", "15m", "30m", "1h", "4h"],
         start: datetime,
         end: datetime,
         limit: int = 10_000,
@@ -1291,7 +1291,7 @@ def create_app(
     @app.get("/api/market/backtest-candles")
     async def get_backtest_candles(
         symbol: str,
-        cadence: Literal["1m", "5m", "15m", "30m"],
+        cadence: Literal["1m", "5m", "15m", "30m", "1h", "4h"],
         start: datetime,
         end: datetime,
         limit: int = 10_000,

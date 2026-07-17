@@ -52,7 +52,7 @@ class _Market:
 
 
 def test_captures_land_on_the_boundaries_every_cadence_shares() -> None:
-    """15m and 30m boundaries are 5m boundaries, so one sampling covers all."""
+    """Every decision boundary from 15m through 4h is also a 5m boundary."""
 
     assert CAPTURE_INTERVAL_SECONDS == 300
     assert next_boundary(datetime(2026, 6, 1, 12, 3, 20, tzinfo=UTC)) == datetime(

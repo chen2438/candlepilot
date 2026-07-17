@@ -177,6 +177,8 @@ function BacktestResultDetail({ result }: { result: BacktestResult | null }) {
   );
 }
 
+const DECISION_CADENCES = ["5m", "15m", "30m", "1h", "4h"];
+
 const emptyStatus: EngineStatus = {
   running: false,
   emergency_locked: false,
@@ -186,11 +188,11 @@ const emptyStatus: EngineStatus = {
   provider_chain: [],
   active_provider: null,
   provider_routes: [],
-  active_cadences: ["5m", "15m", "30m"],
+  active_cadences: DECISION_CADENCES,
   run_limits: { max_run_seconds: null, max_run_cost_usd: null },
   auto_stop_reason: null,
   route_exhausted_since: null,
-  supported_cadences: ["5m", "15m", "30m"],
+  supported_cadences: DECISION_CADENCES,
   candidates_per_cycle: 5,
   max_candidates_per_cycle: 20,
   candidate_count: 0,
@@ -1700,7 +1702,7 @@ const BACKTEST_VS_LIVE: Array<{ aspect: string; live: string; real: string; plai
   },
   {
     aspect: "K 线特征",
-    live: "5m/15m/30m 全套 + 日线结构位",
+    live: "5m/15m/30m/1h/4h 全套 + 日线结构位",
     real: "同一套 FeaturePipeline，同构",
     plain: "同左",
   },
@@ -1736,7 +1738,7 @@ function CollectorPanel({ status, onChange }: { status: CollectorStatus | null; 
         <strong>{status.running ? `采集中 · ${status.symbols.join(" ")}` : "未运行"}</strong>
         <small>
           币安不提供历史盘口，所以订单流只能在它发生时录下来。每 {status.interval_seconds / 60} 分钟采一次
-          （覆盖 5m/15m/30m 的全部决策时刻）。不调模型、不下单。
+          （覆盖 5m/15m/30m/1h/4h 的全部决策时刻）。不调模型、不下单。
         </small>
       </div>
       <div className="collector-actions">
@@ -2037,7 +2039,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
         <div>
           <span className="eyebrow">周期（每多选一个，耗时增加一份）</span>
           <div className="chips">
-            {["5m", "15m", "30m"].map((cadence) => (
+            {DECISION_CADENCES.map((cadence) => (
               <button key={cadence} className={form.cadences.includes(cadence) ? "active" : ""}
                 disabled={busy !== null} onClick={() => toggle("cadences", cadence)}>{cadence}</button>
             ))}

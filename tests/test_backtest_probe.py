@@ -38,6 +38,8 @@ def _series() -> dict[str, list[Candle]]:
         "5m": _candles(5, 400),
         "15m": _candles(15, 200),
         "30m": _candles(30, 200),
+        "1h": _candles(60, 200),
+        "4h": _candles(4 * 60, 200),
         "1d": _candles(60 * 24, 40),
     }
 

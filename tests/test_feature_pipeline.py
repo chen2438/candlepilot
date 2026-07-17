@@ -99,6 +99,8 @@ def test_multitimeframe_features_are_namespaced() -> None:
     assert features["15m_ema_spread"] == features["5m_ema_spread"]
     assert "15m_rsi_14" in features
     assert "30m_rsi_14" in features
+    assert "1h_rsi_14" in features
+    assert "4h_rsi_14" in features
     # 1m is not a decision interval: no setup rule reads it, so it is not sent.
     assert not [name for name in features if name.startswith("1m_")]
 
@@ -107,7 +109,7 @@ def test_multitimeframe_rejects_an_interval_set_the_rules_do_not_cover() -> None
     pipeline = FeaturePipeline()
     rows_by_interval = {interval: _rows() for interval in DECISION_FEATURE_INTERVALS}
 
-    with pytest.raises(ValueError, match="5m, 15m, 30m"):
+    with pytest.raises(ValueError, match="5m, 15m, 30m, 1h, 4h"):
         pipeline.multitimeframe({**rows_by_interval, "1m": _rows()})
 
 

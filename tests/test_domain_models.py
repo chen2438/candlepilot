@@ -63,7 +63,7 @@ def test_the_cadence_set_is_defined_once() -> None:
     cadence that the engine then refused at construction.
     """
 
-    assert SUPPORTED_CADENCES == ("5m", "15m", "30m")
+    assert SUPPORTED_CADENCES == ("5m", "15m", "30m", "1h", "4h")
     with pytest.raises(ValidationError):
         TradeIntent.hold("ETHUSDT", "1m", "paper mark-to-market is gone")
     for cadence in SUPPORTED_CADENCES:

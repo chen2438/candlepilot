@@ -1,7 +1,7 @@
 """Rebuild the payload the live system sends, from history alone.
 
 The old backtest handed the model 15 unprefixed single-timeframe features while
-the shared prompt named 5m/15m/30m fields, daily levels and order flow. It was
+the shared prompt named the decision feature ladder, daily levels and order flow. It was
 scoring a strategy nobody runs. This module assembles the same ladder live
 assembles -- and is explicit about the one part of it that history cannot
 supply.
@@ -27,6 +27,8 @@ INTERVAL_MILLISECONDS: dict[str, int] = {
     "5m": 300_000,
     "15m": 900_000,
     "30m": 1_800_000,
+    "1h": 3_600_000,
+    "4h": 14_400_000,
     "1d": 86_400_000,
 }
 

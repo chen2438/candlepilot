@@ -77,7 +77,14 @@ class ApiMarket:
         return None
 
     async def historical_klines(self, symbol, interval, start, end, *, max_candles=10_000):
-        step = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000}[interval]
+        step = {
+            "1m": 60_000,
+            "5m": 300_000,
+            "15m": 900_000,
+            "30m": 1_800_000,
+            "1h": 3_600_000,
+            "4h": 14_400_000,
+        }[interval]
         start_ms = int(start.timestamp() * 1000)
         return [
             [start_ms + offset * step, "100", "101", "99", "100", "10"]
@@ -90,7 +97,14 @@ class ApiMarket:
 
 class LLMReplayMarket(ApiMarket):
     async def historical_klines(self, symbol, interval, start, end, *, max_candles=10_000):
-        step = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000}[interval]
+        step = {
+            "1m": 60_000,
+            "5m": 300_000,
+            "15m": 900_000,
+            "30m": 1_800_000,
+            "1h": 3_600_000,
+            "4h": 14_400_000,
+        }[interval]
         start_ms = int(start.timestamp() * 1000)
         return [
             [
@@ -806,7 +820,9 @@ def test_settings_endpoint_reads_masked_and_writes_env(tmp_path: Path, monkeypat
         assert "CANDLEPILOT_CADENCES=\n" in env_path.read_text(encoding="utf-8")
         fields = {f["key"]: f for s in cleared.json()["sections"] for f in s["fields"]}
         assert fields["CANDLEPILOT_CADENCES"]["configured"] is False
-        assert Settings.from_mapping(read_env_file(env_path)).cadences == ("5m", "15m", "30m")
+        assert Settings.from_mapping(read_env_file(env_path)).cadences == (
+            "5m", "15m", "30m", "1h", "4h"
+        )
 
         # Invalid values are rejected before the file is touched.
         before = env_path.read_text(encoding="utf-8")
@@ -1193,12 +1209,12 @@ def test_cadence_selection_endpoint(tmp_path: Path) -> None:
     app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
     with TestClient(app) as client:
         status = client.get("/api/status").json()
-        assert status["active_cadences"] == ["5m", "15m", "30m"]
-        assert status["supported_cadences"] == ["5m", "15m", "30m"]
+        assert status["active_cadences"] == ["5m", "15m", "30m", "1h", "4h"]
+        assert status["supported_cadences"] == ["5m", "15m", "30m", "1h", "4h"]
 
-        updated = client.post("/api/cadences", json={"cadences": ["30m", "15m"]})
+        updated = client.post("/api/cadences", json={"cadences": ["4h", "1h"]})
         assert updated.status_code == 200, updated.text
-        assert updated.json()["active_cadences"] == ["15m", "30m"]  # canonical order
+        assert updated.json()["active_cadences"] == ["1h", "4h"]  # canonical order
 
         assert client.post("/api/cadences", json={"cadences": ["1m"]}).status_code == 422
         assert client.post("/api/cadences", json={"cadences": []}).status_code == 422
@@ -1342,7 +1358,14 @@ class BacktestMarket(ApiMarket):
         }
 
     async def historical_klines(self, symbol, interval, start, end, *, max_candles=10_000):
-        step = {"5m": 300_000, "15m": 900_000, "30m": 1_800_000, "1d": 86_400_000}[interval]
+        step = {
+            "5m": 300_000,
+            "15m": 900_000,
+            "30m": 1_800_000,
+            "1h": 3_600_000,
+            "4h": 14_400_000,
+            "1d": 86_400_000,
+        }[interval]
         start_ms, end_ms = int(start.timestamp() * 1000), int(end.timestamp() * 1000)
         rows = []
         price = 100.0

@@ -51,7 +51,7 @@ def _cutoff(interval: str, bars: int) -> datetime:
 def test_snapshot_carries_the_same_ladder_the_live_system_sends() -> None:
     """The old backtest sent 15 unprefixed single-timeframe features.
 
-    The prompt names 5m/15m/30m fields and daily levels, so that payload scored
+    The prompt names the complete 5m through 4h ladder and daily levels, so that payload scored
     a strategy nobody runs. A historical snapshot has to carry what live sends,
     minus only what history genuinely lacks.
     """
@@ -127,8 +127,8 @@ def test_warmup_reaches_back_far_enough_for_the_first_decision() -> None:
 
     reach = required_history_start(start, "5m")
 
-    # The 20-day daily range is the long pole, not the intraday ladder.
-    assert reach <= start - timedelta(days=20)
+    # Two hundred 4h closes need more than 33 days, longer than the daily range.
+    assert reach == start - timedelta(hours=4 * 200)
 
 
 def test_builder_refuses_a_series_missing_an_interval_the_rules_read() -> None:

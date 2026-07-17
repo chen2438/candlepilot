@@ -7,9 +7,9 @@ while it happened. That is all this does: no model calls, no orders, no
 decisions -- it samples the same endpoints ``market_snapshot`` samples and
 writes them down.
 
-Captures land on 5-minute boundaries, which is every decision time the system
-has: 15m and 30m boundaries are also 5m boundaries, so one cadence of sampling
-covers all three.
+Captures land on 5-minute boundaries, which covers every decision time the system
+has: 15m, 30m, 1h and 4h boundaries are also 5m boundaries, so one sampling
+cadence covers the full ladder.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from candlepilot.market.binance import BinancePublicClient
 from candlepilot.market.features import FeaturePipeline
 from candlepilot.provenance import MICROSTRUCTURE_SCHEMA_VERSION
 
-#: Every decision time is a multiple of this, so sampling here covers 5m/15m/30m.
+#: Every decision time is a multiple of this, so one cadence covers 5m through 4h.
 CAPTURE_INTERVAL_SECONDS = 300
 MAX_COLLECTED_SYMBOLS = 8
 

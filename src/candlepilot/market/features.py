@@ -14,7 +14,7 @@ from candlepilot.domain.models import MarketSnapshot
 #: here without a rule that reads it: an interval the rules never name is one
 #: the model has to invent a use for, and it will invent a different one each
 #: call. 1m was dropped for exactly that reason: no setup rule names it.
-DECISION_FEATURE_INTERVALS = ("5m", "15m", "30m")
+DECISION_FEATURE_INTERVALS = ("5m", "15m", "30m", "1h", "4h")
 
 #: Interval supplying daily structure levels, and only those.
 #:
@@ -199,7 +199,7 @@ class FeaturePipeline:
         self,
         *,
         symbol: str,
-        cadence: Literal["1m", "5m", "15m", "30m"],
+        cadence: Literal["1m", "5m", "15m", "30m", "1h", "4h"],
         features: dict[str, float],
         mark_price: Decimal,
         bid: Decimal,

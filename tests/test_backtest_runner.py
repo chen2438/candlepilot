@@ -124,13 +124,15 @@ def test_estimate_counts_the_calls_before_any_are_paid_for() -> None:
     assert result.estimated_seconds == pytest.approx(576 * 24.0)
 
 
-def test_estimate_adds_a_cadence_rather_than_multiplying_the_window() -> None:
+def test_estimate_adds_each_cadence_rather_than_multiplying_the_window() -> None:
     one = estimate(_spec(cadences=("5m",)), seconds_per_call=1)
-    three = estimate(_spec(cadences=("5m", "15m", "30m")), seconds_per_call=1)
+    all_cadences = estimate(
+        _spec(cadences=("5m", "15m", "30m", "1h", "4h")), seconds_per_call=1
+    )
 
-    # Two hours: 24 five-minute bars, 8 fifteens, 4 thirties.
+    # Two hours: 24 five-minute bars, 8 fifteens, 4 thirties, 2 hours, no 4h close.
     assert one.decisions_per_model == 24
-    assert three.decisions_per_model == 36
+    assert all_cadences.decisions_per_model == 38
 
 
 def test_specs_that_cannot_finish_are_refused() -> None:
@@ -150,6 +152,21 @@ def test_decisions_land_on_each_closed_bar_inside_the_window() -> None:
     assert times[0] == WINDOW_START + timedelta(minutes=5)
     assert times[-1] == WINDOW_END
     assert len(times) == 24
+
+
+def test_four_hour_backtest_decisions_use_the_complete_closed_ladder() -> None:
+    spec = _spec(
+        cadences=("4h",),
+        end=WINDOW_START + timedelta(hours=8),
+    )
+    provider = _Provider("model-a", TradeAction.HOLD)
+    run = ModelRun("model-a")
+
+    asyncio.run(_runner(spec).run(provider, run))
+
+    assert run.decisions_done == run.decisions_total == 2
+    assert [snapshot.cadence for snapshot in provider.snapshots] == ["4h", "4h"]
+    assert all("4h_ema_spread" in snapshot.features for snapshot in provider.snapshots)
 
 
 def test_the_run_uses_the_real_risk_policy_not_a_copy_of_it() -> None:

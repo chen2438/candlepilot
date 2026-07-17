@@ -40,7 +40,7 @@ def test_load_dotenv_missing_file_is_noop(tmp_path: Path) -> None:
 
 def test_cadences_default_and_env_override(monkeypatch) -> None:
     monkeypatch.delenv("CANDLEPILOT_CADENCES", raising=False)
-    assert Settings.from_env().cadences == ("5m", "15m", "30m")
+    assert Settings.from_env().cadences == ("5m", "15m", "30m", "1h", "4h")
     monkeypatch.setenv("CANDLEPILOT_CADENCES", "15m, 30m")
     assert Settings.from_env().cadences == ("15m", "30m")
 
@@ -62,8 +62,8 @@ def test_the_parser_rejects_a_cadence_the_engine_would_refuse(monkeypatch) -> No
 def test_cadences_come_back_in_canonical_order(monkeypatch) -> None:
     """Order is the engine's, not the order they happen to be typed in."""
 
-    monkeypatch.setenv("CANDLEPILOT_CADENCES", "30m,5m")
-    assert Settings.from_env().cadences == ("5m", "30m")
+    monkeypatch.setenv("CANDLEPILOT_CADENCES", "4h,30m,5m")
+    assert Settings.from_env().cadences == ("5m", "30m", "4h")
     # Blank and whitespace-only both mean "unset", not "no cadences".
     monkeypatch.setenv("CANDLEPILOT_CADENCES", "   ")
     assert Settings.from_env().cadences == SUPPORTED_CADENCES

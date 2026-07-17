@@ -151,7 +151,7 @@ class BinancePublicClient:
         return inputs
 
     async def klines(self, symbol: str, interval: str, limit: int = 200) -> list[list[Any]]:
-        if interval not in {"1m", "5m", "15m", "30m", "1h", "1d"}:
+        if interval not in {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}:
             raise ValueError("unsupported kline interval")
         if not 1 <= limit <= 1500:
             raise ValueError("kline limit must be between 1 and 1500")
@@ -168,7 +168,7 @@ class BinancePublicClient:
         *,
         max_candles: int = 10_000,
     ) -> list[list[Any]]:
-        if interval not in {"1m", "5m", "15m", "30m", "1h", "1d"}:
+        if interval not in {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}:
             raise ValueError("unsupported kline interval")
         if start.tzinfo is None or end.tzinfo is None:
             raise ValueError("historical range must be timezone-aware")
@@ -183,6 +183,7 @@ class BinancePublicClient:
             "15m": 900_000,
             "30m": 1_800_000,
             "1h": 3_600_000,
+            "4h": 14_400_000,
             "1d": 86_400_000,
         }[interval]
         cursor = int(start.timestamp() * 1000)
@@ -272,7 +273,7 @@ class BinancePublicClient:
         return await self._get("/fapi/v1/aggTrades", symbol=symbol, limit=limit)
 
     async def market_snapshot(self, symbol: str, cadence: str) -> MarketSnapshot:
-        if cadence not in {"5m", "15m", "30m"}:
+        if cadence not in set(DECISION_FEATURE_INTERVALS):
             raise ValueError("unsupported decision cadence")
         # `cadence` only labels which decision the snapshot feeds; the feature
         # ladder below is the same either way, so the two stay separate concepts

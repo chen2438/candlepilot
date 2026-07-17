@@ -15,7 +15,7 @@ RATIONALE_MAX_LENGTH = 1_000
 #: A decision cadence. Every layer -- env parsing, the engine, the API and the
 #: stored models -- validates against this one definition, so the set cannot
 #: drift between the parser that accepts a value and the code that rejects it.
-Cadence = Literal["5m", "15m", "30m"]
+Cadence = Literal["5m", "15m", "30m", "1h", "4h"]
 #: The same set as a tuple, in the canonical order cadences are reported in.
 SUPPORTED_CADENCES: tuple[str, ...] = get_args(Cadence)
 

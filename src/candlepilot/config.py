@@ -373,7 +373,7 @@ class Settings:
     daily_loss_fraction: Decimal = Decimal("0.08")
     inference_timeout_seconds: float = 45.0
     max_snapshot_age_seconds: int = 75
-    cadences: tuple[str, ...] = ("5m", "15m", "30m")
+    cadences: tuple[str, ...] = SUPPORTED_CADENCES
     candidates_per_cycle: int = 5
     max_run_seconds: int | None = None
     max_run_cost_usd: float | None = None
