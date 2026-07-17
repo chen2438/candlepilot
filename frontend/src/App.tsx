@@ -2139,7 +2139,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
         <label className="probe-timeout">
           <span>本次回测超时（秒）</span>
           <input
-            type="number" min={1} placeholder="留空=用设置里的默认值"
+            type="number" min={1} placeholder="留空=创建时固化 Provider 当前值"
             value={timeout} disabled={busy !== null}
             onChange={(event) => setTimeoutSeconds(event.target.value)}
           />
@@ -2194,8 +2194,14 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                     ? <small className="run-real">真实回测 · 含订单流</small>
                     : <small>普通回测 · 无订单流</small>}
                   {run.spec.timeout_seconds
-                    ? <small>超时 {run.spec.timeout_seconds}s</small>
-                    : null}
+                    ? <small>
+                        超时 {run.spec.timeout_seconds}s · {run.spec.timeout_source === "provider_config"
+                          ? "继承配置"
+                          : run.spec.timeout_source === "explicit"
+                            ? "本次指定"
+                            : "本次指定（旧记录）"}
+                      </small>
+                    : <small>超时未固化（旧记录）</small>}
                 </td>}
                 <td>
                   <button

@@ -1911,10 +1911,52 @@ def test_the_run_timeout_reaches_the_provider_and_is_handed_back(tmp_path: Path)
         _await_run(client)
         # Recorded on the run: a failure count means nothing if nothing says
         # which timeout produced it.
-        assert client.get("/api/backtests/1").json()["spec"]["timeout_seconds"] == 90
+        spec = client.get("/api/backtests/1").json()["spec"]
+        assert spec["timeout_seconds"] == 90
+        assert spec["timeout_source"] == "explicit"
 
     assert seen and set(seen) == {90.0}
     assert provider.timeout == 45
+    asyncio.run(database.close())
+
+
+def test_the_configured_timeout_is_frozen_on_the_run(tmp_path: Path) -> None:
+    """An inherited timeout must be visible and stable, not discovered on failure."""
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'bt-inherited-timeout.db'}")
+    market = BacktestMarket()
+    seen: list[float] = []
+
+    class Recording(ApiProvider):
+        async def generate_trade_intent(self, snapshot, portfolio):
+            seen.append(self.timeout)
+            return await super().generate_trade_intent(snapshot, portfolio)
+
+    provider = Recording()
+    provider.timeout = 60
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([provider]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        assert (
+            client.post(
+                "/api/backtests",
+                json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
+            ).status_code
+            == 202
+        )
+        _await_run(client)
+        spec = client.get("/api/backtests/1").json()["spec"]
+        assert spec["timeout_seconds"] == 60
+        assert spec["timeout_source"] == "provider_config"
+
+    assert seen and set(seen) == {60.0}
+    assert provider.timeout == 60
     asyncio.run(database.close())
 
 

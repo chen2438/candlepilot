@@ -392,6 +392,7 @@ export interface BacktestRun {
     provider_configs?: Record<string, { model: string | null; reasoning_effort: string | null }>;
     use_recorded_book?: boolean;
     timeout_seconds?: number | null;
+    timeout_source?: "explicit" | "provider_config";
     estimate: { decisions_per_model: number; total_calls: number; estimated_hours: number };
   };
   created_at: string;

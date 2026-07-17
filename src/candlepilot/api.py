@@ -9,7 +9,7 @@ import time
 from uuid import uuid4
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -189,8 +189,9 @@ class BacktestRequest(ApiModel):
     # Only possible over a window the collector covered; the coverage is
     # checked up front rather than degrading decision by decision.
     use_recorded_book: bool = False
-    # Set from a probe of these providers. None keeps the configured default,
-    # which is one number for endpoints that differ by minutes.
+    # Set from a probe of these providers. None inherits the providers'
+    # configured timeout when the run is created; that effective value is
+    # then frozen on the run for reproducibility.
     timeout_seconds: float | None = Field(default=None, gt=0, le=MAX_SUGGESTED_TIMEOUT)
 
 
@@ -1616,11 +1617,21 @@ def create_app(
             validate(spec)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        selected_providers: list[LLMProvider] = []
         for provider in spec.providers:
             try:
-                engine.providers.get(provider)
+                selected_providers.append(engine.providers.get(provider))
             except KeyError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if spec.timeout_seconds is None:
+            configured_timeouts = {provider.timeout for provider in selected_providers}
+            if len(configured_timeouts) != 1:
+                raise HTTPException(
+                    status_code=422,
+                    detail="selected providers have different configured timeouts; "
+                    "set an explicit timeout for this backtest",
+                )
+            spec = replace(spec, timeout_seconds=configured_timeouts.pop())
         return spec
 
     @app.post("/api/backtests/estimate")
@@ -1935,6 +1946,9 @@ def create_app(
                 # otherwise nothing says whether a run that lost decisions ran
                 # with the probe's number or the global default.
                 "timeout_seconds": spec.timeout_seconds,
+                "timeout_source": (
+                    "explicit" if request.timeout_seconds is not None else "provider_config"
+                ),
                 "estimate": projected.as_dict(),
             },
             list(spec.providers),
