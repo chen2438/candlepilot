@@ -9,7 +9,7 @@ estimate before running, run in the background, and report progress.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -39,6 +39,18 @@ MAX_BACKTEST_DAYS = 3
 #: is measured against the install's own latency.
 MAX_ESTIMATED_HOURS = 8.0
 
+#: The share of a model's decisions that may fail before its numbers stop
+#: meaning anything.
+#:
+#: A failed call is not a HOLD, it is a decision that never happened: the model
+#: never saw that bar, so the run scored a strategy that sat out an arbitrary
+#: slice of the window. One in ten is already generous -- a run that loses more
+#: than that is not comparable against a model that lost none, which is the
+#: whole point of running them side by side. Reporting it as `completed` next to
+#: a clean run is the failure worth preventing, so a run above this is marked
+#: unreliable instead.
+MAX_FAILURE_RATE = 0.10
+
 
 @dataclass(frozen=True, slots=True)
 class BacktestSpec:
@@ -53,6 +65,12 @@ class BacktestSpec:
     #: Only possible where the collector was running, so the window is checked
     #: for full coverage up front and refused if it has holes.
     use_recorded_book: bool = False
+    #: Seconds one decision may take, for this run only.
+    #:
+    #: The console sets it from a probe of the endpoints the run will use, since
+    #: the global default is one number for providers that differ by minutes.
+    #: None keeps whatever each provider was configured with.
+    timeout_seconds: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +140,28 @@ class ModelRun:
         if not self.decisions_total:
             return 0.0
         return self.decisions_done / self.decisions_total
+
+    @property
+    def failure_rate(self) -> float:
+        if not self.decisions_done:
+            return 0.0
+        return self.calls_failed / self.decisions_done
+
+    @property
+    def reliable(self) -> bool:
+        """Whether this model's numbers describe the window it was given."""
+
+        return self.failure_rate <= MAX_FAILURE_RATE
+
+
+def unreliable_models(runs: Sequence[ModelRun]) -> list[ModelRun]:
+    """Models that lost too many decisions for their result to stand.
+
+    Any one of them poisons the comparison, not just its own row: the whole
+    point is ranking models against each other over one window.
+    """
+
+    return [run for run in runs if run.result is not None and not run.reliable]
 
 
 def decision_times(spec: BacktestSpec, cadence: str) -> list[datetime]:

@@ -6,6 +6,7 @@ import type {
   BacktestRun,
   Candidate,
   CollectorStatus,
+  ProbeStatus,
   DecisionEvent,
   DecisionDetail,
   EngineStatus,
@@ -1537,6 +1538,8 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showDiff, setShowDiff] = useState(false);
+  const [probe, setProbe] = useState<ProbeStatus | null>(null);
+  const [timeout, setTimeoutSeconds] = useState("");
 
   const body = useCallback(() => ({
     symbols: form.symbols.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),
@@ -1545,12 +1548,13 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
     end: new Date(form.end).toISOString(),
     providers: form.providers,
     use_recorded_book: useRecordedBook,
+    ...(timeout.trim() ? { timeout_seconds: Number(timeout) } : {}),
     config: {
       initial_equity: form.initialEquity,
       fee_rate: form.feeRate,
       slippage_fraction: form.slippage,
     },
-  }), [form, useRecordedBook]);
+  }), [form, useRecordedBook, timeout]);
 
   const refreshCollector = useCallback(async () => {
     try {
@@ -1578,6 +1582,31 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
   // The estimate is stale the moment the spec changes; showing an old one
   // beside a new window is worse than showing none.
   useEffect(() => { setEstimate(null); }, [form]);
+
+  const refreshProbe = useCallback(async () => {
+    try {
+      setProbe(await api<ProbeStatus>("/api/backtests/probe"));
+    } catch { /* the probe panel is not worth an error banner */ }
+  }, []);
+
+  useEffect(() => { void refreshProbe(); }, [refreshProbe]);
+
+  // Poll only while the probe is in flight; each call is a real inference.
+  useEffect(() => {
+    if (!probe?.running) return;
+    const timer = window.setInterval(() => void refreshProbe(), 2000);
+    return () => window.clearInterval(timer);
+  }, [probe, refreshProbe]);
+
+  const startProbe = async () => {
+    setBusy("probe"); setError(null);
+    try {
+      await api("/api/backtests/probe", { method: "POST", body: JSON.stringify(body()) });
+      await refreshProbe();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally { setBusy(null); }
+  };
 
   const runEstimate = async () => {
     setBusy("estimate"); setError(null);
@@ -1701,6 +1730,57 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
         </small>
       </label>
 
+      <div className="probe">
+        <div className="probe-head">
+          <strong>试跑 {probe?.decisions ?? 3} 次决策</strong>
+          <button
+            className="compact"
+            disabled={busy !== null || !form.providers.length || engineRunning || probe?.running}
+            onClick={() => void startProbe()}
+          >{probe?.running ? "试跑中…" : "开始试跑"}</button>
+          <small>
+            用这个窗口的真实 payload 调每个模型 {probe?.decisions ?? 3} 次，量出它实际要多久。
+            试跑期间超时放宽到 {probe?.ceiling_seconds ?? 180}s——用当前超时去试只会复现超时，
+            量不出模型真正需要的时间。这几次是真实调用，会真实计费。
+          </small>
+        </div>
+        {probe?.providers.map((item) => (
+          <div className="probe-row" key={item.provider}>
+            <span className="probe-name">{providerLabel(item.provider)}</span>
+            {item.error
+              ? <span className="negative">{item.error}</span>
+              : <>
+                  <span className="probe-calls">
+                    {item.calls.map((call, index) => (
+                      <b key={index} className={call.ok ? "" : "negative"}
+                        title={call.error ?? ""}>
+                        {call.ok ? `${call.seconds}s` : "失败"}
+                      </b>
+                    ))}
+                  </span>
+                  {item.suggested_timeout_seconds !== null ? (
+                    <button
+                      className="text-button"
+                      onClick={() => setTimeoutSeconds(String(item.suggested_timeout_seconds))}
+                    >建议 {item.suggested_timeout_seconds}s · 点击采用</button>
+                  ) : (
+                    <span className="negative">
+                      {probe.decisions} 次全部失败——这个端点跑不动这次回测，调大超时也没用
+                    </span>
+                  )}
+                </>}
+          </div>
+        ))}
+        <label className="probe-timeout">
+          <span>本次回测超时（秒）</span>
+          <input
+            type="number" min={1} placeholder="留空=用设置里的默认值"
+            value={timeout} disabled={busy !== null}
+            onChange={(event) => setTimeoutSeconds(event.target.value)}
+          />
+        </label>
+      </div>
+
       {estimate && (
         <div className={`backtest-estimate ${estimate.within_limit ? "" : "over"}`}>
           <span>每模型 <strong>{estimate.decisions_per_model}</strong> 次决策</span>
@@ -1746,7 +1826,8 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                 <td>{model.result ? model.result.trade_count : "—"}</td>
                 {index === 0 && <td rowSpan={run.models.length}>
                   {run.status === "running" && <button className="text-button danger-text" onClick={() => void cancel(run.id)}>取消</button>}
-                  {run.error && <small className="negative" title={run.error}>失败</small>}
+                  {run.status === "unreliable" && <small className="negative" title={run.error ?? ""}>丢了太多决策</small>}
+                  {run.status === "failed" && run.error && <small className="negative" title={run.error}>失败</small>}
                 </td>}
               </tr>
             )))}
@@ -1761,6 +1842,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
 const RUN_STATUS: Record<BacktestRun["status"], string> = {
   running: "进行中",
   completed: "已完成",
+  unreliable: "不可信",
   failed: "失败",
   cancelled: "已取消",
 };

@@ -1186,6 +1186,17 @@ def _backtest_app(tmp_path: Path, name: str):
     return database, engine, app
 
 
+def _await_run(client: TestClient, run_id: int = 1) -> dict[str, object]:
+    """Poll until the background run leaves `running`, rather than sleeping."""
+
+    for _ in range(400):
+        body = client.get(f"/api/backtests/{run_id}").json()
+        if body["status"] != "running":
+            return body
+        time.sleep(0.02)
+    raise AssertionError(f"run {run_id} never finished")
+
+
 def _window(hours: int = 1) -> dict[str, str]:
     end = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
     return {
@@ -1484,4 +1495,164 @@ def test_a_running_backtest_reports_progress_over_the_api(tmp_path: Path) -> Non
     # A denominator, and a numerator that is neither 0 nor already finished.
     assert mid["decisions_total"] == 12
     assert 0 < mid["progress"] < 1
+    asyncio.run(database.close())
+
+
+def test_a_run_that_lost_decisions_is_not_filed_as_completed(tmp_path: Path) -> None:
+    """5 of 12 calls timed out and the run still reported a tidy 0% return.
+
+    The console reads this status; `completed` next to a clean comparison is
+    what makes a number nobody should trust look like one they can.
+    """
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'bt-unreliable.db'}")
+    market = BacktestMarket()
+
+    class Timeouts(ApiProvider):
+        calls = 0
+
+        async def generate_trade_intent(self, snapshot, portfolio):
+            Timeouts.calls += 1
+            if Timeouts.calls % 2 == 0:
+                raise RuntimeError("endpoint timed out after 45s")
+            return await super().generate_trade_intent(snapshot, portfolio)
+
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([Timeouts()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        assert (
+            client.post(
+                "/api/backtests",
+                json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
+            ).status_code
+            == 202
+        )
+        run = _await_run(client)
+
+    assert run["status"] == "unreliable"
+    assert "lost 6 of 12 decisions" in run["error"]
+    # The result is still reported -- flagged, not hidden.
+    assert run["models"][0]["result"] is not None
+    asyncio.run(database.close())
+
+
+def test_a_clean_run_is_still_completed(tmp_path: Path) -> None:
+    """The flag must not fire on the runs it is meant to leave alone."""
+
+    database, _engine, app = _backtest_app(tmp_path, "bt-clean.db")
+
+    with TestClient(app) as client:
+        assert (
+            client.post(
+                "/api/backtests",
+                json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
+            ).status_code
+            == 202
+        )
+        run = _await_run(client)
+
+    assert run["status"] == "completed"
+    assert run["error"] is None
+    asyncio.run(database.close())
+
+
+def test_the_run_timeout_reaches_the_provider_and_is_handed_back(tmp_path: Path) -> None:
+    """The registry's providers are shared with the live engine.
+
+    An override that leaked would silently re-time every later live inference.
+    """
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'bt-timeout.db'}")
+    market = BacktestMarket()
+    seen: list[float] = []
+
+    class Recording(ApiProvider):
+        async def generate_trade_intent(self, snapshot, portfolio):
+            seen.append(self.timeout)
+            return await super().generate_trade_intent(snapshot, portfolio)
+
+    provider = Recording()
+    provider.timeout = 45
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([provider]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        assert (
+            client.post(
+                "/api/backtests",
+                json={
+                    "symbols": ["BTCUSDT"],
+                    "providers": ["api-fixture"],
+                    "timeout_seconds": 90,
+                    **_window(1),
+                },
+            ).status_code
+            == 202
+        )
+        _await_run(client)
+        # Recorded on the run: a failure count means nothing if nothing says
+        # which timeout produced it.
+        assert client.get("/api/backtests/1").json()["spec"]["timeout_seconds"] == 90
+
+    assert seen and set(seen) == {90.0}
+    assert provider.timeout == 45
+    asyncio.run(database.close())
+
+
+def test_the_probe_times_real_calls_and_suggests_a_timeout(tmp_path: Path) -> None:
+    """Guessing the timeout cost a run 5 of its 12 decisions.
+
+    The probe is the only way to learn what the endpoint actually needs, so it
+    has to reach the endpoint and report what it saw.
+    """
+
+    database, _engine, app = _backtest_app(tmp_path, "bt-probe.db")
+
+    with TestClient(app) as client:
+        started = client.post(
+            "/api/backtests/probe",
+            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
+        )
+        assert started.status_code == 202
+        assert started.json()["decisions"] == 3
+
+        for _ in range(200):
+            body = client.get("/api/backtests/probe").json()
+            if not body["running"] and body["providers"]:
+                break
+            time.sleep(0.02)
+
+    assert body["running"] is False
+    probe = body["providers"][0]
+    assert probe["provider"] == "api-fixture"
+    assert len(probe["calls"]) == 3
+    assert all(call["ok"] for call in probe["calls"])
+    assert probe["failures"] == 0
+    assert probe["suggested_timeout_seconds"] is not None
+    asyncio.run(database.close())
+
+
+def test_probing_is_refused_while_the_engine_runs(tmp_path: Path) -> None:
+    """It borrows the same provider the live loop is queueing on."""
+
+    database, engine, app = _backtest_app(tmp_path, "bt-probe-busy.db")
+    engine.running = True
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/backtests/probe",
+            json={"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)},
+        )
+        assert response.status_code == 409
     asyncio.run(database.close())

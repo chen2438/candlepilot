@@ -7,8 +7,8 @@ import os
 import sys
 import time
 from uuid import uuid4
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -26,21 +26,31 @@ from candlepilot.application.scheduler import (
     TradingScheduler,
 )
 from candlepilot.application.testnet_feed import TestnetUserFeed
-from candlepilot.backtest.engine import BacktestConfig, Candle
+from candlepilot.backtest.engine import BacktestConfig, Candle, SimulatedExchange
+from candlepilot.backtest.probe import (
+    MAX_SUGGESTED_TIMEOUT,
+    PROBE_CEILING_SECONDS,
+    PROBE_DECISIONS,
+    ProviderProbe,
+    probe_provider,
+)
 from candlepilot.backtest.runner import (
     MAX_BACKTEST_MODELS,
     MAX_BACKTEST_SYMBOLS,
     MAX_ESTIMATED_HOURS,
+    MAX_FAILURE_RATE,
     BacktestRunner,
     BacktestSpec,
     ModelRun,
     compare,
     estimate,
+    unreliable_models,
     validate,
 )
 from candlepilot.backtest.snapshots import (
     INTERVAL_MILLISECONDS as BACKTEST_INTERVALS,
 )
+from candlepilot.backtest.snapshots import HistoricalSnapshotBuilder
 from candlepilot.backtest.snapshots import (
     coverage,
     required_history_start,
@@ -77,6 +87,7 @@ from candlepilot.providers.pricing import (
 )
 from candlepilot.providers.pricing import PROVIDER_IDS, ModelPricingCatalog
 from candlepilot.providers.pricing import load_catalog as load_pricing_catalog
+from candlepilot.providers.base import LLMProvider
 from candlepilot.providers.openai_compatible import validate_base_url
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.provenance import MICROSTRUCTURE_SCHEMA_VERSION
@@ -174,6 +185,9 @@ class BacktestRequest(ApiModel):
     # Only possible over a window the collector covered; the coverage is
     # checked up front rather than degrading decision by decision.
     use_recorded_book: bool = False
+    # Set from a probe of these providers. None keeps the configured default,
+    # which is one number for endpoints that differ by minutes.
+    timeout_seconds: float | None = Field(default=None, gt=0, le=MAX_SUGGESTED_TIMEOUT)
 
 
 class CollectorStart(ApiModel):
@@ -1446,6 +1460,14 @@ def create_app(
 
 
     backtest_tasks: dict[int, asyncio.Task[None]] = {}
+    # Probes are pre-flight, not history: they describe the endpoint as it is
+    # right now, so they live with the process rather than in the database.
+    probes: dict[str, ProviderProbe] = {}
+    probe_task: asyncio.Task[None] | None = None
+
+    def _set_probe_task(task: asyncio.Task[None]) -> None:
+        nonlocal probe_task
+        probe_task = task
 
     async def measured_seconds_per_call() -> float:
         """Estimate from this install's own latency, not a guess.
@@ -1471,6 +1493,7 @@ def create_app(
             providers=tuple(request.providers),
             config=BacktestConfig(**request.config.model_dump()),
             use_recorded_book=request.use_recorded_book,
+            timeout_seconds=request.timeout_seconds,
         )
 
     async def _checked_spec(request: BacktestRequest) -> BacktestSpec:
@@ -1534,6 +1557,29 @@ def create_app(
             series[symbol] = by_interval
         return series, rules
 
+    @contextmanager
+    def _timeouts(spec: BacktestSpec) -> Iterator[None]:
+        """Apply the run's timeout to its providers, then put them back.
+
+        The registry's providers are shared with the live engine, so the
+        override cannot outlive the run -- including when the run raises or is
+        cancelled, which is exactly when a leaked timeout would go unnoticed.
+        """
+
+        if spec.timeout_seconds is None:
+            yield
+            return
+        restore: list[tuple[LLMProvider, float]] = []
+        try:
+            for name in spec.providers:
+                provider = engine.providers.get(name)
+                restore.append((provider, provider.timeout))
+                provider.timeout = spec.timeout_seconds
+            yield
+        finally:
+            for provider, previous in restore:
+                provider.timeout = previous
+
     async def _run_backtest(
         run_id: int,
         spec: BacktestSpec,
@@ -1559,19 +1605,35 @@ def create_app(
             )
 
         try:
-            await compare(
-                spec=spec,
-                runner_for=lambda _: BacktestRunner(
+            with _timeouts(spec):
+                runs = await compare(
                     spec=spec,
-                    series=series,
-                    rules=rules,
-                    risk=engine.risk,
-                    captures=captures,
-                ),
-                provider_for=engine.providers.get,
-                on_progress=flush,
-            )
-            await engine.audit.finish_backtest_run(run_id, status="completed")
+                    runner_for=lambda _: BacktestRunner(
+                        spec=spec,
+                        series=series,
+                        rules=rules,
+                        risk=engine.risk,
+                        captures=captures,
+                    ),
+                    provider_for=engine.providers.get,
+                    on_progress=flush,
+                )
+            # A run that lost decisions did not measure the window it claims to,
+            # so it must not be filed next to one that did.
+            degraded = unreliable_models(runs)
+            if degraded:
+                await engine.audit.finish_backtest_run(
+                    run_id,
+                    status="unreliable",
+                    error="; ".join(
+                        f"{run.provider} lost {run.calls_failed} of "
+                        f"{run.decisions_done} decisions "
+                        f"({run.failure_rate:.0%}, limit {MAX_FAILURE_RATE:.0%})"
+                        for run in degraded
+                    )[:500],
+                )
+            else:
+                await engine.audit.finish_backtest_run(run_id, status="completed")
         except asyncio.CancelledError:
             await engine.audit.finish_backtest_run(run_id, status="cancelled")
             raise
@@ -1579,6 +1641,80 @@ def create_app(
             await engine.audit.finish_backtest_run(run_id, status="failed", error=str(exc)[:500])
         finally:
             backtest_tasks.pop(run_id, None)
+
+    async def _run_probe(spec: BacktestSpec) -> None:
+        try:
+            series, _rules = await _load_series(spec)
+        except Exception as exc:  # noqa: BLE001 - surface it on every provider
+            for name in spec.providers:
+                probes[name] = ProviderProbe(
+                    provider=name, error=f"history load failed: {exc}"[:200]
+                )
+            return
+        symbol = spec.symbols[0]
+        builder = HistoricalSnapshotBuilder(series[symbol])
+        portfolio = SimulatedExchange(spec.config).portfolio_state({})
+        for name in spec.providers:
+            try:
+                probes[name] = await probe_provider(
+                    engine.providers.get(name),
+                    spec=spec,
+                    builder=builder,
+                    symbol=symbol,
+                    portfolio=portfolio,
+                )
+            except Exception as exc:  # noqa: BLE001 - one endpoint, not the set
+                probes[name] = ProviderProbe(provider=name, error=str(exc)[:200])
+
+    @app.post("/api/backtests/probe", status_code=202)
+    async def start_probe(request: BacktestRequest) -> dict[str, Any]:
+        """Time PROBE_DECISIONS real calls per provider before a run is paid for.
+
+        These are real inferences against the real endpoint on the real payload,
+        so they cost what they cost; there is no cheaper way to learn what the
+        timeout should be than to watch the endpoint answer.
+        """
+
+        if engine.running:
+            raise HTTPException(
+                status_code=409,
+                detail="stop the engine before probing: it shares the same provider",
+            )
+        if probe_task and not probe_task.done():
+            raise HTTPException(status_code=409, detail="a probe is already running")
+        spec = await _checked_spec(request)
+        for name in spec.providers:
+            probes.pop(name, None)
+        _set_probe_task(
+            asyncio.create_task(_run_probe(spec), name="candlepilot-backtest-probe")
+        )
+        return {"providers": list(spec.providers), "decisions": PROBE_DECISIONS}
+
+    @app.get("/api/backtests/probe")
+    async def read_probe() -> dict[str, Any]:
+        return {
+            "running": bool(probe_task and not probe_task.done()),
+            "decisions": PROBE_DECISIONS,
+            "ceiling_seconds": PROBE_CEILING_SECONDS,
+            "providers": [
+                {
+                    "provider": item.provider,
+                    "error": item.error,
+                    "failures": item.failures,
+                    "calls": [
+                        {"seconds": round(call.seconds, 1), "ok": call.ok, "error": call.error}
+                        for call in item.calls
+                    ],
+                    "slowest_ok_seconds": (
+                        round(item.slowest_ok_seconds, 1)
+                        if item.slowest_ok_seconds is not None
+                        else None
+                    ),
+                    "suggested_timeout_seconds": item.suggested_timeout_seconds,
+                }
+                for item in probes.values()
+            ],
+        }
 
     @app.post("/api/backtests", status_code=202)
     async def start_backtest(request: BacktestRequest) -> dict[str, Any]:
@@ -1613,6 +1749,10 @@ def create_app(
                 "end": spec.end.isoformat(),
                 "providers": list(spec.providers),
                 "use_recorded_book": spec.use_recorded_book,
+                # Recorded because the failure count is meaningless without it:
+                # otherwise nothing says whether a run that lost decisions ran
+                # with the probe's number or the global default.
+                "timeout_seconds": spec.timeout_seconds,
                 "estimate": projected.as_dict(),
             },
             list(spec.providers),

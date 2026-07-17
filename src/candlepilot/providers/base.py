@@ -38,6 +38,11 @@ class LLMProvider(ABC):
     model: str | None = None
     reasoning_effort: str | None = None
     reasoning_effort_options: tuple[str, ...] = ()
+    #: Seconds one inference may take before it is abandoned. Every provider
+    #: already had this; it is declared here because the probe and the backtest
+    #: override it for the length of a run, and a protocol that does not admit
+    #: the attribute makes that a reach into a private detail.
+    timeout: float = 45
 
     @property
     def capabilities(self) -> ProviderCapabilities:

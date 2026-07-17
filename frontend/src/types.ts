@@ -334,7 +334,7 @@ export interface BacktestModelRun {
 
 export interface BacktestRun {
   id: number;
-  status: "running" | "completed" | "failed" | "cancelled";
+  status: "running" | "completed" | "unreliable" | "failed" | "cancelled";
   error: string | null;
   spec: {
     symbols: string[];
@@ -343,6 +343,7 @@ export interface BacktestRun {
     end: string;
     providers: string[];
     use_recorded_book?: boolean;
+    timeout_seconds?: number | null;
     estimate: { decisions_per_model: number; total_calls: number; estimated_hours: number };
   };
   created_at: string;
@@ -365,4 +366,26 @@ export interface CollectorStatus {
     first_capture_at: string;
     last_capture_at: string;
   }>;
+}
+
+export interface ProbeCall {
+  seconds: number;
+  ok: boolean;
+  error: string | null;
+}
+
+export interface ProviderProbe {
+  provider: string;
+  error: string | null;
+  failures: number;
+  calls: ProbeCall[];
+  slowest_ok_seconds: number | null;
+  suggested_timeout_seconds: number | null;
+}
+
+export interface ProbeStatus {
+  running: boolean;
+  decisions: number;
+  ceiling_seconds: number;
+  providers: ProviderProbe[];
 }

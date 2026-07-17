@@ -6,12 +6,14 @@ import pytest
 
 from candlepilot.backtest.engine import BacktestConfig, Candle
 from candlepilot.backtest.runner import (
+    MAX_FAILURE_RATE,
     BacktestSpec,
     BacktestRunner,
     ModelRun,
     compare,
     decision_times,
     estimate,
+    unreliable_models,
     validate,
 )
 from candlepilot.backtest.snapshots import INTERVAL_MILLISECONDS
@@ -297,3 +299,50 @@ def test_compare_reports_each_model_while_it_works() -> None:
     assert sorted(set(mid_run)) == ["model-a", "model-b"]
     # The last report for each model carries the result the earlier ones lacked.
     assert all(run.result is not None for run in runs)
+
+
+def test_a_run_that_lost_too_many_decisions_is_not_reliable() -> None:
+    """A failed call is not a HOLD -- it is a bar the model never saw.
+
+    Reporting such a run as completed, next to a model that lost none, invites
+    comparing two different windows as though they were one.
+    """
+
+    clean = ModelRun("model-a", decisions_done=100, calls_failed=0)
+    edge = ModelRun("model-b", decisions_done=100, calls_failed=10)
+    degraded = ModelRun("model-c", decisions_done=100, calls_failed=11)
+
+    assert clean.reliable
+    # Exactly at the limit still counts, so the constant reads as "at most".
+    assert edge.failure_rate == MAX_FAILURE_RATE
+    assert edge.reliable
+    assert not degraded.reliable
+
+
+def test_only_models_that_produced_a_result_are_judged() -> None:
+    """A model that raised has an error already; it is not 'unreliable' too."""
+
+    crashed = ModelRun("model-a", decisions_done=10, calls_failed=10, error="died")
+    assert unreliable_models([crashed]) == []
+
+
+def test_one_degraded_model_poisons_the_comparison() -> None:
+    spec = _spec(providers=("model-a", "model-b"))
+
+    class Broken(_Provider):
+        async def generate_trade_intent(self, snapshot, portfolio):
+            raise RuntimeError("timed out")
+
+    providers = {"model-a": _Provider("model-a"), "model-b": Broken("model-b")}
+    runs = asyncio.run(
+        compare(
+            spec=spec,
+            runner_for=lambda _: _runner(spec),
+            provider_for=lambda name: providers[name],
+        )
+    )
+
+    degraded = unreliable_models(runs)
+    assert [run.provider for run in degraded] == ["model-b"]
+    # The clean model still reports: the run is flagged, not discarded.
+    assert next(run for run in runs if run.provider == "model-a").result is not None

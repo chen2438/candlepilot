@@ -1,0 +1,141 @@
+"""Time a few real decisions before committing to a backtest.
+
+A backtest is hundreds of model calls behind a fixed timeout, and the timeout
+that suits one endpoint strands another. Guessing it cost a run 5 of its 12
+decisions to 45s timeouts and still reported a tidy 0% return, so the number is
+measured against the endpoint that will serve the run, on the payload it will
+be sent.
+"""
+
+from __future__ import annotations
+
+import math
+import time
+from dataclasses import dataclass, field
+from datetime import datetime
+
+from candlepilot.backtest.runner import BacktestSpec, decision_times
+from candlepilot.backtest.snapshots import HistoricalSnapshotBuilder
+from candlepilot.domain.models import PortfolioState
+from candlepilot.providers.base import LLMProvider
+
+#: Calls per provider. Enough to catch an endpoint that is slow rather than
+#: unlucky, few enough that the wait before a run stays honest.
+PROBE_DECISIONS = 3
+
+#: The ceiling a probe call is given, in seconds.
+#:
+#: Deliberately far above any sane timeout: probing at the configured one would
+#: only reproduce the timeouts it is meant to diagnose, and report "45s" for an
+#: endpoint that actually needs 70. The point is to observe how long the model
+#: really takes, so the ceiling only exists to stop a hung call forever.
+PROBE_CEILING_SECONDS = 180.0
+
+#: Multiplier applied to the slowest observed call to suggest a timeout.
+#:
+#: Three samples cannot describe a tail, so the suggestion is a starting point
+#: with room above the worst seen, not a computed safe bound.
+TIMEOUT_HEADROOM = 1.5
+
+MIN_SUGGESTED_TIMEOUT = 10
+MAX_SUGGESTED_TIMEOUT = 600
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeCall:
+    """One timed decision."""
+
+    seconds: float
+    ok: bool
+    error: str | None = None
+
+
+@dataclass
+class ProviderProbe:
+    """What one endpoint did with `PROBE_DECISIONS` real decisions."""
+
+    provider: str
+    calls: list[ProbeCall] = field(default_factory=list)
+    error: str | None = None
+
+    @property
+    def slowest_ok_seconds(self) -> float | None:
+        durations = [call.seconds for call in self.calls if call.ok]
+        return max(durations) if durations else None
+
+    @property
+    def failures(self) -> int:
+        return sum(1 for call in self.calls if not call.ok)
+
+    @property
+    def suggested_timeout_seconds(self) -> int | None:
+        """Headroom over the slowest success, or nothing to suggest.
+
+        With every call failing there is no latency to reason from: the answer
+        is not a bigger number, it is that this endpoint cannot serve the run.
+        """
+
+        slowest = self.slowest_ok_seconds
+        if slowest is None:
+            return None
+        suggested = math.ceil(slowest * TIMEOUT_HEADROOM)
+        return max(MIN_SUGGESTED_TIMEOUT, min(MAX_SUGGESTED_TIMEOUT, suggested))
+
+
+def probe_instants(spec: BacktestSpec, count: int = PROBE_DECISIONS) -> list[datetime]:
+    """The first decision instants of the window, in order.
+
+    The probe sends what the run will send, so it reads its snapshots off the
+    same schedule rather than inventing an instant of its own.
+    """
+
+    times = sorted(decision_times(spec, spec.cadences[0]))
+    return times[:count]
+
+
+async def probe_provider(
+    provider: LLMProvider,
+    *,
+    spec: BacktestSpec,
+    builder: HistoricalSnapshotBuilder,
+    symbol: str,
+    portfolio: PortfolioState,
+    ceiling: float = PROBE_CEILING_SECONDS,
+) -> ProviderProbe:
+    """Time `PROBE_DECISIONS` real calls against `provider`.
+
+    The provider's own timeout is raised to `ceiling` for the duration and put
+    back afterwards, so a probe can outlive the setting it exists to question.
+    """
+
+    result = ProviderProbe(provider=provider.name)
+    instants = probe_instants(spec)
+    if not instants:
+        result.error = "the window holds no decision instants to probe"
+        return result
+
+    previous = provider.timeout
+    provider.timeout = ceiling
+    try:
+        for when in instants:
+            try:
+                snapshot = builder.build(symbol, spec.cadences[0], when)
+            except ValueError as exc:
+                result.error = f"no snapshot at {when.isoformat()}: {exc}"[:200]
+                return result
+            started = time.monotonic()
+            try:
+                await provider.generate_trade_intent(snapshot, portfolio)
+            except Exception as exc:  # noqa: BLE001 - a failed probe is a result
+                result.calls.append(
+                    ProbeCall(
+                        seconds=time.monotonic() - started,
+                        ok=False,
+                        error=str(exc)[:200],
+                    )
+                )
+                continue
+            result.calls.append(ProbeCall(seconds=time.monotonic() - started, ok=True))
+    finally:
+        provider.timeout = previous
+    return result
