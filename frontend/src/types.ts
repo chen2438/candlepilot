@@ -342,9 +342,27 @@ export interface BacktestRun {
     start: string;
     end: string;
     providers: string[];
+    use_recorded_book?: boolean;
     estimate: { decisions_per_model: number; total_calls: number; estimated_hours: number };
   };
   created_at: string;
   ended_at: string | null;
   models: BacktestModelRun[];
+}
+
+export interface CollectorStatus {
+  running: boolean;
+  symbols: string[];
+  capture_count: number;
+  error_count: number;
+  last_capture_at: string | null;
+  last_error: string | null;
+  interval_seconds: number;
+  max_symbols: number;
+  recorded: Array<{
+    symbol: string;
+    capture_count: number;
+    first_capture_at: string;
+    last_capture_at: string;
+  }>;
 }

@@ -5,6 +5,7 @@ import type {
   BacktestEstimate,
   BacktestRun,
   Candidate,
+  CollectorStatus,
   DecisionEvent,
   DecisionDetail,
   EngineStatus,
@@ -1416,14 +1417,101 @@ function RunUsage({ session }: { session: RunSessionMetrics }) {
   );
 }
 
-const BACKTEST_VS_LIVE: Array<{ aspect: string; live: string; backtest: string }> = [
-  { aspect: "下单", live: "真实签名下单到币安测试网，交易所撮合、交易所侧止盈止损括号单", backtest: "本地仿真：下一根 K 线开盘价成交 + 滑点，不发任何订单" },
-  { aspect: "订单流", live: "20 档盘口失衡、成交流水失衡、基差、持仓量", backtest: "全部缺失——币安不提供历史盘口，无法重建。Prompt 已告知模型，不因缺流而否决形态" },
-  { aspect: "价差", live: "真实买一卖一", backtest: "无盘口即无价差（bid = ask = mark）。编一个价差会美化每笔成交" },
-  { aspect: "标的", live: "全市场动态扫描，每分钟轮换", backtest: "你指定标的池——历史上的价差/24h ticker 快照不存在，选币无法忠实重放" },
-  { aspect: "特征", live: "5m/15m/30m 全套 + 日线结构位", backtest: "同一套 FeaturePipeline，同构（减去上面缺的订单流）" },
-  { aspect: "风控", live: "AggressiveRiskPolicy", backtest: "同一个 AggressiveRiskPolicy——日亏熔断、仓位上限、tick 对齐全部生效" },
+const BACKTEST_VS_LIVE: Array<{ aspect: string; live: string; real: string; plain: string }> = [
+  {
+    aspect: "下单",
+    live: "真实签名下单到币安测试网，交易所撮合、交易所侧括号单",
+    real: "本地仿真：下一根 K 线开盘价成交 + 滑点，不发任何订单",
+    plain: "同左",
+  },
+  {
+    aspect: "订单流",
+    live: "20 档盘口失衡、成交流水失衡、基差、持仓量",
+    real: "全部在场——采集器当时录下来的",
+    plain: "全部缺失。币安不提供历史盘口，无法重建。Prompt 已告知模型，不因缺流而否决形态",
+  },
+  {
+    aspect: "价差",
+    live: "真实买一卖一",
+    real: "采集时的真实买一卖一",
+    plain: "无盘口即无价差（bid = ask = mark）。编一个价差会美化每笔成交",
+  },
+  {
+    aspect: "标的",
+    live: "全市场动态扫描，每分钟轮换",
+    real: "你指定标的池，且必须是采集器录过的",
+    plain: "你指定标的池——历史上的价差/24h ticker 快照不存在，选币无法忠实重放",
+  },
+  {
+    aspect: "K 线特征",
+    live: "5m/15m/30m 全套 + 日线结构位",
+    real: "同一套 FeaturePipeline，同构",
+    plain: "同左",
+  },
+  {
+    aspect: "风控",
+    live: "AggressiveRiskPolicy",
+    real: "同一个——日亏熔断、仓位上限、tick 对齐全部生效",
+    plain: "同左",
+  },
 ];
+
+function CollectorPanel({ status, onChange }: { status: CollectorStatus | null; onChange: () => void }) {
+  const [symbols, setSymbols] = useState("BTCUSDT");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const act = async (path: string, body?: object) => {
+    setBusy(true); setError(null);
+    try {
+      await api(path, { method: "POST", ...(body ? { body: JSON.stringify(body) } : {}) });
+      onChange();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally { setBusy(false); }
+  };
+
+  if (!status) return null;
+  return (
+    <div className="collector">
+      <div className="collector-head">
+        <span className="eyebrow">盘口采集</span>
+        <span className={`dot ${status.running ? "online" : ""}`} />
+        <strong>{status.running ? `采集中 · ${status.symbols.join(" ")}` : "未运行"}</strong>
+        <small>
+          币安不提供历史盘口，所以订单流只能在它发生时录下来。每 {status.interval_seconds / 60} 分钟采一次
+          （覆盖 5m/15m/30m 的全部决策时刻）。不调模型、不下单。
+        </small>
+      </div>
+      <div className="collector-actions">
+        <input
+          value={symbols}
+          placeholder={`逗号分隔，最多 ${status.max_symbols} 个`}
+          disabled={busy || status.running}
+          onChange={(e) => setSymbols(e.target.value)}
+        />
+        {status.running
+          ? <button className="ghost" disabled={busy} onClick={() => void act("/api/collector/stop")}>停止采集</button>
+          : <button disabled={busy} onClick={() => void act("/api/collector/start", {
+              symbols: symbols.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),
+            })}>开始采集</button>}
+        {status.error_count > 0 && <small className="negative">{status.error_count} 次采集失败</small>}
+      </div>
+      {error && <div className="error-text">{error}</div>}
+      {status.recorded.length > 0 && (
+        <div className="collector-recorded">
+          {status.recorded.map((item) => (
+            <span key={item.symbol}>
+              <strong>{item.symbol.replace("USDT", "")}</strong>
+              {item.capture_count} 条
+              <small>{new Date(item.first_capture_at).toLocaleString("zh-CN", { hour12: false })} 起</small>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth[]; engineRunning: boolean }) {
   const [form, setForm] = useState(() => {
@@ -1444,6 +1532,8 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
   });
   const [estimate, setEstimate] = useState<BacktestEstimate | null>(null);
   const [runs, setRuns] = useState<BacktestRun[]>([]);
+  const [collector, setCollector] = useState<CollectorStatus | null>(null);
+  const [useRecordedBook, setUseRecordedBook] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showDiff, setShowDiff] = useState(false);
@@ -1454,12 +1544,21 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
     start: new Date(form.start).toISOString(),
     end: new Date(form.end).toISOString(),
     providers: form.providers,
+    use_recorded_book: useRecordedBook,
     config: {
       initial_equity: form.initialEquity,
       fee_rate: form.feeRate,
       slippage_fraction: form.slippage,
     },
-  }), [form]);
+  }), [form, useRecordedBook]);
+
+  const refreshCollector = useCallback(async () => {
+    try {
+      setCollector(await api<CollectorStatus>("/api/collector"));
+    } catch { /* the collector panel is not worth an error banner */ }
+  }, []);
+
+  useEffect(() => { void refreshCollector(); }, [refreshCollector]);
 
   const refreshRuns = useCallback(async () => {
     try {
@@ -1522,6 +1621,8 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
     <article className="panel backtest-panel">
       <PanelTitle code="09" title="回测" meta="历史模式 · 多模型对比" />
 
+      <CollectorPanel status={collector} onChange={() => void refreshCollector()} />
+
       <div className="backtest-note">
         <strong>回测不下单。</strong>它用历史行情重放同一套决策与风控，只有撮合是仿真的。
         <button className="text-button" onClick={() => setShowDiff((value) => !value)}>
@@ -1531,13 +1632,14 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
       {showDiff && (
         <div className="table-wrap backtest-diff">
           <table>
-            <thead><tr><th></th><th>实盘（币安测试网）</th><th>回测（历史模式）</th></tr></thead>
+            <thead><tr><th></th><th>实盘（测试网）</th><th>真实回测</th><th>普通回测</th></tr></thead>
             <tbody>
               {BACKTEST_VS_LIVE.map((row) => (
                 <tr key={row.aspect}>
                   <td><strong>{row.aspect}</strong></td>
                   <td>{row.live}</td>
-                  <td>{row.backtest}</td>
+                  <td>{row.real}</td>
+                  <td>{row.plain}</td>
                 </tr>
               ))}
             </tbody>
@@ -1588,6 +1690,17 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
         </div>
       </div>
 
+      <label className="backtest-real">
+        <input type="checkbox" checked={useRecordedBook} disabled={busy !== null}
+          onChange={(e) => setUseRecordedBook(e.target.checked)} />
+        <span>真实回测</span>
+        <small>
+          用采集器录下的盘口，payload 与实盘完全同构。要求窗口内<strong>每个</strong>决策时刻都有记录——
+          覆盖不全会被拒绝并告诉你缺多少，因为一半决策有订单流、一半没有，
+          等于把两个策略平均成一个不提及此事的数字。
+        </small>
+      </label>
+
       {estimate && (
         <div className={`backtest-estimate ${estimate.within_limit ? "" : "over"}`}>
           <span>每模型 <strong>{estimate.decisions_per_model}</strong> 次决策</span>
@@ -1619,6 +1732,9 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                 {index === 0 && <td rowSpan={run.models.length}>
                   <small>{run.spec.symbols.join(" ")}<br />{run.spec.cadences.join(" ")}<br />
                     {new Date(run.spec.start).toLocaleString("zh-CN", { hour12: false })}</small>
+                  {run.spec.use_recorded_book
+                    ? <small className="run-real">真实回测 · 含订单流</small>
+                    : <small>普通回测 · 无订单流</small>}
                 </td>}
                 <td>{providerLabel(model.provider)}</td>
                 <td>{Math.round(model.progress * 100)}%
