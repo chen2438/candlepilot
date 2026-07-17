@@ -11,7 +11,7 @@ from typing import Any
 from pydantic import BaseModel
 
 
-DECISION_PROMPT_VERSION = "trade-intent-v7"
+DECISION_PROMPT_VERSION = "trade-intent-v8"
 MARKET_SNAPSHOT_SCHEMA_VERSION = "market-snapshot-v1"
 BACKTEST_DATA_SCHEMA_VERSION = "backtest-candles-v1"
 

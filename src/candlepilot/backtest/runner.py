@@ -1,0 +1,247 @@
+"""Replays a window through one or more models and compares what they did.
+
+Cost is the shaping constraint. A decision is one LLM call, calls inside a
+provider are serialised by its own semaphore, and a real call takes tens of
+seconds -- so a day of 5m bars on one symbol is hours, not seconds. Hence:
+estimate before running, run in the background, and report progress.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+from candlepilot.backtest.engine import (
+    BacktestConfig,
+    BacktestResult,
+    Candle,
+    EquityPoint,
+    SimulatedExchange,
+    summarize,
+)
+from candlepilot.backtest.snapshots import INTERVAL_MILLISECONDS, HistoricalSnapshotBuilder
+from candlepilot.domain.models import TradeAction
+from candlepilot.providers.base import LLMProvider
+from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
+
+MAX_BACKTEST_SYMBOLS = 5
+MAX_BACKTEST_MODELS = 4
+MAX_BACKTEST_DAYS = 3
+#: Refuse anything that would take longer than a working day to finish.
+MAX_ESTIMATED_CALLS = 4_000
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestSpec:
+    symbols: tuple[str, ...]
+    cadences: tuple[str, ...]
+    start: datetime
+    end: datetime
+    providers: tuple[str, ...]
+    config: BacktestConfig = field(default_factory=BacktestConfig)
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestEstimate:
+    decisions_per_model: int
+    total_calls: int
+    #: Wall-clock for the slowest model, since models run in parallel and each
+    #: one serialises its own calls.
+    estimated_seconds: float
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "decisions_per_model": self.decisions_per_model,
+            "total_calls": self.total_calls,
+            "estimated_seconds": round(self.estimated_seconds),
+            "estimated_hours": round(self.estimated_seconds / 3600, 2),
+        }
+
+
+def estimate(spec: BacktestSpec, *, seconds_per_call: float) -> BacktestEstimate:
+    """Count the calls the spec implies before any of them are paid for."""
+
+    span_ms = (spec.end - spec.start).total_seconds() * 1000
+    per_model = sum(
+        int(span_ms // INTERVAL_MILLISECONDS[cadence]) * len(spec.symbols)
+        for cadence in spec.cadences
+    )
+    return BacktestEstimate(
+        decisions_per_model=per_model,
+        total_calls=per_model * len(spec.providers),
+        estimated_seconds=per_model * seconds_per_call,
+    )
+
+
+def validate(spec: BacktestSpec) -> None:
+    """Reject a spec that cannot finish, before it burns a single call."""
+
+    if not spec.symbols or len(spec.symbols) > MAX_BACKTEST_SYMBOLS:
+        raise ValueError(f"choose between 1 and {MAX_BACKTEST_SYMBOLS} symbols")
+    if not spec.providers or len(spec.providers) > MAX_BACKTEST_MODELS:
+        raise ValueError(f"choose between 1 and {MAX_BACKTEST_MODELS} models")
+    if len(set(spec.providers)) != len(spec.providers):
+        raise ValueError("a model cannot be compared against itself")
+    if not spec.cadences:
+        raise ValueError("choose at least one cadence")
+    if spec.end <= spec.start:
+        raise ValueError("the window must end after it starts")
+    if spec.end - spec.start > timedelta(days=MAX_BACKTEST_DAYS):
+        raise ValueError(f"the window cannot exceed {MAX_BACKTEST_DAYS} days")
+    if spec.end > datetime.now(UTC):
+        raise ValueError("the window cannot reach into the future")
+
+
+@dataclass
+class ModelRun:
+    """One model's pass over the window."""
+
+    provider: str
+    decisions_done: int = 0
+    decisions_total: int = 0
+    calls_failed: int = 0
+    result: BacktestResult | None = None
+    error: str | None = None
+
+    @property
+    def progress(self) -> float:
+        if not self.decisions_total:
+            return 0.0
+        return self.decisions_done / self.decisions_total
+
+
+def decision_times(spec: BacktestSpec, cadence: str) -> list[datetime]:
+    """When each decision is due: the close of every bar inside the window."""
+
+    step = timedelta(milliseconds=INTERVAL_MILLISECONDS[cadence])
+    times: list[datetime] = []
+    cursor = spec.start + step
+    while cursor <= spec.end:
+        times.append(cursor)
+        cursor += step
+    return times
+
+
+class BacktestRunner:
+    """Replays a spec for one model, against the real risk policy."""
+
+    def __init__(
+        self,
+        *,
+        spec: BacktestSpec,
+        series: dict[str, dict[str, list[Candle]]],
+        rules: dict[str, SymbolRules],
+        risk: AggressiveRiskPolicy,
+    ) -> None:
+        self._spec = spec
+        self._series = series
+        self._rules = rules
+        self._risk = risk
+        self._builders = {
+            symbol: HistoricalSnapshotBuilder(candles) for symbol, candles in series.items()
+        }
+
+    def _next_candle(self, symbol: str, cadence: str, after: datetime) -> Candle | None:
+        for candle in self._series[symbol][cadence]:
+            if candle.timestamp >= after:
+                return candle
+        return None
+
+    def _marks(self, at: datetime) -> dict[str, Decimal]:
+        marks: dict[str, Decimal] = {}
+        for symbol, candles in self._series.items():
+            usable = [item for item in candles["5m"] if item.timestamp <= at]
+            if usable:
+                marks[symbol] = usable[-1].close
+        return marks
+
+    async def run(self, provider: LLMProvider, progress: ModelRun) -> BacktestResult:
+        exchange = SimulatedExchange(self._spec.config)
+        curve: list[EquityPoint] = []
+        schedule = sorted(
+            (when, cadence, symbol)
+            for cadence in self._spec.cadences
+            for when in decision_times(self._spec, cadence)
+            for symbol in self._spec.symbols
+        )
+        progress.decisions_total = len(schedule)
+
+        for when, cadence, symbol in schedule:
+            # Settle first: a trigger that was touched before this decision has
+            # to be booked before the model is asked what to do next, or it
+            # reasons about a position the exchange already closed.
+            candle = self._next_candle(symbol, cadence, when)
+            if candle is not None:
+                exchange.settle_candle(symbol, candle)
+
+            try:
+                snapshot = self._builders[symbol].build(symbol, cadence, when)
+            except ValueError:
+                progress.decisions_done += 1
+                continue
+
+            portfolio = exchange.portfolio_state(self._marks(when))
+            try:
+                result = await provider.generate_trade_intent(snapshot, portfolio)
+            except Exception as exc:  # noqa: BLE001 - one bad call must not end the run
+                progress.calls_failed += 1
+                progress.decisions_done += 1
+                progress.error = str(exc)[:200]
+                continue
+
+            progress.decisions_done += 1
+            intent = result.intent
+            if intent.action == TradeAction.HOLD:
+                curve.append(EquityPoint(when, exchange.equity(self._marks(when))))
+                continue
+
+            # The live risk policy, not a copy of it: the daily-loss breaker,
+            # the position cap, tick alignment and exchange minimums all have to
+            # bite here or the run scores a system nobody runs.
+            evaluation = self._risk.evaluate(
+                intent, snapshot, portfolio, self._rules[symbol], now=when
+            )
+            if evaluation.order is None or not evaluation.decision.accepted:
+                curve.append(EquityPoint(when, exchange.equity(self._marks(when))))
+                continue
+
+            fill_candle = self._next_candle(symbol, cadence, when)
+            if fill_candle is None:
+                continue
+            exchange.execute(evaluation.order, fill_candle, leverage=intent.leverage)
+            curve.append(EquityPoint(when, exchange.equity(self._marks(when))))
+
+        exchange.close_all(self._marks(self._spec.end), self._spec.end)
+        curve.append(EquityPoint(self._spec.end, exchange.equity({})))
+        return summarize(self._spec.config, exchange.trades, curve)
+
+
+async def compare(
+    *,
+    spec: BacktestSpec,
+    runner_for: Callable[[str], BacktestRunner],
+    provider_for: Callable[[str], LLMProvider],
+    on_progress: Callable[[], Awaitable[None]] | None = None,
+) -> list[ModelRun]:
+    """Run every model over the same window, concurrently.
+
+    Calls inside one provider are serialised by that provider, so the models
+    only contend with each other if they share one -- which the spec forbids.
+    Wall-clock is therefore the slowest model, not the sum.
+    """
+
+    runs = [ModelRun(provider=name) for name in spec.providers]
+
+    async def one(run: ModelRun) -> None:
+        try:
+            run.result = await runner_for(run.provider).run(provider_for(run.provider), run)
+        except Exception as exc:  # noqa: BLE001 - report, do not sink the comparison
+            run.error = str(exc)[:500]
+        if on_progress is not None:
+            await on_progress()
+
+    await asyncio.gather(*(one(run) for run in runs))
+    return runs

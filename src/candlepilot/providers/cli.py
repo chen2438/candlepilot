@@ -195,6 +195,30 @@ def _decision_payload(
     }
 
 
+#: Order-flow fields a live snapshot carries and a historical one cannot.
+FLOW_FEATURES = ("book_imbalance", "recent_trade_imbalance")
+
+
+def _flow_clause(snapshot: MarketSnapshot) -> str:
+    """Say so when the payload has no order flow, derived from the payload.
+
+    Read off the snapshot rather than passed in as a mode: a flag could claim
+    flow exists when the fields do not, and the model is told elsewhere that a
+    setup needing absent evidence is not established -- which, left uncorrected,
+    would make every historical decision a HOLD.
+    """
+
+    if any(name in snapshot.features for name in FLOW_FEATURES):
+        return ""
+    return (
+        " This snapshot is historical and carries no order-flow fields: there is no "
+        "book_imbalance, recent_trade_imbalance, basis_bps or open_interest, because no "
+        "historical order book exists to reconstruct them. Do not treat their absence as "
+        "evidence against a setup and do not require flow confirmation here; judge "
+        "participation from quote_volume_ratio alone. Everything else applies unchanged."
+    )
+
+
 def _decision_prompt(
     snapshot: MarketSnapshot,
     portfolio: PortfolioState,
@@ -263,6 +287,7 @@ def _decision_prompt(
         "a take profit. "
         "Never exceed leverage 10 or risk 0.02. "
         f"Keep rationale concise and at most {RATIONALE_TARGET_LENGTH} characters."
+        + _flow_clause(snapshot)
         + schema_clause
         + "\n"
         + json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
