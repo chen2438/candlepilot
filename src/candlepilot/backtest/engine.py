@@ -101,8 +101,22 @@ class BacktestResult:
     total_funding: Decimal
     run_end_trade_count: int
     cancelled_pending_orders: int
+    symbol_results: list[BacktestSymbolResult] = field(default_factory=list)
     trades: list[BacktestTrade] = field(default_factory=list)
     equity_curve: list[EquityPoint] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestSymbolResult:
+    """One symbol's additive contribution to a shared portfolio result."""
+
+    symbol: str
+    gross_price_pnl: Decimal
+    net_pnl: Decimal
+    contribution_return: Decimal
+    trade_count: int
+    total_fees: Decimal
+    total_funding: Decimal
 
 
 class SimulatedExchange:
@@ -416,6 +430,25 @@ def summarize(
         peak = max(peak, point.equity)
         if peak > 0:
             drawdown = max(drawdown, (peak - point.equity) / peak)
+    symbol_results: list[BacktestSymbolResult] = []
+    for symbol in sorted({trade.symbol for trade in trades}):
+        symbol_trades = [trade for trade in trades if trade.symbol == symbol]
+        symbol_net = sum((trade.net_pnl for trade in symbol_trades), Decimal("0"))
+        symbol_fees = sum((trade.fees for trade in symbol_trades), Decimal("0"))
+        symbol_funding = sum((trade.funding for trade in symbol_trades), Decimal("0"))
+        symbol_results.append(
+            BacktestSymbolResult(
+                symbol=symbol,
+                gross_price_pnl=symbol_net + symbol_fees + symbol_funding,
+                net_pnl=symbol_net,
+                contribution_return=(symbol_net / config.initial_equity)
+                if config.initial_equity
+                else Decimal("0"),
+                trade_count=len(symbol_trades),
+                total_fees=symbol_fees,
+                total_funding=symbol_funding,
+            )
+        )
     return BacktestResult(
         initial_equity=config.initial_equity,
         final_equity=final,
@@ -434,6 +467,7 @@ def summarize(
         total_funding=sum((trade.funding for trade in trades), Decimal("0")),
         run_end_trade_count=sum(trade.exit_reason == "run_end" for trade in trades),
         cancelled_pending_orders=cancelled_pending_orders,
+        symbol_results=symbol_results,
         trades=trades,
         equity_curve=curve,
     )

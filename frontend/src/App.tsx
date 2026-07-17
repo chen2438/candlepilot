@@ -37,6 +37,49 @@ function signedUsdt(value: number) {
   return `${value > 0 ? "+" : ""}${value.toFixed(4)} USDT`;
 }
 
+type SymbolBreakdown = {
+  symbol: string;
+  grossPnl: number;
+  fees: number;
+  funding: number;
+  netPnl: number;
+  tradeCount: number;
+  contributionReturn: number;
+};
+
+function backtestSymbolBreakdown(result: BacktestResult): SymbolBreakdown[] {
+  if (result.symbol_results) {
+    return result.symbol_results.map((item) => ({
+      symbol: item.symbol,
+      grossPnl: Number(item.gross_price_pnl),
+      fees: Number(item.total_fees),
+      funding: Number(item.total_funding),
+      netPnl: Number(item.net_pnl),
+      tradeCount: item.trade_count,
+      contributionReturn: Number(item.contribution_return),
+    }));
+  }
+  const initialEquity = Number(result.initial_equity);
+  const grouped = new Map<string, SymbolBreakdown>();
+  for (const trade of result.trades ?? []) {
+    const current = grouped.get(trade.symbol) ?? {
+      symbol: trade.symbol, grossPnl: 0, fees: 0, funding: 0,
+      netPnl: 0, tradeCount: 0, contributionReturn: 0,
+    };
+    const net = Number(trade.net_pnl);
+    const fees = Number(trade.fees);
+    const funding = Number(trade.funding);
+    current.netPnl += net;
+    current.fees += fees;
+    current.funding += funding;
+    current.grossPnl += net + fees + funding;
+    current.tradeCount += 1;
+    current.contributionReturn = initialEquity ? current.netPnl / initialEquity : 0;
+    grouped.set(trade.symbol, current);
+  }
+  return [...grouped.values()].sort((left, right) => left.symbol.localeCompare(right.symbol));
+}
+
 function BacktestResultDetail({ result }: { result: BacktestResult | null }) {
   if (!result) return <div className="backtest-result-empty">正在读取收益明细；未完成的运行会在结束后生成。</div>;
   const netPnl = result.net_pnl === undefined
@@ -49,6 +92,7 @@ function BacktestResultDetail({ result }: { result: BacktestResult | null }) {
     : Number(result.gross_price_pnl);
   const forcedCloses = result.run_end_trade_count
     ?? result.trades?.filter((trade) => trade.exit_reason === "run_end").length;
+  const symbolBreakdown = backtestSymbolBreakdown(result);
 
   return (
     <section className="backtest-result-detail">
@@ -72,6 +116,28 @@ function BacktestResultDetail({ result }: { result: BacktestResult | null }) {
         </span>
         <span><small>最终权益 / 总收益</small><strong>{Number(result.final_equity).toFixed(2)} USDT</strong><em>{(Number(result.total_return) * 100).toFixed(2)}%</em></span>
       </div>
+      {symbolBreakdown.length > 0 && (
+        <div className="backtest-symbols table-wrap">
+          <div className="backtest-symbols-heading">
+            <strong>按标的拆分</strong>
+            <small>收益贡献使用共享初始权益作分母；各行净盈亏与贡献之和等于组合结果。</small>
+          </div>
+          <table>
+            <thead><tr><th>标的</th><th>交易</th><th data-tooltip="该标的全部已平仓交易按成交价计算的盈亏，成交价已经包含滑点。">价格盈亏（毛）</th><th>手续费影响</th><th>资金费影响</th><th>净盈亏</th><th data-tooltip="该标的净盈亏除以整个组合的初始权益；这是组合收益贡献，不是为该标的虚拟分配一份本金后的独立收益率。">收益贡献</th></tr></thead>
+            <tbody>{symbolBreakdown.map((item) => (
+              <tr key={item.symbol}>
+                <td><strong>{item.symbol}</strong></td>
+                <td>{item.tradeCount}</td>
+                <td className={item.grossPnl >= 0 ? "positive" : "negative"}>{signedUsdt(item.grossPnl)}</td>
+                <td className="negative">{signedUsdt(-item.fees)}</td>
+                <td className={-item.funding >= 0 ? "positive" : "negative"}>{signedUsdt(-item.funding)}</td>
+                <td className={item.netPnl >= 0 ? "positive" : "negative"}>{signedUsdt(item.netPnl)}</td>
+                <td className={item.contributionReturn >= 0 ? "positive" : "negative"}>{(item.contributionReturn * 100).toFixed(2)}%</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
       <div className="backtest-closeout">
         <strong>收尾处理</strong>
         <span>

@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from candlepilot.backtest.engine import (
     BacktestConfig,
+    BacktestTrade,
     Candle,
     EquityPoint,
     SimulatedExchange,
@@ -207,6 +208,42 @@ def test_result_reconciles_gross_pnl_costs_and_final_equity() -> None:
     assert (
         result.gross_price_pnl - result.total_fees - result.total_funding
         == result.net_pnl
+    )
+
+
+def test_symbol_breakdown_reconciles_to_the_shared_portfolio() -> None:
+    trades = [
+        BacktestTrade(
+            symbol="BTCUSDT", side="LONG", quantity=Decimal("1"),
+            entry_time=START, entry_price=Decimal("100"),
+            exit_time=START + timedelta(minutes=5), exit_price=Decimal("110"),
+            net_pnl=Decimal("8"), fees=Decimal("1"), funding=Decimal("1"),
+            exit_reason="take_profit",
+        ),
+        BacktestTrade(
+            symbol="ETHUSDT", side="SHORT", quantity=Decimal("1"),
+            entry_time=START, entry_price=Decimal("100"),
+            exit_time=START + timedelta(minutes=5), exit_price=Decimal("104"),
+            net_pnl=Decimal("-5"), fees=Decimal("1"), funding=Decimal("0"),
+            exit_reason="stop_loss",
+        ),
+    ]
+    config = BacktestConfig(initial_equity=Decimal("10000"))
+    result = summarize(
+        config,
+        trades,
+        [EquityPoint(START + timedelta(minutes=5), Decimal("10003"))],
+    )
+    by_symbol = {item.symbol: item for item in result.symbol_results}
+
+    assert by_symbol["BTCUSDT"].gross_price_pnl == Decimal("10")
+    assert by_symbol["BTCUSDT"].net_pnl == Decimal("8")
+    assert by_symbol["BTCUSDT"].contribution_return == Decimal("0.0008")
+    assert by_symbol["ETHUSDT"].gross_price_pnl == Decimal("-4")
+    assert sum(item.net_pnl for item in result.symbol_results) == result.net_pnl
+    assert (
+        sum(item.contribution_return for item in result.symbol_results)
+        == result.total_return
     )
 
 

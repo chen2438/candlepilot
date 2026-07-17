@@ -342,6 +342,15 @@ export interface BacktestResult {
   total_funding: string;
   run_end_trade_count?: number;
   cancelled_pending_orders?: number;
+  symbol_results?: Array<{
+    symbol: string;
+    gross_price_pnl: string;
+    net_pnl: string;
+    contribution_return: string;
+    trade_count: number;
+    total_fees: string;
+    total_funding: string;
+  }>;
   trades?: BacktestTrade[];
 }
 
