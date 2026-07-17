@@ -745,16 +745,25 @@ def test_custom_providers_editor_endpoint(tmp_path: Path, monkeypatch) -> None:
         assert body["max_providers"] == 8
         assert body["wire_apis"] == ["chat-completions", "responses"]
         entry = body["providers"][0]
-        # Every field is editable in the clear except the key...
+        # The list stays safe to render before the user asks to reveal a key.
         assert entry["id"] == "main"
         assert entry["base_url"] == "https://a.example/v1"
         assert entry["model"] == "m1"
-        # ...which is only ever reported as configured + masked.
+        # The ordinary list reports only configured + masked state.
         assert entry["api_key_configured"] is True
         assert "sk-existing" not in listed.text
         # Header values are secrets too: only names are exposed.
         assert entry["extra_header_names"] == ["x-team"]
         assert "desk" not in listed.text
+
+        # An explicit reveal request returns only this provider's key and must
+        # not be cached by the browser or an intermediary.
+        revealed = client.get("/api/custom-providers/main/api-key")
+        assert revealed.status_code == 200
+        assert revealed.json() == {"api_key": "sk-existing"}
+        assert revealed.headers["cache-control"] == "no-store"
+        assert revealed.headers["pragma"] == "no-cache"
+        assert client.get("/api/custom-providers/missing/api-key").status_code == 404
 
         # Editing without resending the key keeps it, and keeps unsent headers.
         saved = client.post(
@@ -783,6 +792,7 @@ def test_custom_providers_editor_endpoint(tmp_path: Path, monkeypatch) -> None:
         )
         stored = json.loads(read_env_file(env_path)["CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON"])
         assert "api_key" not in stored[0]
+        assert client.get("/api/custom-providers/main/api-key").status_code == 404
 
         # Adding a second endpoint, then removing all of them.
         client.post(

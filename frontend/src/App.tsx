@@ -1155,12 +1155,14 @@ function CustomProvidersPanel({
   const [payload, setPayload] = useState<CustomProvidersPayload | null>(null);
   const [drafts, setDrafts] = useState<ProviderDraft[] | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  const [revealedKeys, setRevealedKeys] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     try {
       const next = await api<CustomProvidersPayload>("/api/custom-providers");
       setPayload(next);
       setDrafts(null);
+      setRevealedKeys({});
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
@@ -1175,6 +1177,27 @@ function CustomProvidersPanel({
 
   const update = (index: number, patch: Partial<ProviderDraft>) =>
     setDrafts(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+
+  const revealKey = useCallback(async (providerId: string) => {
+    setBusy(`reveal-key-${providerId}`);
+    setError(null);
+    try {
+      const result = await api<{ api_key: string }>(
+        `/api/custom-providers/${encodeURIComponent(providerId)}/api-key`,
+      );
+      setRevealedKeys((current) => ({ ...current, [providerId]: result.api_key }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }, [setBusy, setError]);
+
+  const hideKey = (providerId: string) => setRevealedKeys((current) => {
+    const next = { ...current };
+    delete next[providerId];
+    return next;
+  });
 
   const save = useCallback(async () => {
     setBusy("custom-providers");
@@ -1198,6 +1221,7 @@ function CustomProvidersPanel({
       });
       setPayload(next);
       setDrafts(null);
+      setRevealedKeys({});
       setSaved(`已保存 ${next.providers.length} 个端点，重启后生效`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -1233,8 +1257,9 @@ function CustomProvidersPanel({
             </label>
             <label><span>API Key</span>
               <input
-                type="password"
-                value={row.api_key ?? ""}
+                type={row.api_key === null && revealedKeys[row.id] !== undefined ? "text" : "password"}
+                value={row.api_key ?? revealedKeys[row.id] ?? ""}
+                readOnly={row.api_key === null && revealedKeys[row.id] !== undefined}
                 placeholder={row.api_key_configured ? `已配置（${row.api_key_masked}）· 留空不变` : "未配置"}
                 disabled={busy !== null}
                 onChange={(e) => update(index, { api_key: e.target.value })}
@@ -1271,8 +1296,17 @@ function CustomProvidersPanel({
             </label>
             <div className="endpoint-actions">
               {row.api_key_configured && row.api_key === null && (
+                revealedKeys[row.id] !== undefined
+                  ? <button className="text-button" disabled={busy !== null}
+                    onClick={() => hideKey(row.id)}>隐藏密钥</button>
+                  : <button className="text-button" disabled={busy !== null}
+                    onClick={() => void revealKey(row.id)}>
+                    {busy === `reveal-key-${row.id}` ? "读取中…" : "显示密钥"}
+                  </button>
+              )}
+              {row.api_key_configured && row.api_key === null && (
                 <button className="text-button" disabled={busy !== null}
-                  onClick={() => update(index, { api_key: "" })}>清除密钥</button>
+                  onClick={() => { hideKey(row.id); update(index, { api_key: "" }); }}>清除密钥</button>
               )}
               {row.api_key !== null && (
                 <button className="text-button" disabled={busy !== null}

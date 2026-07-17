@@ -15,7 +15,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
@@ -1007,6 +1007,24 @@ def create_app(
                 {provider for provider, _ in catalog.prices} if catalog else set()
             ),
         }
+
+    @app.get("/api/custom-providers/{provider_id}/api-key")
+    async def reveal_custom_provider_api_key(
+        provider_id: str, response: Response
+    ) -> dict[str, str]:
+        """Return one stored key only after an explicit local UI request."""
+
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        async with settings_file_lock:
+            stored = _stored_custom_providers()
+        entry = next((item for item in stored if item.get("id") == provider_id), None)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="custom provider not found")
+        key = entry.get("api_key")
+        if not isinstance(key, str) or not key:
+            raise HTTPException(status_code=404, detail="custom provider has no API key")
+        return {"api_key": key}
 
     @app.post("/api/custom-providers")
     async def save_custom_providers(update: CustomProvidersUpdate) -> dict[str, Any]:

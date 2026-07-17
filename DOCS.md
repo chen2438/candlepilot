@@ -2,7 +2,7 @@
 
 > 本文件是 CandlePilot 的**唯一权威功能文档**，记录系统当前的全部能力、接口与边界。
 > `STATUS.md` 与 `PLAN.md` 已弃用，后续变更只同步更新本文件。
-> 最后更新：2026-07-17（回测模型溯源与实时决策）
+> 最后更新：2026-07-17（Custom API Key 按需显式查看）
 
 ---
 
@@ -509,10 +509,13 @@ Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功
 - 控制台「设置」标签页按分区列出**全部 `.env` 配置项**（运行模式与服务、决策与运行、
   Provider 路由、Custom API 单个/多个、币安测试网），`GET /api/settings` 提供字段元数据与
   当前值，`POST /api/settings` 保存。
-- **密钥只写不读**：币安测试网 Key/Secret、Custom API Key，以及内嵌 `api_key` 的
-  `*_PROVIDERS_JSON` / `*_HEADERS_JSON` **永不以明文经 REST 返回**，只返回掩码尾号
-  （如 `sup…abcd`）用于辨认。前端只发送**被改动过的键**，因此不触碰的密钥不会被其掩码覆盖；
-  留空表示保持不变。这延续了 4.1 的 API Key 边界。
+- **密钥默认遮罩、Custom API Key 可按需查看**：设置列表、币安测试网 Key/Secret，以及内嵌
+  `api_key` 的 `*_PROVIDERS_JSON` / `*_HEADERS_JSON` 默认只返回掩码尾号（如 `sup…abcd`）。
+  Custom API 端点允许用户主动点击“显示密钥”，通过
+  `GET /api/custom-providers/{id}/api-key` 只读取该端点已保存的完整 Key；响应强制
+  `Cache-Control: no-store` 与 `Pragma: no-cache`，再次点击可从前端状态中隐藏。该能力只存在于
+  本项目强制绑定的 localhost 控制台；不会自动加载所有 Key，也不开放自定义请求头或币安 Secret。
+  前端保存时仍只发送**被改动过的键**，因此仅查看不会把密钥重新写回或用掩码覆盖原值。
 - **只写文件、不改运行中的进程**：保存只写 `.env`，**重启后生效**；界面明确提示。已在 shell
   中 `export` 的同名变量在运行时优先级仍然更高。
 - **保存前整体校验**：用启动时同一套解析器校验候选配置（`Settings.from_mapping`，纯函数，
@@ -521,8 +524,8 @@ Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功
   崩溃的 `.env`。
 - **Custom API 端点用表单编辑，不写 JSON**：`GET/POST /api/custom-providers` 提供逐字段的增删改
   （ID、Base URL、API Key、模型、协议、推理强度、是否需要 Key），前端负责序列化成
-  `CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON`。**每个端点的 `api_key` 仍只写不读**：GET 只返回
-  `api_key_configured` 与掩码；POST 省略 `api_key` 表示保持原值、`""` 表示清除、给值表示替换。
+  `CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON`。列表 GET 只返回 `api_key_configured` 与掩码，显式
+  reveal 端点按上条规则返回单个 Key；POST 省略 `api_key` 表示保持原值、`""` 表示清除、给值表示替换。
   `extra_headers` 的值同样是密钥，GET 只返回**头名称**，保存时未提交则原样保留。保存前用启动
   解析器校验，并额外校验 Base URL（Provider 构造只把非法 URL 记为配置错误而不抛错，
   不校验就会存下一个"看起来保存成功、实际不可用"的端点）。
