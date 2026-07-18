@@ -1673,7 +1673,7 @@ def create_app(
             **projected.as_dict(),
             "seconds_per_call": round(seconds_per_call, 3),
             "slowest_provider": slowest_provider,
-            "latency_source": "probe_slowest_success",
+            "latency_source": "probe_slowest_average",
             "max_hours": MAX_ESTIMATED_HOURS,
             "within_limit": projected.estimated_seconds <= MAX_ESTIMATED_HOURS * 3600,
         }
@@ -1937,6 +1937,11 @@ def create_app(
                     "slowest_ok_seconds": (
                         round(item.slowest_ok_seconds, 1)
                         if item.slowest_ok_seconds is not None
+                        else None
+                    ),
+                    "average_ok_seconds": (
+                        round(item.average_ok_seconds, 1)
+                        if item.average_ok_seconds is not None
                         else None
                     ),
                     "suggested_timeout_seconds": item.suggested_timeout_seconds,

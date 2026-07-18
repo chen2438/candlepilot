@@ -154,19 +154,24 @@ def test_a_suggestion_leaves_room_over_the_slowest_call() -> None:
     assert probe.suggested_timeout_seconds == 60
 
 
-def test_the_slowest_participating_probe_sets_the_estimate_latency() -> None:
+def test_the_slowest_participating_average_sets_the_estimate_latency() -> None:
     probes = {
         "fast": ProviderProbe(
             provider="fast",
-            calls=[ProbeCall(seconds=value, ok=True) for value in (0.4, 0.5, 0.6)],
+            calls=[ProbeCall(seconds=value, ok=True) for value in (0.4, 0.5, 2.1)],
         ),
         "slow": ProviderProbe(
             provider="slow",
-            calls=[ProbeCall(seconds=value, ok=True) for value in (1.0, 1.4, 1.2)],
+            calls=[ProbeCall(seconds=value, ok=True) for value in (1.0, 1.1, 1.2)],
         ),
     }
 
-    assert slowest_probe(probes, ("fast", "slow")) == ("slow", 1.4)
+    provider, seconds = slowest_probe(probes, ("fast", "slow"))
+
+    # The fast model owns the slowest individual call (2.1s), but the slow
+    # model has the larger mean and therefore governs wall-clock estimation.
+    assert provider == "slow"
+    assert round(seconds, 1) == 1.1
 
 
 def test_an_endpoint_that_never_answers_gets_no_suggestion() -> None:

@@ -314,7 +314,7 @@ export interface BacktestEstimate {
   estimated_hours: number;
   seconds_per_call: number;
   slowest_provider: string;
-  latency_source: "probe_slowest_success";
+  latency_source: "probe_slowest_average";
   max_hours: number;
   within_limit: boolean;
 }
@@ -447,6 +447,7 @@ export interface ProviderProbe {
   in_flight_seconds: number | null;
   calls: ProbeCall[];
   slowest_ok_seconds: number | null;
+  average_ok_seconds: number | null;
   suggested_timeout_seconds: number | null;
 }
 

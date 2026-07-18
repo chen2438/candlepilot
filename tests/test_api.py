@@ -1451,7 +1451,7 @@ def test_backtest_estimate_counts_calls_before_any_are_paid_for(tmp_path: Path) 
         assert body["decisions_per_model"] == 24
         assert body["total_calls"] == 24
         assert body["slowest_provider"] == "api-fixture"
-        assert body["latency_source"] == "probe_slowest_success"
+        assert body["latency_source"] == "probe_slowest_average"
         assert body["within_limit"] is True
     asyncio.run(database.close())
 

@@ -1822,6 +1822,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
   const [error, setError] = useState<string | null>(null);
   const [showDiff, setShowDiff] = useState(false);
   const [probe, setProbe] = useState<ProbeStatus | null>(null);
+  const [autoEstimatePending, setAutoEstimatePending] = useState(false);
   const [timeout, setTimeoutSeconds] = useState("");
   const [openDecisions, setOpenDecisions] = useState<string | null>(null);
   const [decisions, setDecisions] = useState<BacktestDecision[] | null>(null);
@@ -1879,7 +1880,10 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
 
   // The estimate is stale the moment the spec changes; showing an old one
   // beside a new window is worse than showing none.
-  useEffect(() => { setEstimate(null); }, [form, useRecordedBook]);
+  useEffect(() => {
+    setEstimate(null);
+    setAutoEstimatePending(false);
+  }, [form, useRecordedBook]);
 
   const refreshProbe = useCallback(async () => {
     try {
@@ -1900,6 +1904,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
 
   const cancelProbe = async () => {
     try {
+      setAutoEstimatePending(false);
       await api("/api/backtests/probe/cancel", { method: "POST" });
       await refreshProbe();
     } catch (reason) {
@@ -1911,13 +1916,14 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
     setBusy("probe"); setError(null);
     try {
       await api("/api/backtests/probe", { method: "POST", body: JSON.stringify(body()) });
+      setAutoEstimatePending(true);
       await refreshProbe();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally { setBusy(null); }
   };
 
-  const runEstimate = async () => {
+  const runEstimate = useCallback(async () => {
     setBusy("estimate"); setError(null);
     try {
       setEstimate(await api<BacktestEstimate>("/api/backtests/estimate", {
@@ -1926,7 +1932,23 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally { setBusy(null); }
-  };
+  }, [body]);
+
+  // A successful probe already has every latency sample needed by the
+  // estimate. Requiring a second click adds no choice, so complete the
+  // preflight automatically. Parameter edits clear the pending flag above,
+  // preventing a completed old probe from being applied to a new spec.
+  useEffect(() => {
+    if (!autoEstimatePending || !probe || probe.running) return;
+    setAutoEstimatePending(false);
+    const complete = probe.providers.length > 0 && probe.providers.every((item) =>
+      item.done
+      && item.error === null
+      && item.failures === 0
+      && item.calls.length === probe.decisions
+    );
+    if (complete) void runEstimate();
+  }, [autoEstimatePending, probe, runEstimate]);
 
   const start = async () => {
     setBusy("start"); setError(null);
@@ -2126,8 +2148,8 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
           <small>
             用这个窗口的真实 payload 调每个模型 {probe?.decisions ?? 5} 次，量出它实际要多久。
             试跑期间超时放宽到 {probe?.ceiling_seconds ?? 180}s——用当前超时去试只会复现超时，
-            量不出模型真正需要的时间。估算和启动要求当前参数下每个模型 5 次全部成功；修改参数后
-            需要重新试跑。这几次是真实调用，会真实计费。
+            量不出模型真正需要的时间。5 次全部成功后会自动估算耗时；修改参数后需要重新试跑。
+            这几次是真实调用，会真实计费。
           </small>
         </div>
         {probe?.providers.map((item) => (
@@ -2200,7 +2222,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
           <span>共 <strong>{estimate.total_calls}</strong> 次模型调用</span>
           <span>预计 <strong>{formatEstimatedDuration(estimate.estimated_seconds)}</strong>
             <small>
-              按本次试跑最慢模型 {providerLabel(estimate.slowest_provider)} 的最慢一次
+              按本次试跑平均决策最慢的模型 {providerLabel(estimate.slowest_provider)}：平均
               {estimate.seconds_per_call}s · 上限 {estimate.max_hours}h
             </small></span>
           {!estimate.within_limit && <span className="negative">超出耗时上限，请缩短窗口</span>}
@@ -2208,9 +2230,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
       )}
 
       <div className="backtest-actions">
-        <button className="ghost" disabled={busy !== null || !form.providers.length} onClick={() => void runEstimate()}>
-          {busy === "estimate" ? "估算中…" : "先估算耗时"}
-        </button>
+        {busy === "estimate" && <small className="backtest-blocked">试跑完成，正在自动估算耗时…</small>}
         <button className="primary" disabled={busy !== null || !form.providers.length || engineRunning} onClick={() => void start()}>
           {busy === "start" ? "启动中…" : "开始回测"}
         </button>
@@ -2348,7 +2368,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                 ]
                 : [],
             ))}
-            {!runs.length && <tr><td colSpan={9} className="empty">还没有回测。选好标的、窗口和模型后先估算耗时。</td></tr>}
+            {!runs.length && <tr><td colSpan={9} className="empty">还没有回测。选好标的、窗口和模型后先试跑，耗时会自动估算。</td></tr>}
           </tbody>
         </table>
       </div>

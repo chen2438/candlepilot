@@ -83,6 +83,13 @@ class ProviderProbe:
         return max(durations) if durations else None
 
     @property
+    def average_ok_seconds(self) -> float | None:
+        """Mean latency of this endpoint's successful probe decisions."""
+
+        durations = [call.seconds for call in self.calls if call.ok]
+        return sum(durations) / len(durations) if durations else None
+
+    @property
     def failures(self) -> int:
         return sum(1 for call in self.calls if not call.ok)
 
@@ -104,13 +111,13 @@ class ProviderProbe:
 def slowest_probe(
     probes: Mapping[str, ProviderProbe], providers: Sequence[str]
 ) -> tuple[str, float]:
-    """The participating provider with the slowest successful sample."""
+    """The participating provider with the slowest mean decision latency."""
 
     provider = max(
         providers,
-        key=lambda name: probes[name].slowest_ok_seconds or 0.0,
+        key=lambda name: probes[name].average_ok_seconds or 0.0,
     )
-    seconds = probes[provider].slowest_ok_seconds
+    seconds = probes[provider].average_ok_seconds
     if seconds is None:
         raise ValueError(f"{provider} has no successful probe call")
     return provider, seconds
