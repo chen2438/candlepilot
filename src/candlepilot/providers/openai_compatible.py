@@ -301,20 +301,25 @@ class OpenAICompatibleProvider(DecisionProvider):
                 active = asyncio.current_task()
                 self._active_task = active
                 try:
-                    async with httpx.AsyncClient(
-                        timeout=self.timeout,
-                        follow_redirects=False,
-                        transport=self._transport,
-                    ) as client:
-                        response = await client.post(
-                            endpoint,
-                            headers=headers,
-                            json=request,
-                        )
+                    # HTTPX's scalar timeout is an inactivity limit for each
+                    # network phase, not an absolute wall-clock deadline. A
+                    # slow endpoint can otherwise keep a live cycle occupied
+                    # indefinitely by sending an occasional byte.
+                    async with asyncio.timeout(self.timeout):
+                        async with httpx.AsyncClient(
+                            timeout=self.timeout,
+                            follow_redirects=False,
+                            transport=self._transport,
+                        ) as client:
+                            response = await client.post(
+                                endpoint,
+                                headers=headers,
+                                json=request,
+                            )
                 finally:
                     if self._active_task is active:
                         self._active_task = None
-        except httpx.TimeoutException as exc:
+        except (httpx.TimeoutException, TimeoutError) as exc:
             raise invocation_error(
                 f"OpenAI-compatible endpoint timed out after {self.timeout:g}s"
             ) from exc

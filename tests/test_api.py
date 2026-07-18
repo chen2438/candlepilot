@@ -12,11 +12,13 @@ from pydantic import SecretStr
 
 from candlepilot.api import create_app
 from candlepilot.application.engine import TradingEngine
+from candlepilot.application.scheduler import CADENCE_SECONDS
 from candlepilot.backtest.probe import PROBE_CEILING_SECONDS, PROBE_DECISIONS
 from conftest import FakeTestnetBroker, StatefulTestnetBroker
 from candlepilot.broker.binance_testnet import ProtectiveLevels, ReconciliationReport
 from candlepilot.config import Settings
 from candlepilot.domain.models import (
+    MarketSnapshot,
     ProviderHealth,
     TradeIntent,
 )
@@ -78,6 +80,17 @@ class ApiMarket:
 
     async def close(self):
         return None
+
+    async def market_snapshot(self, symbol, cadence):
+        return MarketSnapshot(
+            symbol=symbol,
+            cadence=cadence,
+            timestamp=datetime.now(UTC),
+            mark_price="100",
+            bid="99.9",
+            ask="100.1",
+            quote_volume_24h="1000000",
+        )
 
     async def historical_klines(self, symbol, interval, start, end, *, max_candles=10_000):
         step = {
@@ -274,6 +287,82 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
             )
         )
         assert client.get("/api/metrics/run-session").json()["total_tokens"] == 150
+    asyncio.run(database.close())
+
+
+def test_live_start_runs_three_real_decisions_and_freezes_user_timeout(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'live-probe.db'}")
+    market = ApiMarket()
+
+    class MeasuredProvider(ApiProvider):
+        def __init__(self) -> None:
+            self.calls = 0
+            self.observed_timeouts: list[float] = []
+
+        async def generate_trade_intent(self, snapshot, portfolio):
+            self.calls += 1
+            self.observed_timeouts.append(self.timeout)
+            await asyncio.sleep(0.001)
+            return await super().generate_trade_intent(snapshot, portfolio)
+
+    provider = MeasuredProvider()
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([provider]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+        cadences=("15m",),
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        client.post("/api/providers/select", json={"name": "api-fixture"})
+        response = client.post(
+            "/api/engine/start", json={"timeout_seconds": 7}
+        )
+        assert response.status_code == 200, response.text
+        status = response.json()
+        assert provider.calls == 3
+        assert provider.observed_timeouts == [7, 7, 7]
+        assert status["decision_timeout_seconds"] == 7
+        assert status["startup_probe"]["decisions_per_provider"] == 3
+        assert status["startup_probe"]["analysis_symbol_count"] == 1
+        client.post("/api/engine/stop")
+        assert provider.timeout == 45
+    asyncio.run(database.close())
+
+
+def test_live_start_rejects_a_probe_that_cannot_fit_the_selected_cadence(
+    tmp_path: Path, monkeypatch
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'live-capacity.db'}")
+    market = ApiMarket()
+
+    class SlowProvider(ApiProvider):
+        async def generate_trade_intent(self, snapshot, portfolio):
+            await asyncio.sleep(0.02)
+            return await super().generate_trade_intent(snapshot, portfolio)
+
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([SlowProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+        cadences=("5m",),
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    monkeypatch.setitem(CADENCE_SECONDS, "5m", 0.01)
+
+    with TestClient(app) as client:
+        client.post("/api/providers/select", json={"name": "api-fixture"})
+        response = client.post(
+            "/api/engine/start", json={"timeout_seconds": 1}
+        )
+        assert response.status_code == 422
+        assert "Reduce analysis symbols" in response.json()["detail"]
+        assert client.get("/api/status").json()["running"] is False
     asyncio.run(database.close())
 
 

@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from candlepilot.application.engine import TradingEngine
 from candlepilot.application.scheduler import (
+    CADENCE_SECONDS,
     MAX_CANDIDATES_PER_CYCLE,
     TradingScheduler,
 )
@@ -159,6 +160,12 @@ class SettingsUpdate(ApiModel):
 class RunLimits(ApiModel):
     max_run_seconds: int | None = Field(default=None, gt=0, le=7 * 24 * 3600)
     max_run_cost_usd: float | None = Field(default=None, gt=0, le=10_000)
+
+
+class EngineStartRequest(ApiModel):
+    timeout_seconds: float | None = Field(
+        default=None, gt=0, le=MAX_SUGGESTED_TIMEOUT
+    )
 
 
 class HistoryClearRequest(ApiModel):
@@ -393,6 +400,8 @@ def _status(engine: TradingEngine, scheduler: TradingScheduler | None = None) ->
             "max_run_seconds": engine.max_run_seconds,
             "max_run_cost_usd": engine.max_run_cost_usd,
         },
+        "decision_timeout_seconds": engine.decision_timeout_seconds,
+        "startup_probe": engine.startup_probe,
         "auto_stop_reason": engine.auto_stop_reason,
         "route_failure_count": engine.route_failure_count,
         "route_failure_limit": DECISION_PROVIDER_MAX_ATTEMPTS,
@@ -403,6 +412,18 @@ def _status(engine: TradingEngine, scheduler: TradingScheduler | None = None) ->
         "universe_refreshed_at": engine.universe_refreshed_at.isoformat()
         if engine.universe_refreshed_at
         else None,
+        "scheduler": {
+            "current_cycle": scheduler.current_cycle if scheduler is not None else None,
+            "current_cycles": list(scheduler.current_cycles.values())
+            if scheduler is not None
+            else [],
+            "last_cycle": scheduler.last_cycle if scheduler is not None else None,
+            "last_error": scheduler.last_error if scheduler is not None else None,
+            "universe_last_error": scheduler.universe_last_error
+            if scheduler is not None
+            else None,
+            "guard_last_error": scheduler.guard_last_error if scheduler is not None else None,
+        },
         "user_stream": {
             "enabled": testnet_feed is not None,
             "running": testnet_feed.running if testnet_feed is not None else False,
@@ -521,6 +542,7 @@ def create_app(
     testnet_account_lock = asyncio.Lock()
     env_path = Path(os.environ.get(ENV_FILE_VARIABLE, ".env")).resolve()
     settings_file_lock = asyncio.Lock()
+    engine_start_lock = asyncio.Lock()
     testnet_account_memo: dict[str, Any] = {"account": None, "expires_at": 0.0}
     testnet_levels_lock = asyncio.Lock()
     testnet_levels_memo: dict[str, Any] = {"levels": None, "expires_at": 0.0}
@@ -1234,18 +1256,152 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _status(engine, scheduler)
 
+    async def live_startup_probe() -> dict[str, Any]:
+        """Measure three real, non-trading decisions before every live run."""
+
+        if not engine.candidates:
+            await engine.refresh_universe()
+        if not engine.candidates:
+            raise RuntimeError("the live universe has no eligible symbols to probe")
+
+        cadence = min(engine.active_cadences, key=CADENCE_SECONDS.__getitem__)
+        candidate_symbols = [
+            item.symbol for item in engine.candidates[: scheduler.candidates_per_cycle]
+        ]
+        portfolio = await engine.current_portfolio()
+        analysis_symbols = list(dict.fromkeys([*candidate_symbols, *portfolio.positions]))
+        if not analysis_symbols:
+            raise RuntimeError("the live run has no symbols to analyze")
+        probe_symbol = analysis_symbols[0]
+        durations: dict[str, list[float]] = {name: [] for name in engine.provider_chain}
+
+        for _ in range(3):
+            sample_started = time.perf_counter()
+            snapshot = await market.market_snapshot(probe_symbol, cadence)
+            portfolio = await engine.current_portfolio()
+            shared_seconds = time.perf_counter() - sample_started
+
+            async def invoke(name: str) -> tuple[str, float]:
+                provider = engine.providers.get(name)
+                started = time.perf_counter()
+                try:
+                    async with asyncio.timeout(provider.timeout):
+                        result = await provider.generate_trade_intent(snapshot, portfolio)
+                except TimeoutError as exc:
+                    raise RuntimeError(
+                        f"{name} exceeded the absolute {provider.timeout:g}s startup timeout"
+                    ) from exc
+                if (
+                    result.intent.symbol != snapshot.symbol
+                    or result.intent.cadence != snapshot.cadence
+                ):
+                    raise RuntimeError(
+                        f"{name} returned an intent for a different symbol or cadence"
+                    )
+                return name, shared_seconds + time.perf_counter() - started
+
+            measured = await asyncio.gather(*(invoke(name) for name in engine.provider_chain))
+            for name, seconds in measured:
+                durations[name].append(seconds)
+
+        slowest_seconds = max(value for values in durations.values() for value in values)
+        symbol_count = len(analysis_symbols)
+        projected_cycle_seconds = slowest_seconds * symbol_count
+        cadence_seconds = {
+            cadence_name: CADENCE_SECONDS[cadence_name]
+            for cadence_name in engine.active_cadences
+        }
+        overloaded = [
+            cadence_name
+            for cadence_name, seconds in cadence_seconds.items()
+            if projected_cycle_seconds > seconds
+        ]
+        utilization = projected_cycle_seconds * sum(
+            1 / seconds for seconds in cadence_seconds.values()
+        )
+        max_safe_symbols = max(
+            0,
+            int(
+                1
+                / (
+                    slowest_seconds
+                    * sum(1 / seconds for seconds in cadence_seconds.values())
+                )
+            ),
+        )
+        if overloaded or utilization > 1:
+            cadence_detail = ", ".join(
+                f"{name}={seconds}s" for name, seconds in cadence_seconds.items()
+            )
+            raise ValueError(
+                "live startup probe rejected this capacity: slowest of 3 real decisions "
+                f"was {slowest_seconds:.2f}s; {symbol_count} symbols project to "
+                f"{projected_cycle_seconds:.2f}s per cycle; selected cadences are "
+                f"{cadence_detail} and aggregate provider utilization is "
+                f"{utilization * 100:.1f}%. Reduce analysis symbols to at most "
+                f"{max_safe_symbols} or select longer/fewer cadences."
+            )
+        return {
+            "decisions_per_provider": 3,
+            "probe_symbol": probe_symbol,
+            "probe_cadence": cadence,
+            "durations_seconds": {
+                name: [round(value, 3) for value in values]
+                for name, values in durations.items()
+            },
+            "slowest_seconds": round(slowest_seconds, 3),
+            "analysis_symbol_count": symbol_count,
+            "projected_cycle_seconds": round(projected_cycle_seconds, 3),
+            "aggregate_utilization": round(utilization, 4),
+            "max_safe_symbols": max_safe_symbols,
+            "checked_at": datetime.now(UTC).isoformat(),
+        }
+
     @app.post("/api/engine/start")
-    async def start_engine() -> dict[str, Any]:
+    async def start_engine(request: EngineStartRequest | None = None) -> dict[str, Any]:
         if background_model_work():
             raise HTTPException(
                 status_code=409,
                 detail="cannot start the engine while a probe or backtest runs",
             )
-        try:
-            await engine.start()
-            scheduler.start()
-        except RuntimeError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        request = request or EngineStartRequest()
+        async with engine_start_lock:
+            if engine.running:
+                raise HTTPException(status_code=409, detail="engine is already running")
+            if not engine.provider_chain:
+                raise HTTPException(
+                    status_code=409,
+                    detail="at least one ready decision provider must be selected",
+                )
+            external = [
+                engine.providers.get(name)
+                for name in engine.provider_chain
+                if engine.providers.get(name).capabilities.external_inference
+            ]
+            timeout_seconds = request.timeout_seconds
+            if external and timeout_seconds is None:
+                configured = {provider.timeout for provider in external}
+                if len(configured) != 1:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            "selected external providers have different timeouts; "
+                            "choose one decision timeout for this live run"
+                        ),
+                    )
+                timeout_seconds = configured.pop()
+            try:
+                engine.startup_probe = None
+                engine.configure_decision_timeout(timeout_seconds if external else None)
+                engine.startup_probe = await live_startup_probe()
+                await engine.start()
+                scheduler.start()
+            except ValueError as exc:
+                engine.restore_provider_timeouts()
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            except Exception as exc:
+                engine.restore_provider_timeouts()
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _status(engine, scheduler)
 
     @app.post("/api/engine/stop")

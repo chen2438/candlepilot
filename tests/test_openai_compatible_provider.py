@@ -261,6 +261,25 @@ def test_custom_provider_http_errors_do_not_expose_key_or_url() -> None:
     assert caught.value.input_payload["market"]["symbol"] == "BTCUSDT"
 
 
+def test_custom_provider_timeout_is_an_absolute_wall_clock_deadline() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        # MockTransport does not perform socket reads, so HTTPX's own phase
+        # timeout cannot help here. The provider-level deadline still must.
+        await asyncio.sleep(0.2)
+        return httpx.Response(200, json={})
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://llm.example/v1",
+        api_key=SecretStr("secret"),
+        model="vendor-model",
+        timeout=0.02,
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(ProviderInvocationError, match="timed out after 0.02s"):
+        asyncio.run(provider.generate_trade_intent(_market(), _portfolio()))
+
+
 def test_cancel_targets_the_running_request_not_a_serialized_waiter() -> None:
     async def scenario():
         started = asyncio.Event()

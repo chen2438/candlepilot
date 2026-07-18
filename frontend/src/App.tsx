@@ -191,6 +191,8 @@ const emptyStatus: EngineStatus = {
   provider_routes: [],
   active_cadences: DECISION_CADENCES,
   run_limits: { max_run_seconds: null, max_run_cost_usd: null },
+  decision_timeout_seconds: null,
+  startup_probe: null,
   auto_stop_reason: null,
   route_failure_count: 0,
   route_failure_limit: 3,
@@ -199,6 +201,14 @@ const emptyStatus: EngineStatus = {
   max_candidates_per_cycle: 20,
   candidate_count: 0,
   universe_refreshed_at: null,
+  scheduler: {
+    current_cycle: null,
+    current_cycles: [],
+    last_cycle: null,
+    last_error: null,
+    universe_last_error: null,
+    guard_last_error: null,
+  },
   user_stream: {
     enabled: false,
     running: false,
@@ -399,6 +409,7 @@ export default function App() {
   const [testResult, setTestResult] = useState<Record<string, { ok: boolean; text: string }>>({});
   const [universeExpanded, setUniverseExpanded] = useState(false);
   const [limitDraft, setLimitDraft] = useState<{ minutes: string; budget: string } | null>(null);
+  const [decisionTimeoutDraft, setDecisionTimeoutDraft] = useState<string | null>(null);
 
   const applyProviderConfig = useCallback(async (
     name: string,
@@ -767,6 +778,14 @@ export default function App() {
     () => providers.find((provider) => provider.provider === status.active_provider),
     [providers, status.active_provider],
   );
+  const selectedExternalProvider = useMemo(
+    () => status.provider_chain
+      .map((name) => providers.find((provider) => provider.provider === name))
+      .find((provider) => provider?.capabilities.external_inference),
+    [providers, status.provider_chain],
+  );
+  const displayedDecisionTimeout = decisionTimeoutDraft
+    ?? String(status.decision_timeout_seconds ?? selectedExternalProvider?.timeout_seconds ?? 60);
   const allHistorySelected = HISTORY_CATEGORIES.every(
     (category) => historySelected[category.key],
   );
@@ -916,14 +935,57 @@ export default function App() {
                 >{busy === "run-limits" ? "…" : "应用"}</button>
               </div>
             </div>
+            <div className="cadence-select" title="覆盖整次外部模型调用的绝对截止时间；启动前会用当前真实数据试跑 3 次">
+              <span>正式决策硬超时</span>
+              <div className="limit-row live-timeout-row">
+                <label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={600}
+                    step={1}
+                    value={displayedDecisionTimeout}
+                    disabled={busy !== null || status.running || !selectedExternalProvider}
+                    onFocus={(event) => event.target.select()}
+                    onChange={(event) => setDecisionTimeoutDraft(event.target.value)}
+                  />
+                  <small>秒</small>
+                </label>
+                <small>{selectedExternalProvider
+                  ? "启动时真实试跑 3 次，并校验标的数 × 最慢耗时"
+                  : "本地规则无外部调用超时；仍会试跑 3 次校验容量"}</small>
+              </div>
+              {status.startup_probe && <div className="live-probe-summary">
+                最近试跑：最慢 {status.startup_probe.slowest_seconds}s × {status.startup_probe.analysis_symbol_count} 标的
+                = {status.startup_probe.projected_cycle_seconds}s · 负载 {(status.startup_probe.aggregate_utilization * 100).toFixed(1)}%
+              </div>}
+            </div>
             <button
               className="primary"
               disabled={busy !== null || status.running || status.emergency_locked}
-              onClick={() => act("start", "/api/engine/start")}
-            >{busy === "start" ? "启动中…" : "启动引擎"}</button>
+              onClick={() => {
+                const timeout = Number(displayedDecisionTimeout);
+                if (selectedExternalProvider && (!Number.isFinite(timeout) || timeout <= 0)) {
+                  setError("请输入有效的正式决策硬超时秒数");
+                  return;
+                }
+                void act("start", "/api/engine/start", {
+                  timeout_seconds: selectedExternalProvider ? timeout : null,
+                });
+              }}
+            >{busy === "start" ? "真实试跑 3 次…" : "试跑并启动"}</button>
             <button disabled={busy !== null || !status.running} onClick={() => act("stop", "/api/engine/stop")}>优雅停止</button>
             <button className="danger" disabled={busy !== null} onClick={() => act("kill", "/api/engine/emergency-stop")}>紧急熔断</button>
           </div>
+          {status.running && status.scheduler.current_cycles.map((cycle) => <div
+            className="live-cycle-strip" key={cycle.cadence}
+          >
+            当前 {cycle.cadence} 周期 · {cycle.symbol ?? "准备中"} · {cycle.stage} ·
+            {cycle.completed}/{cycle.total}
+          </div>)}
+          {status.scheduler.last_error && <div className="live-cycle-error">
+            最近调度错误：{status.scheduler.last_error}
+          </div>}
         </section>
 
         <RunUsage session={runSession} />

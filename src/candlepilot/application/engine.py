@@ -111,6 +111,9 @@ class TradingEngine:
         self.max_run_seconds: int | None = None
         self.max_run_cost_usd: float | None = None
         self.auto_stop_reason: str | None = None
+        self.decision_timeout_seconds: float | None = None
+        self.startup_probe: dict[str, object] | None = None
+        self._provider_timeout_restore: dict[str, float] = {}
 
     async def provider_health(self) -> list[ProviderHealth]:
         return await self.providers.health()
@@ -201,6 +204,30 @@ class TradingEngine:
         self.max_run_seconds = max_run_seconds
         self.max_run_cost_usd = max_run_cost_usd
 
+    def configure_decision_timeout(self, seconds: float | None) -> None:
+        """Freeze one absolute external-provider timeout for the next live run."""
+
+        if self.running:
+            raise RuntimeError("cannot change decision timeout while running")
+        self.restore_provider_timeouts()
+        self.decision_timeout_seconds = seconds
+        if seconds is None:
+            return
+        if seconds <= 0:
+            raise ValueError("decision timeout must be positive")
+        for name in self.provider_chain:
+            provider = self.providers.get(name)
+            if not provider.capabilities.external_inference:
+                continue
+            self._provider_timeout_restore[name] = provider.timeout
+            provider.timeout = seconds
+
+    def restore_provider_timeouts(self) -> None:
+        for name, timeout in self._provider_timeout_restore.items():
+            self.providers.get(name).timeout = timeout
+        self._provider_timeout_restore.clear()
+        self.decision_timeout_seconds = None
+
     def evaluate_stop_reason(
         self,
         *,
@@ -290,6 +317,7 @@ class TradingEngine:
             self.run_end_inference_id = await self.audit.latest_inference_id()
             self.run_ended_at = datetime.now(UTC)
         self.running = False
+        self.restore_provider_timeouts()
 
     async def emergency_stop(self, *, now: datetime | None = None) -> None:
         now = now or datetime.now(UTC)
@@ -299,6 +327,7 @@ class TradingEngine:
             self.run_end_inference_id = await self.audit.latest_inference_id()
             self.run_ended_at = now
         self.running = False
+        self.restore_provider_timeouts()
         self.emergency_locked = True
         tomorrow = now.astimezone(UTC).date() + timedelta(days=1)
         self.emergency_locked_until = datetime.combine(tomorrow, time.min, tzinfo=UTC)
@@ -433,7 +462,37 @@ class TradingEngine:
                 for position, name in enumerate(round_candidates, start=1):
                     provider = self.providers.get(name)
                     try:
-                        result = await provider.generate_trade_intent(snapshot, portfolio)
+                        async with asyncio.timeout(provider.timeout):
+                            result = await provider.generate_trade_intent(
+                                snapshot, portfolio
+                            )
+                    except TimeoutError:
+                        timeout_error = ProviderError(
+                            f"decision provider exceeded absolute {provider.timeout:g}s timeout"
+                        )
+                        failed_at = datetime.now(UTC)
+                        state = self._provider_route_states[name]
+                        state.consecutive_failures += 1
+                        state.cooldown_until = failed_at + PROVIDER_FAILURE_COOLDOWN
+                        state.last_error = str(timeout_error)
+                        state.last_failed_at = failed_at
+                        retry_continues = (
+                            position < len(round_candidates)
+                            or attempt_number < DECISION_PROVIDER_MAX_ATTEMPTS
+                        )
+                        failed_results.append(
+                            self._provider_failure_result(
+                                provider_name=name,
+                                provider=provider,
+                                error=timeout_error,
+                                snapshot=snapshot,
+                                portfolio=portfolio,
+                                route_position=self.provider_chain.index(name) + 1,
+                                failover_continues=retry_continues,
+                                decision_attempt=attempt_number,
+                            )
+                        )
+                        continue
                     except ProviderError as exc:
                         failed_at = datetime.now(UTC)
                         state = self._provider_route_states[name]

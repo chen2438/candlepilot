@@ -48,6 +48,19 @@ export interface EngineStatus {
   active_cadences: string[];
   supported_cadences: string[];
   run_limits: { max_run_seconds: number | null; max_run_cost_usd: number | null };
+  decision_timeout_seconds: number | null;
+  startup_probe: {
+    decisions_per_provider: number;
+    probe_symbol: string;
+    probe_cadence: string;
+    durations_seconds: Record<string, number[]>;
+    slowest_seconds: number;
+    analysis_symbol_count: number;
+    projected_cycle_seconds: number;
+    aggregate_utilization: number;
+    max_safe_symbols: number;
+    checked_at: string;
+  } | null;
   auto_stop_reason: string | null;
   route_failure_count: number;
   route_failure_limit: number;
@@ -55,6 +68,30 @@ export interface EngineStatus {
   max_candidates_per_cycle: number;
   candidate_count: number;
   universe_refreshed_at: string | null;
+  scheduler: {
+    current_cycle: {
+      cadence: string;
+      started_at: string;
+      symbol: string | null;
+      symbol_started_at: string | null;
+      stage: string;
+      completed: number;
+      total: number;
+    } | null;
+    current_cycles: Array<{
+      cadence: string;
+      started_at: string;
+      symbol: string | null;
+      symbol_started_at: string | null;
+      stage: string;
+      completed: number;
+      total: number;
+    }>;
+    last_cycle: Record<string, unknown> | null;
+    last_error: string | null;
+    universe_last_error: string | null;
+    guard_last_error: string | null;
+  };
   user_stream: {
     enabled: boolean;
     running: boolean;

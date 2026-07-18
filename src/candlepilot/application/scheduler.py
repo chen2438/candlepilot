@@ -53,9 +53,25 @@ class TradingScheduler:
         self._symbol_locks: dict[str, asyncio.Lock] = {}
         self._stop = asyncio.Event()
         self._auto_stop_task: asyncio.Task[None] | None = None
-        self.last_error: str | None = None
+        self.cadence_errors: dict[str, str] = {}
         self.universe_last_error: str | None = None
         self.guard_last_error: str | None = None
+        self.current_cycles: dict[str, dict[str, object]] = {}
+        self.last_cycle: dict[str, object] | None = None
+
+    @property
+    def current_cycle(self) -> dict[str, object] | None:
+        """Return one active cycle for the compact status API.
+
+        Cadence tasks are independent, so internal tracking remains keyed by
+        cadence even though the current console only has room for one row.
+        """
+
+        return next(iter(self.current_cycles.values()), None)
+
+    @property
+    def last_error(self) -> str | None:
+        return "; ".join(self.cadence_errors.values()) or None
 
     def select_candidates_per_cycle(self, value: int) -> None:
         if self.engine.running:
@@ -103,10 +119,15 @@ class TradingScheduler:
             if not self.engine.running:
                 continue
             try:
-                await self.run_cycle(cadence)
-                self.last_error = None
+                async with asyncio.timeout(max(1.0, seconds - 0.5)):
+                    await self.run_cycle(cadence)
+                self.cadence_errors.pop(cadence, None)
+            except TimeoutError:
+                self.cadence_errors[cadence] = (
+                    f"{cadence}: cycle exceeded its {seconds:g}s cadence budget and was cancelled"
+                )
             except Exception as exc:
-                self.last_error = f"{cadence}: {exc}"
+                self.cadence_errors[cadence] = f"{cadence}: {exc}"
 
     async def _run_universe(self) -> None:
         while not self._stop.is_set():
@@ -207,19 +228,46 @@ class TradingScheduler:
             for candidate in self.engine.candidates[: self.candidates_per_cycle]
         ]
         symbols.extend(portfolio.positions)
+        ordered_symbols = list(dict.fromkeys(symbols))
+        started_at = datetime.now(UTC)
+        cycle_state: dict[str, object] = {
+            "cadence": cadence,
+            "started_at": started_at.isoformat(),
+            "symbol": None,
+            "symbol_started_at": None,
+            "stage": "preparing",
+            "completed": 0,
+            "total": len(ordered_symbols),
+        }
+        self.current_cycles[cadence] = cycle_state
         outcomes = []
-        for symbol in dict.fromkeys(symbols):
-            contract = contracts.get(symbol)
-            if contract is None:
-                continue
-            lock = self._symbol_locks.setdefault(symbol, asyncio.Lock())
-            async with lock:
-                snapshot = await self.market.market_snapshot(symbol, cadence)
-                portfolio = await self._portfolio()
-                outcomes.append(
-                    await self.engine.evaluate(snapshot, portfolio, contract.rules)
+        try:
+            for symbol in ordered_symbols:
+                contract = contracts.get(symbol)
+                if contract is None:
+                    continue
+                cycle_state.update(
+                    symbol=symbol,
+                    symbol_started_at=datetime.now(UTC).isoformat(),
+                    stage="market_snapshot",
                 )
-        return outcomes
+                lock = self._symbol_locks.setdefault(symbol, asyncio.Lock())
+                async with lock:
+                    snapshot = await self.market.market_snapshot(symbol, cadence)
+                    cycle_state["stage"] = "portfolio"
+                    portfolio = await self._portfolio()
+                    cycle_state["stage"] = "decision"
+                    outcomes.append(
+                        await self.engine.evaluate(snapshot, portfolio, contract.rules)
+                    )
+                cycle_state["completed"] = int(cycle_state["completed"]) + 1
+            return outcomes
+        finally:
+            self.last_cycle = {
+                **cycle_state,
+                "ended_at": datetime.now(UTC).isoformat(),
+            }
+            self.current_cycles.pop(cadence, None)
 
     async def _portfolio(self) -> PortfolioState:
         return await self.engine.current_portfolio()
