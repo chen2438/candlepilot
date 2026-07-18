@@ -1827,6 +1827,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
   const [openDecisions, setOpenDecisions] = useState<string | null>(null);
   const [decisions, setDecisions] = useState<BacktestDecision[] | null>(null);
   const [detailResult, setDetailResult] = useState<BacktestResult | null>(null);
+  const restoredEstimateKey = useRef<string | null>(null);
   const localTimeZone = useMemo(() => localTimeZoneLabel(), []);
   const configuredTimeouts = useMemo(() => [
     ...new Set(
@@ -1914,23 +1915,33 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
 
   const startProbe = async () => {
     setBusy("probe"); setError(null);
+    // Clear the previous completed probe before the POST yields. Otherwise the
+    // pending flag can render against stale successful rows and request an
+    // estimate while the server has already cleared them for the new probe.
+    setProbe(null);
+    setAutoEstimatePending(false);
+    restoredEstimateKey.current = null;
     try {
       await api("/api/backtests/probe", { method: "POST", body: JSON.stringify(body()) });
-      setAutoEstimatePending(true);
       await refreshProbe();
+      setAutoEstimatePending(true);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally { setBusy(null); }
   };
 
-  const runEstimate = useCallback(async () => {
-    setBusy("estimate"); setError(null);
+  const runEstimate = useCallback(async (surfaceError = true) => {
+    setBusy("estimate");
+    if (surfaceError) setError(null);
     try {
       setEstimate(await api<BacktestEstimate>("/api/backtests/estimate", {
         method: "POST", body: JSON.stringify(body()),
       }));
+      setError(null);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      if (surfaceError) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      }
     } finally { setBusy(null); }
   }, [body]);
 
@@ -1947,8 +1958,43 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
       && item.failures === 0
       && item.calls.length === probe.decisions
     );
-    if (complete) void runEstimate();
+    if (complete) void runEstimate(true);
   }, [autoEstimatePending, probe, runEstimate]);
+
+  // Probe samples live in the backend process while the estimate card is UI
+  // state. After a refresh, recover the card when the completed providers and
+  // current request still match. A stale probe is expected and rejected by
+  // the API, so recovery failures stay silent; the request fingerprint keeps
+  // them from being retried on every render.
+  useEffect(() => {
+    if (autoEstimatePending || estimate || !probe || probe.running || !form.providers.length) {
+      return;
+    }
+    const complete = probe.providers.length === form.providers.length
+      && probe.providers.every((item) =>
+        form.providers.includes(item.provider)
+        && item.done
+        && item.error === null
+        && item.failures === 0
+        && item.calls.length === probe.decisions
+      );
+    if (!complete) return;
+    let requestKey: string;
+    try {
+      requestKey = JSON.stringify({
+        request: body(),
+        samples: probe.providers.map((item) => ({
+          provider: item.provider,
+          calls: item.calls.map((call) => [call.seconds, call.ok]),
+        })),
+      });
+    } catch {
+      return;
+    }
+    if (restoredEstimateKey.current === requestKey) return;
+    restoredEstimateKey.current = requestKey;
+    void runEstimate(false);
+  }, [autoEstimatePending, body, estimate, form.providers, probe, runEstimate]);
 
   const start = async () => {
     setBusy("start"); setError(null);
