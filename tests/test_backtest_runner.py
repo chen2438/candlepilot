@@ -574,6 +574,9 @@ def test_a_decision_records_why_nothing_traded() -> None:
     assert seen[0].outcome == "call_failed"
     assert "3 attempts" in seen[0].detail
     assert "timed out" in seen[0].detail
+    assert len(seen[0].attempt_started_at) == 3
+    assert all(started.tzinfo == UTC for started in seen[0].attempt_started_at)
+    assert seen[0].attempt_started_at == sorted(seen[0].attempt_started_at)
     # The failed one carries no action: there was no intent to record.
     assert seen[0].action is None
     assert {item.outcome for item in seen} <= {

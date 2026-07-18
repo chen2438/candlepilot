@@ -178,6 +178,7 @@ class BacktestDecisionRow(Base):
     #: The veto reason, the call's error -- whatever explains the outcome.
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     fill_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempts_json: Mapped[str] = mapped_column(Text, default="[]")
 
 
 class BookCaptureRow(Base):
@@ -392,6 +393,15 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             "ADD COLUMN progress_json TEXT NOT NULL DEFAULT '{}'",
         ),
     ),
+    (
+        11,
+        (
+            # Historical decision time and actual local dispatch time are
+            # different clocks; retain every provider attempt for audit.
+            "ALTER TABLE backtest_decisions "
+            "ADD COLUMN attempts_json TEXT NOT NULL DEFAULT '[]'",
+        ),
+    ),
 )
 CURRENT_SCHEMA_VERSION = max(version for version, _ in MIGRATIONS)
 
@@ -425,19 +435,28 @@ class Database:
             if current is not None and version <= current:
                 continue
             for statement in statements:
-                if version in (9, 10):
+                if version in (9, 10, 11):
+                    table = (
+                        "backtest_decisions"
+                        if version == 11
+                        else "backtest_model_runs"
+                    )
                     columns = {
                         row[1]
                         for row in (
                             await connection.execute(
-                                text("PRAGMA table_info(backtest_model_runs)")
+                                text(f"PRAGMA table_info({table})")
                             )
                         ).all()
                     }
                     # create_all() gives a brand-new database the current ORM
-                    # shape before versioned migrations run. Existing v8
+                    # shape before versioned migrations run. Existing earlier
                     # databases still need the ALTER; fresh ones must skip it.
-                    target = "usage_json" if version == 9 else "progress_json"
+                    target = {
+                        9: "usage_json",
+                        10: "progress_json",
+                        11: "attempts_json",
+                    }[version]
                     if not columns or target in columns:
                         continue
                 await connection.execute(text(statement))
@@ -1122,6 +1141,7 @@ class AuditRepository:
                 "rationale": row.rationale,
                 "detail": row.detail,
                 "fill": json.loads(row.fill_json) if row.fill_json else None,
+                "attempt_started_at": json.loads(row.attempts_json or "[]"),
             }
             for row in rows
         ]

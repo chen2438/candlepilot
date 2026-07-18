@@ -1757,7 +1757,11 @@ def create_app(
             if decision is not None:
                 row = decision.as_row()
                 fill = row.pop("fill")
+                attempts = row.pop("attempt_started_at")
                 row["fill_json"] = json.dumps(fill) if fill else None
+                row["attempts_json"] = json.dumps(
+                    [started.isoformat() for started in attempts]
+                )
                 # A model call takes seconds; this local write takes
                 # milliseconds. Persist the complete row now so an expanded
                 # running backtest can show it on the next three-second poll.

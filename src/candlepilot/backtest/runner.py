@@ -236,6 +236,7 @@ class BacktestDecision:
     rationale: str | None = None
     detail: str | None = None
     fill: dict[str, Any] | None = None
+    attempt_started_at: list[datetime] = field(default_factory=list)
 
     def as_row(self) -> dict[str, Any]:
         return {
@@ -248,6 +249,7 @@ class BacktestDecision:
             "rationale": self.rationale,
             "detail": self.detail,
             "fill": self.fill,
+            "attempt_started_at": self.attempt_started_at,
         }
 
 
@@ -430,6 +432,7 @@ class BacktestRunner:
             result: ProviderResult | None = None
             last_error: Exception | None = None
             for attempt in range(DECISION_PROVIDER_MAX_ATTEMPTS):
+                entry.attempt_started_at.append(datetime.now(UTC))
                 try:
                     result = await provider.generate_trade_intent(snapshot, portfolio)
                     break

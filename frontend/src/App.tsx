@@ -2312,11 +2312,23 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                         : !decisions.length
                           ? <span className="empty">这个模型还没有决策记录。</span>
                           : <table className="decision-log">
-                            <thead><tr><th>时间</th><th>标的</th><th>结果</th><th>动作</th><th>置信</th><th>说明</th></tr></thead>
+                            <thead><tr><th>历史时刻</th><th data-tooltip={`模型请求实际从本机发出的墙钟时间；按 ${localTimeZone} 显示。`}>实际调用</th><th>标的</th><th>结果</th><th>动作</th><th>置信</th><th>说明</th></tr></thead>
                             <tbody>
                               {decisions.map((item) => (
                                 <tr key={item.id}>
                                   <td>{formatLocalDateTime(new Date(item.decided_at))}</td>
+                                  <td className="decision-call-times">
+                                    {item.attempt_started_at.length
+                                      ? <>
+                                        <span>首次 · {formatLocalDateTimeSeconds(new Date(item.attempt_started_at[0]))}</span>
+                                        {item.attempt_started_at.slice(1).map((startedAt, retry) => (
+                                          <small key={`${startedAt}-${retry}`}>重试 {retry + 1} · {formatLocalDateTimeSeconds(new Date(startedAt))}</small>
+                                        ))}
+                                        {item.attempt_started_at.length > 1
+                                          && <em>共重试 {item.attempt_started_at.length - 1} 次</em>}
+                                      </>
+                                      : <span>未调用模型</span>}
+                                  </td>
                                   <td>{item.symbol} · {item.cadence}</td>
                                   <td><span className={`decision-outcome ${DECISION_OUTCOME_CLASS[item.outcome]}`}>
                                     {BACKTEST_OUTCOME[item.outcome]}</span></td>
@@ -2377,6 +2389,11 @@ const RUN_STATUS: Record<BacktestRun["status"], string> = {
 function formatLocalDateTime(date: Date): string {
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${String(date.getFullYear()).padStart(4, "0")}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function formatLocalDateTimeSeconds(date: Date): string {
+  const seconds = String(date.getSeconds()).padStart(2, "0");
+  return `${formatLocalDateTime(date)}:${seconds}`;
 }
 
 function parseLocalDateTime(value: string): Date {

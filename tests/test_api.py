@@ -2166,6 +2166,8 @@ def test_every_backtest_decision_is_readable_afterwards(tmp_path: Path) -> None:
     first = decisions[0]
     assert first["symbol"] == "BTCUSDT"
     assert first["cadence"] == "5m"
+    assert len(first["attempt_started_at"]) == 1
+    assert datetime.fromisoformat(first["attempt_started_at"][0]).tzinfo is not None
     # The api fixture always holds, so the reason for zero trades is legible.
     assert {item["outcome"] for item in decisions} == {"hold"}
     assert first["rationale"] == "fixture"

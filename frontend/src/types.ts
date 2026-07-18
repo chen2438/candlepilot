@@ -468,6 +468,7 @@ export interface BacktestDecision {
   confidence: number | null;
   rationale: string | null;
   detail: string | null;
+  attempt_started_at: string[];
   fill: null | {
     status: "NEW" | "FILLED";
     price: string;
