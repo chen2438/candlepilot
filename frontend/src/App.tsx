@@ -317,6 +317,7 @@ function customProviderId(name: string): string | null {
 }
 
 function providerLabel(name: string): string {
+  if (name === "local-rule") return "本地规则";
   if (name === "codex-auth") return "Codex Auth";
   if (name === "claude-code-auth") return "Claude Code Auth";
   if (name === "openai-compatible") return "Custom API";
@@ -331,6 +332,7 @@ function modelConfigSummary(model: string | null, effort: string | null, recorde
 }
 
 function providerIcon(name: string): string {
+  if (name === "local-rule") return "FX";
   if (name === "codex-auth") return "CX";
   if (name === "claude-code-auth") return "CC";
   if (name === "openai-compatible" || customProviderId(name)) return "API";
@@ -813,7 +815,7 @@ export default function App() {
             <p className="eyebrow">AUTONOMOUS DESK / 本地控制台</p>
             <h1>系统{status.running ? "运行中" : "已停机"}</h1>
             <p className="hero-copy">
-              LLM 负责提出交易意图，确定性风控拥有最终否决权。当前不支持真钱实盘。
+              外部模型或本地规则负责提出交易意图，确定性风控拥有最终否决权。当前不支持真钱实盘。
             </p>
           </div>
           <div className="hero-metrics">
@@ -940,12 +942,13 @@ export default function App() {
                 const model = configDraft[provider.provider]?.model ?? provider.model ?? "";
                 const effort = configDraft[provider.provider]?.effort ?? provider.reasoning_effort ?? "";
                 const customProvider = customProviderId(provider.provider) !== null;
+                const configurable = provider.capabilities.configurable_model;
                 const pricing = configDraft[provider.provider]?.pricing ?? provider.pricing ?? "";
                 const custom = configDraft[provider.provider]?.custom ?? (model !== "" && !options.includes(model));
                 const draft = { model, effort, custom, pricing };
-                const dirty = model !== (provider.model ?? "")
+                const dirty = configurable && (model !== (provider.model ?? "")
                   || effort !== (provider.reasoning_effort ?? "")
-                  || (customProvider && pricing !== (provider.pricing ?? ""));
+                  || (customProvider && pricing !== (provider.pricing ?? "")));
                 const update = (next: Partial<typeof draft>) =>
                   setConfigDraft((current) => ({ ...current, [provider.provider]: { ...draft, ...next } }));
                 return <div
@@ -969,7 +972,19 @@ export default function App() {
                       {routeIndex >= 0 ? `#${routeIndex + 1} · ` : ""}{provider.authenticated ? "READY" : provider.available ? "LOGIN" : "MISSING"}
                     </span>
                   </button>
-                  <div className={`provider-card-config ${customProvider ? "has-pricing" : ""}`}>
+                  {!configurable ? <div className="provider-card-config local-provider-config">
+                    <div>
+                      <strong>{provider.model}</strong>
+                      <small>只使用现有多周期 K 线特征 · 本地确定性计算 · 0 Token / 0 成本</small>
+                    </div>
+                    <button className="text-button" disabled={status.running || busy !== null}
+                      onClick={() => testProvider(provider.provider)}>
+                      {busy === `test-${provider.provider}` ? "测试中…" : "测试"}
+                    </button>
+                    {testResult[provider.provider] && <span className={`config-test-result ${testResult[provider.provider].ok ? "ok" : "err"}`}>
+                      {testResult[provider.provider].text}
+                    </span>}
+                  </div> : <div className={`provider-card-config ${customProvider ? "has-pricing" : ""}`}>
                     <label>
                       <span>模型</span>
                       <div className="config-model-cell">
@@ -1037,7 +1052,7 @@ export default function App() {
                     {testResult[provider.provider] && <span className={`config-test-result ${testResult[provider.provider].ok ? "ok" : "err"}`}>
                       {testResult[provider.provider].text}
                     </span>}
-                  </div>
+                  </div>}
                 </div>;
               })}
             </div>
@@ -1835,13 +1850,20 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
   const [decisions, setDecisions] = useState<BacktestDecision[] | null>(null);
   const [detailResult, setDetailResult] = useState<BacktestResult | null>(null);
   const restoredEstimateKey = useRef<string | null>(null);
+  const localEstimateKey = useRef<string | null>(null);
   const localTimeZone = useMemo(() => localTimeZoneLabel(), []);
   const configuredTimeouts = useMemo(() => [
     ...new Set(
-      form.providers.map((name) => providers.find((item) => item.provider === name)?.timeout_seconds)
+      form.providers.map((name) => {
+        const provider = providers.find((item) => item.provider === name);
+        return provider?.capabilities.external_inference ? provider.timeout_seconds : undefined;
+      })
         .filter((seconds): seconds is number => seconds !== undefined),
     ),
   ], [form.providers, providers]);
+  const providersRequiringProbe = useMemo(() => form.providers.filter((name) =>
+    providers.find((item) => item.provider === name)?.capabilities.requires_backtest_probe,
+  ), [form.providers, providers]);
   const timeoutPlaceholder = configuredTimeouts.length === 1
     ? `留空默认 ${configuredTimeouts[0]}s`
     : configuredTimeouts.length > 1
@@ -1977,9 +1999,9 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
     if (autoEstimatePending || estimate || !probe || probe.running || !form.providers.length) {
       return;
     }
-    const complete = probe.providers.length === form.providers.length
+    const complete = probe.providers.length === providersRequiringProbe.length
       && probe.providers.every((item) =>
-        form.providers.includes(item.provider)
+        providersRequiringProbe.includes(item.provider)
         && item.done
         && item.error === null
         && item.failures === 0
@@ -2001,7 +2023,25 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
     if (restoredEstimateKey.current === requestKey) return;
     restoredEstimateKey.current = requestKey;
     void runEstimate(false);
-  }, [autoEstimatePending, body, estimate, form.providers, probe, runEstimate]);
+  }, [autoEstimatePending, body, estimate, form.providers, probe, providersRequiringProbe, runEstimate]);
+
+  // A deterministic local provider has no network latency to sample. Estimate
+  // it directly whenever the current form contains only providers that declare
+  // probing unnecessary.
+  useEffect(() => {
+    if (!form.providers.length || providersRequiringProbe.length || estimate || busy !== null) {
+      return;
+    }
+    let requestKey: string;
+    try {
+      requestKey = JSON.stringify(body());
+    } catch {
+      return;
+    }
+    if (localEstimateKey.current === requestKey) return;
+    localEstimateKey.current = requestKey;
+    void runEstimate(false);
+  }, [body, busy, estimate, form.providers.length, providersRequiringProbe.length, runEstimate]);
 
   const start = async () => {
     setBusy("start"); setError(null);
@@ -2165,7 +2205,9 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                 disabled={busy !== null || !provider.available}
                 onClick={() => toggle("providers", provider.provider)}>
                 <span>{providerLabel(provider.provider)}</span>
-                <small>{modelConfigSummary(provider.model, provider.reasoning_effort)}</small>
+                <small>{provider.capabilities.external_inference
+                  ? modelConfigSummary(provider.model, provider.reasoning_effort)
+                  : `${provider.model} · 本地确定性`}</small>
               </button>
             ))}
           </div>
@@ -2187,23 +2229,25 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
 
         <div className="probe">
         <div className="probe-head">
-          <strong>试跑 {probe?.decisions ?? 5} 次决策</strong>
-          <button
+          <strong>{providersRequiringProbe.length
+            ? `试跑 ${probe?.decisions ?? 5} 次决策`
+            : "本地策略无需试跑"}</strong>
+          {providersRequiringProbe.length > 0 && <button
             className="compact"
             disabled={busy !== null || !form.providers.length || engineRunning || probe?.running}
             onClick={() => void startProbe()}
-          >{probe?.running ? "试跑中…" : "开始试跑"}</button>
+          >{probe?.running ? "试跑中…" : "开始试跑"}</button>}
           {probe?.running && (
             <button className="text-button danger-text" onClick={() => void cancelProbe()}>
               停止试跑
             </button>
           )}
-          <small>
-            用这个窗口的真实 payload 调每个模型 {probe?.decisions ?? 5} 次，量出它实际要多久。
+          <small>{providersRequiringProbe.length ? <>
+            用这个窗口的真实 payload 调每个外部模型 {probe?.decisions ?? 5} 次，量出它实际要多久。
             试跑期间超时放宽到 {probe?.ceiling_seconds ?? 180}s——用当前超时去试只会复现超时，
             量不出模型真正需要的时间。5 次全部成功后会自动估算耗时；修改参数后需要重新试跑。
             这几次是真实调用，会真实计费。
-          </small>
+          </> : <>本地规则直接计算现有特征，没有网络超时、Token 或调用成本；参数变化后会自动重新估算。</>}</small>
         </div>
         {probe?.providers.map((item) => (
           <div className="probe-row" key={item.provider}>
@@ -2258,24 +2302,24 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
             )}
           </div>
         ))}
-        <label className="probe-timeout">
+        {providersRequiringProbe.length > 0 && <label className="probe-timeout">
           <span>本次回测超时（秒）</span>
           <input
             type="number" min={1} placeholder={timeoutPlaceholder} title={timeoutPlaceholder}
             value={timeout} disabled={busy !== null}
             onChange={(event) => setTimeoutSeconds(event.target.value)}
           />
-        </label>
+        </label>}
         </div>
       </div>
 
       {estimate && (
         <div className={`backtest-estimate ${estimate.within_limit ? "" : "over"}`}>
           <span>每模型 <strong>{estimate.decisions_per_model}</strong> 次决策</span>
-          <span>共 <strong>{estimate.total_calls}</strong> 次模型调用</span>
+          <span>共 <strong>{estimate.total_calls}</strong> 次决策计算</span>
           <span>预计 <strong>{formatEstimatedDuration(estimate.estimated_seconds)}</strong>
             <small>
-              按本次试跑平均决策最慢的模型 {providerLabel(estimate.slowest_provider)}：平均
+              按{estimate.latency_source === "local_deterministic" ? "本地计算基线" : "本次试跑平均决策最慢的模型"} {providerLabel(estimate.slowest_provider)}：平均
               {estimate.seconds_per_call}s · 上限 {estimate.max_hours}h
             </small></span>
           {!estimate.within_limit && <span className="negative">超出耗时上限，请缩短窗口</span>}
@@ -2430,7 +2474,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                 ]
                 : [],
             ))}
-            {!runs.length && <tr><td colSpan={9} className="empty">还没有回测。选好标的、窗口和模型后先试跑，耗时会自动估算。</td></tr>}
+            {!runs.length && <tr><td colSpan={12} className="empty">还没有回测。选好标的、窗口和决策 Provider；外部模型试跑后、本地规则直接自动估算耗时。</td></tr>}
           </tbody>
         </table>
       </div>

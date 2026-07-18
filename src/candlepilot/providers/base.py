@@ -31,14 +31,19 @@ class ProviderCapabilities:
     tools_disabled: bool = True
     cancellable: bool = False
     max_concurrency: int = 1
+    external_inference: bool = True
+    configurable_model: bool = True
+    requires_backtest_probe: bool = True
+    retryable: bool = True
+    estimated_seconds_per_decision: float | None = None
 
 
-class LLMProvider(ABC):
+class DecisionProvider(ABC):
     name: str
     model: str | None = None
     reasoning_effort: str | None = None
     reasoning_effort_options: tuple[str, ...] = ()
-    #: Seconds one inference may take before it is abandoned. Every provider
+    #: Seconds one decision may take before it is abandoned. Every provider
     #: already had this; it is declared here because the probe and the backtest
     #: override it for the length of a run, and a protocol that does not admit
     #: the attribute makes that a reach into a private detail.
@@ -62,3 +67,8 @@ class LLMProvider(ABC):
         portfolio: PortfolioState,
     ) -> ProviderResult:
         raise NotImplementedError
+
+
+# Compatibility for integrations and tests written before local deterministic
+# strategies made the provider boundary broader than LLM inference.
+LLMProvider = DecisionProvider

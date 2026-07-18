@@ -236,7 +236,7 @@ class TradingEngine:
         if self.emergency_locked:
             raise RuntimeError("engine is emergency locked")
         if not self.provider_chain:
-            raise RuntimeError("at least one authenticated LLM provider must be selected")
+            raise RuntimeError("at least one ready decision provider must be selected")
         report = await self.testnet_broker.reconcile_account()
         self.testnet_reconciliation = report
         if report.unprotected_symbols:

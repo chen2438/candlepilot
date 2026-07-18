@@ -3,8 +3,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from candlepilot.domain.models import ProviderHealth
-from candlepilot.providers.base import LLMProvider
+from candlepilot.providers.base import DecisionProvider
 from candlepilot.providers.cli import ClaudeCodeAuthProvider, CodexAuthProvider
+from candlepilot.providers.local import LocalRuleProvider
 from candlepilot.providers.openai_compatible import OpenAICompatibleProvider
 
 if TYPE_CHECKING:
@@ -12,13 +13,18 @@ if TYPE_CHECKING:
 
 
 class ProviderRegistry:
-    def __init__(self, providers: list[LLMProvider] | None = None) -> None:
-        configured = providers or [CodexAuthProvider(), ClaudeCodeAuthProvider()]
+    def __init__(self, providers: list[DecisionProvider] | None = None) -> None:
+        configured = providers or [
+            LocalRuleProvider(),
+            CodexAuthProvider(),
+            ClaudeCodeAuthProvider(),
+        ]
         self._providers = {provider.name: provider for provider in configured}
 
     @classmethod
     def from_settings(cls, settings: Settings) -> ProviderRegistry:
-        providers: list[LLMProvider] = [
+        providers: list[DecisionProvider] = [
+            LocalRuleProvider(),
             CodexAuthProvider(
                 timeout=settings.inference_timeout_seconds,
                 model=settings.codex_model,
@@ -46,7 +52,7 @@ class ProviderRegistry:
         )
         return cls(providers)
 
-    def get(self, name: str) -> LLMProvider:
+    def get(self, name: str) -> DecisionProvider:
         try:
             return self._providers[name]
         except KeyError as exc:

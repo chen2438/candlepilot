@@ -2,14 +2,15 @@
 
 > 本文件是 CandlePilot 的**唯一权威功能文档**，记录系统当前的全部能力、接口与边界。
 > `STATUS.md` 与 `PLAN.md` 已弃用，后续变更只同步更新本文件。
-> 最后更新：2026-07-17（正式决策与回测 Provider 同决策重试）
+> 最后更新：2026-07-18（本地确定性趋势决策 Provider）
 
 ---
 
 ## 1. 概述
 
-CandlePilot 是一个**本地优先、可审计**的 LLM 日内交易系统，当前专注于币安
-USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，**确定性风控拥有最终否决权**。
+CandlePilot 是一个**本地优先、可审计**的日内交易系统，当前专注于币安
+USDⓈ-M USDT 永续合约。外部 LLM 或本地确定性策略分析市场并提出结构化 `TradeIntent`，
+**确定性风控拥有最终否决权**。
 
 - 运行只有一种形态：**币安官方 Demo 测试网**（真实签名下单、真实撮合、真实交易所过滤器）。
   回测是**按需发起的分析**，不是运行模式。
@@ -33,7 +34,8 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 
 - 只监听 localhost（非 `127.0.0.1/localhost/::1` 的绑定地址会被拒绝启动）。
 - 币安密钥、任何敏感环境变量**永不传入 LLM 子进程**。
-- LLM 子进程禁用工具、文件、Shell、网络；单轮、硬超时、单并发。
+- 外部 LLM 子进程禁用工具、文件、Shell、网络；单轮、硬超时、单并发。本地规则 Provider
+  不启动子进程、不访问网络。
 - 测试网 Broker 硬性拒绝生产交易地址；凭证不写入数据库和日志。
 - 真钱实盘、美股、新闻/社交/链上数据均**不实施**。
 
@@ -42,13 +44,24 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 - 后端：Python 3.12、FastAPI、Pydantic、SQLAlchemy、SQLite（WAL）。
 - 前端：React + TypeScript + Vite，白色浅色主题；REST + WebSocket。
 - 存储：SQLite 保存业务与审计数据；Parquet 保存大容量历史行情。
-- 适配器接口预留扩展点：`MarketDataProvider`、`BrokerAdapter`、`LLMProvider`、
+- 适配器接口预留扩展点：`MarketDataProvider`、`BrokerAdapter`、`DecisionProvider`
+  （`LLMProvider` 保留为兼容别名）、
   `FeaturePipeline`、`DecisionEngine`、`RiskPolicy`。
 - 单进程异步，不依赖 Redis/Celery。
 
 ## 4. 功能详解
 
-### 4.1 LLM 接入
+### 4.1 决策 Provider 接入
+
+- **本地规则（`local-rule` / `trend-v1`）**：不调用外部 LLM，不新增行情采集，直接读取正式决策
+  与普通历史回测都具备的多周期 K 线派生特征。5m/15m/30m/1h/4h EMA 方向按
+  10%/15%/20%/25%/30% 加权；绝对分数至少 0.45，5m 必须触发、15m/30m 至少一个确认，
+  1h/4h 不得同时反向，5m `return_1`/`return_5` 不得同时反向，5m `quote_volume_ratio`
+  至少 0.8，且顺势 `ema20_distance_atr` 不得达到 2.5，才产生开仓。开仓固定请求 0.5% 风险、
+  3 倍杠杆，以决策周期 ATR 的 1.5 倍止损、1.5R 止盈；已有仓位只在完整反向入场条件成立时
+  `CLOSE`，否则 `HOLD`，第一版不 `ADD/REDUCE`。缺少任一必需特征时明确 `HOLD` 并列出缺项。
+  该策略忽略仅实盘存在的盘口、主动成交、基差和持仓量，保证普通回测与正式决策语义一致。
+  每次计算仍完整审计输入、规则版本、结构化输出和理由；Token/成本均为 0。
 
 - **Codex Auth**：优先检测当前 ChatGPT App 与旧版 Codex App 的内置二进制
   （`/Applications/ChatGPT.app/...`、`/Applications/Codex.app/...`），不可用时依次回退到
@@ -97,7 +110,7 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
   `rationale_truncated=true`，同时完整原始输出仍留在本地审计。方向、杠杆、风险、价格与保护单
   等交易关键字段不做自动修正，任何不合规仍安全降级。
 - **有序主备路由**：控制台或 `CANDLEPILOT_PROVIDER_CHAIN` 可配置任意长度且不重复的 Provider
-  顺序，例如 `codex → claude-code → custom:main`。启动时并行检查整条路由，只要至少一个节点已
+  顺序，例如 `local → codex → custom:main`。启动时并行检查整条路由，只要至少一个节点已
   就绪即可启动，并选择顺序最靠前的就绪节点承载。每个配置名必须对应实际注册的 Provider；失效
   引用会在保存或启动时明确拒绝，不会跳过节点或静默改选另一条实际路由。
 - **故障冷却、同决策重试与恢复**：一轮分析按顺序尝试未冷却节点；调用失败的节点立即冷却
@@ -139,7 +152,7 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 ### 4.3 选币与特征
 
 - 动态全市场扫描 USDT 永续，按上市时间、完整度、价差、成交额、波动率、趋势过滤排名；
-  启动即扫，之后每分钟自动刷新轮换，每周期最多向 LLM 提交 5 个候选。
+  启动即扫，之后每分钟自动刷新轮换，每周期最多向所选决策 Provider 提交 5 个候选。
 - 特征：**5m/15m/30m/1h/4h** 共享 EMA、RSI、ATR、收益率、成交量，以及 20/50 根区间高低点与
   区间内位置（`range_position_50`，0 为区间底、1 为区间顶）；另有基差、持仓量、
   20 档盘口与近期成交失衡等微观结构特征。每个周期获取最近 200 根 K 线、排除未收盘 K 线
@@ -157,7 +170,7 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 - **准入耦合**：日线结构位要求至少 `DAILY_STRUCTURE_PERIOD`（20）根已收盘日线，这正由扫描器
   30 天上市门槛保证；两者的关系有测试钉住（门槛降到 20 天以下会让新币在
   `market_snapshot` 阶段抛错并整体掉出该周期）。
-- **喂给模型的周期 = 规则用到的周期**（`DECISION_FEATURE_INTERVALS`）。1m **不进** LLM
+- **喂给决策 Provider 的周期 = 规则用到的周期**（`DECISION_FEATURE_INTERVALS`）。1m **不进入**决策
   payload：入场形态明确使用 5m/15m/30m，趋势与结构背景明确使用 1h/4h，没有一条规则读 1m，
   而没有分配角色的数据比
   没有数据更糟——模型必然自行发明用法，且每次调用可能发明得不一样。1m 还会双向干扰规则
@@ -343,7 +356,7 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 `AggressiveRiskPolicy`，因此静默跳过了日亏熔断、8 仓上限、快照时效与 tick 对齐，
 评估的是一个没人运行的系统。
 
-- **喂给模型的 payload 与实盘同构**：同一套 `FeaturePipeline` 组装 5m/15m/30m/1h/4h 前缀特征
+- **喂给决策 Provider 的 payload 与实盘同构**：同一套 `FeaturePipeline` 组装 5m/15m/30m/1h/4h 前缀特征
   与日线结构位，按决策时刻截断至**已收盘**的 K 线（无前视）。
 - **历史拿不到的东西被声明，不被伪造**：币安没有历史盘口，因此 `book_imbalance`、
   `basis_bps`、`open_interest`、成交流水**一律缺失**。Prompt 会追加一句说明，
@@ -375,8 +388,8 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 - **多模型对比**：同一窗口跑 1–4 个模型，跨模型并行（同模型内串行），逐模型独立报告
   收益/胜率/回撤/盈亏比/交易数。任一模型被判定 Provider 失效时，整轮对比立即停止并取消其他
   模型，避免继续消耗一个已经失去共同截止点的比较。
-- **成本护栏**：`POST /api/backtests/estimate` 计算调用数与预计耗时。估算不再混用过去 7 天所有
-  Provider 的平均值，也没有 25 秒猜测回退；它要求当前参数下每个参与模型先完成下述 5 次试跑，
+- **成本护栏**：`POST /api/backtests/estimate` 计算决策数与预计耗时。估算不再混用过去 7 天所有
+  外部 Provider 的平均值，也没有 25 秒猜测回退；它要求当前参数下每个参与外部模型先完成下述 5 次试跑，
   先分别计算每个模型 5 次成功调用的**平均决策耗时**，再取平均值最慢的参与模型乘以每模型串行
   决策数。单次异常慢响应不会独自代表整轮耗时；模型之间并行，
   所以模型数只增加 `total_calls`，不重复累加墙钟时间。试跑必须与标的、周期、窗口、回测配置、
@@ -386,6 +399,8 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
   基线估算。控制台不超过 1 小时按向上取整的分钟显示，超过 1 小时才显示“小时 + 分钟”；
   回测超时留空时直接展示所选 Provider 的当前默认秒数，多个默认值不一致则要求显式填写。
   历史窗口放宽为 ≤ 31 天（约一个月），同时仍受 ≤ 5 标的、≤ 4 模型和 8 小时护栏约束。
+  `local-rule` 不存在网络长尾、超时或计费，使用声明的本地计算基线直接自动估算，不要求 5 次试跑；
+  与外部模型混合对比时只试跑外部模型，最慢平均值仍在所有参与 Provider 中比较。
 - **异步执行**：真实窗口是数小时，不可能同步返回。`POST /api/backtests` 返回 **202 + run_id**，
   后台执行，`GET /api/backtests/{id}` 轮询进度与已完成的部分结果，
   `POST /api/backtests/{id}/cancel` 取消。进度**逐决策落库**：控制台读的是存储的那一份，
@@ -402,7 +417,7 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
   和本地写入，并在每次决策完成后修正。收益按最新历史 mark 计算，包含尚未平仓头寸的未实现盈亏；
   胜率与交易数只统计已经平仓的交易，最大回撤使用截至当前的逐决策权益曲线。这些临时统计与最终
   收尾结果分开持久化并随 3 秒轮询更新，不会为了展示实时收益而提前强平持仓。
-- **同决策失败重试**：与正式决策共用“最多 3 轮、轮间退避 5 秒/15 秒”的策略，但回测每个模型
+- **同决策失败重试**：外部 Provider 与正式决策共用“最多 3 轮、轮间退避 5 秒/15 秒”的策略，但回测每个模型
   本身就是独立比较对象，不存在备用 Provider，所以每轮只重试该模型。任一轮成功就按这次正式
   结果继续；三轮都失败即判定该 Provider 失效，把该时刻记为一个 `call_failed`（不是三条失败
   决策）并立即停止整轮回测。回测的历史结束时间改为该 Provider **最后一次成功决策的时间**；
@@ -410,7 +425,9 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
   终止时回滚到最后一个成功检查点，因此收益、成交和收尾价格不会包含显示截止时间之后的行情；
   原计划结束时间另存为 `spec.requested_end`，控制台明确展示提前结束及原计划时间。估算仍展示
   无失败时的基础调用量与耗时；实际重试会额外增加失败调用自身的等待时间及 5 秒/15 秒退避。
-- **超时与耗时试跑（`POST /api/backtests/probe`）**：回测是数百次调用压在一个固定超时上，而合适的
+  本地规则没有可由重试恢复的网络故障，缺特征返回可审计 `HOLD`，未预期的计算异常只尝试一次
+  并立即停止回测。
+- **超时与耗时试跑（`POST /api/backtests/probe`）**：外部模型回测是数百次调用压在一个固定超时上，而合适的
   超时值因端点而异——猜一个 45s 曾让一次运行 12 次决策丢掉 5 次，却仍报出一个整洁的 0% 收益。
   发起前对**每个模型跑 5 次真实决策**（真实端点、真实 payload、真实计费），既量出超时也作为
   本次预计运行时间的唯一延迟来源。不同模型并行试跑，各模型内部仍串行；即使选四个模型，最坏
@@ -428,6 +445,7 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
   `timeout_seconds` 随 run 落库：用户显式填写时标记为「本次指定」，留空时在创建任务的瞬间读取
   Provider 当前超时并标记为「继承配置」，随后整轮使用这个固化值。这样运行记录在失败前就能说明
   实际超时，且运行期间的配置变化不会改写回测语义；旧记录没有固化值时明确显示不可补回。
+  纯本地规则回测的 timeout 来源记录为“不适用”，控制台隐藏超时输入与试跑按钮并自动显示估算。
 - **逐条决策可查（`GET /api/backtests/{id}/decisions`）**：只报总数时，「0 笔交易」有四种
   互相看不出来的成因——模型一直持有、风控每次否决、快照缺失、调用失败，全都是 0。
   因此每条决策落库：时间、标的、周期、`outcome`（`traded`/`pending`/`rejected`/`hold`/`no_snapshot`/
@@ -550,7 +568,7 @@ Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功
 | 标签页 | 面板 | 内容 |
 |---|---|---|
 | 总览 | 引擎控制（hero）| 系统状态、分析周期、每周期标的数、启动/停止/紧急熔断；下方实时显示本次或上次运行的 Token、等效成本、调用数与时长 |
-| 总览 | 01 模型接入 | 每张 Provider 卡片内集成接入状态、模型与推理强度、应用/测试；下方提供有序主备路由及当前承载/冷却状态 |
+| 总览 | 01 模型接入 | 每张 Provider 卡片内集成接入状态；外部模型可配置模型与推理强度，本地规则显示固定版本与零 Token/成本；下方提供有序主备路由及当前承载/冷却状态 |
 | 总览 | 02 硬风控边界 | 只读展示不可修改的风控参数 |
 | 总览 | 03 动态候选池 | 全市场扫描结果，可手动刷新；默认只显示评分前 5 个，可展开查看全部 |
 | 总览 | 04 决策与风控 | 将 LLM 意图、硬风控与执行尝试合并为一条审计事件；可按放行、下单成功、下单失败、否决、HOLD、仅推理筛选，并展开失败阶段、交易所错误、紧急回补和损失估算 |
@@ -653,8 +671,8 @@ Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功
 | `CANDLEPILOT_CANDIDATES_PER_CYCLE` | 每周期分析候选池前 N 个标的，默认 5（范围 1–20）|
 | `CANDLEPILOT_MAX_RUN_SECONDS` | 单次运行时长上限（秒）；留空/非正数=不限 |
 | `CANDLEPILOT_MAX_RUN_COST_USD` | 单次运行等效成本预算（USD）；留空/非正数=不限 |
-| `CANDLEPILOT_PROVIDER_CHAIN` | 启动时默认的逗号分隔有序 Provider 路由，例如 `codex,claude-code,custom:main`；不允许重复，所有 Custom API ID 必须存在，优先级高于旧的单 Provider 配置 |
-| `CANDLEPILOT_DEFAULT_PROVIDER` | 兼容旧配置的单 Provider 默认值；引用的 Custom API ID 必须存在，仅在 `CANDLEPILOT_PROVIDER_CHAIN` 留空时使用 |
+| `CANDLEPILOT_PROVIDER_CHAIN` | 启动时默认的逗号分隔有序 Provider 路由，例如 `local,codex,custom:main`；不允许重复，所有 Custom API ID 必须存在，优先级高于旧的单 Provider 配置 |
+| `CANDLEPILOT_DEFAULT_PROVIDER` | 兼容旧配置的单 Provider 默认值；`local`/`local-rule` 选择本地规则，引用的 Custom API ID 必须存在，仅在 `CANDLEPILOT_PROVIDER_CHAIN` 留空时使用 |
 | `CANDLEPILOT_CODEX_MODEL` / `CANDLEPILOT_CODEX_REASONING_EFFORT` | Codex 模型 / 推理强度（minimal/low/medium/high）|
 | `CANDLEPILOT_CLAUDE_MODEL` / `CANDLEPILOT_CLAUDE_EFFORT` | Claude 模型 / 强度（low/medium/high/xhigh/max）|
 | `CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON` | **全部** Custom API 端点的 JSON 数组（最多 8 个），每项需唯一 `id` 与 `base_url`，注册为 `openai-compatible:<id>` |

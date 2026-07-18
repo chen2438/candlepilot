@@ -27,7 +27,7 @@ from candlepilot.backtest.engine import (
 )
 from candlepilot.backtest.snapshots import INTERVAL_MILLISECONDS, HistoricalSnapshotBuilder
 from candlepilot.domain.models import TradeAction
-from candlepilot.providers.base import LLMProvider, ProviderResult
+from candlepilot.providers.base import DecisionProvider, ProviderResult
 from candlepilot.providers.retry import (
     DECISION_PROVIDER_MAX_ATTEMPTS,
     DECISION_PROVIDER_RETRY_DELAYS,
@@ -334,7 +334,7 @@ class BacktestRunner:
 
     async def run(
         self,
-        provider: LLMProvider,
+        provider: DecisionProvider,
         progress: ModelRun,
         *,
         on_progress: Callable[[ModelRun, BacktestDecision | None], Awaitable[None]]
@@ -431,14 +431,19 @@ class BacktestRunner:
             portfolio = exchange.portfolio_state(self._marks(when), as_of=when)
             result: ProviderResult | None = None
             last_error: Exception | None = None
-            for attempt in range(DECISION_PROVIDER_MAX_ATTEMPTS):
+            max_attempts = (
+                DECISION_PROVIDER_MAX_ATTEMPTS
+                if provider.capabilities.retryable
+                else 1
+            )
+            for attempt in range(max_attempts):
                 entry.attempt_started_at.append(datetime.now(UTC))
                 try:
                     result = await provider.generate_trade_intent(snapshot, portfolio)
                     break
                 except Exception as exc:  # noqa: BLE001 - retry the decision in place
                     last_error = exc
-                    if attempt < DECISION_PROVIDER_MAX_ATTEMPTS - 1:
+                    if attempt < max_attempts - 1:
                         await self._retry_sleep(self._provider_retry_delays[attempt])
 
             if result is None:
@@ -446,7 +451,7 @@ class BacktestRunner:
                 entry.outcome = "call_failed"
                 entry.detail = (
                     "provider unavailable after "
-                    f"{DECISION_PROVIDER_MAX_ATTEMPTS} attempts: {last_error}"
+                    f"{max_attempts} attempts: {last_error}"
                 )[:200]
                 progress.calls_failed += 1
                 progress.decisions_done += 1
@@ -542,7 +547,7 @@ async def compare(
     *,
     spec: BacktestSpec,
     runner_for: Callable[[str], BacktestRunner],
-    provider_for: Callable[[str], LLMProvider],
+    provider_for: Callable[[str], DecisionProvider],
     on_progress: Callable[[ModelRun, BacktestDecision | None], Awaitable[None]]
     | None = None,
 ) -> list[ModelRun]:

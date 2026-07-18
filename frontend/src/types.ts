@@ -97,6 +97,11 @@ export interface ProviderHealth {
     tools_disabled: boolean;
     cancellable: boolean;
     max_concurrency: number;
+    external_inference: boolean;
+    configurable_model: boolean;
+    requires_backtest_probe: boolean;
+    retryable: boolean;
+    estimated_seconds_per_decision: number | null;
   };
 }
 
@@ -332,7 +337,7 @@ export interface BacktestEstimate {
   estimated_hours: number;
   seconds_per_call: number;
   slowest_provider: string;
-  latency_source: "probe_slowest_average";
+  latency_source: "probe_slowest_average" | "local_deterministic";
   max_hours: number;
   within_limit: boolean;
 }
@@ -426,7 +431,7 @@ export interface BacktestRun {
     provider_configs?: Record<string, { model: string | null; reasoning_effort: string | null }>;
     use_recorded_book?: boolean;
     timeout_seconds?: number | null;
-    timeout_source?: "explicit" | "provider_config";
+    timeout_source?: "explicit" | "provider_config" | "not_applicable";
     estimate: { decisions_per_model: number; total_calls: number; estimated_hours: number };
   };
   created_at: string;

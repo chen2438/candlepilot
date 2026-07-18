@@ -22,6 +22,8 @@ ENV_FILE_VARIABLE = "CANDLEPILOT_ENV_FILE"
 # would win over the rewritten .env (load_dotenv never overrides real vars).
 DOTENV_INJECTED_KEYS: set[str] = set()
 DEFAULT_PROVIDER_ALIASES = {
+    "local": "local-rule",
+    "local-rule": "local-rule",
     "codex": "codex-auth",
     "codex-auth": "codex-auth",
     "claude": "claude-code-auth",

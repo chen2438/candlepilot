@@ -141,8 +141,6 @@ def test_custom_llm_providers_reject_bad_definitions(monkeypatch) -> None:
 
 
 def test_provider_chain_accepts_custom_endpoint_ids(monkeypatch) -> None:
-    import pytest
-
     monkeypatch.setenv(
         "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON",
         json.dumps(
@@ -167,6 +165,16 @@ def test_provider_chain_accepts_custom_endpoint_ids(monkeypatch) -> None:
         with pytest.raises(ValueError):
             Settings.from_env()
     monkeypatch.delenv("CANDLEPILOT_PROVIDER_CHAIN")
+
+
+def test_local_rule_is_a_first_class_provider_alias(monkeypatch) -> None:
+    monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", "local, codex")
+    monkeypatch.setenv("CANDLEPILOT_DEFAULT_PROVIDER", "local-rule")
+
+    settings = Settings.from_env()
+
+    assert settings.provider_chain == ("local-rule", "codex-auth")
+    assert settings.default_provider == "local-rule"
 
 
 def test_run_limits_default_to_unbounded_and_read_env(monkeypatch) -> None:

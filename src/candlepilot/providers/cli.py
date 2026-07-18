@@ -22,7 +22,7 @@ from candlepilot.domain.models import (
     ProviderHealth,
     TradeIntent,
 )
-from candlepilot.providers.base import LLMProvider, ProviderCapabilities, ProviderResult
+from candlepilot.providers.base import DecisionProvider, ProviderCapabilities, ProviderResult
 from candlepilot.provenance import (
     DECISION_PROMPT_VERSION,
     MARKET_SNAPSHOT_SCHEMA_VERSION,
@@ -432,7 +432,7 @@ def trade_intent_output_schema() -> dict[str, Any]:
     return schema
 
 
-class CodexAuthProvider(LLMProvider):
+class CodexAuthProvider(DecisionProvider):
     name = "codex-auth"
     reasoning_effort_options = ("minimal", "low", "medium", "high")
 
@@ -610,7 +610,7 @@ class CodexAuthProvider(LLMProvider):
         )
 
 
-class ClaudeCodeAuthProvider(LLMProvider):
+class ClaudeCodeAuthProvider(DecisionProvider):
     name = "claude-code-auth"
     reasoning_effort_options = ("low", "medium", "high", "xhigh", "max")
 

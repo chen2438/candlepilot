@@ -33,7 +33,6 @@ from candlepilot.backtest.probe import (
     PROBE_DECISIONS,
     ProviderProbe,
     probe_provider,
-    slowest_probe,
 )
 from candlepilot.backtest.runner import (
     MAX_BACKTEST_MODELS,
@@ -90,7 +89,7 @@ from candlepilot.providers.pricing import (
 )
 from candlepilot.providers.pricing import PROVIDER_IDS, ModelPricingCatalog
 from candlepilot.providers.pricing import load_catalog as load_pricing_catalog
-from candlepilot.providers.base import LLMProvider, ProviderResult
+from candlepilot.providers.base import DecisionProvider, ProviderResult
 from candlepilot.providers.openai_compatible import validate_base_url
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.providers.retry import DECISION_PROVIDER_MAX_ATTEMPTS
@@ -785,6 +784,11 @@ def create_app(
             raise HTTPException(
                 status_code=409,
                 detail="cannot change model settings while a probe or backtest runs",
+            )
+        if not provider.capabilities.configurable_model:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{config.name} has a fixed local strategy version",
             )
         model = (config.model or "").strip() or None
         effort = (config.reasoning_effort or "").strip() or None
@@ -1646,22 +1650,36 @@ def create_app(
             validate(spec)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        selected_providers: list[LLMProvider] = []
+        selected_providers: list[DecisionProvider] = []
         for provider in spec.providers:
             try:
                 selected_providers.append(engine.providers.get(provider))
             except KeyError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
         if spec.timeout_seconds is None:
-            configured_timeouts = {provider.timeout for provider in selected_providers}
+            timed_providers = [
+                provider
+                for provider in selected_providers
+                if provider.capabilities.external_inference
+            ]
+            configured_timeouts = {provider.timeout for provider in timed_providers}
             if len(configured_timeouts) != 1:
-                raise HTTPException(
-                    status_code=422,
-                    detail="selected providers have different configured timeouts; "
-                    "set an explicit timeout for this backtest",
-                )
-            spec = replace(spec, timeout_seconds=configured_timeouts.pop())
+                if configured_timeouts:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="selected external providers have different configured timeouts; "
+                        "set an explicit timeout for this backtest",
+                    )
+            elif configured_timeouts:
+                spec = replace(spec, timeout_seconds=configured_timeouts.pop())
         return spec
+
+    def _providers_requiring_probe(spec: BacktestSpec) -> tuple[str, ...]:
+        return tuple(
+            name
+            for name in spec.providers
+            if engine.providers.get(name).capabilities.requires_backtest_probe
+        )
 
     def _probe_key(spec: BacktestSpec, provider_name: str) -> tuple[object, ...]:
         """Everything that can change the payload or selected model.
@@ -1688,7 +1706,9 @@ def create_app(
         """Estimate from five clean calls against every participating model."""
 
         invalid: list[str] = []
-        for name in spec.providers:
+        latencies: dict[str, float] = {}
+        required = _providers_requiring_probe(spec)
+        for name in required:
             probe = probes.get(name)
             if probe is None or probe_keys.get(name) != _probe_key(spec, name):
                 invalid.append(f"{name} has no matching probe")
@@ -1700,6 +1720,9 @@ def create_app(
                 or probe.failures
             ):
                 invalid.append(f"{name} does not have {PROBE_DECISIONS} successful calls")
+                continue
+            assert probe.average_ok_seconds is not None
+            latencies[name] = probe.average_ok_seconds
         if invalid:
             raise HTTPException(
                 status_code=422,
@@ -1709,13 +1732,23 @@ def create_app(
                 ),
             )
 
-        slowest_provider, seconds_per_call = slowest_probe(probes, spec.providers)
+        for name in spec.providers:
+            if name in latencies:
+                continue
+            latency = engine.providers.get(
+                name
+            ).capabilities.estimated_seconds_per_decision
+            latencies[name] = latency if latency is not None else 0.001
+        slowest_provider = max(spec.providers, key=latencies.__getitem__)
+        seconds_per_call = latencies[slowest_provider]
         projected = estimate(spec, seconds_per_call=seconds_per_call)
         payload = {
             **projected.as_dict(),
             "seconds_per_call": round(seconds_per_call, 3),
             "slowest_provider": slowest_provider,
-            "latency_source": "probe_slowest_average",
+            "latency_source": (
+                "probe_slowest_average" if required else "local_deterministic"
+            ),
             "max_hours": MAX_ESTIMATED_HOURS,
             "within_limit": projected.estimated_seconds <= MAX_ESTIMATED_HOURS * 3600,
         }
@@ -1771,7 +1804,7 @@ def create_app(
         if spec.timeout_seconds is None:
             yield
             return
-        restore: list[tuple[LLMProvider, float]] = []
+        restore: list[tuple[DecisionProvider, float]] = []
         try:
             for name in spec.providers:
                 provider = engine.providers.get(name)
@@ -1856,7 +1889,7 @@ def create_app(
                     status="failed",
                     error="; ".join(
                         f"{run.provider} became unavailable after "
-                        f"{DECISION_PROVIDER_MAX_ATTEMPTS} attempts"
+                        f"{DECISION_PROVIDER_MAX_ATTEMPTS if engine.providers.get(run.provider).capabilities.retryable else 1} attempts"
                         for run in unavailable
                     )[:500],
                     effective_end=effective_end,
@@ -1876,11 +1909,12 @@ def create_app(
         # filled in as its calls land. A probe that only appears once it has
         # finished is indistinguishable from a hung one for as long as it takes
         # -- and at the ceiling, five calls is fifteen minutes.
-        for name in spec.providers:
+        required = _providers_requiring_probe(spec)
+        for name in required:
             probes[name] = ProviderProbe(provider=name)
 
         def fail_all(reason: str) -> None:
-            for name in spec.providers:
+            for name in required:
                 probes[name].error = reason[:200]
                 probes[name].done = True
 
@@ -1922,7 +1956,7 @@ def create_app(
         # Providers are also parallel during the real comparison. Probing them
         # serially would turn five 180-second ceilings into an hour-long gate
         # with four models, while teaching nothing about their shared wall time.
-        await asyncio.gather(*(one(name) for name in spec.providers))
+        await asyncio.gather(*(one(name) for name in required))
 
     @app.post("/api/backtests/probe", status_code=202)
     async def start_probe(request: BacktestRequest) -> dict[str, Any]:
@@ -1943,14 +1977,20 @@ def create_app(
         if active_backtest_tasks():
             raise HTTPException(status_code=409, detail="a backtest is already running")
         spec = await _checked_spec(request)
+        required = _providers_requiring_probe(spec)
+        if not required:
+            raise HTTPException(
+                status_code=422,
+                detail="the selected local decision providers do not require a probe",
+            )
         probes.clear()
         probe_keys.clear()
-        for name in spec.providers:
+        for name in required:
             probe_keys[name] = _probe_key(spec, name)
         _set_probe_task(
             asyncio.create_task(_run_probe(spec), name="candlepilot-backtest-probe")
         )
-        return {"providers": list(spec.providers), "decisions": PROBE_DECISIONS}
+        return {"providers": list(required), "decisions": PROBE_DECISIONS}
 
     @app.get("/api/backtests/probe")
     async def read_probe() -> dict[str, Any]:
@@ -2058,7 +2098,11 @@ def create_app(
                 # with the probe's number or the global default.
                 "timeout_seconds": spec.timeout_seconds,
                 "timeout_source": (
-                    "explicit" if request.timeout_seconds is not None else "provider_config"
+                    "explicit"
+                    if request.timeout_seconds is not None
+                    else "provider_config"
+                    if spec.timeout_seconds is not None
+                    else "not_applicable"
                 ),
                 "estimate": estimate_payload,
             },

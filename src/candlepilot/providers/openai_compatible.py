@@ -12,7 +12,7 @@ import httpx
 from pydantic import SecretStr, ValidationError
 
 from candlepilot.domain.models import MarketSnapshot, PortfolioState, ProviderHealth
-from candlepilot.providers.base import LLMProvider, ProviderCapabilities, ProviderResult
+from candlepilot.providers.base import DecisionProvider, ProviderCapabilities, ProviderResult
 from candlepilot.providers.cli import (
     MAX_OUTPUT_BYTES,
     ProviderError,
@@ -132,7 +132,7 @@ def parse_responses_response(
     return "".join(texts), model if isinstance(model, str) and model else None, usage
 
 
-class OpenAICompatibleProvider(LLMProvider):
+class OpenAICompatibleProvider(DecisionProvider):
     """User-configured Responses or Chat Completions endpoint with local validation."""
 
     name = "openai-compatible"

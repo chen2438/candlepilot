@@ -18,7 +18,7 @@ from datetime import datetime
 from candlepilot.backtest.runner import BacktestSpec, decision_times
 from candlepilot.backtest.snapshots import HistoricalSnapshotBuilder
 from candlepilot.domain.models import PortfolioState
-from candlepilot.providers.base import LLMProvider
+from candlepilot.providers.base import DecisionProvider
 
 #: Calls per provider. Five samples are still cheap next to a full backtest,
 #: while making one unusually fast or slow answer less likely to describe the
@@ -139,7 +139,7 @@ def probe_instants(spec: BacktestSpec, count: int = PROBE_DECISIONS) -> list[dat
 
 
 async def probe_provider(
-    provider: LLMProvider,
+    provider: DecisionProvider,
     *,
     spec: BacktestSpec,
     builder: HistoricalSnapshotBuilder,
