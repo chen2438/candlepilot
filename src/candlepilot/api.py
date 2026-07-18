@@ -1764,6 +1764,9 @@ def create_app(
                 await engine.audit.record_backtest_decisions(
                     run_id, run.provider, [row]
                 )
+            live_result = None
+            if run.live_result is not None:
+                live_result = _json_value(asdict(run.live_result))
             await engine.audit.update_backtest_progress(
                 run_id,
                 run.provider,
@@ -1771,6 +1774,11 @@ def create_app(
                 decisions_total=run.decisions_total,
                 calls_failed=run.calls_failed,
                 usage=run.usage_dict(),
+                progress={
+                    "elapsed_seconds": run.elapsed_seconds,
+                    "remaining_seconds": run.remaining_seconds,
+                    "live_result": live_result,
+                },
                 result=_json_value(asdict(run.result)) if run.result is not None else None,
                 error=run.error,
             )

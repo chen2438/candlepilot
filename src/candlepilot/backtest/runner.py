@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -117,6 +118,18 @@ def validate(spec: BacktestSpec) -> None:
         raise ValueError("the window cannot reach into the future")
 
 
+@dataclass(frozen=True, slots=True)
+class BacktestLiveStats:
+    """Provisional headline metrics without pretending close-out happened."""
+
+    equity: Decimal
+    unrealized_pnl: Decimal
+    total_return: Decimal
+    max_drawdown: Decimal
+    win_rate: Decimal
+    trade_count: int
+
+
 @dataclass
 class ModelRun:
     """One model's pass over the window."""
@@ -138,6 +151,9 @@ class ModelRun:
     error: str | None = None
     provider_failed: bool = False
     last_successful_at: datetime | None = None
+    elapsed_seconds: float = 0.0
+    remaining_seconds: float | None = None
+    live_result: BacktestLiveStats | None = None
 
     @property
     def equivalent_cost_usd(self) -> float | None:
@@ -190,6 +206,16 @@ class ModelRun:
         if not self.decisions_total:
             return 0.0
         return self.decisions_done / self.decisions_total
+
+    def update_timing(self, elapsed_seconds: float) -> None:
+        """Infer remaining wall time from this run's observed throughput."""
+
+        self.elapsed_seconds = max(0.0, elapsed_seconds)
+        if self.decisions_done <= 0 or self.decisions_total <= 0:
+            self.remaining_seconds = None
+            return
+        remaining = max(0, self.decisions_total - self.decisions_done)
+        self.remaining_seconds = self.elapsed_seconds / self.decisions_done * remaining
 
 @dataclass
 class BacktestDecision:
@@ -326,6 +352,7 @@ class BacktestRunner:
         """
 
         exchange = SimulatedExchange(self._spec.config)
+        started_at = time.monotonic()
         curve: list[EquityPoint] = []
         schedule = sorted(
             (when, symbol, cadence)
@@ -344,6 +371,33 @@ class BacktestRunner:
             await on_progress(progress, None)
 
         async def report(decision: BacktestDecision | None = None) -> None:
+            progress.update_timing(time.monotonic() - started_at)
+            if decision is not None:
+                live_at = decision.decided_at
+                if progress.provider_failed:
+                    live_at = progress.last_successful_at or self._spec.start
+                marks = self._marks(live_at)
+                portfolio = exchange.portfolio_state(marks, as_of=live_at)
+                live_equity = EquityPoint(live_at, portfolio.equity)
+                if not curve or curve[-1] != live_equity:
+                    curve.append(live_equity)
+                # No close-out is performed here. final_equity/return therefore
+                # include open-position PnL at the latest mark, while win rate
+                # and trade count remain based on trades actually closed so far.
+                live_summary = summarize(
+                    self._spec.config, list(exchange.trades), curve
+                )
+                progress.live_result = BacktestLiveStats(
+                    equity=portfolio.equity,
+                    unrealized_pnl=sum(
+                        (position.unrealized_pnl for position in portfolio.positions.values()),
+                        Decimal("0"),
+                    ),
+                    total_return=live_summary.total_return,
+                    max_drawdown=live_summary.max_drawdown,
+                    win_rate=live_summary.win_rate,
+                    trade_count=live_summary.trade_count,
+                )
             if on_progress is not None:
                 await on_progress(progress, decision)
 
@@ -507,6 +561,15 @@ async def compare(
             run.result = await runner_for(run.provider).run(
                 provider_for(run.provider), run, on_progress=on_progress
             )
+            run.live_result = BacktestLiveStats(
+                equity=run.result.final_equity,
+                unrealized_pnl=Decimal("0"),
+                total_return=run.result.total_return,
+                max_drawdown=run.result.max_drawdown,
+                win_rate=run.result.win_rate,
+                trade_count=run.result.trade_count,
+            )
+            run.remaining_seconds = 0.0
         except Exception as exc:  # noqa: BLE001 - report, do not sink the comparison
             run.error = str(exc)[:500]
         # The final report carries the result and any error, which the

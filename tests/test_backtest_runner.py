@@ -485,6 +485,37 @@ def test_progress_accumulates_tokens_and_requires_complete_pricing() -> None:
     assert run.usage_dict()["average_duration_ms"] == 250
 
 
+def test_remaining_time_uses_observed_decision_throughput() -> None:
+    run = ModelRun("model-a", decisions_done=3, decisions_total=12)
+
+    run.update_timing(9.0)
+
+    assert run.elapsed_seconds == 9.0
+    assert run.remaining_seconds == pytest.approx(27.0)
+
+
+def test_progress_reports_unrealized_return_without_closing_the_position() -> None:
+    spec = _spec()
+    seen = []
+
+    async def record(run: ModelRun, decision: BacktestDecision | None) -> None:
+        if run.decisions_done == 3 and run.live_result is not None:
+            seen.append(run.live_result)
+
+    result = asyncio.run(
+        _runner(spec).run(_Provider("model-a"), ModelRun("model-a"), on_progress=record)
+    )
+
+    assert seen
+    live = seen[0]
+    assert live.trade_count == 0
+    assert live.win_rate == 0
+    assert live.unrealized_pnl != 0
+    assert live.total_return == (live.equity / spec.config.initial_equity) - 1
+    # The live snapshot did not manufacture a close merely to calculate it.
+    assert result.trade_count == 1
+
+
 def test_compare_reports_each_model_while_it_works() -> None:
     """on_progress must reach the runner, not just fire once per finished model."""
 

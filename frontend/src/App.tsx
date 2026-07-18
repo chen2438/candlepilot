@@ -1627,6 +1627,23 @@ function formatEstimatedDuration(seconds: number): string {
   return `${hours} 小时 ${minutes} 分钟`;
 }
 
+function backtestHeadline(run: BacktestRun, model: BacktestRun["models"][number]) {
+  return model.result ?? (run.status === "running" ? model.live_result : null);
+}
+
+function BacktestRemaining({ run }: { run: BacktestRun }) {
+  if (run.status !== "running") return null;
+  const active = run.models.filter((model) => model.progress < 1);
+  if (!active.length) return <small>正在收尾</small>;
+  if (active.some((model) => model.remaining_seconds === null)) {
+    return <small>剩余时间推算中</small>;
+  }
+  const seconds = Math.max(...active.map((model) => model.remaining_seconds ?? 0));
+  return <small data-tooltip="多个模型并行回测，因此整轮剩余时间取尚未完成模型中的最慢值。">
+    剩余约 {formatEstimatedDuration(seconds)}
+  </small>;
+}
+
 function backtestElapsed(run: BacktestRun): string {
   const end = run.ended_at ? new Date(run.ended_at).getTime() : Date.now();
   const start = new Date(run.created_at).getTime();
@@ -2213,9 +2230,11 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
             <th data-tooltip="按 Provider 返回成本或所选计费厂商价格折算；有任一调用无法定价时显示未知。">成本</th>
             <th>收益</th><th>胜率</th><th>回撤</th><th>交易</th><th></th></tr></thead>
           <tbody>
-            {runs.flatMap((run) => run.models.map((model, index) => (
-              <tr key={`${run.id}-${model.provider}`}>
-                {index === 0 && <td rowSpan={run.models.length}><strong>{run.id}</strong><small className={`run-status ${run.status}`}>{RUN_STATUS[run.status]}</small><small data-tooltip="任务从创建到结束的墙钟耗时；运行中随列表轮询继续计时。">耗时 {backtestElapsed(run)}</small></td>}
+            {runs.flatMap((run) => run.models.map((model, index) => {
+              const headline = backtestHeadline(run, model);
+              const live = !model.result && headline !== null;
+              return <tr key={`${run.id}-${model.provider}`}>
+                {index === 0 && <td rowSpan={run.models.length}><strong>{run.id}</strong><small className={`run-status ${run.status}`}>{RUN_STATUS[run.status]}</small><small data-tooltip="任务从创建到结束的墙钟耗时；运行中随列表轮询继续计时。">耗时 {backtestElapsed(run)}</small><BacktestRemaining run={run} /></td>}
                 {index === 0 && <td rowSpan={run.models.length}>
                   <small className="run-window">
                     <span>{run.spec.symbols.join(" ")}</span>
@@ -2263,18 +2282,26 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                     ? "—"
                     : `$${model.usage.equivalent_cost_usd.toFixed(6)}`}
                 </td>
-                <td className={model.result && Number(model.result.total_return) >= 0 ? "positive" : "negative"}>
-                  {model.result ? `${(Number(model.result.total_return) * 100).toFixed(2)}%` : "—"}</td>
-                <td>{model.result ? `${(Number(model.result.win_rate) * 100).toFixed(0)}%` : "—"}</td>
-                <td>{model.result ? `${(Number(model.result.max_drawdown) * 100).toFixed(2)}%` : "—"}</td>
-                <td>{model.result ? model.result.trade_count : "—"}</td>
+                <td className={headline && Number(headline.total_return) >= 0 ? "positive" : "negative"}
+                  data-tooltip={live && model.live_result
+                    ? `实时收益包含当前未平仓头寸按最新历史 mark 计算的未实现盈亏（${money(model.live_result.unrealized_pnl)}）。`
+                    : undefined}>
+                  {headline ? `${(Number(headline.total_return) * 100).toFixed(2)}%` : "—"}
+                  {live && <small>实时 · 含未实现</small>}
+                </td>
+                <td data-tooltip={live ? "实时胜率只统计已经平仓的交易。" : undefined}>
+                  {headline ? `${(Number(headline.win_rate) * 100).toFixed(0)}%` : "—"}</td>
+                <td data-tooltip={live ? "截至当前逐决策权益曲线的最大回撤。" : undefined}>
+                  {headline ? `${(Number(headline.max_drawdown) * 100).toFixed(2)}%` : "—"}</td>
+                <td data-tooltip={live ? "实时交易数只统计已经平仓的交易。" : undefined}>
+                  {headline ? headline.trade_count : "—"}</td>
                 {index === 0 && <td rowSpan={run.models.length}>
                   {run.status === "running" && <button className="text-button danger-text" onClick={() => void cancel(run.id)}>取消</button>}
                   {run.status === "unreliable" && <small className="negative" title={run.error ?? ""}>丢了太多决策</small>}
                   {run.status === "failed" && run.error && <small className="negative" title={run.error}>失败</small>}
                 </td>}
-              </tr>
-            )).concat(
+              </tr>;
+            }).concat(
               openDecisions?.startsWith(`${run.id}-`)
                 ? [
                   <tr key={`${run.id}-decisions`} className="run-decisions">

@@ -380,6 +380,16 @@ export interface BacktestModelRun {
     average_duration_ms: number;
   };
   progress: number;
+  elapsed_seconds: number;
+  remaining_seconds: number | null;
+  live_result: {
+    equity: string;
+    unrealized_pnl: string;
+    total_return: string;
+    max_drawdown: string;
+    win_rate: string;
+    trade_count: number;
+  } | null;
   error: string | null;
   result: BacktestResult | null;
 }

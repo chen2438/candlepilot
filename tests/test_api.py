@@ -1936,6 +1936,18 @@ def test_a_running_backtest_reports_progress_over_the_api(tmp_path: Path) -> Non
     assert mid["usage"]["total_tokens"] == 120
     assert mid["usage"]["equivalent_cost_usd"] == 0.0025
     assert mid["usage"]["average_duration_ms"] == 250
+    assert mid["elapsed_seconds"] > 0
+    assert mid["remaining_seconds"] > 0
+    assert mid["live_result"] is not None
+    assert set(mid["live_result"]) == {
+        "equity",
+        "unrealized_pnl",
+        "total_return",
+        "max_drawdown",
+        "win_rate",
+        "trade_count",
+    }
+    assert mid["live_result"]["trade_count"] == 0
     asyncio.run(database.close())
 
 

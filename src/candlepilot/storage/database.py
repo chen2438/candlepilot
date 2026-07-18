@@ -147,6 +147,7 @@ class BacktestModelRunRow(Base):
     decisions_total: Mapped[int] = mapped_column(Integer, default=0)
     calls_failed: Mapped[int] = mapped_column(Integer, default=0)
     usage_json: Mapped[str] = mapped_column(Text, default="{}")
+    progress_json: Mapped[str] = mapped_column(Text, default="{}")
     result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -382,6 +383,15 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             "ADD COLUMN usage_json TEXT NOT NULL DEFAULT '{}'",
         ),
     ),
+    (
+        10,
+        (
+            # Running backtests expose provisional portfolio statistics and a
+            # throughput-based ETA without pretending they are final results.
+            "ALTER TABLE backtest_model_runs "
+            "ADD COLUMN progress_json TEXT NOT NULL DEFAULT '{}'",
+        ),
+    ),
 )
 CURRENT_SCHEMA_VERSION = max(version for version, _ in MIGRATIONS)
 
@@ -415,7 +425,7 @@ class Database:
             if current is not None and version <= current:
                 continue
             for statement in statements:
-                if version == 9:
+                if version in (9, 10):
                     columns = {
                         row[1]
                         for row in (
@@ -427,7 +437,8 @@ class Database:
                     # create_all() gives a brand-new database the current ORM
                     # shape before versioned migrations run. Existing v8
                     # databases still need the ALTER; fresh ones must skip it.
-                    if not columns or "usage_json" in columns:
+                    target = "usage_json" if version == 9 else "progress_json"
+                    if not columns or target in columns:
                         continue
                 await connection.execute(text(statement))
             await connection.execute(
@@ -1124,6 +1135,7 @@ class AuditRepository:
         decisions_total: int,
         calls_failed: int,
         usage: dict[str, Any] | None = None,
+        progress: dict[str, Any] | None = None,
         result: dict[str, Any] | None = None,
         error: str | None = None,
     ) -> None:
@@ -1141,6 +1153,10 @@ class AuditRepository:
             row.calls_failed = calls_failed
             if usage is not None:
                 row.usage_json = json.dumps(usage, separators=(",", ":"))
+            if progress is not None:
+                row.progress_json = json.dumps(
+                    progress, separators=(",", ":"), default=str
+                )
             if result is not None:
                 row.result_json = json.dumps(result, separators=(",", ":"), default=str)
             if error is not None:
@@ -1235,6 +1251,7 @@ class AuditRepository:
         row: BacktestModelRunRow, *, detail: bool, config: dict[str, Any]
     ) -> dict[str, Any]:
         result = json.loads(row.result_json) if row.result_json else None
+        runtime = json.loads(row.progress_json or "{}")
         if result is not None and not detail:
             # The list view only needs the headline numbers; trades and the
             # curve are megabytes on a three-day run.
@@ -1252,6 +1269,9 @@ class AuditRepository:
             "decisions_total": row.decisions_total,
             "calls_failed": row.calls_failed,
             "usage": json.loads(row.usage_json or "{}"),
+            "elapsed_seconds": runtime.get("elapsed_seconds", 0.0),
+            "remaining_seconds": runtime.get("remaining_seconds"),
+            "live_result": runtime.get("live_result"),
             "progress": (row.decisions_done / row.decisions_total)
             if row.decisions_total
             else 0.0,
