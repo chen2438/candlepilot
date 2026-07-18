@@ -138,6 +138,7 @@ class LLMReplayMarket(ApiMarket):
 class ApiTestnetBroker:
     def __init__(self) -> None:
         self.account_calls = 0
+        self.position_risk_calls = 0
         self.level_calls = 0
 
     async def protective_levels(self):
@@ -150,8 +151,8 @@ class ApiTestnetBroker:
 
     async def account(self):
         self.account_calls += 1
-        # Mirrors the real /fapi/v3/account futures response, which has no
-        # canTrade field; margin readiness is derived from availableBalance.
+        # Mirrors the real /fapi/v3/account futures response: it has neither
+        # canTrade nor a usable mark/entry price for the position table.
         return {
             "totalWalletBalance": "10000.5",
             "totalMarginBalance": "10025.5",
@@ -162,8 +163,6 @@ class ApiTestnetBroker:
                 {
                     "symbol": "BTCUSDT",
                     "positionAmt": "0.25",
-                    "entryPrice": "60000",
-                    "markPrice": "60100",
                     "unrealizedProfit": "25",
                     "leverage": "3",
                     "isolated": True,
@@ -172,6 +171,19 @@ class ApiTestnetBroker:
                 {"symbol": "ETHUSDT", "positionAmt": "0"},
             ],
         }
+
+    async def position_risk(self):
+        self.position_risk_calls += 1
+        return [
+            {
+                "symbol": "BTCUSDT",
+                "positionAmt": "0.25",
+                "entryPrice": "60000",
+                "markPrice": "60100",
+                "unRealizedProfit": "25",
+                "leverage": "3",
+            }
+        ]
 
 
 def test_control_api_lifecycle(tmp_path: Path) -> None:
@@ -534,6 +546,7 @@ def test_testnet_account_status_is_sanitized_and_includes_reconciliation(
             }
         ]
         assert broker.account_calls == 1
+        assert broker.position_risk_calls == 1
         # The console refreshes several account panels together; the bracket read
         # is a signed request and must be memoized like the account itself.
         assert broker.level_calls == 1
@@ -545,6 +558,7 @@ def test_testnet_account_status_is_sanitized_and_includes_reconciliation(
         )
         assert client.get("/api/account/positions").json()[0]["protection_source"] == "missing"
         assert broker.account_calls == 1
+        assert broker.position_risk_calls == 1
         assert broker.level_calls == 1
     asyncio.run(database.close())
 

@@ -32,6 +32,40 @@ def test_broker_uses_current_official_demo_endpoint() -> None:
         BinanceTestnetBroker(_credentials(), base_url="https://testnet.binancefuture.com")
 
 
+def test_position_risk_reads_signed_v3_prices() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "symbol": "BTCUSDT",
+                    "positionAmt": "0.091",
+                    "entryPrice": "64110.7",
+                    "markPrice": "64425.1",
+                    "unRealizedProfit": "28.61",
+                }
+            ],
+        )
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        rows = await broker.position_risk()
+        await client.aclose()
+        return rows
+
+    rows = asyncio.run(scenario())
+    assert rows[0]["entryPrice"] == "64110.7"
+    assert captured[0].url.path == "/fapi/v3/positionRisk"
+    assert captured[0].headers["X-MBX-APIKEY"] == "test-key"
+    assert "signature=" in str(captured[0].url)
+
+
 def test_signed_testnet_entry_and_bracket() -> None:
     requests: list[httpx.Request] = []
 

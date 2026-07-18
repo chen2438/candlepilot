@@ -207,6 +207,16 @@ class BinanceTestnetBroker:
     async def account(self) -> dict[str, Any]:
         return await self._signed_request("GET", "/fapi/v3/account", {})
 
+    async def position_risk(self) -> list[dict[str, Any]]:
+        """Return exchange-authoritative position prices and unrealized PnL.
+
+        The v3 account summary contains position quantities and margin fields,
+        but does not include a usable mark price.  Position Risk v3 is the
+        signed source for both mark and entry prices.
+        """
+
+        return await self._signed_request("GET", "/fapi/v3/positionRisk", {})
+
     async def pending_entry_symbols(self) -> tuple[str, ...]:
         """Return symbols with a live non-reduce-only order on the exchange."""
 

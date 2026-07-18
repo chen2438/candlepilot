@@ -272,7 +272,7 @@ const TABS: Array<{ key: TabKey; label: string; meta: string }> = [
   { key: "overview", label: "总览", meta: "引擎 · 接入 · 候选 · 决策" },
   { key: "account", label: "账户", meta: "持仓 · 订单" },
   { key: "backtest", label: "回测", meta: "历史模式 · 多模型对比" },
-  { key: "operations", label: "运维", meta: "模型 · 测试网" },
+  { key: "operations", label: "运维", meta: "模型调用指标" },
   { key: "data", label: "数据", meta: "删除历史数据" },
   { key: "settings", label: "设置", meta: "编辑本地 .env" },
 ];
@@ -607,14 +607,16 @@ export default function App() {
   }, []);
 
   const refreshAccount = useCallback(async () => {
-    const [nextPortfolio, nextPositions, nextOrders] = await Promise.all([
+    const [nextPortfolio, nextPositions, nextOrders, nextTestnetStatus] = await Promise.all([
       api<AccountPortfolio>("/api/account/portfolio"),
       api<AccountPosition[]>("/api/account/positions"),
       api<OrderRecord[]>("/api/orders?limit=25"),
+      api<TestnetAccountStatus>("/api/testnet/account-status"),
     ]);
     setPortfolio(nextPortfolio);
     setPositions(nextPositions);
     setOrders(nextOrders);
+    setTestnetStatus(nextTestnetStatus);
   }, []);
 
   // The live tail is merged, not replaced: paging older decisions in would
@@ -653,16 +655,13 @@ export default function App() {
   }, [refreshDecisions]);
 
   const refreshOperations = useCallback(async () => {
-    const [metrics, testnet] = await Promise.allSettled([
-      api<ProviderMetricsResponse>("/api/metrics/providers?hours=24"),
-      api<TestnetAccountStatus>("/api/testnet/account-status"),
-    ]);
-    if (metrics.status === "fulfilled") setProviderMetrics(metrics.value.providers);
-    if (testnet.status === "fulfilled") setTestnetStatus(testnet.value);
-    const failures = [metrics, testnet]
-      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
-      .map((result) => result.reason instanceof Error ? result.reason.message : String(result.reason));
-    setOperationsError(failures.length ? failures.join("；") : null);
+    try {
+      const metrics = await api<ProviderMetricsResponse>("/api/metrics/providers?hours=24");
+      setProviderMetrics(metrics.providers);
+      setOperationsError(null);
+    } catch (reason) {
+      setOperationsError(reason instanceof Error ? reason.message : String(reason));
+    }
   }, []);
 
   const refreshRunSession = useCallback(async () => {
@@ -1207,6 +1206,7 @@ export default function App() {
             portfolio={portfolio}
             positions={positions}
             orders={orders}
+            testnetStatus={testnetStatus}
           />
         </section>
         )}
@@ -1215,7 +1215,6 @@ export default function App() {
         <section className="grid">
           <OperationsPanel
             providerMetrics={providerMetrics}
-            testnetStatus={testnetStatus}
             operationsError={operationsError}
           />
         </section>
@@ -2938,12 +2937,18 @@ function AccountPanel({
   portfolio,
   positions,
   orders,
+  testnetStatus,
 }: {
   portfolio: AccountPortfolio | null;
   positions: AccountPosition[];
   orders: OrderRecord[];
+  testnetStatus: TestnetAccountStatus | null;
 }) {
   const displayedPnl = portfolio?.daily_pnl ?? null;
+  const reconciliation = testnetStatus?.reconciliation;
+  const testnetSafe = reconciliation !== null
+    && reconciliation !== undefined
+    && reconciliation.unprotected_symbols.length === 0;
   return (
     <article className="panel account-panel">
       <PanelTitle
@@ -2951,7 +2956,24 @@ function AccountPanel({
         title="账户与订单"
         meta="币安测试网账户 · 只读"
       />
+      <div className="account-testnet-status">
+        <div className="testnet-heading">
+          <div>
+            <strong>{testnetStatus?.enabled ? "账户已配置" : "未配置"}</strong>
+            <small>{testnetStatus?.active ? "当前交易模式" : "当前未启用测试网交易模式"}</small>
+          </div>
+          <span className={`status-pill ${testnetStatus?.enabled ? "ok" : "off"}`}>
+            {testnetStatus?.enabled ? "TESTNET" : "DISABLED"}
+          </span>
+        </div>
+        <div className="testnet-checks">
+          <span><i className={testnetStatus?.user_stream.running ? "ok" : ""} />用户流 {testnetStatus?.user_stream.running ? "在线" : "离线"}</span>
+          <span><i className={testnetSafe ? "ok" : ""} />启动对账 {reconciliation ? testnetSafe ? "安全" : "有未保护仓位" : "尚未执行"}</span>
+          <span><i className={testnetStatus?.account?.can_trade ? "ok" : ""} />可用保证金 {testnetStatus?.account?.can_trade ? "就绪" : "不足"}</span>
+        </div>
+      </div>
       <div className="account-metrics">
+        <Metric label="钱包余额" value={portfolio ? money(portfolio.cash) : "—"} suffix="" />
         <Metric label="权益" value={portfolio ? money(portfolio.equity) : "—"} suffix="" />
         <Metric label="可用余额" value={portfolio ? money(portfolio.available_balance) : "—"} suffix="" />
         <div
@@ -3017,21 +3039,15 @@ function AccountPanel({
 
 function OperationsPanel({
   providerMetrics,
-  testnetStatus,
   operationsError,
 }: {
   providerMetrics: ProviderMetric[];
-  testnetStatus: TestnetAccountStatus | null;
   operationsError: string | null;
 }) {
-  const reconciliation = testnetStatus?.reconciliation;
-  const testnetSafe = reconciliation !== null
-    && reconciliation !== undefined
-    && reconciliation.unprotected_symbols.length === 0;
   return (
     <article className="panel operations-panel">
-      <PanelTitle code="07" title="模型与测试网" meta="24 小时运维窗口 · 只读" />
-      {operationsError && <div className="operations-error">部分运维数据暂不可用：{operationsError}</div>}
+      <PanelTitle code="07" title="模型运维" meta="24 小时调用窗口 · 只读" />
+      {operationsError && <div className="operations-error">模型运维数据暂不可用：{operationsError}</div>}
       <div className="operations-grid">
         <section>
           <h4 className="account-subhead">模型调用</h4>
@@ -3071,44 +3087,6 @@ function OperationsPanel({
           )}
         </section>
 
-        <section className="testnet-summary">
-          <h4 className="account-subhead">币安测试网</h4>
-          <div className="testnet-heading">
-            <div>
-              <strong>{testnetStatus?.enabled ? "账户已配置" : "未配置"}</strong>
-              <small>{testnetStatus?.active ? "当前交易模式" : "当前未启用测试网交易模式"}</small>
-            </div>
-            <span className={`status-pill ${testnetStatus?.enabled ? "ok" : "off"}`}>
-              {testnetStatus?.enabled ? "TESTNET" : "DISABLED"}
-            </span>
-          </div>
-          <div className="testnet-balances">
-            <Metric label="钱包余额" value={testnetStatus?.account ? money(testnetStatus.account.total_wallet_balance) : "—"} suffix="" />
-            <Metric label="可用余额" value={testnetStatus?.account ? money(testnetStatus.account.available_balance) : "—"} suffix="" />
-            <Metric label="未实现盈亏" value={testnetStatus?.account ? money(testnetStatus.account.total_unrealized_profit) : "—"} suffix="" />
-          </div>
-          <div className="testnet-checks">
-            <span><i className={testnetStatus?.user_stream.running ? "ok" : ""} />用户流 {testnetStatus?.user_stream.running ? "在线" : "离线"}</span>
-            <span><i className={testnetSafe ? "ok" : ""} />启动对账 {reconciliation ? testnetSafe ? "安全" : "有未保护仓位" : "尚未执行"}</span>
-            <span><i className={testnetStatus?.account?.can_trade ? "ok" : ""} />可用保证金 {testnetStatus?.account?.can_trade ? "就绪" : "不足"}</span>
-          </div>
-          {testnetStatus?.positions.length ? (
-            <div className="table-wrap testnet-positions">
-              <table>
-                <thead><tr><th>持仓</th><th>数量</th><th>标记价</th><th>杠杆</th><th>未实现盈亏</th></tr></thead>
-                <tbody>{testnetStatus.positions.map((position) => (
-                  <tr key={position.symbol}>
-                    <td>{position.symbol}</td>
-                    <td>{Number(position.position_amount).toFixed(4)}</td>
-                    <td>{Number(position.mark_price).toFixed(4)}</td>
-                    <td>{position.leverage}×</td>
-                    <td className={Number(position.unrealized_profit) >= 0 ? "positive" : "negative"}>{money(position.unrealized_profit)}</td>
-                  </tr>
-                ))}</tbody>
-              </table>
-            </div>
-          ) : <div className="empty testnet-empty">测试网当前无持仓。</div>}
-        </section>
       </div>
     </article>
   );
