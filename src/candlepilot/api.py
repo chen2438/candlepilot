@@ -571,26 +571,30 @@ def create_app(
             if testnet_account_memo["account"] is not None:
                 if now < testnet_account_memo["expires_at"]:
                     return testnet_account_memo["account"]
-            account = await broker.account()
-            position_risk = getattr(broker, "position_risk", None)
-            if callable(position_risk):
-                risk_rows = await position_risk()
-                risk_by_symbol = {
-                    str(item.get("symbol", "")): {
-                        **item,
-                        "unrealizedProfit": item.get(
-                            "unRealizedProfit", item.get("unrealizedProfit", "0")
-                        ),
+            snapshot_loader = getattr(broker, "account_snapshot", None)
+            if callable(snapshot_loader):
+                account = await snapshot_loader()
+            else:
+                account = await broker.account()
+                position_risk = getattr(broker, "position_risk", None)
+                if callable(position_risk):
+                    risk_rows = await position_risk()
+                    risk_by_symbol = {
+                        str(item.get("symbol", "")): {
+                            **item,
+                            "unrealizedProfit": item.get(
+                                "unRealizedProfit", item.get("unrealizedProfit", "0")
+                            ),
+                        }
+                        for item in risk_rows
                     }
-                    for item in risk_rows
-                }
-                account = {
-                    **account,
-                    "positions": [
-                        {**item, **risk_by_symbol.get(str(item.get("symbol", "")), {})}
-                        for item in account.get("positions", [])
-                    ],
-                }
+                    account = {
+                        **account,
+                        "positions": [
+                            {**item, **risk_by_symbol.get(str(item.get("symbol", "")), {})}
+                            for item in account.get("positions", [])
+                        ],
+                    }
             testnet_account_memo["account"] = account
             testnet_account_memo["expires_at"] = time.monotonic() + 1.0
             return account

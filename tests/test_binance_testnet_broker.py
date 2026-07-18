@@ -8,6 +8,7 @@ import pytest
 from pydantic import SecretStr
 
 from candlepilot.broker.binance_testnet import (
+    AccountReconciliationError,
     BinanceTestnetBroker,
     BinanceTestnetCredentials,
     OrderStatusUnknown,
@@ -64,6 +65,87 @@ def test_position_risk_reads_signed_v3_prices() -> None:
     assert captured[0].url.path == "/fapi/v3/positionRisk"
     assert captured[0].headers["X-MBX-APIKEY"] == "test-key"
     assert "signature=" in str(captured[0].url)
+
+
+def test_account_snapshot_enriches_positions_with_position_risk() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fapi/v3/account":
+            return httpx.Response(
+                200,
+                json={
+                    "totalMarginBalance": "4917.76",
+                    "positions": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "positionAmt": "0.091",
+                            "leverage": "1",
+                        }
+                    ],
+                },
+            )
+        if request.url.path == "/fapi/v3/positionRisk":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "symbol": "BTCUSDT",
+                        "positionAmt": "0.091",
+                        "entryPrice": "64110.7",
+                        "markPrice": "64503.7",
+                        "unRealizedProfit": "35.76",
+                    }
+                ],
+            )
+        return httpx.Response(404, json={"code": -1, "msg": "not found"})
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        snapshot = await broker.account_snapshot()
+        await client.aclose()
+        return snapshot
+
+    snapshot = asyncio.run(scenario())
+    assert snapshot["totalMarginBalance"] == "4917.76"
+    assert snapshot["positions"] == [
+        {
+            "symbol": "BTCUSDT",
+            "positionAmt": "0.091",
+            "leverage": "1",
+            "entryPrice": "64110.7",
+            "markPrice": "64503.7",
+            "unRealizedProfit": "35.76",
+            "unrealizedProfit": "35.76",
+        }
+    ]
+
+
+def test_account_snapshot_rejects_open_position_without_risk_price() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fapi/v3/account":
+            return httpx.Response(
+                200,
+                json={"positions": [{"symbol": "BTCUSDT", "positionAmt": "0.091"}]},
+            )
+        if request.url.path == "/fapi/v3/positionRisk":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404, json={"code": -1, "msg": "not found"})
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        with pytest.raises(
+            AccountReconciliationError,
+            match="position risk response is missing entry price for BTCUSDT",
+        ):
+            await broker.account_snapshot()
+        await client.aclose()
+
+    asyncio.run(scenario())
 
 
 def test_signed_testnet_entry_and_bracket() -> None:

@@ -381,8 +381,10 @@ class TradingEngine:
             if callable(pending_loader)
             else asyncio.sleep(0, result=())
         )
+        snapshot_loader = getattr(broker, "account_snapshot", None)
+        account_loader = snapshot_loader if callable(snapshot_loader) else broker.account
         account, levels, realized_today, pending_entry_symbols = await asyncio.gather(
-            broker.account(), broker.protective_levels(), daily_income, pending_entries
+            account_loader(), broker.protective_levels(), daily_income, pending_entries
         )
         raw_positions = {
             str(item["symbol"]): item
@@ -392,11 +394,16 @@ class TradingEngine:
         positions: dict[str, PositionState] = {}
         for symbol, item in raw_positions.items():
             amount = Decimal(str(item["positionAmt"]))
+            entry_price = item.get("entryPrice")
+            if entry_price is None:
+                raise AccountReconciliationError(
+                    f"position risk response is missing entry price for {symbol}"
+                )
             guard = levels.get(symbol, ProtectiveLevels())
             positions[symbol] = PositionState(
                 side="LONG" if amount > 0 else "SHORT",
                 quantity=abs(amount),
-                entry_price=Decimal(str(item["entryPrice"])),
+                entry_price=Decimal(str(entry_price)),
                 unrealized_pnl=Decimal(str(item.get("unrealizedProfit", "0"))),
                 leverage=int(item.get("leverage", 1)),
                 stop_loss=guard.stop_loss,

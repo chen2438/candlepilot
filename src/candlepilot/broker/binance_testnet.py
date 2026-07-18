@@ -217,6 +217,36 @@ class BinanceTestnetBroker:
 
         return await self._signed_request("GET", "/fapi/v3/positionRisk", {})
 
+    async def account_snapshot(self) -> dict[str, Any]:
+        """Return balances plus exchange-authoritative live position fields."""
+
+        account, risk_rows = await asyncio.gather(self.account(), self.position_risk())
+        risk_by_symbol = {
+            str(item.get("symbol", "")): {
+                **item,
+                "unrealizedProfit": item.get(
+                    "unRealizedProfit", item.get("unrealizedProfit", "0")
+                ),
+            }
+            for item in risk_rows
+        }
+        positions: list[dict[str, Any]] = []
+        for item in account.get("positions", []):
+            symbol = str(item.get("symbol", ""))
+            merged = {**item, **risk_by_symbol.get(symbol, {})}
+            if (
+                Decimal(str(merged.get("positionAmt", "0"))) != 0
+                and merged.get("entryPrice") is None
+            ):
+                raise AccountReconciliationError(
+                    f"position risk response is missing entry price for {symbol}"
+                )
+            positions.append(merged)
+        return {
+            **account,
+            "positions": positions,
+        }
+
     async def pending_entry_symbols(self) -> tuple[str, ...]:
         """Return symbols with a live non-reduce-only order on the exchange."""
 

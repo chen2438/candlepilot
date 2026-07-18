@@ -1137,6 +1137,9 @@ def test_testnet_portfolio_carries_entry_price_and_live_bracket(tmp_path: Path) 
             return ReconciliationReport(("BTCUSDT",), 2, ())
 
         async def account(self):
+            raise AssertionError("formal decisions must use the enriched account snapshot")
+
+        async def account_snapshot(self):
             return {
                 "totalMarginBalance": "10000",
                 "availableBalance": "8000",
@@ -1190,3 +1193,36 @@ def test_testnet_portfolio_carries_entry_price_and_live_bracket(tmp_path: Path) 
     assert portfolio.pending_entry_symbols == ("ETHUSDT",)
     # A flat symbol is not a position.
     assert "ETHUSDT" not in portfolio.positions
+
+
+def test_testnet_portfolio_reports_missing_position_risk_entry_price(tmp_path: Path) -> None:
+    import pytest
+
+    from candlepilot.broker.binance_testnet import AccountReconciliationError
+
+    class MissingPriceBroker(FakeTestnetBroker):
+        async def account_snapshot(self):
+            return {
+                "totalMarginBalance": "10000",
+                "availableBalance": "8000",
+                "totalInitialMargin": "100",
+                "positions": [{"symbol": "BTCUSDT", "positionAmt": "1"}],
+            }
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'missing-price.db'}")
+        await database.initialize()
+        engine = TradingEngine(
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=FakeMarket(),  # type: ignore[arg-type]
+            testnet_broker=MissingPriceBroker(),  # type: ignore[arg-type]
+        )
+        with pytest.raises(
+            AccountReconciliationError,
+            match="position risk response is missing entry price for BTCUSDT",
+        ):
+            await engine.current_portfolio()
+        await database.close()
+
+    asyncio.run(scenario())
