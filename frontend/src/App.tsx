@@ -1634,12 +1634,12 @@ function backtestHeadline(run: BacktestRun, model: BacktestRun["models"][number]
 function BacktestRemaining({ run }: { run: BacktestRun }) {
   if (run.status !== "running") return null;
   const active = run.models.filter((model) => model.progress < 1);
-  if (!active.length) return <small>正在收尾</small>;
+  if (!active.length) return <small className="run-timing">正在收尾</small>;
   if (active.some((model) => model.remaining_seconds === null)) {
-    return <small>剩余时间推算中</small>;
+    return <small className="run-timing">剩余时间推算中</small>;
   }
   const seconds = Math.max(...active.map((model) => model.remaining_seconds ?? 0));
-  return <small data-tooltip="多个模型并行回测，因此整轮剩余时间取尚未完成模型中的最慢值。">
+  return <small className="run-timing" data-tooltip="多个模型并行回测，因此整轮剩余时间取尚未完成模型中的最慢值。">
     剩余约 {formatEstimatedDuration(seconds)}
   </small>;
 }
@@ -2300,7 +2300,12 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
               const headline = backtestHeadline(run, model);
               const live = !model.result && headline !== null;
               return <tr key={`${run.id}-${model.provider}`}>
-                {index === 0 && <td rowSpan={run.models.length}><strong>{run.id}</strong><small className={`run-status ${run.status}`}>{RUN_STATUS[run.status]}</small><small data-tooltip="任务从创建到结束的墙钟耗时；运行中随列表轮询继续计时。">耗时 {backtestElapsed(run)}</small><BacktestRemaining run={run} /></td>}
+                {index === 0 && <td rowSpan={run.models.length} className="run-identity-cell">
+                  <div className="run-identity">
+                    <strong>#{run.id}</strong>
+                    <small className={`run-status ${run.status}`}>{RUN_STATUS[run.status]}</small>
+                  </div>
+                </td>}
                 {index === 0 && <td rowSpan={run.models.length}>
                   <small className="run-window">
                     <span>{run.spec.symbols.join(" ")}</span>
@@ -2323,6 +2328,10 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                             : "本次指定（旧记录）"}
                       </small>
                     : <small>超时未固化（旧记录）</small>}
+                  <small className="run-timing" data-tooltip="任务从创建到结束的墙钟耗时；运行中随列表轮询继续计时。">
+                    耗时 {backtestElapsed(run)}
+                  </small>
+                  <BacktestRemaining run={run} />
                 </td>}
                 <td>
                   <button
