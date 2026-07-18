@@ -13,7 +13,7 @@ import type {
   DecisionEvent,
   DecisionDetail,
   EngineStatus,
-  OrderRecord,
+  TradeFillRecord,
   ProviderHealth,
   ProviderTestResult,
   ProviderMetric,
@@ -390,7 +390,7 @@ export default function App() {
   decisionFilterRef.current = decisionFilter;
   const [portfolio, setPortfolio] = useState<AccountPortfolio | null>(null);
   const [positions, setPositions] = useState<AccountPosition[]>([]);
-  const [orders, setOrders] = useState<OrderRecord[]>([]);
+  const [fills, setFills] = useState<TradeFillRecord[]>([]);
   const [providerMetrics, setProviderMetrics] = useState<ProviderMetric[]>([]);
   const [runSession, setRunSession] = useState<RunSessionMetrics>(emptyRunSession);
   const [testnetStatus, setTestnetStatus] = useState<TestnetAccountStatus | null>(null);
@@ -609,15 +609,15 @@ export default function App() {
   }, []);
 
   const refreshAccount = useCallback(async () => {
-    const [nextPortfolio, nextPositions, nextOrders, nextTestnetStatus] = await Promise.all([
+    const [nextPortfolio, nextPositions, nextFills, nextTestnetStatus] = await Promise.all([
       api<AccountPortfolio>("/api/account/portfolio"),
       api<AccountPosition[]>("/api/account/positions"),
-      api<OrderRecord[]>("/api/orders?limit=25"),
+      api<TradeFillRecord[]>("/api/fills?limit=50"),
       api<TestnetAccountStatus>("/api/testnet/account-status"),
     ]);
     setPortfolio(nextPortfolio);
     setPositions(nextPositions);
-    setOrders(nextOrders);
+    setFills(nextFills);
     setTestnetStatus(nextTestnetStatus);
   }, []);
 
@@ -1231,7 +1231,7 @@ export default function App() {
           <AccountPanel
             portfolio={portfolio}
             positions={positions}
-            orders={orders}
+            fills={fills}
             testnetStatus={testnetStatus}
             engineRunning={status.running}
             busy={busy}
@@ -2965,7 +2965,7 @@ function AnalysisDetail({
 function AccountPanel({
   portfolio,
   positions,
-  orders,
+  fills,
   testnetStatus,
   engineRunning,
   busy,
@@ -2973,7 +2973,7 @@ function AccountPanel({
 }: {
   portfolio: AccountPortfolio | null;
   positions: AccountPosition[];
-  orders: OrderRecord[];
+  fills: TradeFillRecord[];
   testnetStatus: TestnetAccountStatus | null;
   engineRunning: boolean;
   busy: string | null;
@@ -3076,28 +3076,50 @@ function AccountPanel({
         </table>
       </div>
 
-      <h4 className="account-subhead">订单与成交</h4>
+      <h4 className="account-subhead">成交明细</h4>
       <div className="table-wrap account-table">
         <table>
-          <thead><tr><th>订单号</th><th>标的</th><th>状态</th><th>成交量</th><th>成交价</th><th>时间</th></tr></thead>
+          <thead><tr><th>时间</th><th>标的</th><th>方向</th><th>用途</th><th>成交量</th><th>成交价</th><th>已实现盈亏</th><th>关联开仓</th><th>订单号</th></tr></thead>
           <tbody>
-            {orders.map((order) => (
-              <tr key={order.id}>
-                <td><small>{order.client_order_id}</small></td>
-                <td>{order.symbol.replace("USDT", "")}</td>
-                <td><span className={`order-status ${order.status.toLowerCase()}`}>{order.status}</span></td>
-                <td>{Number(order.report.filled_quantity).toFixed(4)}</td>
-                <td>{order.report.average_price === null ? "—" : Number(order.report.average_price).toFixed(4)}</td>
-                <td><small>{new Date(order.created_at).toLocaleString("zh-CN", { hour12: false })}</small></td>
+            {fills.map((fill) => (
+              <tr key={`${fill.source}-${fill.id}`}>
+                <td><small>{new Date(fill.created_at).toLocaleString("zh-CN", { hour12: false })}</small></td>
+                <td>{fill.symbol.replace("USDT", "")}</td>
+                <td className={fill.side === "BUY" ? "fill-buy" : fill.side === "SELL" ? "fill-sell" : ""}>
+                  {fill.side === "BUY" ? "买入" : fill.side === "SELL" ? "卖出" : "—"}
+                </td>
+                <td><span className={`fill-purpose ${fill.purpose}`}>{fillPurposeLabel(fill.purpose)}</span></td>
+                <td>{Number(fill.report.filled_quantity).toFixed(4)}</td>
+                <td>{fill.report.average_price === null ? "—" : Number(fill.report.average_price).toFixed(4)}</td>
+                <td className={fill.realized_pnl !== null && Number(fill.realized_pnl) < 0 ? "fill-pnl negative" : "fill-pnl"}>
+                  {fill.realized_pnl === null || fill.purpose === "entry" ? "—" : `${Number(fill.realized_pnl).toFixed(4)} USDT`}
+                </td>
+                <td><small title={fill.related_client_order_id ?? undefined}>{shortOrderId(fill.related_client_order_id)}</small></td>
+                <td><small title={fill.client_order_id}>{shortOrderId(fill.client_order_id)}</small></td>
               </tr>
             ))}
-            {!orders.length && <tr><td colSpan={6} className="empty">尚无订单记录。</td></tr>}
+            {!fills.length && <tr><td colSpan={9} className="empty">尚无成交记录。</td></tr>}
           </tbody>
         </table>
       </div>
 
     </article>
   );
+}
+
+function fillPurposeLabel(purpose: TradeFillRecord["purpose"]): string {
+  return {
+    entry: "开仓 / 加仓",
+    stop_loss: "止损平仓",
+    take_profit: "止盈平仓",
+    manual_close: "手动平仓",
+    rescue_close: "紧急回补",
+  }[purpose];
+}
+
+function shortOrderId(clientOrderId: string | null): string {
+  if (!clientOrderId) return "—";
+  return clientOrderId.length > 15 ? `…${clientOrderId.slice(-12)}` : clientOrderId;
 }
 
 function OperationsPanel({

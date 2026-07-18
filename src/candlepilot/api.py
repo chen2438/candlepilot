@@ -1813,7 +1813,7 @@ def create_app(
     async def get_fills(limit: int = 100) -> list[dict[str, Any]]:
         if not 1 <= limit <= 500:
             raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
-        return await engine.audit.recent_executions(limit, status="FILLED")
+        return await engine.audit.recent_trade_fills(limit)
 
     @app.get("/api/risk-events")
     async def get_risk_events(

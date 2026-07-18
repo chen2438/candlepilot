@@ -719,6 +719,138 @@ class AuditRepository:
             for row in rows
         ]
 
+    async def recent_trade_fills(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Return one row per completed exchange trade, including bracket exits.
+
+        Execution rows originate in CandlePilot's REST submission path, so they
+        do not include exchange-triggered stop-loss or take-profit orders.  The
+        persisted Binance user stream is the authoritative source for those
+        fills.  Execution rows remain as a fallback for paper/test records and
+        for the short interval before a matching stream event arrives.
+        """
+
+        event_query = (
+            select(UserStreamEventRow)
+            .where(
+                UserStreamEventRow.event_type == "ORDER_TRADE_UPDATE",
+                func.json_extract(UserStreamEventRow.payload_json, "$.o.X") == "FILLED",
+                func.json_extract(UserStreamEventRow.payload_json, "$.o.x") == "TRADE",
+            )
+            .order_by(UserStreamEventRow.event_time.desc(), UserStreamEventRow.id.desc())
+            .limit(limit)
+        )
+        execution_query = (
+            select(ExecutionRow)
+            .where(ExecutionRow.status == "FILLED")
+            .order_by(ExecutionRow.created_at.desc(), ExecutionRow.id.desc())
+            .limit(limit)
+        )
+        async with self.sessions() as session:
+            event_rows = (await session.scalars(event_query)).all()
+            execution_rows = (await session.scalars(execution_query)).all()
+            event_client_ids = {
+                str(json.loads(row.payload_json).get("o", {}).get("c", ""))
+                for row in event_rows
+            }
+            fills: list[dict[str, Any]] = []
+            for row in event_rows:
+                payload = json.loads(row.payload_json)
+                order = payload.get("o", {})
+                client_order_id = str(order.get("c", ""))
+                purpose, related_entry_id = self._trade_fill_identity(client_order_id)
+                reduce_only = order.get("R") in {True, "true", "TRUE", 1, "1"}
+                if reduce_only and related_entry_id is None:
+                    related_entry_id = await self._latest_entry_before(session, row)
+                average_price = Decimal(str(order.get("ap", "0")))
+                fills.append(
+                    {
+                        "id": row.id,
+                        "source": "exchange_user_stream",
+                        "client_order_id": client_order_id,
+                        "related_client_order_id": related_entry_id,
+                        "symbol": row.symbol or str(order.get("s", "")),
+                        "side": str(order.get("S", "")),
+                        "purpose": purpose,
+                        "reduce_only": reduce_only,
+                        "realized_pnl": str(order.get("rp", "0")),
+                        "status": "FILLED",
+                        "report": {
+                            "client_order_id": client_order_id,
+                            "status": "FILLED",
+                            "filled_quantity": str(order.get("z", "0")),
+                            "average_price": str(average_price) if average_price > 0 else None,
+                            "message": "Binance user stream trade fill",
+                            "timestamp": self._utc(row.event_time),
+                        },
+                        "created_at": self._utc(row.event_time),
+                    }
+                )
+
+        for row in execution_rows:
+            if row.client_order_id in event_client_ids:
+                continue
+            report = json.loads(row.report_json)
+            purpose, related_entry_id = self._trade_fill_identity(row.client_order_id)
+            fills.append(
+                {
+                    "id": row.id,
+                    "source": "execution_audit",
+                    "client_order_id": row.client_order_id,
+                    "related_client_order_id": related_entry_id,
+                    "symbol": row.symbol,
+                    "side": None,
+                    "purpose": purpose,
+                    "reduce_only": purpose != "entry",
+                    "realized_pnl": None,
+                    "status": row.status,
+                    "report": report,
+                    "created_at": self._utc(row.created_at),
+                }
+            )
+        fills.sort(key=lambda item: item["created_at"], reverse=True)
+        return fills[:limit]
+
+    @staticmethod
+    def _trade_fill_identity(client_order_id: str) -> tuple[str, str | None]:
+        suffixes = {
+            "-sl": "stop_loss",
+            "-tp": "take_profit",
+            "-rescue": "rescue_close",
+        }
+        for suffix, purpose in suffixes.items():
+            if client_order_id.endswith(suffix):
+                return purpose, client_order_id[: -len(suffix)]
+        if client_order_id.startswith("cp-manual-"):
+            return "manual_close", None
+        return "entry", None
+
+    async def _latest_entry_before(
+        self, session: AsyncSession, exit_event: UserStreamEventRow
+    ) -> str | None:
+        candidates = (
+            await session.scalars(
+                select(UserStreamEventRow)
+                .where(
+                    UserStreamEventRow.event_type == "ORDER_TRADE_UPDATE",
+                    UserStreamEventRow.symbol == exit_event.symbol,
+                    UserStreamEventRow.id < exit_event.id,
+                )
+                .order_by(UserStreamEventRow.id.desc())
+                .limit(100)
+            )
+        ).all()
+        for candidate in candidates:
+            order = json.loads(candidate.payload_json).get("o", {})
+            if order.get("X") != "FILLED" or order.get("x") != "TRADE":
+                continue
+            if order.get("R") in {True, "true", "TRUE", 1, "1"}:
+                continue
+            client_order_id = str(order.get("c", ""))
+            purpose, _ = self._trade_fill_identity(client_order_id)
+            if purpose == "entry":
+                return client_order_id
+        return None
+
     async def recent_risk_decisions(
         self, limit: int = 100, *, accepted: bool | None = None
     ) -> list[dict[str, Any]]:

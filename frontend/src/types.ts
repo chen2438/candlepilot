@@ -288,10 +288,16 @@ export interface ManualCloseResult {
   timestamp: string;
 }
 
-export interface OrderRecord {
+export interface TradeFillRecord {
   id: number;
+  source: "exchange_user_stream" | "execution_audit";
   client_order_id: string;
+  related_client_order_id: string | null;
   symbol: string;
+  side: "BUY" | "SELL" | null;
+  purpose: "entry" | "stop_loss" | "take_profit" | "manual_close" | "rescue_close";
+  reduce_only: boolean;
+  realized_pnl: string | null;
   status: string;
   report: {
     filled_quantity: string;

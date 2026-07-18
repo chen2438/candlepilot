@@ -231,6 +231,124 @@ def test_execution_record_catches_up_when_the_user_event_arrives_first(tmp_path:
     assert result["report"]["timestamp"] is not None
 
 
+def test_trade_fills_include_protective_and_manual_exits_without_duplicate_entries(
+    tmp_path: Path,
+) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'trade-fills.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        now = datetime.now(UTC)
+        await repository.record_execution(
+            "BANKUSDT",
+            ExecutionReport(
+                client_order_id="cp-entry",
+                status="FILLED",
+                filled_quantity="283",
+                average_price="0.11188",
+            ),
+        )
+        events = [
+            UserStreamEvent(
+                "ORDER_TRADE_UPDATE",
+                now,
+                now,
+                "BANKUSDT",
+                {
+                    "o": {
+                        "c": "cp-entry",
+                        "s": "BANKUSDT",
+                        "S": "BUY",
+                        "x": "TRADE",
+                        "X": "FILLED",
+                        "z": "283",
+                        "ap": "0.11188",
+                        "R": False,
+                        "rp": "0",
+                    }
+                },
+            ),
+            UserStreamEvent(
+                "ORDER_TRADE_UPDATE",
+                now + timedelta(minutes=1),
+                now + timedelta(minutes=1),
+                "BANKUSDT",
+                {
+                    "o": {
+                        "c": "cp-entry-sl",
+                        "s": "BANKUSDT",
+                        "S": "SELL",
+                        "x": "TRADE",
+                        "X": "FILLED",
+                        "z": "283",
+                        "ap": "0.10716",
+                        "R": True,
+                        "rp": "-1.33576",
+                    }
+                },
+            ),
+            UserStreamEvent(
+                "ORDER_TRADE_UPDATE",
+                now + timedelta(minutes=2),
+                now + timedelta(minutes=2),
+                "BANKUSDT",
+                {
+                    "o": {
+                        "c": "cp-entry-2",
+                        "s": "BANKUSDT",
+                        "S": "BUY",
+                        "x": "TRADE",
+                        "X": "FILLED",
+                        "z": "303",
+                        "ap": "0.10948",
+                        "R": False,
+                        "rp": "0",
+                    }
+                },
+            ),
+            UserStreamEvent(
+                "ORDER_TRADE_UPDATE",
+                now + timedelta(minutes=3),
+                now + timedelta(minutes=3),
+                "BANKUSDT",
+                {
+                    "o": {
+                        "c": "cp-manual-123",
+                        "s": "BANKUSDT",
+                        "S": "SELL",
+                        "x": "TRADE",
+                        "X": "FILLED",
+                        "z": "303",
+                        "ap": "0.11000",
+                        "R": True,
+                        "rp": "0.15756",
+                    }
+                },
+            ),
+        ]
+        for event in events:
+            await repository.record_user_event(event)
+        result = await repository.recent_trade_fills()
+        await database.close()
+        return result
+
+    fills = asyncio.run(scenario())
+    assert [item["client_order_id"] for item in fills] == [
+        "cp-manual-123",
+        "cp-entry-2",
+        "cp-entry-sl",
+        "cp-entry",
+    ]
+    assert fills[0]["purpose"] == "manual_close"
+    assert fills[0]["related_client_order_id"] == "cp-entry-2"
+    assert fills[0]["realized_pnl"] == "0.15756"
+    assert fills[2]["purpose"] == "stop_loss"
+    assert fills[2]["related_client_order_id"] == "cp-entry"
+    assert fills[2]["side"] == "SELL"
+    assert fills[2]["realized_pnl"] == "-1.33576"
+    assert sum(item["client_order_id"] == "cp-entry" for item in fills) == 1
+
+
 def test_decision_events_join_inference_and_risk_outcomes(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'decision-events.db'}")
