@@ -57,8 +57,10 @@ from candlepilot.backtest.snapshots import (
     required_history_start,
 )
 from candlepilot.broker.binance_testnet import (
+    AccountReconciliationError,
     BinanceTestnetBroker,
     BinanceTestnetCredentials,
+    ManualCloseError,
     ProtectiveLevels,
 )
 from candlepilot.broker.user_stream import BinanceTestnetUserStream
@@ -73,6 +75,7 @@ from candlepilot.config import (
 )
 from candlepilot.domain.models import (
     SUPPORTED_CADENCES,
+    ExecutionReport,
     MarketSnapshot,
     PortfolioState,
 )
@@ -166,6 +169,10 @@ class EngineStartRequest(ApiModel):
     timeout_seconds: float | None = Field(
         default=None, gt=0, le=MAX_SUGGESTED_TIMEOUT
     )
+
+
+class ClosePositionRequest(ApiModel):
+    symbol: str = Field(pattern=r"^[A-Z0-9]+USDT$")
 
 
 class HistoryClearRequest(ApiModel):
@@ -544,6 +551,7 @@ def create_app(
     env_path = Path(os.environ.get(ENV_FILE_VARIABLE, ".env")).resolve()
     settings_file_lock = asyncio.Lock()
     engine_start_lock = asyncio.Lock()
+    manual_close_lock = asyncio.Lock()
     testnet_account_memo: dict[str, Any] = {"account": None, "expires_at": 0.0}
     testnet_levels_lock = asyncio.Lock()
     testnet_levels_memo: dict[str, Any] = {"levels": None, "expires_at": 0.0}
@@ -1748,6 +1756,52 @@ def create_app(
                 }
             )
         return [_json_value(item) for item in positions]
+
+    @app.post("/api/account/positions/close")
+    async def close_account_position(request: ClosePositionRequest) -> dict[str, Any]:
+        broker = engine.testnet_broker
+        if broker is None:
+            raise HTTPException(status_code=409, detail="testnet broker is not configured")
+        async with engine_start_lock, manual_close_lock:
+            if engine.running:
+                raise HTTPException(
+                    status_code=409,
+                    detail="stop the trading engine before manually closing a position",
+                )
+            report: ExecutionReport | None = None
+            try:
+                report = await broker.close_position_market(request.symbol)
+            except AccountReconciliationError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except ManualCloseError as exc:
+                report = exc.report
+                await engine.audit.record_execution(request.symbol, report)
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"manual close failed during {exc.stage.lower()}: {exc}",
+                ) from exc
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"manual market close failed: {exc}",
+                ) from exc
+            finally:
+                testnet_account_memo["account"] = None
+                testnet_account_memo["expires_at"] = 0.0
+                testnet_levels_memo["levels"] = None
+                testnet_levels_memo["expires_at"] = 0.0
+                engine.testnet_reconciliation = None
+            await engine.audit.record_execution(request.symbol, report)
+            return _json_value(
+                {
+                    "symbol": request.symbol,
+                    "client_order_id": report.client_order_id,
+                    "status": report.status,
+                    "filled_quantity": report.filled_quantity,
+                    "average_price": report.average_price,
+                    "timestamp": report.timestamp,
+                }
+            )
 
     @app.get("/api/orders")
     async def get_orders(limit: int = 100, status: str | None = None) -> list[dict[str, Any]]:

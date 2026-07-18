@@ -11,6 +11,7 @@ from candlepilot.broker.binance_testnet import (
     AccountReconciliationError,
     BinanceTestnetBroker,
     BinanceTestnetCredentials,
+    ManualCloseError,
     OrderStatusUnknown,
 )
 from candlepilot.broker.user_stream import UserStreamEvent
@@ -778,6 +779,175 @@ def test_emergency_flatten_cancels_orphan_orders_before_closing_positions() -> N
     assert max(
         index for index, request in enumerate(requests) if request.method == "DELETE"
     ) < requests.index(flatten)
+
+
+def test_manual_market_close_is_reduce_only_and_cleans_only_own_bracket() -> None:
+    requests: list[httpx.Request] = []
+    closed = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal closed
+        requests.append(request)
+        if request.url.path == "/fapi/v3/account":
+            return httpx.Response(
+                200,
+                json={
+                    "positions": []
+                    if closed
+                    else [{"symbol": "BTCUSDT", "positionAmt": "-2"}]
+                },
+            )
+        if request.url.path == "/fapi/v3/positionRisk":
+            return httpx.Response(
+                200,
+                json=[]
+                if closed
+                else [
+                    {
+                        "symbol": "BTCUSDT",
+                        "entryPrice": "100",
+                        "markPrice": "99",
+                        "unRealizedProfit": "2",
+                    }
+                ],
+            )
+        if request.url.path == "/fapi/v1/symbolConfig":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "symbol": "BTCUSDT",
+                        "leverage": 2,
+                        "marginType": "ISOLATED",
+                    }
+                ],
+            )
+        if request.url.path == "/fapi/v1/openAlgoOrders":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "symbol": "BTCUSDT",
+                        "clientAlgoId": "cp-entry-sl",
+                        "orderType": "STOP_MARKET",
+                        "closePosition": True,
+                    },
+                    {
+                        "symbol": "BTCUSDT",
+                        "clientAlgoId": "cp-entry-tp",
+                        "orderType": "TAKE_PROFIT_MARKET",
+                        "closePosition": True,
+                    },
+                    {
+                        "symbol": "BTCUSDT",
+                        "clientAlgoId": "manual-stop",
+                        "orderType": "STOP_MARKET",
+                        "closePosition": True,
+                    },
+                ],
+            )
+        if request.url.path == "/fapi/v1/order" and request.method == "POST":
+            closed = True
+            query = parse_qs(request.url.query.decode())
+            return httpx.Response(
+                200,
+                json={
+                    "clientOrderId": query["newClientOrderId"][0],
+                    "status": "FILLED",
+                    "executedQty": "2",
+                    "avgPrice": "99",
+                },
+            )
+        return httpx.Response(200, json={"status": "CANCELED"})
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        report = await broker.close_position_market("BTCUSDT")
+        await client.aclose()
+        return report
+
+    report = asyncio.run(scenario())
+    assert report.status == "FILLED"
+    close_request = next(
+        request
+        for request in requests
+        if request.url.path == "/fapi/v1/order" and request.method == "POST"
+    )
+    close_query = parse_qs(close_request.url.query.decode())
+    assert close_query["side"] == ["BUY"]
+    assert close_query["quantity"] == ["2"]
+    assert close_query["reduceOnly"] == ["true"]
+    cancelled_ids = {
+        parse_qs(request.url.query.decode())["clientAlgoId"][0]
+        for request in requests
+        if request.url.path == "/fapi/v1/algoOrder" and request.method == "DELETE"
+    }
+    assert cancelled_ids == {"cp-entry-sl", "cp-entry-tp"}
+
+
+def test_manual_market_close_keeps_protection_when_fill_is_incomplete() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/fapi/v3/account":
+            return httpx.Response(
+                200,
+                json={"positions": [{"symbol": "BTCUSDT", "positionAmt": "1"}]},
+            )
+        if request.url.path == "/fapi/v3/positionRisk":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "symbol": "BTCUSDT",
+                        "entryPrice": "100",
+                        "markPrice": "101",
+                    }
+                ],
+            )
+        if request.url.path == "/fapi/v1/symbolConfig":
+            return httpx.Response(200, json=[])
+        if request.url.path == "/fapi/v1/openAlgoOrders":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "clientAlgoId": "cp-entry-sl",
+                        "orderType": "STOP_MARKET",
+                        "closePosition": True,
+                    }
+                ],
+            )
+        if request.url.path == "/fapi/v1/order":
+            return httpx.Response(
+                200,
+                json={
+                    "clientOrderId": "cp-manual-partial",
+                    "status": "PARTIALLY_FILLED",
+                    "executedQty": "0.5",
+                    "avgPrice": "101",
+                },
+            )
+        return httpx.Response(200, json={})
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        with pytest.raises(ManualCloseError, match="did not fill completely") as caught:
+            await broker.close_position_market("BTCUSDT")
+        await client.aclose()
+        return caught.value
+
+    failure = asyncio.run(scenario())
+    assert failure.stage == "FILL"
+    assert failure.report.status == "PARTIALLY_FILLED"
+    assert not any(request.method == "DELETE" for request in requests)
 
 
 def test_recovers_timed_out_order_by_client_id() -> None:

@@ -618,6 +618,63 @@ def test_account_and_risk_query_endpoints(tmp_path: Path) -> None:
     asyncio.run(database.close())
 
 
+def test_manual_position_close_requires_stopped_engine_and_is_audited(
+    tmp_path: Path,
+) -> None:
+    from candlepilot.domain.models import ExecutionReport
+
+    class ManualCloseBroker(FakeTestnetBroker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.closed_symbols: list[str] = []
+
+        async def close_position_market(self, symbol: str) -> ExecutionReport:
+            self.closed_symbols.append(symbol)
+            return ExecutionReport(
+                client_order_id="cp-manual-test",
+                status="FILLED",
+                filled_quantity="0.25",
+                average_price="60100",
+                message="manual market close from account frontend",
+            )
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'manual-close-api.db'}")
+    broker = ManualCloseBroker()
+    engine = TradingEngine(
+        testnet_broker=broker,  # type: ignore[arg-type]
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=ApiMarket(),  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=ApiMarket(), engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        engine.running = True
+        blocked = client.post(
+            "/api/account/positions/close", json={"symbol": "BTCUSDT"}
+        )
+        assert blocked.status_code == 409
+        assert broker.closed_symbols == []
+
+        engine.running = False
+        response = client.post(
+            "/api/account/positions/close", json={"symbol": "BTCUSDT"}
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "FILLED"
+        assert response.json()["filled_quantity"] == "0.25"
+        assert broker.closed_symbols == ["BTCUSDT"]
+        orders = client.get("/api/orders").json()
+        assert orders[0]["client_order_id"] == "cp-manual-test"
+        assert orders[0]["symbol"] == "BTCUSDT"
+
+        assert (
+            client.post("/api/account/positions/close", json={"symbol": "btc"}).status_code
+            == 422
+        )
+    asyncio.run(database.close())
+
+
 def test_alert_transitions_are_logged_and_persisted(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'alerts-api.db'}")
     market = ApiMarket()

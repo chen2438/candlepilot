@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlencode
+from uuid import uuid4
 
 import httpx
 from pydantic import SecretStr
@@ -56,6 +57,19 @@ class OrderStatusUnknown(RuntimeError):
     def __init__(self, client_order_id: str) -> None:
         super().__init__(f"order status remains unknown: {client_order_id}")
         self.client_order_id = client_order_id
+
+
+class ManualCloseError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        report: ExecutionReport,
+        stage: Literal["FILL", "VERIFY", "CLEANUP"],
+    ) -> None:
+        super().__init__(message)
+        self.report = report
+        self.stage = stage
 
 
 @dataclass(frozen=True, slots=True)
@@ -628,6 +642,84 @@ class BinanceTestnetBroker:
                 reduce_only=True,
             )
         )
+
+    async def close_position_market(self, symbol: str) -> ExecutionReport:
+        """Close one live position without touching unrelated manual orders.
+
+        The reduce-only market order is sent before CandlePilot's bracket is
+        removed, so a rejected or partial close leaves the remaining exposure
+        protected. Only after the exchange confirms the symbol is flat are this
+        system's own stop/take-profit algo orders cancelled.
+        """
+
+        account, bracket_ids = await asyncio.gather(
+            self.account_snapshot(), self._candlepilot_protective_orders(symbol)
+        )
+        position = next(
+            (
+                item
+                for item in account.get("positions", [])
+                if str(item.get("symbol", "")) == symbol
+                and Decimal(str(item.get("positionAmt", "0"))) != 0
+            ),
+            None,
+        )
+        if position is None:
+            raise AccountReconciliationError(f"no open position exists for {symbol}")
+        amount = Decimal(str(position["positionAmt"]))
+        order = OrderPlan(
+            client_order_id=f"cp-manual-{uuid4().hex[:20]}",
+            symbol=symbol,
+            side="SELL" if amount > 0 else "BUY",
+            quantity=abs(amount),
+            order_type=OrderType.MARKET,
+            reduce_only=True,
+        )
+        report = (await self._place_order(order)).model_copy(
+            update={"message": "manual market close from account frontend"}
+        )
+        if report.status != "FILLED":
+            raise ManualCloseError(
+                f"manual close did not fill completely ({report.status})",
+                report=report,
+                stage="FILL",
+            )
+        try:
+            refreshed = await self.account_snapshot()
+        except Exception as exc:
+            raise ManualCloseError(
+                "manual close filled but the resulting position could not be verified",
+                report=report,
+                stage="VERIFY",
+            ) from exc
+        remaining = next(
+            (
+                Decimal(str(item.get("positionAmt", "0")))
+                for item in refreshed.get("positions", [])
+                if str(item.get("symbol", "")) == symbol
+            ),
+            Decimal("0"),
+        )
+        if remaining != 0:
+            raise ManualCloseError(
+                f"manual close left a remaining position of {remaining} {symbol}",
+                report=report,
+                stage="VERIFY",
+            )
+        cancellations = await asyncio.gather(
+            *(self._cancel_algo_order(client_id) for client_id in bracket_ids),
+            return_exceptions=True,
+        )
+        failed_cancellations = [
+            result for result in cancellations if isinstance(result, BaseException)
+        ]
+        if failed_cancellations:
+            raise ManualCloseError(
+                "position is flat but CandlePilot protective orders could not all be cancelled",
+                report=report,
+                stage="CLEANUP",
+            )
+        return report
 
     @staticmethod
     def _estimated_rescue_loss(

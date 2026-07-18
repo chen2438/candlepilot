@@ -279,6 +279,15 @@ export interface AccountPosition {
   protection_source?: "exchange" | "missing" | "unknown";
 }
 
+export interface ManualCloseResult {
+  symbol: string;
+  client_order_id: string;
+  status: string;
+  filled_quantity: string;
+  average_price: string | null;
+  timestamp: string;
+}
+
 export interface OrderRecord {
   id: number;
   client_order_id: string;

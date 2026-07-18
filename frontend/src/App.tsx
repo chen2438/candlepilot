@@ -2,6 +2,7 @@ import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } fro
 import type {
   AccountPortfolio,
   AccountPosition,
+  ManualCloseResult,
   BacktestDecision,
   BacktestEstimate,
   BacktestResult,
@@ -620,6 +621,29 @@ export default function App() {
     setTestnetStatus(nextTestnetStatus);
   }, []);
 
+  const closeAccountPosition = useCallback(async (symbol: string): Promise<boolean> => {
+    setBusy(`position-close-${symbol}`);
+    setError(null);
+    try {
+      await api<ManualCloseResult>("/api/account/positions/close", {
+        method: "POST",
+        body: JSON.stringify({ symbol }),
+      });
+      await refreshAccount();
+      return true;
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      try {
+        await refreshAccount();
+      } catch {
+        // Preserve the action error; the normal account poll will retry shortly.
+      }
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  }, [refreshAccount]);
+
   // The live tail is merged, not replaced: paging older decisions in would
   // otherwise be wiped by the next push two seconds later. The audit log is
   // append-only, but an event does change after it is written -- risk and
@@ -1209,6 +1233,9 @@ export default function App() {
             positions={positions}
             orders={orders}
             testnetStatus={testnetStatus}
+            engineRunning={status.running}
+            busy={busy}
+            onClosePosition={closeAccountPosition}
           />
         </section>
         )}
@@ -2940,12 +2967,19 @@ function AccountPanel({
   positions,
   orders,
   testnetStatus,
+  engineRunning,
+  busy,
+  onClosePosition,
 }: {
   portfolio: AccountPortfolio | null;
   positions: AccountPosition[];
   orders: OrderRecord[];
   testnetStatus: TestnetAccountStatus | null;
+  engineRunning: boolean;
+  busy: string | null;
+  onClosePosition: (symbol: string) => Promise<boolean>;
 }) {
+  const [confirmCloseSymbol, setConfirmCloseSymbol] = useState<string | null>(null);
   const displayedPnl = portfolio?.daily_pnl ?? null;
   const reconciliation = testnetStatus?.reconciliation;
   const testnetSafe = reconciliation !== null
@@ -2956,7 +2990,7 @@ function AccountPanel({
       <PanelTitle
         code="06"
         title="账户与订单"
-        meta="币安测试网账户 · 只读"
+        meta="币安测试网账户 · 可手动平仓"
       />
       <div className="account-testnet-status">
         <div className="testnet-heading">
@@ -2987,9 +3021,12 @@ function AccountPanel({
       </div>
 
       <h4 className="account-subhead">持仓</h4>
+      <p className="position-close-note">
+        市价平仓按交易所当前数量提交 reduce-only 委托；成交并确认仓位归零后，仅撤销 CandlePilot 的保护单。运行中请先停止引擎。
+      </p>
       <div className="table-wrap account-table">
         <table>
-          <thead><tr><th>标的</th><th>方向</th><th>数量</th><th>均价</th><th>标记价</th><th>杠杆</th><th>未实现盈亏</th><th>保护</th></tr></thead>
+          <thead><tr><th>标的</th><th>方向</th><th>数量</th><th>均价</th><th>标记价</th><th>杠杆</th><th>未实现盈亏</th><th>保护</th><th>操作</th></tr></thead>
           <tbody>
             {positions.map((position) => (
               <tr key={position.symbol}>
@@ -3008,9 +3045,33 @@ function AccountPanel({
                       <span>止损 <strong>{position.stop_loss === null ? "缺失" : Number(position.stop_loss).toFixed(4)}</strong></span>
                       <span>止盈 <strong>{position.take_profit === null ? "缺失" : Number(position.take_profit).toFixed(4)}</strong></span>
                     </span>}</td>
+                <td className="position-close-cell">
+                  {confirmCloseSymbol === position.symbol
+                    ? <span className="position-close-confirm">
+                        <small>确认全部平仓？</small>
+                        <button
+                          className="position-close-danger"
+                          disabled={busy !== null || engineRunning}
+                          onClick={async () => {
+                            if (await onClosePosition(position.symbol)) setConfirmCloseSymbol(null);
+                          }}
+                        >{busy === `position-close-${position.symbol}` ? "平仓中…" : "确认"}</button>
+                        <button
+                          className="text-button"
+                          disabled={busy !== null}
+                          onClick={() => setConfirmCloseSymbol(null)}
+                        >取消</button>
+                      </span>
+                    : <button
+                        className="position-close-button"
+                        disabled={busy !== null || engineRunning}
+                        title={engineRunning ? "请先停止交易引擎" : `市价平掉全部 ${position.symbol} 持仓`}
+                        onClick={() => setConfirmCloseSymbol(position.symbol)}
+                      >市价平仓</button>}
+                </td>
               </tr>
             ))}
-            {!positions.length && <tr><td colSpan={8} className="empty">当前无持仓。</td></tr>}
+            {!positions.length && <tr><td colSpan={9} className="empty">当前无持仓。</td></tr>}
           </tbody>
         </table>
       </div>
