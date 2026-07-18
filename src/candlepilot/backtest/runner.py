@@ -61,7 +61,7 @@ class BacktestSpec:
     use_recorded_book: bool = False
     #: Seconds one decision may take, for this run only.
     #:
-    #: The console sets it from a probe of the endpoints the run will use, since
+    #: The frontend sets it from a probe of the endpoints the run will use, since
     #: the global default is one number for providers that differ by minutes.
     #: None keeps whatever each provider was configured with.
     timeout_seconds: float | None = None
@@ -559,7 +559,7 @@ async def compare(
 
     ``on_progress`` is handed down to each runner, which awaits it per decision.
     Reporting only from here would fire it once, after a run that can take hours
-    has already finished -- which is exactly what the console had to watch.
+    has already finished -- which is exactly what the frontend had to watch.
     """
 
     runs = [ModelRun(provider=name) for name in spec.providers]

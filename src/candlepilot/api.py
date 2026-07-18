@@ -142,7 +142,7 @@ class CustomProviderInput(ApiModel):
     require_api_key: bool = True
     pricing: str | None = None
     # None keeps the stored key, "" clears it, any other value replaces it — the
-    # console never receives the current key, so it cannot send it back.
+    # frontend never receives the current key, so it cannot send it back.
     api_key: str | None = None
     extra_headers: dict[str, str] | None = None
 
@@ -152,7 +152,7 @@ class CustomProvidersUpdate(ApiModel):
 
 
 class SettingsUpdate(ApiModel):
-    # Only the keys the console actually changed are sent, so an untouched
+    # Only the keys the frontend actually changed are sent, so an untouched
     # secret is never echoed back as its own mask.
     values: dict[str, str] = Field(max_length=64)
 
@@ -1205,7 +1205,7 @@ def create_app(
             serialized = json.dumps(entries, separators=(",", ":")) if entries else ""
             candidate = {**read_env_file(env_path), CUSTOM_PROVIDERS_ENV: serialized}
             try:
-                # Reuse the startup parser so the console cannot save a list the
+                # Reuse the startup parser so the frontend cannot save a list the
                 # next start would reject.
                 Settings.from_mapping(candidate)
             except (ValueError, TypeError) as exc:

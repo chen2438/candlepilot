@@ -706,7 +706,7 @@ async def _seed_decisions(repository: AuditRepository) -> None:
 def test_outcome_filter_agrees_with_the_python_classifier(tmp_path: Path) -> None:
     """The SQL filter reproduces _decision_outcome and must not drift from it.
 
-    A filter that classifies differently from the column the console displays
+    A filter that classifies differently from the column the frontend displays
     would answer "show me every rejection" with the wrong set, and nothing in
     the response would admit it.
     """

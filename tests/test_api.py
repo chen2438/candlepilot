@@ -547,7 +547,7 @@ def test_testnet_account_status_is_sanitized_and_includes_reconciliation(
         ]
         assert broker.account_calls == 1
         assert broker.position_risk_calls == 1
-        # The console refreshes several account panels together; the bracket read
+        # The frontend refreshes several account panels together; the bracket read
         # is a signed request and must be memoized like the account itself.
         assert broker.level_calls == 1
 
@@ -2019,7 +2019,7 @@ def test_a_plain_backtest_does_not_need_any_captures(tmp_path: Path) -> None:
 
 
 def test_a_running_backtest_reports_progress_over_the_api(tmp_path: Path) -> None:
-    """The console polls this endpoint, so 0% here is 0% on screen.
+    """The frontend polls this endpoint, so 0% here is 0% on screen.
 
     compare() was never given on_progress and the stored row was only written
     once the whole comparison returned, so a run that takes minutes showed 0%

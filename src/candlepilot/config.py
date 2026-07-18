@@ -15,7 +15,7 @@ from candlepilot.domain.models import SUPPORTED_CADENCES
 
 
 DEFAULT_DATABASE_URL = "sqlite+aiosqlite:///./candlepilot.db"
-# Single source of truth for the .env location, shared with the console editor.
+# Single source of truth for the .env location, shared with the frontend editor.
 ENV_FILE_VARIABLE = "CANDLEPILOT_ENV_FILE"
 # Keys this process took from .env rather than from a real environment variable.
 # A restart must drop these before re-exec, otherwise the inherited old values

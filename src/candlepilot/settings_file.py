@@ -1,6 +1,6 @@
-"""Read, describe and rewrite the local ``.env`` so the console can edit it.
+"""Read, describe and rewrite the local ``.env`` so the frontend can edit it.
 
-The console only ever *writes* secrets: existing values are returned masked, so a
+The frontend only ever *writes* secrets: existing values are returned masked, so a
 key never leaves the backend in full. Saving rewrites ``.env`` in place, keeping
 comments and key order, and never applies to the running process — every change
 takes effect on the next start.
@@ -177,7 +177,7 @@ def write_env_file(path: Path, updates: Mapping[str, str]) -> None:
 
 
 def describe_settings(path: Path, values: Mapping[str, str]) -> dict[str, object]:
-    """Build the console payload: metadata plus masked-or-plain current values."""
+    """Build the frontend payload: metadata plus masked-or-plain current values."""
 
     sections = []
     for section in ENV_SECTIONS:

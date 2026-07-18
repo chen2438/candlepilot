@@ -108,7 +108,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("doctor", help="check LLM auth and Binance public connectivity")
-    commands.add_parser("serve", help="start the local API and built web console")
+    commands.add_parser("serve", help="start the local API and built web frontend")
     acceptance = commands.add_parser(
         "acceptance",
         help="evaluate the audited testnet soak run against release invariants",

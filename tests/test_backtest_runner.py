@@ -435,7 +435,7 @@ def test_one_provider_failing_stops_the_comparison() -> None:
 
 
 def test_progress_is_reported_while_the_run_is_still_running() -> None:
-    """The console polls a stored copy, so in-memory counters are invisible.
+    """The frontend polls a stored copy, so in-memory counters are invisible.
 
     compare() was never handed on_progress, and its signature took none of the
     run's state anyway, so nothing was written until the whole comparison

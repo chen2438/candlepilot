@@ -58,7 +58,7 @@ class LocalRuleProvider(DecisionProvider):
             retryable=False,
             # Include the local snapshot/risk/audit overhead in the preflight
             # baseline. A sub-millisecond pure function measured in isolation
-            # would round a day-long run down to "0 minutes" in the console.
+            # would round a day-long run down to "0 minutes" in the frontend.
             estimated_seconds_per_decision=0.01,
         )
 

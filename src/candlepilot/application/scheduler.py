@@ -64,7 +64,7 @@ class TradingScheduler:
         """Return one active cycle for the compact status API.
 
         Cadence tasks are independent, so internal tracking remains keyed by
-        cadence even though the current console only has room for one row.
+        cadence even though the current frontend only has room for one row.
         """
 
         return next(iter(self.current_cycles.values()), None)

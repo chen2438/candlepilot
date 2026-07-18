@@ -803,7 +803,7 @@ export default function App() {
         </div>
         <div className="live-state">
           <span className={`dot ${socketOnline ? "online" : ""}`} />
-          {socketOnline ? "CONSOLE ONLINE" : "CONSOLE OFFLINE"}
+          {socketOnline ? "FRONTEND ONLINE" : "FRONTEND OFFLINE"}
         </div>
       </header>
 
@@ -830,7 +830,7 @@ export default function App() {
         {tab === "overview" && (<>
         <section className="hero panel">
           <div>
-            <p className="eyebrow">AUTONOMOUS DESK / 本地控制台</p>
+            <p className="eyebrow">AUTONOMOUS DESK / 本地前端</p>
             <h1>系统{status.running ? "运行中" : "已停机"}</h1>
             <p className="hero-copy">
               外部模型或本地规则负责提出交易意图，确定性风控拥有最终否决权。当前不支持真钱实盘。
@@ -1385,7 +1385,7 @@ function CustomProvidersPanel({
 
   useEffect(() => { load(); }, [load]);
 
-  // api_key null means "leave the stored key alone" — the console never holds it.
+  // api_key null means "leave the stored key alone" — the frontend never holds it.
   const rows: ProviderDraft[] =
     drafts ?? (payload?.providers ?? []).map((p) => ({ ...p, api_key: null }));
   const dirty = drafts !== null;
@@ -1962,7 +1962,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
 
   useEffect(() => { void refreshRuns(); }, [refreshRuns]);
 
-  // Poll only while something is unfinished, so an idle console stays quiet.
+  // Poll only while something is unfinished, so an idle frontend stays quiet.
   useEffect(() => {
     if (!runs.some((run) => run.status === "running")) return;
     const timer = window.setInterval(() => void refreshRuns(), 3000);

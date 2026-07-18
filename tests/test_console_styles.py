@@ -1,4 +1,4 @@
-"""The console's CSS fails silently: a wrong selector still builds and ships.
+"""The frontend's CSS fails silently: a wrong selector still builds and ships.
 
 These guard the layout invariants that no type checker or bundler can see.
 """
