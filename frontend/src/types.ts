@@ -290,7 +290,7 @@ export interface ManualCloseResult {
 
 export interface TradeFillRecord {
   id: number;
-  source: "exchange_user_stream" | "execution_audit";
+  source: "exchange_user_stream" | "exchange_rest_reconciliation" | "execution_audit";
   client_order_id: string;
   related_client_order_id: string | null;
   symbol: string;

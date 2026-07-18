@@ -950,6 +950,80 @@ def test_manual_market_close_keeps_protection_when_fill_is_incomplete() -> None:
     assert not any(request.method == "DELETE" for request in requests)
 
 
+def test_completed_order_fill_event_uses_real_exchange_trades() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/fapi/v1/order":
+            return httpx.Response(
+                200,
+                json={
+                    "orderId": 42,
+                    "clientOrderId": "cp-manual-close",
+                    "symbol": "BTCUSDT",
+                    "side": "SELL",
+                    "status": "FILLED",
+                    "reduceOnly": True,
+                },
+            )
+        if request.url.path == "/fapi/v1/userTrades":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "orderId": 42,
+                        "qty": "0.04",
+                        "price": "61000",
+                        "quoteQty": "2440",
+                        "realizedPnl": "20",
+                        "side": "SELL",
+                        "time": 1784445088000,
+                    },
+                    {
+                        "orderId": 42,
+                        "qty": "0.06",
+                        "price": "61100",
+                        "quoteQty": "3666",
+                        "realizedPnl": "31",
+                        "side": "SELL",
+                        "time": 1784445088123,
+                    },
+                ],
+            )
+        return httpx.Response(404, json={"code": -1, "msg": "unexpected"})
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        event = await broker.completed_order_fill_event("BTCUSDT", "cp-manual-close")
+        await client.aclose()
+        return event
+
+    event = asyncio.run(scenario())
+    assert event is not None
+    assert event.payload["_source"] == "rest_trade_reconciliation"
+    assert event.payload["o"] == {
+        "s": "BTCUSDT",
+        "c": "cp-manual-close",
+        "S": "SELL",
+        "x": "TRADE",
+        "X": "FILLED",
+        "z": "0.10",
+        "ap": "6.106E+4",
+        "R": True,
+        "rp": "51",
+        "i": 42,
+    }
+    assert event.event_time.isoformat() == "2026-07-19T07:11:28.123000+00:00"
+    assert [request.url.path for request in requests] == [
+        "/fapi/v1/order",
+        "/fapi/v1/userTrades",
+    ]
+
+
 def test_recovers_timed_out_order_by_client_id() -> None:
     query_attempts = 0
 

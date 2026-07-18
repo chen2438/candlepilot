@@ -621,12 +621,14 @@ def test_account_and_risk_query_endpoints(tmp_path: Path) -> None:
 def test_manual_position_close_requires_stopped_engine_and_is_audited(
     tmp_path: Path,
 ) -> None:
+    from candlepilot.broker.user_stream import UserStreamEvent
     from candlepilot.domain.models import ExecutionReport
 
     class ManualCloseBroker(FakeTestnetBroker):
         def __init__(self) -> None:
             super().__init__()
             self.closed_symbols: list[str] = []
+            self.fill_queries = 0
 
         async def close_position_market(self, symbol: str) -> ExecutionReport:
             self.closed_symbols.append(symbol)
@@ -636,6 +638,32 @@ def test_manual_position_close_requires_stopped_engine_and_is_audited(
                 filled_quantity="0.25",
                 average_price="60100",
                 message="manual market close from account frontend",
+            )
+
+        async def completed_order_fill_event(
+            self, symbol: str, client_order_id: str
+        ) -> UserStreamEvent:
+            self.fill_queries += 1
+            now = datetime.now(UTC)
+            return UserStreamEvent(
+                "ORDER_TRADE_UPDATE",
+                now,
+                now,
+                symbol,
+                {
+                    "_source": "rest_trade_reconciliation",
+                    "o": {
+                        "c": client_order_id,
+                        "s": symbol,
+                        "S": "SELL",
+                        "x": "TRADE",
+                        "X": "FILLED",
+                        "z": "0.25",
+                        "ap": "60100",
+                        "R": True,
+                        "rp": "25",
+                    },
+                },
             )
 
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'manual-close-api.db'}")
@@ -667,11 +695,61 @@ def test_manual_position_close_requires_stopped_engine_and_is_audited(
         orders = client.get("/api/orders").json()
         assert orders[0]["client_order_id"] == "cp-manual-test"
         assert orders[0]["symbol"] == "BTCUSDT"
+        fills = client.get("/api/fills").json()
+        assert fills[0]["source"] == "exchange_rest_reconciliation"
+        assert fills[0]["side"] == "SELL"
+        assert fills[0]["report"]["average_price"] == "60100"
+        assert fills[0]["realized_pnl"] == "25"
+        assert broker.fill_queries == 1
+        assert client.get("/api/fills").json()[0]["side"] == "SELL"
+        assert broker.fill_queries == 1
 
         assert (
             client.post("/api/account/positions/close", json={"symbol": "btc"}).status_code
             == 422
         )
+    asyncio.run(database.close())
+
+
+def test_missing_manual_fill_reconciliation_uses_retry_backoff(tmp_path: Path) -> None:
+    from candlepilot.domain.models import ExecutionReport
+
+    class MissingFillBroker(FakeTestnetBroker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.fill_queries = 0
+
+        async def completed_order_fill_event(self, _symbol: str, _client_order_id: str):
+            self.fill_queries += 1
+            return None
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'manual-fill-backoff.db'}")
+    broker = MissingFillBroker()
+    engine = TradingEngine(
+        testnet_broker=broker,  # type: ignore[arg-type]
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=ApiMarket(),  # type: ignore[arg-type]
+    )
+    asyncio.run(database.initialize())
+    asyncio.run(
+        engine.audit.record_execution(
+            "BTCUSDT",
+            ExecutionReport(
+                client_order_id="cp-manual-missing",
+                status="FILLED",
+                filled_quantity="0.1",
+            ),
+        )
+    )
+    app = create_app(database=database, market=ApiMarket(), engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        first = client.get("/api/fills").json()
+        second = client.get("/api/fills").json()
+        assert first[0]["source"] == "execution_audit"
+        assert second[0]["source"] == "execution_audit"
+        assert broker.fill_queries == 1
     asyncio.run(database.close())
 
 

@@ -721,6 +721,77 @@ class BinanceTestnetBroker:
             )
         return report
 
+    async def completed_order_fill_event(
+        self, symbol: str, client_order_id: str
+    ) -> UserStreamEvent | None:
+        """Reconstruct one completed order from exchange trade history.
+
+        Manual close is intentionally allowed only while the engine (and thus
+        its user stream) is stopped.  Querying the exchange trades supplies the
+        side, weighted price and realized PnL that the REST order response may
+        omit, without guessing any execution data.
+        """
+
+        from candlepilot.broker.user_stream import UserStreamEvent
+
+        order = await self._signed_request(
+            "GET",
+            "/fapi/v1/order",
+            {"symbol": symbol, "origClientOrderId": client_order_id},
+        )
+        if order.get("status") != "FILLED" or order.get("orderId") is None:
+            return None
+        order_id = str(order["orderId"])
+        rows = await self._signed_request(
+            "GET", "/fapi/v1/userTrades", {"symbol": symbol, "orderId": order_id}
+        )
+        trades = [row for row in rows if str(row.get("orderId", "")) == order_id]
+        if not trades:
+            return None
+        quantity = sum((Decimal(str(row.get("qty", "0"))) for row in trades), Decimal("0"))
+        if quantity <= 0:
+            return None
+        quote_quantity = sum(
+            (
+                Decimal(str(row.get("quoteQty")))
+                if row.get("quoteQty") is not None
+                else Decimal(str(row.get("price", "0"))) * Decimal(str(row.get("qty", "0")))
+                for row in trades
+            ),
+            Decimal("0"),
+        )
+        realized_pnl = sum(
+            (Decimal(str(row.get("realizedPnl", "0"))) for row in trades), Decimal("0")
+        )
+        event_ms = max(int(row.get("time", 0)) for row in trades)
+        event_time = datetime.fromtimestamp(event_ms / 1000, tz=UTC)
+        side = str(order.get("side") or trades[0].get("side") or "")
+        payload = {
+            "e": "ORDER_TRADE_UPDATE",
+            "E": event_ms,
+            "T": event_ms,
+            "_source": "rest_trade_reconciliation",
+            "o": {
+                "s": symbol,
+                "c": client_order_id,
+                "S": side,
+                "x": "TRADE",
+                "X": "FILLED",
+                "z": str(quantity),
+                "ap": str(quote_quantity / quantity),
+                "R": bool(order.get("reduceOnly", True)),
+                "rp": str(realized_pnl),
+                "i": order["orderId"],
+            },
+        }
+        return UserStreamEvent(
+            event_type="ORDER_TRADE_UPDATE",
+            event_time=event_time,
+            transaction_time=event_time,
+            symbol=symbol,
+            payload=payload,
+        )
+
     @staticmethod
     def _estimated_rescue_loss(
         order: OrderPlan,

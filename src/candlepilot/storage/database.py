@@ -765,7 +765,11 @@ class AuditRepository:
                 fills.append(
                     {
                         "id": row.id,
-                        "source": "exchange_user_stream",
+                        "source": (
+                            "exchange_rest_reconciliation"
+                            if payload.get("_source") == "rest_trade_reconciliation"
+                            else "exchange_user_stream"
+                        ),
                         "client_order_id": client_order_id,
                         "related_client_order_id": related_entry_id,
                         "symbol": row.symbol or str(order.get("s", "")),
@@ -833,9 +837,10 @@ class AuditRepository:
                 .where(
                     UserStreamEventRow.event_type == "ORDER_TRADE_UPDATE",
                     UserStreamEventRow.symbol == exit_event.symbol,
-                    UserStreamEventRow.id < exit_event.id,
+                    UserStreamEventRow.event_time <= exit_event.event_time,
+                    UserStreamEventRow.id != exit_event.id,
                 )
-                .order_by(UserStreamEventRow.id.desc())
+                .order_by(UserStreamEventRow.event_time.desc(), UserStreamEventRow.id.desc())
                 .limit(100)
             )
         ).all()

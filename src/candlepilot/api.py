@@ -552,6 +552,9 @@ def create_app(
     settings_file_lock = asyncio.Lock()
     engine_start_lock = asyncio.Lock()
     manual_close_lock = asyncio.Lock()
+    trade_fill_reconciliation_lock = asyncio.Lock()
+    trade_fill_retry_after: dict[str, float] = {}
+    trade_fill_failure_count: dict[str, int] = {}
     testnet_account_memo: dict[str, Any] = {"account": None, "expires_at": 0.0}
     testnet_levels_lock = asyncio.Lock()
     testnet_levels_memo: dict[str, Any] = {"levels": None, "expires_at": 0.0}
@@ -1813,7 +1816,45 @@ def create_app(
     async def get_fills(limit: int = 100) -> list[dict[str, Any]]:
         if not 1 <= limit <= 500:
             raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
-        return await engine.audit.recent_trade_fills(limit)
+        fills = await engine.audit.recent_trade_fills(limit)
+        broker = engine.testnet_broker
+        resolver = getattr(broker, "completed_order_fill_event", None)
+        if resolver is None or not any(
+            fill["source"] == "execution_audit" and fill["purpose"] == "manual_close"
+            for fill in fills
+        ):
+            return fills
+        async with trade_fill_reconciliation_lock:
+            fills = await engine.audit.recent_trade_fills(limit)
+            missing = [
+                fill
+                for fill in fills
+                if fill["source"] == "execution_audit" and fill["purpose"] == "manual_close"
+                and trade_fill_retry_after.get(fill["client_order_id"], 0) <= time.monotonic()
+            ]
+            for fill in missing:
+                client_order_id = fill["client_order_id"]
+                try:
+                    event = await resolver(fill["symbol"], client_order_id)
+                except Exception as exc:
+                    event = None
+                    logging.getLogger("candlepilot").warning(
+                        "manual close fill reconciliation failed for %s: %s",
+                        client_order_id,
+                        type(exc).__name__,
+                    )
+                if event is not None:
+                    await engine.audit.record_user_event(event)
+                    trade_fill_retry_after.pop(client_order_id, None)
+                    trade_fill_failure_count.pop(client_order_id, None)
+                    continue
+                failures = trade_fill_failure_count.get(client_order_id, 0) + 1
+                trade_fill_failure_count[client_order_id] = failures
+                delays = (5, 15, 60, 300)
+                trade_fill_retry_after[client_order_id] = (
+                    time.monotonic() + delays[min(failures - 1, len(delays) - 1)]
+                )
+            return await engine.audit.recent_trade_fills(limit)
 
     @app.get("/api/risk-events")
     async def get_risk_events(
