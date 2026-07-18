@@ -113,11 +113,16 @@ USDⓈ-M USDT 永续合约。LLM 分析市场并提出结构化 `TradeIntent`，
 - **可选模型与推理强度**：Codex 传 `-m` / `-c model_reasoning_effort`，Claude 传
   `--model` / `--effort`。默认取自环境变量，也可在控制台运行前经 `/api/providers/config`
   修改；控制台模型为下拉选择（选项来自 models.dev 目录、按 Provider 过滤、含 CLI 别名），
-  并保留「自定义」输入以支持目录外模型。
+  并保留「自定义」输入以支持目录外模型。控制台选择「默认强度」会把运行时值清为 `None`：
+  Codex/Claude 调用分别不追加 `-c model_reasoning_effort` / `--effort`，Custom API 的 Responses /
+  Chat Completions 请求分别不发送 `reasoning` / `reasoning_effort`，最终默认值由 CLI、模型或端点决定，
+  CandlePilot 不暗中代填某个档位。
 - **配置连通性测试**：每个 Provider 可经控制台「测试」按钮或 `POST /api/providers/test`
   用当前已应用的模型与推理强度发起一次合成快照调用，验证认证与配置能否返回 schema 合法的
-  `TradeIntent`，并返回耗时与结果动作。测试调用**不写入审计**（不污染决策/用量），引擎运行时
-  锁定（返回 409）。
+  `TradeIntent`，并返回耗时、结果动作、该次调用报告的 Token 与等效成本。成本优先采用端点返回值，
+  否则按所选 models.dev 计费厂商折算；端点未报告 usage 或没有可靠计费映射时分别明确显示
+  「Token 未报告」/「成本未知」，不以零冒充。测试调用**不写入审计**（不污染决策/运行用量），
+  引擎运行时锁定（返回 409）。
 - **失败调用审计**：Provider 已发起调用但在进程、网络、响应解析或 `TradeIntent` 校验阶段失败时，
   引擎仍降级为 `HOLD`，同时保留失败前已知的实际 Prompt、结构化输入、模型、真实耗时、token
   usage、版本指纹与安全原始输出，并单独记录错误信息。历史上只写入部分详情的失败记录在控制台

@@ -14,6 +14,7 @@ import type {
   EngineStatus,
   OrderRecord,
   ProviderHealth,
+  ProviderTestResult,
   ProviderMetric,
   ProviderMetricsResponse,
   CustomProvider,
@@ -441,13 +442,19 @@ export default function App() {
         });
         setProviders(next);
       }
-      const result = await api<{ ok: boolean; model: string | null; action?: string; duration_ms: number; detail?: string }>(
+      const result = await api<ProviderTestResult>(
         "/api/providers/test",
         { method: "POST", body: JSON.stringify({ name }) },
       );
       const seconds = (result.duration_ms / 1000).toFixed(1);
+      const tokens = result.usage?.tokens_reported
+        ? `${result.usage.total_tokens.toLocaleString("zh-CN")} Token`
+        : "Token 未报告";
+      const cost = result.usage?.equivalent_cost_usd == null
+        ? "成本未知"
+        : `成本 $${result.usage.equivalent_cost_usd.toFixed(6)}`;
       const text = result.ok
-        ? `✓ ${result.model ?? "默认模型"} · ${seconds}s · ${result.action}`
+        ? `✓ ${result.model ?? "默认模型"} · ${seconds}s · ${result.action} · ${tokens} · ${cost}`
         : `✗ ${result.detail ?? "调用失败"}`;
       setTestResult((current) => ({ ...current, [name]: { ok: result.ok, text } }));
     } catch (reason) {

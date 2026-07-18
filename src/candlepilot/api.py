@@ -846,12 +846,54 @@ def create_app(
                 "duration_ms": int((time.perf_counter() - started) * 1000),
                 "detail": str(exc),
             }
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        usage = result.usage
+        tokens_reported = any(
+            key in usage
+            for key in (
+                "input_tokens",
+                "cached_input_tokens",
+                "cache_creation_input_tokens",
+                "output_tokens",
+                "total_tokens",
+            )
+        )
+        input_tokens = int(usage.get("input_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or 0)
+        total_tokens = int(usage.get("total_tokens") or input_tokens + output_tokens)
+        equivalent_cost_usd = _provider_result_cost_usd(
+            result, None, provider_pricing_ids
+        )
+        if (
+            equivalent_cost_usd is None
+            and tokens_reported
+            and result.model
+            and request.name in provider_pricing_ids
+        ):
+            try:
+                catalog = await pricing_catalog()
+            except Exception:  # noqa: BLE001 - pricing is optional test metadata
+                catalog = None
+            equivalent_cost_usd = _provider_result_cost_usd(
+                result, catalog, provider_pricing_ids
+            )
         return {
             "ok": True,
             "provider": request.name,
             "model": result.model,
             "action": result.intent.action.value,
-            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "duration_ms": duration_ms,
+            "usage": {
+                "tokens_reported": tokens_reported,
+                "input_tokens": input_tokens,
+                "cached_input_tokens": int(usage.get("cached_input_tokens") or 0),
+                "cache_creation_input_tokens": int(
+                    usage.get("cache_creation_input_tokens") or 0
+                ),
+                "output_tokens": output_tokens,
+                "total_tokens": total_tokens,
+                "equivalent_cost_usd": equivalent_cost_usd,
+            },
         }
 
     @app.get("/api/metrics/providers")

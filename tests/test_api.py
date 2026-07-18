@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -1091,11 +1092,26 @@ def test_run_limits_endpoint(tmp_path: Path) -> None:
 
 
 def test_provider_test_endpoint_reports_success_and_failure(tmp_path: Path) -> None:
+    class UsageProvider(ApiProvider):
+        async def generate_trade_intent(self, snapshot, portfolio):
+            result = await super().generate_trade_intent(snapshot, portfolio)
+            return replace(
+                result,
+                model="test-model",
+                usage={
+                    "input_tokens": 120,
+                    "cached_input_tokens": 20,
+                    "output_tokens": 30,
+                    "total_tokens": 150,
+                    "cost_usd": 0.004,
+                },
+            )
+
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'test-provider.db'}")
     market = ApiMarket()
     engine = TradingEngine(
         testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
-        providers=ProviderRegistry([ApiProvider(), BrokenProvider()]),
+        providers=ProviderRegistry([UsageProvider(), BrokenProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
     )
@@ -1107,6 +1123,15 @@ def test_provider_test_endpoint_reports_success_and_failure(tmp_path: Path) -> N
         assert body["ok"] is True
         assert body["action"] == "HOLD"
         assert "duration_ms" in body
+        assert body["usage"] == {
+            "tokens_reported": True,
+            "input_tokens": 120,
+            "cached_input_tokens": 20,
+            "cache_creation_input_tokens": 0,
+            "output_tokens": 30,
+            "total_tokens": 150,
+            "equivalent_cost_usd": 0.004,
+        }
 
         broken = client.post("/api/providers/test", json={"name": "broken-fixture"}).json()
         assert broken["ok"] is False

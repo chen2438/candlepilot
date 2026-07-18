@@ -100,6 +100,24 @@ export interface ProviderHealth {
   };
 }
 
+export interface ProviderTestResult {
+  ok: boolean;
+  provider: string;
+  model?: string | null;
+  action?: string;
+  duration_ms: number;
+  detail?: string;
+  usage?: {
+    tokens_reported: boolean;
+    input_tokens: number;
+    cached_input_tokens: number;
+    cache_creation_input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    equivalent_cost_usd: number | null;
+  };
+}
+
 export interface Candidate {
   symbol: string;
   score: string;
