@@ -487,6 +487,7 @@ def create_app(
             max_risk_fraction=settings.max_risk_fraction,
             max_positions=settings.max_positions,
             max_margin_fraction=settings.max_margin_fraction,
+            max_symbol_margin_fraction=settings.max_symbol_margin_fraction,
             daily_loss_fraction=settings.daily_loss_fraction,
             max_snapshot_age_seconds=settings.max_snapshot_age_seconds,
         ),

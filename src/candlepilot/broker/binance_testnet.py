@@ -217,10 +217,17 @@ class BinanceTestnetBroker:
 
         return await self._signed_request("GET", "/fapi/v3/positionRisk", {})
 
+    async def symbol_configuration(self) -> list[dict[str, Any]]:
+        """Return leverage and margin mode removed from Binance's v3 snapshots."""
+
+        return await self._signed_request("GET", "/fapi/v1/symbolConfig", {})
+
     async def account_snapshot(self) -> dict[str, Any]:
         """Return balances plus exchange-authoritative live position fields."""
 
-        account, risk_rows = await asyncio.gather(self.account(), self.position_risk())
+        account, risk_rows, configuration_rows = await asyncio.gather(
+            self.account(), self.position_risk(), self.symbol_configuration()
+        )
         risk_by_symbol = {
             str(item.get("symbol", "")): {
                 **item,
@@ -230,10 +237,40 @@ class BinanceTestnetBroker:
             }
             for item in risk_rows
         }
+        configuration_by_symbol = {
+            str(item.get("symbol", "")): item for item in configuration_rows
+        }
         positions: list[dict[str, Any]] = []
         for item in account.get("positions", []):
             symbol = str(item.get("symbol", ""))
-            merged = {**item, **risk_by_symbol.get(symbol, {})}
+            risk = risk_by_symbol.get(symbol, {})
+            configuration = configuration_by_symbol.get(symbol, {})
+            # V3 deliberately removes symbol configuration. Keep quantities and
+            # margin figures from the account response, enrich only live risk
+            # fields from positionRisk, then restore leverage/margin mode from
+            # the dedicated configuration endpoint.
+            merged = {
+                **item,
+                **{
+                    key: risk[key]
+                    for key in (
+                        "entryPrice",
+                        "markPrice",
+                        "unrealizedProfit",
+                        "unRealizedProfit",
+                        "notional",
+                    )
+                    if key in risk
+                },
+                **{
+                    key: configuration[key]
+                    for key in ("leverage", "marginType")
+                    if key in configuration
+                },
+            }
+            margin_type = str(merged.get("marginType", "")).upper()
+            if margin_type:
+                merged["isolated"] = margin_type == "ISOLATED"
             if (
                 Decimal(str(merged.get("positionAmt", "0"))) != 0
                 and merged.get("entryPrice") is None

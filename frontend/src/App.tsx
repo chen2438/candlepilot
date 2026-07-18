@@ -302,7 +302,8 @@ const METRIC_DEFINITIONS: Record<string, string> = {
 const RISK_DEFINITIONS: Record<string, string> = {
   "单笔风险": "单次开仓或加仓在止损触发时允许承担的计划亏损上限，为当前权益的 2%，并在定量时计入费用与保守滑点。",
   "并发仓位": "整个组合同时允许持有的非零净仓标的上限为 8 个。",
-  "保证金占用": "全部仓位占用保证金不得超过账户权益的 60%。",
+  "保证金占用": "全部仓位占用保证金不得超过账户权益的 80%。",
+  "单标的保证金": "每个标的的初始保证金不得超过账户权益的 10%，增仓也计入同一上限。",
   "持仓模式": "每个标的使用逐仓保证金并维持单向净仓，不同时持有双向仓位。",
 };
 
@@ -1142,10 +1143,11 @@ export default function App() {
             <div className="risk-grid">
               <RiskItem label="单笔风险" value="2.0%" detail="权益上限" />
               <RiskItem label="并发仓位" value="8" detail="全组合" />
-              <RiskItem label="保证金占用" value="60%" detail="组合上限" />
+              <RiskItem label="保证金占用" value="80%" detail="组合上限" />
+              <RiskItem label="单标的保证金" value="10%" detail="权益上限" />
               <RiskItem label="持仓模式" value="逐仓" detail="单向净仓" />
             </div>
-            <div className="risk-line"><span style={{ width: "60%" }} /></div>
+            <div className="risk-line"><span style={{ width: "80%" }} /></div>
             <p>所有开仓必须包含交易所侧止损，并通过精度、陈旧行情和强平缓冲检查。</p>
           </article>
 

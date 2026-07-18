@@ -96,6 +96,17 @@ def test_account_snapshot_enriches_positions_with_position_risk() -> None:
                     }
                 ],
             )
+        if request.url.path == "/fapi/v1/symbolConfig":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "symbol": "BTCUSDT",
+                        "leverage": 2,
+                        "marginType": "ISOLATED",
+                    }
+                ],
+            )
         return httpx.Response(404, json={"code": -1, "msg": "not found"})
 
     async def scenario():
@@ -113,7 +124,9 @@ def test_account_snapshot_enriches_positions_with_position_risk() -> None:
         {
             "symbol": "BTCUSDT",
             "positionAmt": "0.091",
-            "leverage": "1",
+            "leverage": 2,
+            "marginType": "ISOLATED",
+            "isolated": True,
             "entryPrice": "64110.7",
             "markPrice": "64503.7",
             "unRealizedProfit": "35.76",
@@ -130,6 +143,8 @@ def test_account_snapshot_rejects_open_position_without_risk_price() -> None:
                 json={"positions": [{"symbol": "BTCUSDT", "positionAmt": "0.091"}]},
             )
         if request.url.path == "/fapi/v3/positionRisk":
+            return httpx.Response(200, json=[])
+        if request.url.path == "/fapi/v1/symbolConfig":
             return httpx.Response(200, json=[])
         return httpx.Response(404, json={"code": -1, "msg": "not found"})
 

@@ -66,8 +66,34 @@ def _position(side: str, quantity: str = "1", **changes) -> dict[str, PositionSt
     }
 
 
-def test_sizes_position_from_stop_distance_and_rounds_down() -> None:
+def test_single_symbol_initial_margin_is_capped_at_ten_percent_of_equity() -> None:
     result = AggressiveRiskPolicy().evaluate(_intent(), _snapshot(), _portfolio(), RULES)
+    assert result.decision.accepted
+    assert result.order is not None
+    assert result.order.quantity == Decimal("50.000")
+    assert result.order.quantity * Decimal("100") / 5 == Decimal("1000")
+
+
+def test_portfolio_initial_margin_is_capped_at_eighty_percent_of_equity() -> None:
+    result = AggressiveRiskPolicy(max_symbol_margin_fraction=Decimal("1")).evaluate(
+        _intent(),
+        _snapshot(),
+        _portfolio(margin_used="7000", available_balance="3000"),
+        RULES,
+    )
+
+    assert result.decision.accepted
+    assert result.order is not None
+    assert result.order.quantity == Decimal("50.000")
+    assert Decimal("7000") + result.order.quantity * Decimal("100") / 5 == Decimal(
+        "8000"
+    )
+
+
+def test_sizes_position_from_stop_distance_and_rounds_down() -> None:
+    result = AggressiveRiskPolicy(max_symbol_margin_fraction=Decimal("1")).evaluate(
+        _intent(), _snapshot(), _portfolio(), RULES
+    )
     assert result.decision.accepted
     assert result.order is not None
     assert result.order.quantity == Decimal("95.238")
@@ -150,7 +176,9 @@ def test_add_subtracts_existing_position_risk_from_the_hard_limit() -> None:
         ),
     )
 
-    result = AggressiveRiskPolicy().evaluate(intent, _snapshot(), portfolio, RULES)
+    result = AggressiveRiskPolicy(max_symbol_margin_fraction=Decimal("1")).evaluate(
+        intent, _snapshot(), portfolio, RULES
+    )
 
     assert not result.decision.accepted
     assert result.order is None
@@ -165,7 +193,9 @@ def test_add_uses_only_the_remaining_combined_risk_budget() -> None:
         positions=_position("LONG", "25", stop_loss="98", take_profit="104"),
     )
 
-    result = AggressiveRiskPolicy().evaluate(intent, _snapshot(), portfolio, RULES)
+    result = AggressiveRiskPolicy(max_symbol_margin_fraction=Decimal("1")).evaluate(
+        intent, _snapshot(), portfolio, RULES
+    )
 
     assert result.decision.accepted
     assert result.order is not None
@@ -173,6 +203,32 @@ def test_add_uses_only_the_remaining_combined_risk_budget() -> None:
     new_risk = result.order.quantity * (Decimal("2") + Decimal("0.1"))
     assert existing_risk + new_risk <= Decimal("200")
     assert existing_risk + new_risk > Decimal("199.99")
+
+
+def test_add_uses_only_remaining_single_symbol_margin_capacity() -> None:
+    portfolio = _portfolio(
+        open_positions=1,
+        margin_used="900",
+        positions=_position(
+            "LONG",
+            "45",
+            leverage=5,
+            initial_margin="900",
+            stop_loss="98",
+            take_profit="104",
+        ),
+    )
+
+    result = AggressiveRiskPolicy().evaluate(
+        _intent(TradeAction.ADD), _snapshot(), portfolio, RULES
+    )
+
+    assert result.decision.accepted
+    assert result.order is not None
+    assert result.order.quantity == Decimal("5.000")
+    assert Decimal("900") + result.order.quantity * Decimal("100") / 5 == Decimal(
+        "1000"
+    )
 
 
 def test_rejects_take_profit_on_wrong_side_of_entry() -> None:

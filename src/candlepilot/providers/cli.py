@@ -290,7 +290,11 @@ def _decision_prompt(
         "HOLD must use leverage=1, risk_fraction=0, order_type=MARKET, and null entry_price, "
         "stop_loss, and take_profit. Opening and ADD decisions require both a stop loss and "
         "a take profit. "
-        "Never exceed leverage 10 or risk 0.02. "
+        "Never exceed leverage 10 or risk 0.02. Hard sizing also limits total initial "
+        "margin across the portfolio to 80% of equity and total initial margin for any "
+        "single symbol to 10% of equity; portfolio.positions reports each existing "
+        "position's initial_margin, and opening or ADD sizing must respect the remaining "
+        "per-symbol capacity. "
         f"Keep rationale concise and at most {RATIONALE_TARGET_LENGTH} characters."
         + _flow_clause(snapshot)
         + schema_clause

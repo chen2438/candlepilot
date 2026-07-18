@@ -59,7 +59,8 @@ class AggressiveRiskPolicy:
         max_leverage: int = 10,
         max_risk_fraction: Decimal = Decimal("0.02"),
         max_positions: int = 8,
-        max_margin_fraction: Decimal = Decimal("0.60"),
+        max_margin_fraction: Decimal = Decimal("0.80"),
+        max_symbol_margin_fraction: Decimal = Decimal("0.10"),
         daily_loss_fraction: Decimal = Decimal("0.08"),
         slippage_fraction: Decimal = Decimal("0.001"),
         max_snapshot_age_seconds: int = 75,
@@ -71,6 +72,7 @@ class AggressiveRiskPolicy:
         self.max_risk_fraction = max_risk_fraction
         self.max_positions = max_positions
         self.max_margin_fraction = max_margin_fraction
+        self.max_symbol_margin_fraction = max_symbol_margin_fraction
         self.daily_loss_fraction = daily_loss_fraction
         self.slippage_fraction = slippage_fraction
         self.max_snapshot_age_seconds = max_snapshot_age_seconds
@@ -221,13 +223,26 @@ class AggressiveRiskPolicy:
             Decimal("0"),
             (portfolio.equity * self.max_margin_fraction) - portfolio.margin_used,
         )
+        existing_symbol_margin = (
+            existing.initial_margin if existing is not None else Decimal("0")
+        )
+        remaining_symbol_margin = max(
+            Decimal("0"),
+            (portfolio.equity * self.max_symbol_margin_fraction)
+            - existing_symbol_margin,
+        )
         margin_price = (
             max(entry, snapshot.ask if requested_side == "LONG" else snapshot.bid)
             if intent.order_type == OrderType.LIMIT
             else entry
         )
         margin_quantity = (
-            min(remaining_margin, portfolio.available_balance) * intent.leverage
+            min(
+                remaining_margin,
+                remaining_symbol_margin,
+                portfolio.available_balance,
+            )
+            * intent.leverage
         ) / margin_price
         quantity = _round_down(min(risk_quantity, margin_quantity), rules.quantity_step)
         if quantity < rules.min_quantity:

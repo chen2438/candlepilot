@@ -133,6 +133,7 @@ class PositionState(StrictModel):
     entry_price: PositiveDecimal
     unrealized_pnl: Decimal = Decimal("0")
     leverage: int = Field(default=1, ge=1)
+    initial_margin: NonNegativeDecimal = Decimal("0")
     stop_loss: Decimal | None = Field(default=None, gt=0)
     take_profit: Decimal | None = Field(default=None, gt=0)
 

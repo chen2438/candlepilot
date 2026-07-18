@@ -371,7 +371,8 @@ class Settings:
     max_leverage: int = 10
     max_risk_fraction: Decimal = Decimal("0.02")
     max_positions: int = 8
-    max_margin_fraction: Decimal = Decimal("0.60")
+    max_margin_fraction: Decimal = Decimal("0.80")
+    max_symbol_margin_fraction: Decimal = Decimal("0.10")
     daily_loss_fraction: Decimal = Decimal("0.08")
     inference_timeout_seconds: float = 45.0
     max_snapshot_age_seconds: int = 75

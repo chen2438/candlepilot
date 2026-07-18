@@ -286,11 +286,11 @@ def test_engine_executes_against_refreshed_market_after_slow_analysis(tmp_path: 
     assert snapshot_calls == 1
     # The analysis snapshot said 100, the refreshed market says 101. The stop
     # stays where the model put it -- it reasoned off the analysis snapshot --
-    # but the size must come from the refreshed price: risking 100 over a 3.101
-    # per-unit loss is 32.247, where the stale price would have sized 47.619.
+    # but the size must come from the refreshed price. The 10% per-symbol initial
+    # margin cap is tighter here: 1000 USDT at 3x / 101 = 29.702 units.
     # The fill itself comes back from the exchange, so it is not ours to assert.
     assert orders[0].stop_price == Decimal("98.00")
-    assert orders[0].quantity == Decimal("32.247")
+    assert orders[0].quantity == Decimal("29.702")
 
 
 def test_engine_executes_and_audits_marketable_limit_after_refresh(tmp_path: Path) -> None:
@@ -1186,6 +1186,7 @@ def test_testnet_portfolio_carries_entry_price_and_live_bracket(tmp_path: Path) 
     assert position.entry_price == Decimal("101.25")
     assert position.unrealized_pnl == Decimal("-3.75")
     assert position.leverage == 5
+    assert position.initial_margin == Decimal("30.375")
     assert position.stop_loss == Decimal("104")
     # No take-profit leg on the exchange must read as absent, not as invented.
     assert position.take_profit is None

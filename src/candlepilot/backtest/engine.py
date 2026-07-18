@@ -157,6 +157,7 @@ class SimulatedExchange:
                 entry_price=position.entry_price,
                 unrealized_pnl=pnl,
                 leverage=position.leverage,
+                initial_margin=position.quantity * mark / position.leverage,
                 stop_loss=position.stop_loss,
                 take_profit=position.take_profit,
             )

@@ -400,12 +400,20 @@ class TradingEngine:
                     f"position risk response is missing entry price for {symbol}"
                 )
             guard = levels.get(symbol, ProtectiveLevels())
+            leverage = int(item.get("leverage", 1))
+            initial_margin = item.get(
+                "positionInitialMargin", item.get("initialMargin")
+            )
+            if initial_margin is None:
+                mark_price = Decimal(str(item.get("markPrice", entry_price)))
+                initial_margin = abs(amount) * mark_price / leverage
             positions[symbol] = PositionState(
                 side="LONG" if amount > 0 else "SHORT",
                 quantity=abs(amount),
                 entry_price=Decimal(str(entry_price)),
                 unrealized_pnl=Decimal(str(item.get("unrealizedProfit", "0"))),
-                leverage=int(item.get("leverage", 1)),
+                leverage=leverage,
+                initial_margin=Decimal(str(initial_margin)),
                 stop_loss=guard.stop_loss,
                 take_profit=guard.take_profit,
             )
