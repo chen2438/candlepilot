@@ -275,6 +275,7 @@ CURRENT_SCHEMA_VERSION = 13
 
 class Database:
     def __init__(self, url: str) -> None:
+        self.url = url
         self.engine: AsyncEngine = create_async_engine(url)
         if url.startswith("sqlite"):
             event.listen(self.engine.sync_engine, "connect", self._configure_sqlite)

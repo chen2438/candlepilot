@@ -16,6 +16,7 @@ from candlepilot.domain.models import (
 )
 from candlepilot.providers.base import ProviderResult
 from candlepilot.providers.pricing import parse_models_dev
+from candlepilot.runtime_lock import ServiceInstanceLock
 from candlepilot.storage.database import (
     CURRENT_SCHEMA_VERSION,
     DECISION_OUTCOMES,
@@ -133,6 +134,22 @@ def test_live_runs_group_inferences_and_record_terminal_reason(tmp_path: Path) -
     assert legacy is not None
     assert legacy["live_run_id"] is None
     assert legacy["live_run"] is None
+
+
+def test_service_instance_lock_rejects_a_second_owner(tmp_path: Path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'owned.db'}"
+    first = ServiceInstanceLock(database_url)
+    second = ServiceInstanceLock(database_url)
+
+    first.acquire()
+    try:
+        with pytest.raises(RuntimeError, match="another CandlePilot service"):
+            second.acquire()
+    finally:
+        first.release()
+
+    second.acquire()
+    second.release()
 
 
 def test_inference_audit_distinguishes_partial_and_unavailable_details(

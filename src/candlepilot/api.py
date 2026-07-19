@@ -96,6 +96,7 @@ from candlepilot.providers.pricing import load_catalog as load_pricing_catalog
 from candlepilot.providers.base import DecisionProvider, ProviderResult
 from candlepilot.providers.openai_compatible import validate_base_url
 from candlepilot.providers.registry import ProviderRegistry
+from candlepilot.runtime_lock import ServiceInstanceLock
 from candlepilot.providers.retry import DECISION_PROVIDER_MAX_ATTEMPTS
 from candlepilot.provenance import MICROSTRUCTURE_SCHEMA_VERSION
 from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
@@ -501,6 +502,7 @@ def create_app(
         if testnet_stream is not None
         else None
     )
+    instance_lock = ServiceInstanceLock(database.url)
     async def current_run_cost_usd() -> float | None:
         if engine.run_start_inference_id is None:
             return None
@@ -618,38 +620,46 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        await database.initialize()
-        # A live run left open can only mean the previous process did not
-        # execute its graceful shutdown path. Close it before serving history.
-        await engine.audit.interrupt_open_live_runs()
-        await engine.restore_runtime_state()
-        # Warm the models.dev pricing cache without blocking startup.
-        warm_pricing = asyncio.create_task(pricing_catalog())
-        yield
-        warm_pricing.cancel()
-        await asyncio.gather(warm_pricing, return_exceptions=True)
-        await scheduler.stop()
-        await engine.stop()
-        await collector.stop()
-        model_tasks = active_backtest_tasks()
-        if probe_task is not None and not probe_task.done():
-            probe_task.cancel()
-            model_tasks.append(probe_task)
-        for task in model_tasks:
-            task.cancel()
-        if model_tasks:
-            # Backtests write their cancelled terminal state while the audit
-            # database is still open; Provider cancellation also gets a chance
-            # to terminate its CLI process/HTTP request before resources close.
-            await asyncio.gather(*model_tasks, return_exceptions=True)
-        if owns_market:
-            await market.close()
-        if testnet_broker is not None:
-            await testnet_broker.close()
-        if testnet_feed is not None:
-            await testnet_feed.close()
-        if owns_database:
-            await database.close()
+        # Acquire before touching live-run rows. A second local service using the
+        # same SQLite file must not mark the first service's active run interrupted.
+        instance_lock.acquire()
+        try:
+            await database.initialize()
+            # With exclusive ownership established, a live run left open can only
+            # mean the previous owner did not execute its graceful shutdown path.
+            await engine.audit.interrupt_open_live_runs()
+            await engine.restore_runtime_state()
+            # Warm the models.dev pricing cache without blocking startup.
+            warm_pricing = asyncio.create_task(pricing_catalog())
+            try:
+                yield
+            finally:
+                warm_pricing.cancel()
+                await asyncio.gather(warm_pricing, return_exceptions=True)
+                await scheduler.stop()
+                await engine.stop()
+                await collector.stop()
+                model_tasks = active_backtest_tasks()
+                if probe_task is not None and not probe_task.done():
+                    probe_task.cancel()
+                    model_tasks.append(probe_task)
+                for task in model_tasks:
+                    task.cancel()
+                if model_tasks:
+                    # Backtests write their cancelled terminal state while the audit
+                    # database is still open; Provider cancellation also gets a chance
+                    # to terminate its CLI process/HTTP request before resources close.
+                    await asyncio.gather(*model_tasks, return_exceptions=True)
+                if owns_market:
+                    await market.close()
+                if testnet_broker is not None:
+                    await testnet_broker.close()
+                if testnet_feed is not None:
+                    await testnet_feed.close()
+                if owns_database:
+                    await database.close()
+        finally:
+            instance_lock.release()
 
     async def _store_captures(captures: list[Any]) -> None:
         await engine.audit.store_book_captures(
