@@ -1575,6 +1575,15 @@ def test_history_clear_removes_selected_categories(tmp_path: Path) -> None:
         )
         assert len(client.get("/api/signals").json()) == 1
 
+        engine.running = True
+        blocked = client.post(
+            "/api/history/clear", json={"categories": ["inferences"]}
+        )
+        assert blocked.status_code == 409
+        assert "formal decision engine" in blocked.json()["detail"]
+        assert len(client.get("/api/signals").json()) == 1
+        engine.running = False
+
         response = client.post(
             "/api/history/clear", json={"categories": ["inferences", "market_cache"]}
         )
@@ -2686,6 +2695,11 @@ def test_a_running_probe_shows_each_call_as_it_lands(tmp_path: Path) -> None:
         assert client.post(
             "/api/providers/test", json={"name": "api-fixture"}
         ).status_code == 409
+        blocked_clear = client.post(
+            "/api/history/clear", json={"categories": ["backtests"]}
+        )
+        assert blocked_clear.status_code == 409
+        assert "backtest or probe" in blocked_clear.json()["detail"]
         gate.set()
 
     assert mid, "the probe published nothing while it was running"

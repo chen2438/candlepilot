@@ -1056,6 +1056,20 @@ def create_app(
         unknown = sorted(set(request.categories) - valid)
         if unknown:
             raise HTTPException(status_code=422, detail=f"unknown categories: {', '.join(unknown)}")
+        active: list[str] = []
+        if engine.running:
+            active.append("the formal decision engine")
+        if background_model_work():
+            active.append("a backtest or probe")
+        if collector.running:
+            active.append("the market collector")
+        if active:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "stop active work before clearing history: " + ", ".join(active)
+                ),
+            )
         selected = set(request.categories)
         cleared: dict[str, int] = {}
         db_selected = selected & db_categories

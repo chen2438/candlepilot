@@ -1271,7 +1271,7 @@ export default function App() {
             <div className="history-actions">
               <button
                 className="history-select-all"
-                disabled={busy !== null}
+                disabled={busy !== null || status.running}
                 onClick={() => {
                   setHistoryConfirm(false);
                   setHistorySelected(
@@ -1286,16 +1286,17 @@ export default function App() {
               {!historyConfirm ? (
                 <button
                   className="danger"
-                  disabled={busy !== null || !Object.values(historySelected).some(Boolean)}
+                  disabled={busy !== null || status.running || !Object.values(historySelected).some(Boolean)}
                   onClick={() => setHistoryConfirm(true)}
                 >清除所选</button>
               ) : (
                 <>
                   <span className="history-warn">确认删除所选数据？此操作不可恢复。</span>
-                  <button className="danger" disabled={busy !== null} onClick={clearHistory}>{busy === "history-clear" ? "删除中…" : "确认删除"}</button>
+                  <button className="danger" disabled={busy !== null || status.running} onClick={clearHistory}>{busy === "history-clear" ? "删除中…" : "确认删除"}</button>
                   <button className="text-button" disabled={busy !== null} onClick={() => setHistoryConfirm(false)}>取消</button>
                 </>
               )}
+              {status.running && <span className="history-warn">正式决策运行中，停止后才能删除历史。</span>}
               {historyResult && <span className="history-result">已删除 → {historyResult}</span>}
             </div>
           </article>
