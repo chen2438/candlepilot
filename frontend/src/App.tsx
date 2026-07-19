@@ -274,7 +274,7 @@ const METRIC_DEFINITIONS: Record<string, string> = {
 const RISK_DEFINITIONS: Record<string, string> = {
   "单笔风险": "单次开仓或加仓在止损触发时允许承担的计划亏损上限，为当前权益的 1%，并在定量时计入手续费、盘口与保守滑点。",
   "组合止损风险": "全部未平仓头寸按当前交易所保护价计算的计划止损风险合计，不得超过当前权益的 4%；缺少可核验止损时拒绝新增风险。",
-  "最低盈亏比": "开仓与加仓按最新盘口、手续费、双边滑点和交易所精度计算的有效盈亏比不得低于 1.3:1；减仓和平仓不受此限制。",
+  "最低盈亏比": "开仓与加仓按入场、止损和止盈的价格距离计算原始盈亏比，必须大于 1.3:1；手续费和滑点不参与该比例，减仓和平仓不受此限制。",
   "保证金占用": "全部仓位占用保证金不得超过账户权益的 80%。",
   "单标的保证金": "每个标的的初始保证金不得超过账户权益的 10%，增仓也计入同一上限。",
   "持仓模式": "每个标的使用逐仓保证金并维持单向净仓，不同时持有双向仓位。",
@@ -1158,13 +1158,13 @@ export default function App() {
             <div className="risk-grid">
               <RiskItem label="单笔风险" value="1.0%" detail="权益上限" />
               <RiskItem label="组合止损风险" value="4.0%" detail="权益上限" />
-              <RiskItem label="最低盈亏比" value="1.3:1" detail="有效值" />
+              <RiskItem label="最低盈亏比" value="> 1.3:1" detail="原始值" />
               <RiskItem label="保证金占用" value="80%" detail="组合上限" />
               <RiskItem label="单标的保证金" value="10%" detail="权益上限" />
               <RiskItem label="持仓模式" value="逐仓" detail="单向净仓" />
             </div>
             <div className="risk-line"><span style={{ width: "80%" }} /></div>
-            <p>模型以 1.5:1 以上为目标；所有开仓必须包含交易所侧止损，并通过组合风险、有效盈亏比、精度、陈旧行情和强平缓冲检查。</p>
+            <p>模型提示词不包含盈亏比要求；所有开仓必须包含交易所侧止损和止盈，并通过组合风险、原始盈亏比、精度、陈旧行情和强平缓冲检查。</p>
             </article>
 
             <article className="panel universe-panel">
@@ -2917,7 +2917,7 @@ export function DecisionPanel({
                   <span>入场价<strong>{intentPrice(decision.intent.entry_price)}</strong></span>
                   <span>止损<strong>{intentPrice(decision.intent.stop_loss)}</strong></span>
                   <span>止盈<strong>{intentPrice(decision.intent.take_profit)}</strong></span>
-                  <span data-tooltip="仅按 AI 返回的入场价、止损和止盈计算，不含交易所 tick 对齐、最新盘口、手续费或滑点；硬风控使用另行重算的有效盈亏比。">AI 原始盈亏比<strong>{intentRewardRiskLabel(decision.intent)}</strong></span>
+                  <span data-tooltip="仅按 AI 返回的入场价、止损和止盈计算，不含交易所 tick 对齐或最新行情；硬风控同样使用原始价格距离公式，但会采用刷新后的实际入场基准和对齐交易所精度后的保护价。">AI 原始盈亏比<strong>{intentRewardRiskLabel(decision.intent)}</strong></span>
                   <span>风控数量<strong>{decision.risk?.decision.max_quantity ?? "—"}</strong></span>
                 </div>
                 <div className={`decision-reason ${decision.outcome}`}>

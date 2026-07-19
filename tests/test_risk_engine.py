@@ -386,13 +386,30 @@ def test_daily_loss_circuit_breaker_never_blocks_a_close() -> None:
     assert result.order is not None and result.order.reduce_only
 
 
-def test_rejects_effective_reward_risk_below_the_hard_minimum() -> None:
+def test_rejects_raw_reward_risk_at_the_strict_threshold() -> None:
+    intent = _intent().model_copy(update={"take_profit": Decimal("102.6")})
+
+    result = AggressiveRiskPolicy().evaluate(intent, _snapshot(), _portfolio(), RULES)
+
+    assert not result.decision.accepted
+    assert "raw reward/risk ratio must be greater than 1.3:1" in result.decision.reason
+
+
+def test_raw_reward_risk_above_threshold_ignores_fees_and_slippage() -> None:
+    intent = _intent().model_copy(update={"take_profit": Decimal("102.62")})
+
+    result = AggressiveRiskPolicy().evaluate(intent, _snapshot(), _portfolio(), RULES)
+
+    assert result.decision.accepted
+
+
+def test_rejects_raw_reward_risk_below_the_threshold() -> None:
     intent = _intent().model_copy(update={"take_profit": Decimal("102")})
 
     result = AggressiveRiskPolicy().evaluate(intent, _snapshot(), _portfolio(), RULES)
 
     assert not result.decision.accepted
-    assert "reward/risk ratio" in result.decision.reason
+    assert "raw reward/risk ratio" in result.decision.reason
 
 
 def test_portfolio_stop_risk_caps_new_exposure_at_four_percent() -> None:

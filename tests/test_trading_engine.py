@@ -361,7 +361,7 @@ def test_engine_executes_against_refreshed_market_after_slow_analysis(tmp_path: 
     assert orders[0].quantity == Decimal("29.702")
 
 
-def test_engine_rejects_when_refreshed_market_breaks_reward_risk(tmp_path: Path) -> None:
+def test_engine_rejects_when_refreshed_market_breaks_raw_reward_risk(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'refresh-ratio.db'}")
         await database.initialize()
@@ -393,7 +393,7 @@ def test_engine_rejects_when_refreshed_market_breaks_reward_risk(tmp_path: Path)
 
     outcome, snapshot_calls, orders = asyncio.run(scenario())
     assert not outcome.risk.accepted and outcome.execution is None
-    assert "reward/risk ratio" in outcome.risk.reason
+    assert "raw reward/risk ratio" in outcome.risk.reason
     assert snapshot_calls == 1
     assert orders == []
 

@@ -36,7 +36,7 @@ const decision: DecisionEvent = {
   risk: {
     id: 1,
     accepted: false,
-    reason: "effective reward/risk ratio is below the hard minimum 1.3:1",
+    reason: "raw reward/risk ratio must be greater than 1.3:1",
     decision: { max_quantity: null },
     created_at: "2026-07-19T15:16:52Z",
   },

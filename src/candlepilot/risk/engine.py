@@ -283,24 +283,24 @@ class AggressiveRiskPolicy:
         if quantity * entry < rules.min_notional:
             return self._reject("risk-sized notional is below the exchange minimum")
 
-        reward_risk_entry = effective_entry
+        reward_risk_entry = entry
         if intent.action == TradeAction.ADD:
             assert existing is not None
             combined_quantity = existing.quantity + quantity
             reward_risk_entry = (
                 (existing.entry_price * existing.quantity)
-                + (effective_entry * quantity)
+                + (entry * quantity)
             ) / combined_quantity
         if take_profit is not None:
-            reward_risk_ratio = self._effective_reward_risk_ratio(
+            reward_risk_ratio = self._raw_reward_risk_ratio(
                 requested_side,
                 reward_risk_entry,
                 stop,
                 take_profit,
             )
-            if reward_risk_ratio < self.minimum_reward_risk_ratio:
+            if reward_risk_ratio <= self.minimum_reward_risk_ratio:
                 return self._reject(
-                    "effective reward/risk ratio is below the hard minimum "
+                    "raw reward/risk ratio must be greater than "
                     f"{self.minimum_reward_risk_ratio}:1"
                 )
 
@@ -359,19 +359,14 @@ class AggressiveRiskPolicy:
         fees = (entry + exit_price) * self.fee_fraction
         return price_loss + fees
 
-    def _effective_reward_risk_ratio(
-        self,
-        side: str,
-        entry: Decimal,
-        stop: Decimal,
-        take_profit: Decimal,
+    @staticmethod
+    def _raw_reward_risk_ratio(
+        side: str, entry: Decimal, stop: Decimal, take_profit: Decimal
     ) -> Decimal:
         direction = Decimal("1") if side == "LONG" else Decimal("-1")
-        target_exit = self._effective_exit(side, take_profit)
-        reward = max(Decimal("0"), (target_exit - entry) * direction)
-        reward -= (entry + target_exit) * self.fee_fraction
-        risk = self._effective_loss_per_unit(side, entry, stop)
-        return max(Decimal("0"), reward) / risk
+        reward = max(Decimal("0"), (take_profit - entry) * direction)
+        risk = max(Decimal("0"), (entry - stop) * direction)
+        return reward / risk if risk > 0 else Decimal("0")
 
     def _portfolio_stop_risk(
         self,
