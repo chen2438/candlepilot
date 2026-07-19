@@ -323,6 +323,80 @@ def test_guard_stops_the_run_when_a_limit_is_reached(tmp_path: Path) -> None:
     assert tasks == []  # the scheduler tore its own tasks down
 
 
+def test_three_rescues_auto_stop_one_live_run_and_report_the_reason(tmp_path: Path) -> None:
+    from candlepilot.broker.binance_testnet import ProtectiveStopError
+    from candlepilot.domain.models import ExecutionReport
+
+    class RescueBroker(FakeTestnetBroker):
+        async def execute_with_stop(self, order, **_):
+            entry = ExecutionReport(
+                client_order_id=order.client_order_id,
+                status="FILLED",
+                filled_quantity=order.quantity,
+                average_price="100",
+            )
+            rescue = ExecutionReport(
+                client_order_id=f"{order.client_order_id}-rescue",
+                status="FILLED",
+                filled_quantity=order.quantity,
+                average_price="99",
+            )
+            raise ProtectiveStopError(
+                "entry succeeded but protective bracket failed; rescued",
+                entry=entry,
+                rescue=rescue,
+                exchange_error_code=-4130,
+                estimated_loss_usdt=order.quantity,
+                failed_stage="PROTECTION",
+                requires_emergency_lock=False,
+            )
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'rescue-limit.db'}")
+        await database.initialize()
+        audit = AuditRepository(database.sessions)
+        market = SchedulerMarket()
+        engine = TradingEngine(
+            testnet_broker=RescueBroker(),  # type: ignore[arg-type]
+            providers=ProviderRegistry([ConflictingProvider()]),
+            audit=audit,
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider_chain(["conflicting"])
+        await engine.start()
+        scheduler = TradingScheduler(engine, market)  # type: ignore[arg-type]
+        cycle_sizes = []
+        for _ in range(3):
+            cycle_sizes.append(len(await scheduler.run_cycle("5m")))
+        if scheduler._auto_stop_task is not None:
+            await scheduler._auto_stop_task
+        events = await audit.recent_decision_events()
+        stopped = (
+            engine.running,
+            engine.rescue_count,
+            engine.auto_stop_reason,
+            events[0]["live_run"],
+            len(await scheduler.run_cycle("5m")),
+        )
+        await engine.start()
+        reset_count = engine.rescue_count
+        await engine.stop()
+        await database.close()
+        return cycle_sizes, stopped, reset_count
+
+    cycle_sizes, stopped, reset_count = asyncio.run(scenario())
+    running, count, reason, live_run, fourth_cycle_size = stopped
+    assert cycle_sizes == [1, 1, 1]
+    assert running is False
+    assert count == 3
+    assert reason == "本次运行累计紧急回补 3 次，达到安全上限 3 次"
+    assert live_run["status"] == "auto_stopped"
+    assert live_run["stop_reason"] == reason
+    assert live_run["config"]["rescue_limit"] == 3
+    assert fourth_cycle_size == 0
+    assert reset_count == 0
+
+
 def test_guard_emergency_stops_when_the_user_feed_dies(tmp_path: Path) -> None:
     class DeadFeed:
         running = False

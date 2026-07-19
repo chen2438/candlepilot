@@ -42,6 +42,7 @@ from candlepilot.storage.database import AuditRepository
 
 
 PROVIDER_FAILURE_COOLDOWN = timedelta(seconds=60)
+MAX_RESCUES_PER_RUN = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +109,7 @@ class TradingEngine:
         self.run_end_inference_id: int | None = None
         self.live_run_id: int | None = None
         self.route_failure_count = 0
+        self.rescue_count = 0
         self.max_run_seconds: int | None = None
         self.max_run_cost_usd: float | None = None
         self.auto_stop_reason: str | None = None
@@ -234,6 +236,11 @@ class TradingEngine:
         if not self.running:
             return None
         now = now or datetime.now(UTC)
+        if self.rescue_count >= MAX_RESCUES_PER_RUN:
+            return (
+                f"本次运行累计紧急回补 {self.rescue_count} 次，"
+                f"达到安全上限 {MAX_RESCUES_PER_RUN} 次"
+            )
         if self.max_run_seconds is not None and self.run_started_at is not None:
             elapsed = (now - self.run_started_at).total_seconds()
             if elapsed >= self.max_run_seconds:
@@ -309,11 +316,13 @@ class TradingEngine:
             "decision_timeout_seconds": self.decision_timeout_seconds,
             "max_run_seconds": self.max_run_seconds,
             "max_run_cost_usd": self.max_run_cost_usd,
+            "rescue_limit": MAX_RESCUES_PER_RUN,
         }
         if run_config is not None:
             config.update(run_config)
         self.live_run_id = await self.audit.create_live_run(config)
         self.route_failure_count = 0
+        self.rescue_count = 0
         self.auto_stop_reason = None
         self.running = True
 
@@ -669,6 +678,8 @@ class TradingEngine:
                         estimated_loss_usdt=exc.estimated_loss_usdt,
                     ),
                 )
+                if exc.rescue is not None:
+                    self.rescue_count += 1
                 if exc.requires_emergency_lock:
                     await self.emergency_stop()
             except Exception as exc:

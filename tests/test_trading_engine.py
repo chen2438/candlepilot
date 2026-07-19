@@ -504,6 +504,7 @@ def test_evaluate_stop_reason_covers_duration_budget_and_route_failures() -> Non
     engine.max_run_seconds = None
     engine.max_run_cost_usd = None
     engine.route_failure_count = 0
+    engine.rescue_count = 0
 
     assert engine.evaluate_stop_reason(now=now, run_cost_usd=5.0) is None
 
@@ -524,6 +525,12 @@ def test_evaluate_stop_reason_covers_duration_budget_and_route_failures() -> Non
     assert engine.evaluate_stop_reason(now=now) is None
     engine.route_failure_count = DECISION_PROVIDER_MAX_ATTEMPTS
     assert "every provider" in engine.evaluate_stop_reason(now=now)
+
+    engine.route_failure_count = 0
+    engine.rescue_count = 2
+    assert engine.evaluate_stop_reason(now=now) is None
+    engine.rescue_count = 3
+    assert "累计紧急回补 3 次" in engine.evaluate_stop_reason(now=now)
 
     # A stopped engine never reports a reason.
     engine.running = False

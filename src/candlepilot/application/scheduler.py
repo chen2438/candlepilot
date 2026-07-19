@@ -243,6 +243,8 @@ class TradingScheduler:
         outcomes = []
         try:
             for symbol in ordered_symbols:
+                if not self.engine.running or self.engine.auto_stop_reason is not None:
+                    break
                 contract = contracts.get(symbol)
                 if contract is None:
                     continue
@@ -257,10 +259,13 @@ class TradingScheduler:
                     cycle_state["stage"] = "portfolio"
                     portfolio = await self._portfolio()
                     cycle_state["stage"] = "decision"
-                    outcomes.append(
-                        await self.engine.evaluate(snapshot, portfolio, contract.rules)
-                    )
+                    outcome = await self.engine.evaluate(snapshot, portfolio, contract.rules)
+                    outcomes.append(outcome)
                 cycle_state["completed"] = int(cycle_state["completed"]) + 1
+                stop_reason = self.engine.evaluate_stop_reason()
+                if stop_reason is not None:
+                    self.request_auto_stop(stop_reason)
+                    break
             return outcomes
         finally:
             self.last_cycle = {

@@ -1425,6 +1425,8 @@ def test_run_limits_endpoint(tmp_path: Path) -> None:
         status = client.get("/api/status").json()
         assert status["run_limits"] == {"max_run_seconds": None, "max_run_cost_usd": None}
         assert status["auto_stop_reason"] is None
+        assert status["rescue_count"] == 0
+        assert status["rescue_limit"] == 3
 
         updated = client.post(
             "/api/run-limits", json={"max_run_seconds": 3600, "max_run_cost_usd": 2.5}

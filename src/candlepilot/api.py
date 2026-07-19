@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from candlepilot.application.engine import TradingEngine
+from candlepilot.application.engine import MAX_RESCUES_PER_RUN, TradingEngine
 from candlepilot.application.scheduler import (
     CADENCE_SECONDS,
     MAX_CANDIDATES_PER_CYCLE,
@@ -409,6 +409,8 @@ def _status(engine: TradingEngine, scheduler: TradingScheduler | None = None) ->
         "auto_stop_reason": engine.auto_stop_reason,
         "route_failure_count": engine.route_failure_count,
         "route_failure_limit": DECISION_PROVIDER_MAX_ATTEMPTS,
+        "rescue_count": engine.rescue_count,
+        "rescue_limit": MAX_RESCUES_PER_RUN,
         "supported_cadences": list(SUPPORTED_CADENCES),
         "candidates_per_cycle": scheduler.candidates_per_cycle if scheduler is not None else None,
         "max_candidates_per_cycle": MAX_CANDIDATES_PER_CYCLE,

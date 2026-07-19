@@ -68,6 +68,8 @@ export interface EngineStatus {
   auto_stop_reason: string | null;
   route_failure_count: number;
   route_failure_limit: number;
+  rescue_count: number;
+  rescue_limit: number;
   candidates_per_cycle: number | null;
   max_candidates_per_cycle: number;
   candidate_count: number;
