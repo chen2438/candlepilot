@@ -103,6 +103,93 @@ def test_sizes_position_from_stop_distance_and_rounds_down() -> None:
     assert result.order.take_profit_price == Decimal("104")
 
 
+def test_market_entry_is_capped_by_market_lot_size_maximum() -> None:
+    rules = SymbolRules(
+        quantity_step=Decimal("0.001"),
+        min_quantity=Decimal("0.001"),
+        min_notional=Decimal("5"),
+        tick_size=Decimal("0.01"),
+        max_quantity=Decimal("1000"),
+        market_quantity_step=Decimal("0.1"),
+        market_min_quantity=Decimal("0.1"),
+        market_max_quantity=Decimal("10.05"),
+    )
+
+    result = AggressiveRiskPolicy(max_symbol_margin_fraction=Decimal("1")).evaluate(
+        _intent(), _snapshot(), _portfolio(), rules
+    )
+
+    assert result.decision.accepted
+    assert result.order is not None and result.order.quantity == Decimal("10.0")
+    assert "quantity capped at exchange MARKET_LOT_SIZE maxQty 10.05" in (
+        result.decision.reason
+    )
+
+
+def test_kaito_sized_above_testnet_market_max_is_reduced_before_submission() -> None:
+    rules = SymbolRules(
+        quantity_step=Decimal("0.1"),
+        min_quantity=Decimal("0.1"),
+        min_notional=Decimal("5"),
+        tick_size=Decimal("0.0001"),
+        max_quantity=Decimal("1000000"),
+        market_quantity_step=Decimal("0.1"),
+        market_min_quantity=Decimal("0.1"),
+        market_max_quantity=Decimal("500"),
+    )
+    snapshot = _snapshot().model_copy(
+        update={
+            "symbol": "KAITOUSDT",
+            "mark_price": Decimal("0.9576"),
+            "bid": Decimal("0.9575"),
+            "ask": Decimal("0.9577"),
+        }
+    )
+    intent = _intent().model_copy(
+        update={
+            "symbol": "KAITOUSDT",
+            "leverage": 5,
+            "risk_fraction": Decimal("0.008"),
+            "stop_loss": Decimal("0.9350"),
+            "take_profit": Decimal("1.0050"),
+        }
+    )
+
+    result = AggressiveRiskPolicy().evaluate(intent, snapshot, _portfolio(), rules)
+
+    assert result.decision.accepted
+    assert result.order is not None and result.order.quantity == Decimal("500")
+    assert "MARKET_LOT_SIZE maxQty 500" in result.decision.reason
+
+
+def test_marketable_limit_entry_uses_lot_size_maximum() -> None:
+    rules = SymbolRules(
+        quantity_step=Decimal("0.01"),
+        min_quantity=Decimal("0.01"),
+        min_notional=Decimal("5"),
+        tick_size=Decimal("0.01"),
+        max_quantity=Decimal("7.5"),
+        market_quantity_step=Decimal("0.1"),
+        market_min_quantity=Decimal("0.1"),
+        market_max_quantity=Decimal("2"),
+    )
+    intent = _intent().model_copy(
+        update={
+            "order_type": OrderType.LIMIT,
+            "entry_price": Decimal("101"),
+            "take_profit": Decimal("106"),
+        }
+    )
+
+    result = AggressiveRiskPolicy(max_symbol_margin_fraction=Decimal("1")).evaluate(
+        intent, _snapshot(), _portfolio(), rules
+    )
+
+    assert result.decision.accepted
+    assert result.order is not None and result.order.quantity == Decimal("7.5")
+    assert "quantity capped at exchange LOT_SIZE maxQty 7.5" in result.decision.reason
+
+
 def test_testnet_policy_requires_take_profit_on_open() -> None:
     intent = _intent().model_copy(update={"take_profit": None})
     policy = AggressiveRiskPolicy(require_take_profit=True)
@@ -504,6 +591,31 @@ def test_close_is_always_reduce_only() -> None:
     assert result.order is not None and result.order.reduce_only
     assert result.order.side == "SELL"
     assert result.order.quantity == Decimal("1.234")
+
+
+def test_market_close_uses_market_lot_size_and_rejects_above_its_maximum() -> None:
+    rules = SymbolRules(
+        quantity_step=Decimal("0.001"),
+        min_quantity=Decimal("0.001"),
+        min_notional=Decimal("5"),
+        tick_size=Decimal("0.01"),
+        max_quantity=Decimal("100"),
+        market_quantity_step=Decimal("0.1"),
+        market_min_quantity=Decimal("0.1"),
+        market_max_quantity=Decimal("1"),
+    )
+    portfolio = _portfolio(
+        open_positions=1,
+        positions=_position("LONG", "1.24"),
+    )
+
+    result = AggressiveRiskPolicy().evaluate(
+        _intent(TradeAction.CLOSE), _snapshot(), portfolio, rules
+    )
+
+    assert not result.decision.accepted
+    assert result.order is None
+    assert "exceeds exchange MARKET_LOT_SIZE maxQty" in result.decision.reason
 
 
 def test_protective_prices_snap_to_the_tick_grid_away_from_entry() -> None:

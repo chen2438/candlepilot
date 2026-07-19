@@ -47,7 +47,18 @@ def test_testnet_tradable_symbols_excludes_pending_and_non_usdt_contracts() -> N
                         "quoteAsset": "USDT",
                         "status": "TRADING",
                         "filters": [
-                            {"filterType": "LOT_SIZE", "stepSize": "0.010", "minQty": "0.020"},
+                            {
+                                "filterType": "LOT_SIZE",
+                                "stepSize": "0.010",
+                                "minQty": "0.020",
+                                "maxQty": "500",
+                            },
+                            {
+                                "filterType": "MARKET_LOT_SIZE",
+                                "stepSize": "0.10",
+                                "minQty": "0.10",
+                                "maxQty": "100",
+                            },
                             {"filterType": "MIN_NOTIONAL", "notional": "100"},
                             {"filterType": "PRICE_FILTER", "tickSize": "0.10"},
                         ],
@@ -90,6 +101,10 @@ def test_testnet_tradable_symbols_excludes_pending_and_non_usdt_contracts() -> N
     assert rules["BTCUSDT"].min_quantity == Decimal("0.020")
     assert rules["BTCUSDT"].min_notional == Decimal("100")
     assert rules["BTCUSDT"].tick_size == Decimal("0.10")
+    assert rules["BTCUSDT"].max_quantity == Decimal("500")
+    assert rules["BTCUSDT"].market_quantity_step == Decimal("0.10")
+    assert rules["BTCUSDT"].market_min_quantity == Decimal("0.10")
+    assert rules["BTCUSDT"].market_max_quantity == Decimal("100")
 
 
 def test_position_risk_reads_signed_v3_prices() -> None:

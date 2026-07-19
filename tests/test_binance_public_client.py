@@ -25,6 +25,13 @@ def _response(request: httpx.Request) -> httpx.Response:
                                 "filterType": "LOT_SIZE",
                                 "stepSize": "0.001",
                                 "minQty": "0.001",
+                                "maxQty": "1000",
+                            },
+                            {
+                                "filterType": "MARKET_LOT_SIZE",
+                                "stepSize": "0.01",
+                                "minQty": "0.01",
+                                "maxQty": "100",
                             },
                             {"filterType": "MIN_NOTIONAL", "notional": "5"},
                             {"filterType": "PRICE_FILTER", "tickSize": "0.10"},
@@ -257,6 +264,10 @@ def test_exchange_info_carries_the_price_tick_into_symbol_rules() -> None:
     assert rules.tick_size == Decimal("0.10")
     assert rules.quantity_step == Decimal("0.001")
     assert rules.min_notional == Decimal("5")
+    assert rules.max_quantity == Decimal("1000")
+    assert rules.market_quantity_step == Decimal("0.01")
+    assert rules.market_min_quantity == Decimal("0.01")
+    assert rules.market_max_quantity == Decimal("100")
 
 
 def test_the_snapshot_takes_only_the_cadences_the_engine_can_ask_for() -> None:

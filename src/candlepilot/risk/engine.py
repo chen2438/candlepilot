@@ -22,6 +22,31 @@ class SymbolRules:
     min_quantity: Decimal
     min_notional: Decimal
     tick_size: Decimal
+    max_quantity: Decimal | None = None
+    market_quantity_step: Decimal | None = None
+    market_min_quantity: Decimal | None = None
+    market_max_quantity: Decimal | None = None
+
+    def quantity_limits(
+        self, order_type: OrderType
+    ) -> tuple[Decimal, Decimal, Decimal | None]:
+        if order_type == OrderType.MARKET:
+            step = self.market_quantity_step or self.quantity_step
+            minimum = (
+                self.market_min_quantity
+                if self.market_min_quantity is not None
+                else self.min_quantity
+            )
+            maximum = (
+                self.market_max_quantity
+                if self.market_max_quantity is not None
+                else self.max_quantity
+            )
+        else:
+            step = self.quantity_step
+            minimum = self.min_quantity
+            maximum = self.max_quantity
+        return step, minimum, maximum if maximum is not None and maximum > 0 else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,8 +302,16 @@ class AggressiveRiskPolicy:
             )
             * intent.leverage
         ) / margin_price
-        quantity = _round_down(min(risk_quantity, margin_quantity), rules.quantity_step)
-        if quantity < rules.min_quantity:
+        quantity_step, min_quantity, max_quantity = rules.quantity_limits(intent.order_type)
+        uncapped_quantity = min(risk_quantity, margin_quantity)
+        exchange_capped = max_quantity is not None and uncapped_quantity > max_quantity
+        quantity = _round_down(
+            min(uncapped_quantity, max_quantity)
+            if max_quantity is not None
+            else uncapped_quantity,
+            quantity_step,
+        )
+        if quantity < min_quantity:
             return self._reject("risk-sized quantity is below the exchange minimum")
         if quantity * entry < rules.min_notional:
             return self._reject("risk-sized notional is below the exchange minimum")
@@ -315,15 +348,22 @@ class AggressiveRiskPolicy:
             take_profit_price=take_profit,
             reduce_only=False,
         )
+        accepted_reasons = ["accepted within hard risk limits"]
+        if exchange_capped:
+            quantity_filter = (
+                "MARKET_LOT_SIZE"
+                if intent.order_type == OrderType.MARKET
+                else "LOT_SIZE"
+            )
+            accepted_reasons.append(
+                f"quantity capped at exchange {quantity_filter} maxQty {max_quantity}"
+            )
+        if immediately_marketable:
+            accepted_reasons.append("limit entry is immediately marketable after refresh")
         return RiskEvaluation(
             decision=RiskDecision(
                 accepted=True,
-                reason=(
-                    "accepted within hard risk limits; "
-                    "limit entry is immediately marketable after refresh"
-                    if immediately_marketable
-                    else "accepted within hard risk limits"
-                ),
+                reason="; ".join(accepted_reasons),
                 max_quantity=quantity,
             ),
             order=order,
@@ -400,12 +440,24 @@ class AggressiveRiskPolicy:
         position_quantity: Decimal,
         rules: SymbolRules,
     ) -> RiskEvaluation:
-        quantity = _round_down(position_quantity, rules.quantity_step)
+        quantity_step, min_quantity, max_quantity = rules.quantity_limits(
+            intent.order_type
+        )
+        quantity = _round_down(position_quantity, quantity_step)
         if intent.action == TradeAction.REDUCE:
-            quantity = _round_down(quantity / 2, rules.quantity_step)
-        if quantity <= 0 or quantity < rules.min_quantity:
+            quantity = _round_down(quantity / 2, quantity_step)
+        if quantity <= 0 or quantity < min_quantity:
             return AggressiveRiskPolicy._reject(
                 "reduce-only quantity is below the exchange minimum"
+            )
+        if max_quantity is not None and quantity > max_quantity:
+            quantity_filter = (
+                "MARKET_LOT_SIZE"
+                if intent.order_type == OrderType.MARKET
+                else "LOT_SIZE"
+            )
+            return AggressiveRiskPolicy._reject(
+                f"reduce-only quantity exceeds exchange {quantity_filter} maxQty"
             )
         side = "SELL" if existing_side == "LONG" else "BUY"
         price = intent.entry_price
