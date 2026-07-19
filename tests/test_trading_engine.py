@@ -128,8 +128,24 @@ class MarketableLimitProvider(FakeProvider):
             order_type=OrderType.LIMIT,
             entry_price="101",
             stop_loss="98",
-            take_profit="104",
+            take_profit="106",
             rationale="marketable limit fixture",
+        )
+        return ProviderResult(intent, self.name, "fixture", timedelta(0), "{}", {})
+
+
+class RefreshSafeProvider(FakeProvider):
+    async def generate_trade_intent(self, snapshot, portfolio) -> ProviderResult:
+        intent = TradeIntent(
+            symbol=snapshot.symbol,
+            cadence=snapshot.cadence,
+            action=TradeAction.OPEN_LONG,
+            confidence=0.8,
+            leverage=3,
+            risk_fraction="0.01",
+            stop_loss=snapshot.mark_price * Decimal("0.985"),
+            take_profit=snapshot.mark_price * Decimal("1.06"),
+            rationale="refresh-safe fixture",
         )
         return ProviderResult(intent, self.name, "fixture", timedelta(0), "{}", {})
 
@@ -304,7 +320,7 @@ def test_engine_executes_against_refreshed_market_after_slow_analysis(tmp_path: 
         broker = FakeTestnetBroker()
         engine = TradingEngine(
             testnet_broker=broker,  # type: ignore[arg-type]
-            providers=ProviderRegistry([FakeProvider()]),
+            providers=ProviderRegistry([RefreshSafeProvider()]),
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
         )
@@ -334,8 +350,45 @@ def test_engine_executes_against_refreshed_market_after_slow_analysis(tmp_path: 
     # but the size must come from the refreshed price. The 10% per-symbol initial
     # margin cap is tighter here: 1000 USDT at 3x / 101 = 29.702 units.
     # The fill itself comes back from the exchange, so it is not ours to assert.
-    assert orders[0].stop_price == Decimal("98.00")
+    assert orders[0].stop_price == Decimal("98.50")
     assert orders[0].quantity == Decimal("29.702")
+
+
+def test_engine_rejects_when_refreshed_market_breaks_reward_risk(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'refresh-ratio.db'}")
+        await database.initialize()
+        market = FakeMarket(mark_price=Decimal("101"))
+        broker = FakeTestnetBroker()
+        engine = TradingEngine(
+            testnet_broker=broker,  # type: ignore[arg-type]
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider_chain(["fake-auth"])
+        await engine.start()
+        outcome = await engine.evaluate(
+            MarketSnapshot(
+                symbol="BTCUSDT",
+                cadence="5m",
+                timestamp=datetime.now(UTC) - timedelta(seconds=20),
+                mark_price="100",
+                bid="99.9",
+                ask="100.1",
+                quote_volume_24h="1000000",
+            ),
+            PortfolioState(equity="10000", available_balance="8000"),
+            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")),
+        )
+        await database.close()
+        return outcome, market.snapshot_calls, broker.orders
+
+    outcome, snapshot_calls, orders = asyncio.run(scenario())
+    assert not outcome.risk.accepted and outcome.execution is None
+    assert "reward/risk ratio" in outcome.risk.reason
+    assert snapshot_calls == 1
+    assert orders == []
 
 
 def test_engine_executes_and_audits_marketable_limit_after_refresh(tmp_path: Path) -> None:
