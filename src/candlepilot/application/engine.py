@@ -538,8 +538,27 @@ class TradingEngine:
 
             failed_results: list[ProviderResult] = []
             result: ProviderResult | None = None
+            analysis_snapshot = snapshot
+            analysis_portfolio = portfolio
+            refresh_retry_inputs = False
             while self.route_failure_count < DECISION_PROVIDER_MAX_ATTEMPTS:
                 attempt_number = self.route_failure_count + 1
+                if refresh_retry_inputs:
+                    try:
+                        analysis_snapshot = await self.market.market_snapshot(
+                            snapshot.symbol, snapshot.cadence
+                        )
+                        analysis_portfolio = await self.current_portfolio()
+                    except Exception as exc:
+                        for failed_result in failed_results:
+                            await self.audit.record_inference(
+                                failed_result, live_run_id=self.live_run_id
+                            )
+                        raise RuntimeError(
+                            "decision retry input refresh failed: "
+                            f"{type(exc).__name__}"
+                        ) from exc
+                    refresh_retry_inputs = False
                 round_candidates = (
                     candidates if attempt_number == 1 else list(self.provider_chain)
                 )
@@ -548,7 +567,7 @@ class TradingEngine:
                     try:
                         async with asyncio.timeout(provider.timeout):
                             result = await provider.generate_trade_intent(
-                                snapshot, portfolio
+                                analysis_snapshot, analysis_portfolio
                             )
                     except TimeoutError:
                         timeout_error = ProviderError(
@@ -569,8 +588,8 @@ class TradingEngine:
                                 provider_name=name,
                                 provider=provider,
                                 error=timeout_error,
-                                snapshot=snapshot,
-                                portfolio=portfolio,
+                                snapshot=analysis_snapshot,
+                                portfolio=analysis_portfolio,
                                 route_position=self.provider_chain.index(name) + 1,
                                 failover_continues=retry_continues,
                                 decision_attempt=attempt_number,
@@ -598,8 +617,8 @@ class TradingEngine:
                                 provider_name=name,
                                 provider=provider,
                                 error=provider_error,
-                                snapshot=snapshot,
-                                portfolio=portfolio,
+                                snapshot=analysis_snapshot,
+                                portfolio=analysis_portfolio,
                                 route_position=self.provider_chain.index(name) + 1,
                                 failover_continues=retry_continues,
                                 decision_attempt=attempt_number,
@@ -623,6 +642,7 @@ class TradingEngine:
                     await self._retry_sleep(
                         self._provider_retry_delays[self.route_failure_count - 1]
                     )
+                    refresh_retry_inputs = True
 
             if result is not None:
                 for failed_result in failed_results:
@@ -640,19 +660,24 @@ class TradingEngine:
         inference_id = await self.audit.record_inference(
             result, live_run_id=self.live_run_id
         )
-        evaluation_snapshot = snapshot
-        evaluation_portfolio = portfolio
+        evaluation_snapshot = analysis_snapshot
+        evaluation_portfolio = analysis_portfolio
         intent_matches_snapshot = (
-            result.intent.symbol == snapshot.symbol and result.intent.cadence == snapshot.cadence
+            result.intent.symbol == analysis_snapshot.symbol
+            and result.intent.cadence == analysis_snapshot.cadence
         )
         if intent_matches_snapshot and result.intent.action != TradeAction.HOLD:
-            analysis_age = (datetime.now(UTC) - snapshot.timestamp).total_seconds()
+            analysis_age = (
+                datetime.now(UTC) - analysis_snapshot.timestamp
+            ).total_seconds()
             if analysis_age < -2 or analysis_age > self.risk.max_snapshot_age_seconds:
                 rejection = RiskDecision(
                     accepted=False,
                     reason="analysis snapshot expired before pre-trade refresh",
                 )
-                await self.audit.record_risk(snapshot.symbol, rejection, inference_id=inference_id)
+                await self.audit.record_risk(
+                    analysis_snapshot.symbol, rejection, inference_id=inference_id
+                )
                 return DecisionOutcome(
                     intent=result.intent,
                     risk=rejection,
@@ -661,7 +686,7 @@ class TradingEngine:
                 )
             try:
                 evaluation_snapshot = await self.market.market_snapshot(
-                    snapshot.symbol, snapshot.cadence
+                    analysis_snapshot.symbol, analysis_snapshot.cadence
                 )
                 evaluation_portfolio = await self.current_portfolio()
             except Exception as exc:
@@ -669,7 +694,9 @@ class TradingEngine:
                     accepted=False,
                     reason=f"pre-trade refresh failed: {type(exc).__name__}",
                 )
-                await self.audit.record_risk(snapshot.symbol, rejection, inference_id=inference_id)
+                await self.audit.record_risk(
+                    analysis_snapshot.symbol, rejection, inference_id=inference_id
+                )
                 return DecisionOutcome(
                     intent=result.intent,
                     risk=rejection,
@@ -684,7 +711,7 @@ class TradingEngine:
             rules,
         )
         await self.audit.record_risk(
-            snapshot.symbol, evaluation.decision, inference_id=inference_id
+            analysis_snapshot.symbol, evaluation.decision, inference_id=inference_id
         )
         execution = None
         if evaluation.order is not None and evaluation.decision.accepted:
@@ -695,11 +722,11 @@ class TradingEngine:
                     replace_existing_protection=result.intent.action == TradeAction.ADD,
                 )
             except ProtectiveStopError as exc:
-                await self.audit.record_execution(snapshot.symbol, exc.entry)
+                await self.audit.record_execution(analysis_snapshot.symbol, exc.entry)
                 if exc.rescue is not None:
-                    await self.audit.record_execution(snapshot.symbol, exc.rescue)
+                    await self.audit.record_execution(analysis_snapshot.symbol, exc.rescue)
                 await self.audit.record_execution_attempt(
-                    snapshot.symbol,
+                    analysis_snapshot.symbol,
                     ExecutionAttempt(
                         inference_id=inference_id,
                         client_order_id=evaluation.order.client_order_id,
@@ -723,7 +750,7 @@ class TradingEngine:
                     else "FAILED"
                 )
                 await self.audit.record_execution_attempt(
-                    snapshot.symbol,
+                    analysis_snapshot.symbol,
                     ExecutionAttempt(
                         inference_id=inference_id,
                         client_order_id=evaluation.order.client_order_id,
@@ -738,10 +765,10 @@ class TradingEngine:
                 if execution_status == "UNKNOWN":
                     await self.emergency_stop()
             else:
-                await self.audit.record_execution(snapshot.symbol, execution)
+                await self.audit.record_execution(analysis_snapshot.symbol, execution)
                 completed = execution.status in {"NEW", "PARTIALLY_FILLED", "FILLED"}
                 await self.audit.record_execution_attempt(
-                    snapshot.symbol,
+                    analysis_snapshot.symbol,
                     ExecutionAttempt(
                         inference_id=inference_id,
                         client_order_id=evaluation.order.client_order_id,

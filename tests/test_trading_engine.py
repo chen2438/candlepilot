@@ -693,6 +693,147 @@ def test_route_failures_retry_three_times_and_success_clears_the_count(tmp_path:
     assert retry_delays == [5.0, 15.0, 5.0, 15.0]
 
 
+def test_next_retry_round_refreshes_market_and_portfolio_inputs(tmp_path: Path) -> None:
+    class RefreshPortfolioBroker(FakeTestnetBroker):
+        async def account(self):
+            return {
+                "totalMarginBalance": "9000",
+                "availableBalance": "7000",
+                "totalInitialMargin": "0",
+                "positions": [],
+            }
+
+    class CapturingFlakyProvider(FakeProvider):
+        name = "capturing-flaky"
+
+        def __init__(self) -> None:
+            self.inputs: list[tuple[Decimal, Decimal]] = []
+
+        async def generate_trade_intent(self, snapshot, portfolio) -> ProviderResult:
+            self.inputs.append((snapshot.mark_price, portfolio.equity))
+            if len(self.inputs) == 1:
+                raise ProviderError("retry with fresh inputs")
+            result = await super().generate_trade_intent(snapshot, portfolio)
+            return ProviderResult(
+                result.intent,
+                self.name,
+                result.model,
+                result.duration,
+                result.raw_output,
+                result.usage,
+            )
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'fresh-retry.db'}")
+        await database.initialize()
+        market = FakeMarket(mark_price=Decimal("105"))
+        provider = CapturingFlakyProvider()
+        engine = TradingEngine(
+            testnet_broker=RefreshPortfolioBroker(),  # type: ignore[arg-type]
+            providers=ProviderRegistry([provider]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+            provider_retry_delays=(0, 0),
+        )
+        engine.select_provider_chain([provider.name])
+        await engine.start()
+        outcome = await engine.evaluate(
+            MarketSnapshot(
+                symbol="BTCUSDT",
+                cadence="5m",
+                timestamp=datetime.now(UTC),
+                mark_price="100",
+                bid="99.9",
+                ask="100.1",
+                quote_volume_24h="1000000",
+            ),
+            PortfolioState(equity="10000", available_balance="8000"),
+            SymbolRules(
+                Decimal("0.001"),
+                Decimal("0.001"),
+                Decimal("5"),
+                Decimal("0.01"),
+            ),
+        )
+        await database.close()
+        return outcome, provider.inputs, market.snapshot_calls
+
+    outcome, inputs, snapshot_calls = asyncio.run(scenario())
+    assert inputs == [
+        (Decimal("100"), Decimal("10000")),
+        (Decimal("105"), Decimal("9000")),
+    ]
+    assert snapshot_calls == 2  # retry input refresh, then pre-trade refresh
+    assert outcome.execution is not None
+
+
+def test_retry_refresh_failure_never_reuses_old_inputs_or_places_an_order(
+    tmp_path: Path,
+) -> None:
+    class FailingRefreshMarket(FakeMarket):
+        async def market_snapshot(self, symbol, cadence):
+            self.snapshot_calls += 1
+            raise TimeoutError("fresh snapshot unavailable")
+
+    class CountingFailedProvider(FailedProvider):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def generate_trade_intent(self, snapshot, portfolio) -> ProviderResult:
+            self.calls += 1
+            return await super().generate_trade_intent(snapshot, portfolio)
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'retry-refresh-fail.db'}")
+        await database.initialize()
+        audit = AuditRepository(database.sessions)
+        market = FailingRefreshMarket()
+        provider = CountingFailedProvider()
+        broker = FakeTestnetBroker()
+        engine = TradingEngine(
+            testnet_broker=broker,  # type: ignore[arg-type]
+            providers=ProviderRegistry([provider]),
+            audit=audit,
+            market=market,  # type: ignore[arg-type]
+            provider_retry_delays=(0, 0),
+        )
+        engine.select_provider_chain([provider.name])
+        await engine.start()
+        try:
+            await engine.evaluate(
+                MarketSnapshot(
+                    symbol="BTCUSDT",
+                    cadence="5m",
+                    timestamp=datetime.now(UTC),
+                    mark_price="100",
+                    bid="99.9",
+                    ask="100.1",
+                    quote_volume_24h="1000000",
+                ),
+                PortfolioState(equity="10000", available_balance="8000"),
+                SymbolRules(
+                    Decimal("0.001"),
+                    Decimal("0.001"),
+                    Decimal("5"),
+                    Decimal("0.01"),
+                ),
+            )
+        except RuntimeError as exc:
+            error = str(exc)
+        else:
+            raise AssertionError("retry refresh failure must abort the decision")
+        events = await audit.recent_intents()
+        await database.close()
+        return error, provider.calls, market.snapshot_calls, broker.orders, events
+
+    error, provider_calls, snapshot_calls, orders, events = asyncio.run(scenario())
+    assert error == "decision retry input refresh failed: TimeoutError"
+    assert provider_calls == 1
+    assert snapshot_calls == 1
+    assert orders == []
+    assert len(events) == 1
+
+
 def test_testnet_add_requests_protective_bracket_replacement(tmp_path: Path) -> None:
     from candlepilot.broker.binance_testnet import ProtectiveLevels, ReconciliationReport
     from candlepilot.domain.models import ExecutionReport
