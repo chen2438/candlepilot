@@ -58,7 +58,7 @@ def test_custom_provider_calls_chat_completions_and_parses_usage() -> None:
         body = json.loads(request.content)
         assert secret not in request.content.decode()
         assert body["model"] == "vendor-model"
-        assert body["reasoning_effort"] == "high"
+        assert body["reasoning_effort"] == "max"
         assert '"additionalProperties":false' in body["messages"][0]["content"]
         return httpx.Response(
             200,
@@ -80,7 +80,7 @@ def test_custom_provider_calls_chat_completions_and_parses_usage() -> None:
         base_url="https://llm.example/v1/",
         api_key=SecretStr(secret),
         model="vendor-model",
-        reasoning_effort="high",
+        reasoning_effort="max",
         transport=httpx.MockTransport(handler),
     )
     result = asyncio.run(provider.generate_trade_intent(_market(), _portfolio()))
@@ -97,6 +97,13 @@ def test_custom_provider_calls_chat_completions_and_parses_usage() -> None:
     }
     assert result.input_payload is not None
     assert result.prompt is not None
+    assert provider.reasoning_effort_options == (
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    )
 
 
 def test_custom_provider_calls_responses_with_optional_auth_and_headers() -> None:

@@ -1616,7 +1616,7 @@ function CustomProvidersPanel({
             <label><span>推理强度</span>
               <select value={row.reasoning_effort} disabled={busy !== null}
                 onChange={(e) => update(index, { reasoning_effort: e.target.value })}>
-                {["", "low", "medium", "high", "xhigh"].map((o) => (
+                {["", "low", "medium", "high", "xhigh", "max"].map((o) => (
                   <option key={o} value={o}>{o || "（默认）"}</option>
                 ))}
               </select>

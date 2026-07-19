@@ -135,7 +135,7 @@ def parse_responses_response(
 class OpenAICompatibleProvider(DecisionProvider):
     """User-configured Responses or Chat Completions endpoint with local validation."""
 
-    reasoning_effort_options = ("low", "medium", "high", "xhigh")
+    reasoning_effort_options = ("low", "medium", "high", "xhigh", "max")
 
     def __init__(
         self,
