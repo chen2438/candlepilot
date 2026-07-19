@@ -327,7 +327,7 @@ function inferenceConfigLabel(decision: DecisionEvent): string {
   if (!Object.prototype.hasOwnProperty.call(provenance, "reasoning_effort")) {
     return `${model} · 推理强度未记录`;
   }
-  return `${model} · ${provenance.reasoning_effort ? `推理 ${provenance.reasoning_effort}` : "默认推理强度"}`;
+  return `${model} · ${provenance.reasoning_effort || "默认推理强度"}`;
 }
 
 function percent(value: string): string {

@@ -58,6 +58,7 @@ describe("DecisionPanel", () => {
 
     expect(screen.queryByRole("button", { name: "风控放行" })).toBeNull();
     expect(screen.getByRole("button", { name: "下单成功" })).toBeTruthy();
+    expect(screen.getByText("15m · Custom API · openrouter · tencent/hy3:free · low")).toBeTruthy();
   });
 
   it("shows the ratio calculated from the AI-returned prices when a decision is expanded", async () => {
