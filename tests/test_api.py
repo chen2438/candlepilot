@@ -1598,6 +1598,27 @@ def test_history_clear_removes_selected_categories(tmp_path: Path) -> None:
     asyncio.run(database.close())
 
 
+def test_caller_supplied_decision_evaluation_is_not_exposed(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'no-manual-evaluate.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/decisions/evaluate",
+            json={"snapshot": {}, "portfolio": {}, "rules": {}},
+        )
+        assert response.status_code == 405
+        assert "/api/decisions/evaluate" not in client.get("/openapi.json").json()["paths"]
+    asyncio.run(database.close())
+
+
 def test_cadence_selection_endpoint(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'cadence-api.db'}")
     market = ApiMarket()

@@ -211,26 +211,6 @@ class CollectorStart(ApiModel):
     symbols: list[str] = Field(min_length=1, max_length=MAX_COLLECTED_SYMBOLS)
 
 
-class SymbolRulesInput(ApiModel):
-    quantity_step: Annotated[Decimal, Field(gt=0)]
-    min_quantity: Annotated[Decimal, Field(gt=0)]
-    min_notional: Annotated[Decimal, Field(gt=0)]
-    tick_size: Annotated[Decimal, Field(gt=0)]
-
-
-class DecisionRequest(ApiModel):
-    snapshot: MarketSnapshot
-    portfolio: PortfolioState
-    rules: SymbolRulesInput
-
-
-
-
-
-
-
-
-
 
 # CLI-accepted aliases that are not published as models.dev ids.
 _CURATED_MODEL_ALIASES: dict[str, tuple[str, ...]] = {
@@ -1948,26 +1928,6 @@ def create_app(
         if not 1 <= limit <= 500:
             raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
         return await engine.audit.recent_risk_decisions(limit, accepted=accepted)
-
-    @app.post("/api/decisions/evaluate")
-    async def evaluate_decision(request: DecisionRequest) -> dict[str, Any]:
-        rules = SymbolRules(
-            request.rules.quantity_step,
-            request.rules.min_quantity,
-            request.rules.min_notional,
-            request.rules.tick_size,
-        )
-        try:
-            outcome = await engine.evaluate(request.snapshot, request.portfolio, rules)
-        except RuntimeError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return {
-            "provider": outcome.provider,
-            "intent": outcome.intent.model_dump(mode="json"),
-            "risk": outcome.risk.model_dump(mode="json"),
-            "execution": outcome.execution.model_dump(mode="json") if outcome.execution else None,
-        }
-
 
     backtest_tasks: dict[int, asyncio.Task[None]] = {}
     # Probes are pre-flight, not history: they describe the endpoint as it is

@@ -805,8 +805,9 @@ Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功
 `GET /api/market/klines`、`GET /api/market/funding-rates`、
 `GET /api/market/backtest-candles`。
 
-**决策与信号**：`POST /api/decisions/evaluate`、`GET /api/decision-events`、
-`GET /api/decision-events/{inference_id}`、`GET /api/signals`。列表接口只返回轻量摘要；按 ID
+**决策与信号**：`GET /api/decision-events`、`GET /api/decision-events/{inference_id}`、
+`GET /api/signals`。不提供接受调用方行情、账户或合约规则的手动决策接口；正式执行只能由调度器
+使用后端刚读取的数据发起，避免本地请求用伪造精度或快照绕过执行链。列表接口只返回轻量摘要；按 ID
 详情接口返回该次推理的结构化输入、实际 Prompt、原始输出、token usage 和等效成本。
 `decision-events` 以模型推理为主记录，关联硬风控和执行尝试并给出 `approved` / `executed` /
 `execution_failed` / `rejected` / `hold` / `analysis_only` 展示状态；执行对象包含状态、失败阶段、
