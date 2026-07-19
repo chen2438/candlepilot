@@ -120,9 +120,7 @@ class ApiModel(BaseModel):
 
 
 class ProviderSelection(ApiModel):
-    providers: list[str] | None = Field(default=None, min_length=1, max_length=16)
-    name: str | None = None
-    backup: str | None = None
+    providers: list[str] = Field(min_length=1, max_length=16)
 
 
 class ProviderConfig(ApiModel):
@@ -397,8 +395,6 @@ def _status(engine: TradingEngine, scheduler: TradingScheduler | None = None) ->
         "emergency_locked_until": engine.emergency_locked_until.isoformat()
         if engine.emergency_locked_until
         else None,
-        "selected_provider": engine.selected_provider,
-        "backup_provider": engine.backup_provider,
         "provider_chain": list(engine.provider_chain),
         "active_provider": engine.active_provider,
         "live_run_id": engine.live_run_id,
@@ -506,8 +502,6 @@ def create_app(
     validate_provider_references(settings, engine.providers.names)
     if settings.provider_chain and not engine.provider_chain:
         engine.select_provider_chain(settings.provider_chain)
-    if settings.default_provider is not None and engine.selected_provider is None:
-        engine.select_provider(settings.default_provider)
     if settings.max_run_seconds is not None or settings.max_run_cost_usd is not None:
         engine.select_run_limits(
             max_run_seconds=settings.max_run_seconds,
@@ -1081,12 +1075,7 @@ def create_app(
     @app.post("/api/providers/select")
     async def select_provider(selection: ProviderSelection) -> dict[str, Any]:
         try:
-            if selection.providers is not None:
-                engine.select_provider_chain(selection.providers)
-            elif selection.name is not None:
-                engine.select_provider(selection.name, selection.backup)
-            else:
-                raise ValueError("providers or name is required")
+            engine.select_provider_chain(selection.providers)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:

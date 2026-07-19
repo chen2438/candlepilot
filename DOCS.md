@@ -678,7 +678,7 @@ Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功
   仅 localhost 绑定）。**任何不合法的值都会在文件被修改前拒绝**，不会写出一个下次启动直接
   崩溃的 `.env`。
 - **Provider 引用必须完整**：`CANDLEPILOT_PROVIDER_CHAIN` 和
-  `CANDLEPILOT_DEFAULT_PROVIDER` 中的每个名称都必须对应 Codex、Claude Code 或同一候选配置中
+  `CANDLEPILOT_PROVIDER_CHAIN` 中的每个名称都必须对应 Codex、Claude Code 或同一候选配置中
   实际存在的 `openai-compatible:<id>`。通用设置表单与 Custom API 表单均校验**修改后的完整
   候选配置**；修改或删除仍被路由/默认值引用的 Custom API ID 会返回 422，文件保持不变并明确
   列出失效字段与 Provider。需要改 ID 时，先把主备路由及默认 Provider 切换到仍存在的 Provider，
@@ -744,7 +744,6 @@ Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功
 | `CANDLEPILOT_MAX_RUN_SECONDS` | 单次运行时长上限（秒）；留空/非正数=不限 |
 | `CANDLEPILOT_MAX_RUN_COST_USD` | 单次运行等效成本预算（USD）；留空/非正数=不限 |
 | `CANDLEPILOT_PROVIDER_CHAIN` | 启动时默认的逗号分隔有序 Provider 路由，例如 `local,codex,custom:main`；不允许重复，所有 Custom API ID 必须存在，优先级高于旧的单 Provider 配置 |
-| `CANDLEPILOT_DEFAULT_PROVIDER` | 兼容旧配置的单 Provider 默认值；`local`/`local-rule` 选择本地规则，引用的 Custom API ID 必须存在，仅在 `CANDLEPILOT_PROVIDER_CHAIN` 留空时使用 |
 | `CANDLEPILOT_CODEX_MODEL` / `CANDLEPILOT_CODEX_REASONING_EFFORT` | Codex 模型 / 推理强度（minimal/low/medium/high）|
 | `CANDLEPILOT_CLAUDE_MODEL` / `CANDLEPILOT_CLAUDE_EFFORT` | Claude 模型 / 强度（low/medium/high/xhigh/max）|
 | `CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON` | **全部** Custom API 端点的 JSON 数组（最多 8 个），每项需唯一 `id` 与 `base_url`，注册为 `openai-compatible:<id>` |
@@ -771,8 +770,8 @@ Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功
 `POST /api/engine/clear-emergency-lock`。
 
 `POST /api/providers/select` 的新格式为
-`{"providers":["codex-auth","claude-code-auth","openai-compatible:main"]}`；旧的
-`{"name":"codex-auth","backup":"claude-code-auth"}` 仍兼容。引擎运行时修改返回 409。
+`{"providers":["codex-auth","claude-code-auth","openai-compatible:main"]}`；这是唯一请求结构，
+`name/backup` 旧结构返回 422。引擎运行时修改返回 409。
 `GET /api/status` 通过 `provider_chain`、`active_provider` 和 `provider_routes` 返回顺序、当前承载、
 冷却截止时间、最近错误与最近成功/失败时间；不返回任何凭据。
 

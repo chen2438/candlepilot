@@ -185,8 +185,6 @@ const emptyStatus: EngineStatus = {
   running: false,
   emergency_locked: false,
   emergency_locked_until: null,
-  selected_provider: null,
-  backup_provider: null,
   provider_chain: [],
   active_provider: null,
   live_run_id: null,

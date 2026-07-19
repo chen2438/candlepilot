@@ -114,7 +114,7 @@ def test_scheduler_runs_ranked_candidate_cycle(tmp_path: Path) -> None:
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
         )
-        engine.select_provider("hold")
+        engine.select_provider_chain(["hold"])
         await engine.start()
         scheduler = TradingScheduler(engine, market, candidates_per_cycle=5)  # type: ignore[arg-type]
         outcomes = await scheduler.run_cycle("5m")
@@ -137,7 +137,7 @@ def test_scheduler_only_runs_selected_cadences(tmp_path: Path) -> None:
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
         )
-        engine.select_provider("hold")
+        engine.select_provider_chain(["hold"])
         engine.select_cadences(["4h", "1h"])  # order-insensitive input
         await engine.start()
         scheduler = TradingScheduler(engine, market)  # type: ignore[arg-type]
@@ -171,7 +171,7 @@ def test_scheduler_candidates_per_cycle_validates_and_locks_when_running(
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
         )
-        engine.select_provider("hold")
+        engine.select_provider_chain(["hold"])
         scheduler = TradingScheduler(engine, market)  # type: ignore[arg-type]
 
         # invalid bounds are rejected
@@ -234,7 +234,7 @@ def test_scheduler_limits_cycle_to_candidates_per_cycle(tmp_path: Path) -> None:
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
         )
-        engine.select_provider("hold")
+        engine.select_provider_chain(["hold"])
         await engine.start()
         scheduler = TradingScheduler(engine, market, candidates_per_cycle=2)  # type: ignore[arg-type]
         outcomes = await scheduler.run_cycle("5m")
@@ -275,7 +275,7 @@ def test_scheduler_always_analyzes_open_positions_outside_candidate_limit(
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
         )
-        engine.select_provider("hold")
+        engine.select_provider_chain(["hold"])
         await engine.start()
         scheduler = TradingScheduler(engine, market, candidates_per_cycle=1)  # type: ignore[arg-type]
         outcomes = await scheduler.run_cycle("5m")
@@ -296,7 +296,7 @@ def test_guard_stops_the_run_when_a_limit_is_reached(tmp_path: Path) -> None:
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
         )
-        engine.select_provider("hold")
+        engine.select_provider_chain(["hold"])
         # Already past the duration limit the moment the guard first ticks.
         engine.select_run_limits(max_run_seconds=1, max_run_cost_usd=None)
         await engine.start()
@@ -344,7 +344,7 @@ def test_guard_emergency_stops_when_the_user_feed_dies(tmp_path: Path) -> None:
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
         )
-        engine.select_provider("hold")
+        engine.select_provider_chain(["hold"])
         await engine.start()
         scheduler = TradingScheduler(
             engine,
@@ -384,7 +384,7 @@ def test_guard_only_loads_cost_when_a_budget_is_set(tmp_path: Path) -> None:
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
         )
-        engine.select_provider("hold")
+        engine.select_provider_chain(["hold"])
         await engine.start()
         calls = {"count": 0}
 
@@ -439,7 +439,7 @@ def test_concurrent_cadences_cannot_open_opposing_positions(tmp_path: Path) -> N
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
         )
-        engine.select_provider("conflicting")
+        engine.select_provider_chain(["conflicting"])
         await engine.start()
         await engine.refresh_universe()
         scheduler = TradingScheduler(engine, market)  # type: ignore[arg-type]
@@ -468,7 +468,7 @@ def test_scheduler_refreshes_universe_periodically(tmp_path: Path) -> None:
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
         )
-        engine.select_provider("hold")
+        engine.select_provider_chain(["hold"])
         await engine.start()
         scheduler = TradingScheduler(
             engine,

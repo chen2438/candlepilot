@@ -181,7 +181,7 @@ def test_engine_requires_provider_and_audits_paper_fill(tmp_path: Path) -> None:
             raise AssertionError("start should require a provider")
         except RuntimeError:
             pass
-        engine.select_provider("fake-auth")
+        engine.select_provider_chain(["fake-auth"])
         await engine.start()
         candidates = await engine.refresh_universe()
         snapshot = MarketSnapshot(
@@ -268,7 +268,7 @@ def test_engine_refreshes_market_and_rejects_crossed_price_before_execution(
             audit=audit,
             market=market,  # type: ignore[arg-type]
         )
-        engine.select_provider("fake-auth")
+        engine.select_provider_chain(["fake-auth"])
         await engine.start()
         outcome = await engine.evaluate(
             MarketSnapshot(
@@ -308,7 +308,7 @@ def test_engine_executes_against_refreshed_market_after_slow_analysis(tmp_path: 
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
         )
-        engine.select_provider("fake-auth")
+        engine.select_provider_chain(["fake-auth"])
         await engine.start()
         outcome = await engine.evaluate(
             MarketSnapshot(
@@ -349,7 +349,7 @@ def test_engine_executes_and_audits_marketable_limit_after_refresh(tmp_path: Pat
             audit=audit,
             market=FakeMarket(),  # type: ignore[arg-type]
         )
-        engine.select_provider("fake-auth")
+        engine.select_provider_chain(["fake-auth"])
         await engine.start()
         outcome = await engine.evaluate(
             MarketSnapshot(
@@ -388,7 +388,7 @@ def test_engine_rejects_expired_analysis_before_market_refresh(tmp_path: Path) -
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
         )
-        engine.select_provider("fake-auth")
+        engine.select_provider_chain(["fake-auth"])
         await engine.start()
         outcome = await engine.evaluate(
             MarketSnapshot(
@@ -429,7 +429,7 @@ def test_engine_audits_market_refresh_failure_without_execution(tmp_path: Path) 
             audit=audit,
             market=market,  # type: ignore[arg-type]
         )
-        engine.select_provider("fake-auth")
+        engine.select_provider_chain(["fake-auth"])
         await engine.start()
         outcome = await engine.evaluate(
             MarketSnapshot(
@@ -478,7 +478,7 @@ def test_engine_cadence_selection_validates_and_locks_when_running(tmp_path: Pat
             except ValueError:
                 errors[label] = True
 
-        engine.select_provider("fake-auth")
+        engine.select_provider_chain(["fake-auth"])
         await engine.start()
         try:
             engine.select_cadences(["5m"])
@@ -542,7 +542,7 @@ def test_run_limits_validate_and_lock_while_running(tmp_path: Path) -> None:
             audit=AuditRepository(database.sessions),
             market=FakeMarket(),  # type: ignore[arg-type]
         )
-        engine.select_provider("fake-auth")
+        engine.select_provider_chain(["fake-auth"])
         assert engine.max_run_seconds is None and engine.max_run_cost_usd is None
 
         with pytest.raises(ValueError):
@@ -593,14 +593,14 @@ def test_route_failures_retry_three_times_and_success_clears_the_count(tmp_path:
         portfolio = PortfolioState(equity="10000", available_balance="8000")
 
         # Only the failing provider is routed: the route becomes exhausted.
-        engine.select_provider("failed-primary")
+        engine.select_provider_chain(["failed-primary"])
         await engine.start()
         await engine.evaluate(snapshot, portfolio, rules)
         exhausted = engine.route_failure_count
         await engine.stop()
 
         # A working provider clears the exhaustion marker on the next success.
-        engine.select_provider("fake-auth")
+        engine.select_provider_chain(["fake-auth"])
         await engine.start()
         engine.route_failure_count = 2
         await engine.evaluate(snapshot, portfolio, rules)
@@ -679,7 +679,7 @@ def test_testnet_add_requests_protective_bracket_replacement(tmp_path: Path) -> 
             market=FakeMarket(),  # type: ignore[arg-type]
             testnet_broker=broker,  # type: ignore[arg-type]
         )
-        engine.select_provider("fake-auth")
+        engine.select_provider_chain(["fake-auth"])
         await engine.start()
         outcome = await engine.evaluate(
             MarketSnapshot(
@@ -728,7 +728,7 @@ def test_start_refuses_pending_entry_orders(tmp_path: Path) -> None:
             market=FakeMarket(),  # type: ignore[arg-type]
             testnet_broker=PendingEntryBroker(),  # type: ignore[arg-type]
         )
-        engine.select_provider("fake-auth")
+        engine.select_provider_chain(["fake-auth"])
         with pytest.raises(AccountReconciliationError, match="pending entry orders: ETHUSDT"):
             await engine.start()
         await database.close()
@@ -788,7 +788,7 @@ def test_testnet_execution_failure_is_audited_with_rescue_loss(tmp_path: Path) -
             market=FakeMarket(),  # type: ignore[arg-type]
             testnet_broker=FailingProtectionBroker(),  # type: ignore[arg-type]
         )
-        engine.select_provider("fake-auth")
+        engine.select_provider_chain(["fake-auth"])
         await engine.start()
         outcome = await engine.evaluate(
             MarketSnapshot(
@@ -840,7 +840,7 @@ def test_terminal_exchange_rejection_is_not_audited_as_success(tmp_path: Path) -
             audit=audit,
             market=FakeMarket(),  # type: ignore[arg-type]
         )
-        engine.select_provider("fake-auth")
+        engine.select_provider_chain(["fake-auth"])
         await engine.start()
         outcome = await engine.evaluate(
             MarketSnapshot(
@@ -917,7 +917,7 @@ def test_unrescued_protection_failure_emergency_locks_engine(tmp_path: Path) -> 
             market=FakeMarket(),  # type: ignore[arg-type]
             testnet_broker=broker,  # type: ignore[arg-type]
         )
-        engine.select_provider("fake-auth")
+        engine.select_provider_chain(["fake-auth"])
         await engine.start()
         await engine.evaluate(
             MarketSnapshot(
@@ -961,7 +961,7 @@ def test_engine_fails_over_once_to_explicit_backup_provider(tmp_path: Path) -> N
             market=FakeMarket(),  # type: ignore[arg-type]
             provider_retry_delays=(0, 0),
         )
-        engine.select_provider("failed-primary", "fake-auth")
+        engine.select_provider_chain(["failed-primary", "fake-auth"])
         await engine.start()
         snapshot = MarketSnapshot(
             symbol="BTCUSDT",
@@ -1099,7 +1099,7 @@ def test_engine_persists_failed_provider_audit_context(tmp_path: Path) -> None:
             market=FakeMarket(),  # type: ignore[arg-type]
             provider_retry_delays=(0, 0),
         )
-        engine.select_provider("audited-failure")
+        engine.select_provider_chain(["audited-failure"])
         await engine.start()
         outcome = await engine.evaluate(
             MarketSnapshot(

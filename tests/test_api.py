@@ -237,7 +237,7 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         assert client.get("/api/metrics/run-session").json()["state"] == "none"
         assert client.get("/api/metrics/providers?hours=0").status_code == 422
         assert client.post("/api/engine/start").status_code == 409
-        assert client.post("/api/providers/select", json={"name": "api-fixture"}).status_code == 200
+        assert client.post("/api/providers/select", json={"providers": ["api-fixture"]}).status_code == 200
         assert client.post("/api/engine/start").json()["running"] is True
         universe = client.post("/api/universe/refresh").json()
         assert universe[0]["symbol"] == "BTCUSDT"
@@ -332,7 +332,7 @@ def test_live_start_runs_three_real_decisions_and_freezes_user_timeout(
     app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
 
     with TestClient(app) as client:
-        client.post("/api/providers/select", json={"name": "api-fixture"})
+        client.post("/api/providers/select", json={"providers": ["api-fixture"]})
         response = client.post(
             "/api/engine/start", json={"timeout_seconds": 7}
         )
@@ -377,7 +377,7 @@ def test_live_startup_probe_publishes_each_decision_progress(tmp_path: Path) -> 
     app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
 
     with TestClient(app) as client, ThreadPoolExecutor(max_workers=1) as pool:
-        client.post("/api/providers/select", json={"name": "api-fixture"})
+        client.post("/api/providers/select", json={"providers": ["api-fixture"]})
         future = pool.submit(client.post, "/api/engine/start")
         try:
             assert second_call_started.wait(timeout=2)
@@ -419,7 +419,7 @@ def test_live_start_rejects_a_probe_that_cannot_fit_the_selected_cadence(
     monkeypatch.setitem(CADENCE_SECONDS, "5m", 0.01)
 
     with TestClient(app) as client:
-        client.post("/api/providers/select", json={"name": "api-fixture"})
+        client.post("/api/providers/select", json={"providers": ["api-fixture"]})
         response = client.post(
             "/api/engine/start", json={"timeout_seconds": 1}
         )
@@ -429,7 +429,7 @@ def test_live_start_rejects_a_probe_that_cannot_fit_the_selected_cadence(
     asyncio.run(database.close())
 
 
-def test_default_provider_is_selected_from_settings(tmp_path: Path) -> None:
+def test_provider_chain_is_selected_from_settings(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'default-provider.db'}")
     market = ApiMarket()
     engine = TradingEngine(
@@ -439,13 +439,13 @@ def test_default_provider_is_selected_from_settings(tmp_path: Path) -> None:
         market=market,  # type: ignore[arg-type]
     )
     application = create_app(
-        settings=Settings(default_provider="api-fixture"),
+        settings=Settings(provider_chain=("api-fixture",)),
         database=database,
         market=market,  # type: ignore[arg-type]
         engine=engine,
     )
 
-    assert application.state.engine.selected_provider == "api-fixture"
+    assert application.state.engine.provider_chain == ("api-fixture",)
     asyncio.run(database.close())
 
 
@@ -1039,7 +1039,7 @@ def test_provider_config_sets_model_and_reasoning_effort(tmp_path: Path) -> None
         )
 
         # Locked while the engine runs.
-        client.post("/api/providers/select", json={"name": "api-fixture"})
+        client.post("/api/providers/select", json={"providers": ["api-fixture"]})
         client.post("/api/engine/start")
         assert (
             client.post(
@@ -1316,14 +1316,13 @@ def test_custom_providers_editor_endpoint(tmp_path: Path, monkeypatch) -> None:
     asyncio.run(database.close())
 
 
-def test_custom_provider_id_change_requires_route_and_default_update(
+def test_custom_provider_id_change_requires_route_update(
     tmp_path: Path, monkeypatch
 ) -> None:
     env_path = tmp_path / ".env"
     original = (
         'CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON=[{"id":"main","base_url":"https://a.example/v1"}]\n'
         "CANDLEPILOT_PROVIDER_CHAIN=custom:main\n"
-        "CANDLEPILOT_DEFAULT_PROVIDER=custom:main\n"
     )
     env_path.write_text(original, encoding="utf-8")
     monkeypatch.setenv("CANDLEPILOT_ENV_FILE", str(env_path))
@@ -1350,7 +1349,6 @@ def test_custom_provider_id_change_requires_route_and_default_update(
         )
         assert renamed.status_code == 422
         assert "CANDLEPILOT_PROVIDER_CHAIN" in renamed.json()["detail"]
-        assert "CANDLEPILOT_DEFAULT_PROVIDER" in renamed.json()["detail"]
         assert env_path.read_text(encoding="utf-8") == original
     asyncio.run(database.close())
 
@@ -1364,7 +1362,6 @@ def test_startup_rejects_unknown_provider_references(
         create_app(
             settings=Settings(
                 provider_chain=("missing-custom", "api-fixture"),
-                default_provider="also-missing",
             ),
             database=database,
             market=BacktestMarket(),  # type: ignore[arg-type]
@@ -1372,7 +1369,6 @@ def test_startup_rejects_unknown_provider_references(
         )
     message = str(error.value)
     assert "missing-custom" in message
-    assert "also-missing" in message
     asyncio.run(database.close())
 
 
@@ -1405,7 +1401,7 @@ def test_restart_is_refused_while_the_engine_runs(tmp_path: Path) -> None:
     )
     app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
     with TestClient(app) as client:
-        client.post("/api/providers/select", json={"name": "api-fixture"})
+        client.post("/api/providers/select", json={"providers": ["api-fixture"]})
         client.post("/api/engine/start")
         # A restart would kill a live run, so it must be refused.
         refused = client.post("/api/restart")
@@ -1449,7 +1445,7 @@ def test_run_limits_endpoint(tmp_path: Path) -> None:
         assert client.post("/api/run-limits", json={"max_run_cost_usd": -1}).status_code == 422
 
         # Locked while the engine runs.
-        client.post("/api/providers/select", json={"name": "api-fixture"})
+        client.post("/api/providers/select", json={"providers": ["api-fixture"]})
         client.post("/api/engine/start")
         assert client.post("/api/run-limits", json={"max_run_seconds": 60}).status_code == 409
     asyncio.run(database.close())
@@ -1507,7 +1503,7 @@ def test_provider_test_endpoint_reports_success_and_failure(tmp_path: Path) -> N
         assert client.get("/api/signals").json() == []
 
         # Locked while the engine runs.
-        client.post("/api/providers/select", json={"name": "api-fixture"})
+        client.post("/api/providers/select", json={"providers": ["api-fixture"]})
         client.post("/api/engine/start")
         assert client.post("/api/providers/test", json={"name": "api-fixture"}).status_code == 409
     asyncio.run(database.close())
@@ -1614,7 +1610,7 @@ def test_cadence_selection_endpoint(tmp_path: Path) -> None:
         assert client.post("/api/cadences", json={"cadences": []}).status_code == 422
 
         # Locked while the engine runs.
-        client.post("/api/providers/select", json={"name": "api-fixture"})
+        client.post("/api/providers/select", json={"providers": ["api-fixture"]})
         client.post("/api/engine/start")
         assert client.post("/api/cadences", json={"cadences": ["5m"]}).status_code == 409
     asyncio.run(database.close())
@@ -1650,7 +1646,7 @@ def test_candidates_per_cycle_endpoint(tmp_path: Path) -> None:
         )
 
         # Locked while the engine runs.
-        client.post("/api/providers/select", json={"name": "api-fixture"})
+        client.post("/api/providers/select", json={"providers": ["api-fixture"]})
         client.post("/api/engine/start")
         assert (
             client.post("/api/candidates-per-cycle", json={"candidates_per_cycle": 3}).status_code
@@ -1670,7 +1666,7 @@ def test_unknown_provider_is_404(tmp_path: Path) -> None:
     )
     app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
     with TestClient(app) as client:
-        response = client.post("/api/providers/select", json={"name": "missing"})
+        response = client.post("/api/providers/select", json={"providers": ["missing"]})
         assert response.status_code == 404
     asyncio.run(database.close())
 
@@ -1686,6 +1682,10 @@ def test_provider_route_api_exposes_order_and_locks_while_running(tmp_path: Path
     )
     app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
     with TestClient(app) as client:
+        retired = client.post(
+            "/api/providers/select", json={"name": "api-fixture", "backup": None}
+        )
+        assert retired.status_code == 422
         selected = client.post(
             "/api/providers/select", json={"providers": ["api-fixture"]}
         )
@@ -1996,7 +1996,7 @@ def test_backtest_is_refused_while_the_engine_runs(tmp_path: Path) -> None:
     database, engine, app = _backtest_app(tmp_path, "bt-busy.db")
 
     with TestClient(app) as client:
-        client.post("/api/providers/select", json={"name": "api-fixture"})
+        client.post("/api/providers/select", json={"providers": ["api-fixture"]})
         assert client.post("/api/engine/start").json()["running"] is True
 
         response = client.post(

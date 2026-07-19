@@ -66,7 +66,6 @@ ENV_SECTIONS: tuple[EnvSection, ...] = (
         (
             EnvField("CANDLEPILOT_PROVIDER_CHAIN", "主备顺序", placeholder="codex, claude, custom:groq",
                      description="逗号分隔；自定义端点写 custom:<id>。"),
-            EnvField("CANDLEPILOT_DEFAULT_PROVIDER", "默认 Provider", placeholder="codex"),
             EnvField("CANDLEPILOT_CODEX_MODEL", "Codex 模型"),
             EnvField("CANDLEPILOT_CODEX_REASONING_EFFORT", "Codex 推理强度", "enum",
                      ("", "minimal", "low", "medium", "high")),

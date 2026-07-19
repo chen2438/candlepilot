@@ -40,8 +40,6 @@ export interface EngineStatus {
   running: boolean;
   emergency_locked: boolean;
   emergency_locked_until: string | null;
-  selected_provider: string | null;
-  backup_provider: string | null;
   provider_chain: string[];
   active_provider: string | null;
   live_run_id: number | null;

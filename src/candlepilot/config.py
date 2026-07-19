@@ -140,7 +140,7 @@ def _parse_snapshot_age(raw: str | None) -> int:
     return value
 
 
-def _parse_default_provider(raw: str | None) -> str | None:
+def _parse_provider_name(raw: str | None) -> str | None:
     if not raw or not raw.strip():
         return None
     alias = raw.strip().lower()
@@ -158,7 +158,8 @@ def _parse_default_provider(raw: str | None) -> str | None:
     except KeyError as exc:
         choices = ", ".join(DEFAULT_PROVIDER_ALIASES)
         raise ValueError(
-            f"unsupported CANDLEPILOT_DEFAULT_PROVIDER: {raw!r}; choose one of {choices}"
+            f"unsupported provider in CANDLEPILOT_PROVIDER_CHAIN: {raw!r}; "
+            f"choose one of {choices}"
         ) from exc
 
 
@@ -167,7 +168,7 @@ def _parse_provider_chain(raw: str | None) -> tuple[str, ...]:
         return ()
     providers: list[str] = []
     for item in raw.split(","):
-        provider = _parse_default_provider(item)
+        provider = _parse_provider_name(item)
         if provider is None:
             continue
         if provider in providers:
@@ -249,6 +250,7 @@ LEGACY_CUSTOM_LLM_ENV = (
     "CANDLEPILOT_CUSTOM_LLM_REQUIRE_API_KEY",
     "CANDLEPILOT_CUSTOM_LLM_EXTRA_HEADERS_JSON",
 )
+REMOVED_PROVIDER_ENV = "CANDLEPILOT_DEFAULT_PROVIDER"
 
 
 def _reject_removed_mode_env(env: Mapping[str, str]) -> None:
@@ -283,6 +285,15 @@ def _reject_legacy_custom_llm_env(env: Mapping[str, str]) -> None:
         + ", ".join(present)
         + ". Define every endpoint in CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON instead, e.g. "
         '[{"id":"main","base_url":"https://api.example/v1","api_key":"...","model":"..."}]'
+    )
+
+
+def _reject_removed_provider_env(env: Mapping[str, str]) -> None:
+    if not env.get(REMOVED_PROVIDER_ENV, "").strip():
+        return
+    raise ValueError(
+        "CANDLEPILOT_DEFAULT_PROVIDER was removed: define the complete ordered "
+        "route in CANDLEPILOT_PROVIDER_CHAIN instead"
     )
 
 
@@ -381,7 +392,6 @@ class Settings:
     max_run_seconds: int | None = None
     max_run_cost_usd: float | None = None
     provider_chain: tuple[str, ...] = ()
-    default_provider: str | None = None
     codex_model: str | None = None
     codex_reasoning_effort: str | None = None
     claude_model: str | None = None
@@ -409,6 +419,7 @@ class Settings:
 
         _reject_removed_mode_env(env)
         _reject_legacy_custom_llm_env(env)
+        _reject_removed_provider_env(env)
         settings = cls(
             database_url=get("CANDLEPILOT_DATABASE_URL", DEFAULT_DATABASE_URL),
             data_dir=Path(get("CANDLEPILOT_DATA_DIR", "data")),
@@ -429,9 +440,6 @@ class Settings:
                 get("CANDLEPILOT_MAX_RUN_COST_USD"), float
             ),
             provider_chain=_parse_provider_chain(get("CANDLEPILOT_PROVIDER_CHAIN")),
-            default_provider=_parse_default_provider(
-                get("CANDLEPILOT_DEFAULT_PROVIDER")
-            ),
             codex_model=get("CANDLEPILOT_CODEX_MODEL") or None,
             codex_reasoning_effort=get("CANDLEPILOT_CODEX_REASONING_EFFORT") or None,
             claude_model=get("CANDLEPILOT_CLAUDE_MODEL") or None,
@@ -475,11 +483,6 @@ def validate_provider_references(
         problems.append(
             "CANDLEPILOT_PROVIDER_CHAIN references unknown provider(s): "
             f"{', '.join(missing_route)}"
-        )
-    if settings.default_provider is not None and settings.default_provider not in known:
-        problems.append(
-            "CANDLEPILOT_DEFAULT_PROVIDER references unknown provider: "
-            f"{settings.default_provider}"
         )
     if problems:
         raise ValueError(

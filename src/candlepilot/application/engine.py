@@ -82,8 +82,6 @@ class TradingEngine:
         # The exchange brackets every entry, so a take profit is not optional.
         self.risk = risk or AggressiveRiskPolicy(require_take_profit=True)
         self.testnet_broker = testnet_broker
-        self.selected_provider: str | None = None
-        self.backup_provider: str | None = None
         self.provider_chain: tuple[str, ...] = ()
         self.active_provider: str | None = None
         self._provider_route_states: dict[str, ProviderRouteState] = {}
@@ -120,9 +118,6 @@ class TradingEngine:
     async def provider_health(self) -> list[ProviderHealth]:
         return await self.providers.health()
 
-    def select_provider(self, name: str, backup: str | None = None) -> None:
-        self.select_provider_chain([name, *([backup] if backup is not None else [])])
-
     def select_provider_chain(self, providers: tuple[str, ...] | list[str]) -> None:
         if self.running:
             raise RuntimeError("cannot change provider route while running")
@@ -134,8 +129,6 @@ class TradingEngine:
         for name in ordered:
             self.providers.get(name)
         self.provider_chain = ordered
-        self.selected_provider = ordered[0]
-        self.backup_provider = ordered[1] if len(ordered) > 1 else None
         self.active_provider = None
         self._provider_route_states = {
             name: self._provider_route_states.get(name, ProviderRouteState())

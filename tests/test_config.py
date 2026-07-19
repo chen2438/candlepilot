@@ -169,12 +169,10 @@ def test_provider_chain_accepts_custom_endpoint_ids(monkeypatch) -> None:
 
 def test_local_rule_is_a_first_class_provider_alias(monkeypatch) -> None:
     monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", "local, codex")
-    monkeypatch.setenv("CANDLEPILOT_DEFAULT_PROVIDER", "local-rule")
 
     settings = Settings.from_env()
 
     assert settings.provider_chain == ("local-rule", "codex-auth")
-    assert settings.default_provider == "local-rule"
 
 
 def test_run_limits_default_to_unbounded_and_read_env(monkeypatch) -> None:
@@ -218,37 +216,9 @@ def test_snapshot_age_default_override_and_validation(monkeypatch) -> None:
         Settings.from_env()
 
 
-@pytest.mark.parametrize(
-    ("configured", "expected"),
-    [
-        ("codex", "codex-auth"),
-        ("codex-auth", "codex-auth"),
-        ("claude", "claude-code-auth"),
-        ("Claude Code", "claude-code-auth"),
-        ("claude-code-auth", "claude-code-auth"),
-        ("custom:main", "openai-compatible:main"),
-        ("custom-api:main", "openai-compatible:main"),
-        ("openai-compatible:main", "openai-compatible:main"),
-    ],
-)
-def test_default_provider_aliases(monkeypatch, configured, expected) -> None:
-    if expected == "openai-compatible:main":
-        monkeypatch.setenv(
-            "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON",
-            '[{"id":"main","base_url":"https://main.example/v1"}]',
-        )
-    monkeypatch.setenv("CANDLEPILOT_DEFAULT_PROVIDER", configured)
-    assert Settings.from_env().default_provider == expected
-
-
-def test_default_provider_is_optional(monkeypatch) -> None:
-    monkeypatch.delenv("CANDLEPILOT_DEFAULT_PROVIDER", raising=False)
-    assert Settings.from_env().default_provider is None
-
-
-def test_default_provider_rejects_unknown_value(monkeypatch) -> None:
-    monkeypatch.setenv("CANDLEPILOT_DEFAULT_PROVIDER", "openai-api")
-    with pytest.raises(ValueError, match="unsupported CANDLEPILOT_DEFAULT_PROVIDER"):
+def test_removed_default_provider_env_is_rejected(monkeypatch) -> None:
+    monkeypatch.setenv("CANDLEPILOT_DEFAULT_PROVIDER", "codex")
+    with pytest.raises(ValueError, match="CANDLEPILOT_PROVIDER_CHAIN"):
         Settings.from_env()
 
 
@@ -280,7 +250,6 @@ def test_provider_references_must_exist_in_the_same_candidate() -> None:
         {
             "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON": custom,
             "CANDLEPILOT_PROVIDER_CHAIN": "custom:main,codex",
-            "CANDLEPILOT_DEFAULT_PROVIDER": "custom:main",
         }
     )
     assert valid.provider_chain == ("openai-compatible:main", "codex-auth")
@@ -290,14 +259,11 @@ def test_provider_references_must_exist_in_the_same_candidate() -> None:
             {
                 "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON": custom,
                 "CANDLEPILOT_PROVIDER_CHAIN": "custom:removed,codex",
-                "CANDLEPILOT_DEFAULT_PROVIDER": "custom:old-default",
             }
         )
     message = str(error.value)
     assert "CANDLEPILOT_PROVIDER_CHAIN" in message
     assert "openai-compatible:removed" in message
-    assert "CANDLEPILOT_DEFAULT_PROVIDER" in message
-    assert "openai-compatible:old-default" in message
 
 
 def test_from_env_reads_loaded_dotenv(tmp_path: Path, monkeypatch) -> None:
