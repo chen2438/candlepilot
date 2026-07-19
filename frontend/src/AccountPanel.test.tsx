@@ -35,7 +35,7 @@ describe("AccountPanel manual close", () => {
           related_client_order_id: "cp-entry",
           symbol: "BTCUSDT",
           side: "SELL",
-          purpose: "stop_loss",
+          purpose: "entry",
           reduce_only: true,
           realized_pnl: "-10",
           notional_usdt: "200",
@@ -58,6 +58,7 @@ describe("AccountPanel manual close", () => {
 
     expect(screen.getByText("+5.00%")).toBeTruthy();
     expect(screen.getByText("200.00 USDT")).toBeTruthy();
+    expect(screen.getByText("其他平仓")).toBeTruthy();
     expect(screen.getByText("-10.00%")).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "原始盈亏比" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "未实现盈亏" }).getAttribute("data-tooltip"))

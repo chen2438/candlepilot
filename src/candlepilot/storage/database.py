@@ -800,13 +800,39 @@ class AuditRepository:
                 str(json.loads(row.payload_json).get("o", {}).get("c", ""))
                 for row in event_rows
             }
+            client_ids = event_client_ids | {row.client_order_id for row in execution_rows}
+            intent_actions: dict[str, str] = {}
+            if client_ids:
+                action_rows = (
+                    await session.execute(
+                        select(
+                            ExecutionAttemptRow.client_order_id,
+                            InferenceRow.intent_json,
+                        )
+                        .join(
+                            InferenceRow,
+                            InferenceRow.id == ExecutionAttemptRow.inference_id,
+                        )
+                        .where(ExecutionAttemptRow.client_order_id.in_(client_ids))
+                        .order_by(ExecutionAttemptRow.id.desc())
+                    )
+                ).all()
+                for client_order_id, intent_json in action_rows:
+                    if client_order_id is not None and client_order_id not in intent_actions:
+                        intent_actions[client_order_id] = (
+                            TradeIntent.model_validate_json(intent_json).action.value
+                        )
             fills: list[dict[str, Any]] = []
             for row in event_rows:
                 payload = json.loads(row.payload_json)
                 order = payload.get("o", {})
                 client_order_id = str(order.get("c", ""))
-                purpose, related_entry_id = self._trade_fill_identity(client_order_id)
                 reduce_only = order.get("R") in {True, "true", "TRUE", 1, "1"}
+                purpose, related_entry_id = self._trade_fill_identity(
+                    client_order_id,
+                    intent_action=intent_actions.get(client_order_id),
+                    reduce_only=reduce_only,
+                )
                 if reduce_only and related_entry_id is None:
                     related_entry_id = await self._latest_entry_before(session, row)
                 average_price = Decimal(str(order.get("ap", "0")))
@@ -842,7 +868,10 @@ class AuditRepository:
             if row.client_order_id in event_client_ids:
                 continue
             report = json.loads(row.report_json)
-            purpose, related_entry_id = self._trade_fill_identity(row.client_order_id)
+            purpose, related_entry_id = self._trade_fill_identity(
+                row.client_order_id,
+                intent_action=intent_actions.get(row.client_order_id),
+            )
             fills.append(
                 {
                     "id": row.id,
@@ -939,7 +968,7 @@ class AuditRepository:
             entry_contexts[client_order_id] = (entry_basis, intent.leverage)
 
         for fill in fills:
-            if fill["purpose"] == "entry" or fill["realized_pnl"] is None:
+            if not fill["reduce_only"] or fill["realized_pnl"] is None:
                 continue
             context = entry_contexts.get(fill.get("related_client_order_id"))
             if context is None:
@@ -954,7 +983,12 @@ class AuditRepository:
             fill["realized_return_percent"] = str((realized_pnl / margin) * Decimal("100"))
 
     @staticmethod
-    def _trade_fill_identity(client_order_id: str) -> tuple[str, str | None]:
+    def _trade_fill_identity(
+        client_order_id: str,
+        *,
+        intent_action: str | None = None,
+        reduce_only: bool = False,
+    ) -> tuple[str, str | None]:
         suffixes = {
             "-sl": "stop_loss",
             "-tp": "take_profit",
@@ -965,6 +999,12 @@ class AuditRepository:
                 return purpose, client_order_id[: -len(suffix)]
         if client_order_id.startswith("cp-manual-"):
             return "manual_close", None
+        if intent_action == "CLOSE":
+            return "model_close", None
+        if intent_action == "REDUCE":
+            return "model_reduce", None
+        if reduce_only:
+            return "other_close", None
         return "entry", None
 
     async def _latest_entry_before(

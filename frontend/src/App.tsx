@@ -3345,11 +3345,11 @@ export function AccountPanel({
                 <td className={fill.side === "BUY" ? "fill-buy" : fill.side === "SELL" ? "fill-sell" : ""}>
                   {fill.side === "BUY" ? "买入" : fill.side === "SELL" ? "卖出" : "—"}
                 </td>
-                <td><span className={`fill-purpose ${fill.purpose}`}>{fillPurposeLabel(fill.purpose)}</span></td>
+                <td><span className={`fill-purpose ${displayedFillPurpose(fill)}`}>{fillPurposeLabel(displayedFillPurpose(fill))}</span></td>
                 <td>{fill.notional_usdt === null ? "—" : `${money(fill.notional_usdt)} USDT`}</td>
                 <td>{fill.report.average_price === null ? "—" : Number(fill.report.average_price).toFixed(4)}</td>
                 <td className={fill.realized_pnl !== null && Number(fill.realized_pnl) < 0 ? "fill-pnl negative" : "fill-pnl"}>
-                  {fill.realized_pnl === null || fill.purpose === "entry" ? "—" : <span className="pnl-with-return">
+                  {fill.realized_pnl === null || !fill.reduce_only ? "—" : <span className="pnl-with-return">
                     <span>{Number(fill.realized_pnl).toFixed(4)} USDT</span>
                     <em>{signedPositionPercent(fill.realized_return_percent === null ? null : Number(fill.realized_return_percent))}</em>
                   </span>}
@@ -3374,7 +3374,14 @@ function fillPurposeLabel(purpose: TradeFillRecord["purpose"]): string {
     take_profit: "止盈平仓",
     manual_close: "手动平仓",
     rescue_close: "紧急回补",
+    model_close: "模型平仓",
+    model_reduce: "模型减仓",
+    other_close: "其他平仓",
   }[purpose];
+}
+
+function displayedFillPurpose(fill: TradeFillRecord): TradeFillRecord["purpose"] {
+  return fill.reduce_only && fill.purpose === "entry" ? "other_close" : fill.purpose;
 }
 
 function shortOrderId(clientOrderId: string | null): string {

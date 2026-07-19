@@ -570,6 +570,110 @@ def test_live_run_performance_revalues_partial_manual_close_after_stop(
     assert performance["win_rate"] == "1"
 
 
+def test_model_close_fill_uses_linked_intent_instead_of_order_id_shape(
+    tmp_path: Path,
+) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'model-close-fill.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        run_id = await repository.create_live_run({"provider_chain": ["model"]})
+        entry = TradeIntent(
+            symbol="BTCUSDT",
+            cadence="15m",
+            action=TradeAction.OPEN_LONG,
+            confidence=0.8,
+            leverage=2,
+            risk_fraction="0.01",
+            stop_loss="63000",
+            take_profit="67000",
+            rationale="entry",
+        )
+        close = TradeIntent(
+            symbol="BTCUSDT",
+            cadence="15m",
+            action=TradeAction.CLOSE,
+            confidence=0.7,
+            leverage=1,
+            risk_fraction="0",
+            rationale="model close",
+        )
+        entry_inference = await repository.record_inference(
+            ProviderResult(entry, "model", "fixture", timedelta(), "{}", {}),
+            live_run_id=run_id,
+        )
+        close_inference = await repository.record_inference(
+            ProviderResult(close, "model", "fixture", timedelta(), "{}", {}),
+            live_run_id=run_id,
+        )
+        await repository.record_execution(
+            "BTCUSDT",
+            ExecutionReport(
+                client_order_id="cp-generic-entry",
+                status="FILLED",
+                filled_quantity="0.01",
+                average_price="65000",
+            ),
+        )
+        for inference_id, client_order_id in (
+            (entry_inference, "cp-generic-entry"),
+            (close_inference, "cp-generic-close"),
+        ):
+            await repository.record_execution_attempt(
+                "BTCUSDT",
+                ExecutionAttempt(
+                    inference_id=inference_id,
+                    client_order_id=client_order_id,
+                    status="SUCCEEDED",
+                    stage="COMPLETE",
+                    message="filled",
+                ),
+            )
+        now = datetime.now(UTC)
+        for client_order_id, side, reduce_only, realized_pnl in (
+            ("cp-generic-entry", "BUY", False, "0"),
+            ("cp-generic-close", "SELL", True, "-5.35935"),
+        ):
+            await repository.record_user_event(
+                UserStreamEvent(
+                    "ORDER_TRADE_UPDATE",
+                    now,
+                    now,
+                    "BTCUSDT",
+                    {
+                        "o": {
+                            "c": client_order_id,
+                            "s": "BTCUSDT",
+                            "S": side,
+                            "x": "TRADE",
+                            "X": "FILLED",
+                            "z": "0.01",
+                            "ap": "64385.7" if reduce_only else "65000",
+                            "R": reduce_only,
+                            "rp": realized_pnl,
+                        }
+                    },
+                )
+            )
+        fills = await repository.recent_trade_fills()
+        await database.close()
+        return next(fill for fill in fills if fill["client_order_id"] == "cp-generic-close")
+
+    fill = asyncio.run(scenario())
+    assert fill["purpose"] == "model_close"
+    assert fill["reduce_only"] is True
+    assert fill["related_client_order_id"] == "cp-generic-entry"
+    assert fill["realized_pnl"] == "-5.35935"
+    assert fill["realized_return_percent"] is not None
+    assert Decimal(fill["realized_return_percent"]) < 0
+    assert AuditRepository._trade_fill_identity(
+        "cp-generic-reduce", intent_action="REDUCE"
+    ) == ("model_reduce", None)
+    assert AuditRepository._trade_fill_identity(
+        "external-order", reduce_only=True
+    ) == ("other_close", None)
+
+
 def test_trade_fill_realized_return_uses_combined_add_entry_margin(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'add-fill-return.db'}")

@@ -874,7 +874,11 @@ Position Risk v3 及 Symbol Config 合并：持仓数量与保证金来自账户
 覆盖入场与交易所触发的保护性退出，并以执行审计补充尚无用户流事件的 `FILLED` 记录。成交响应
 额外包含 `side`、`purpose`、`reduce_only`、`realized_pnl`、`notional_usdt`、
 `realized_pnl_margin_usdt`、`realized_return_percent`、`related_client_order_id` 与 `source`；
-其中 `purpose` 为 `entry`、`stop_loss`、`take_profit`、`manual_close` 或 `rescue_close`。缺少用户流
+其中 `purpose` 为 `entry`、`stop_loss`、`take_profit`、`manual_close`、`rescue_close`、
+`model_close`、`model_reduce` 或 `other_close`。普通客户端订单号不能单独证明是开仓：有执行审计的
+reduce-only 成交按关联决策区分模型平仓/减仓，无法关联的 reduce-only 成交显示为其他平仓；退出
+成交的已实现盈亏与回报率不因订单号缺少保护单后缀而隐藏。前端同时以 `reduce_only` 兜底，旧版
+或异常响应即使把退出用途写成 `entry`，也只能显示为其他平仓，不能伪装成开仓。缺少用户流
 事件的手动平仓，以及用户流离线期间触发的 CandlePilot 止损、止盈或回补，会按上文规则从交易所
 成交历史补录；`source` 由此增加 `exchange_rest_reconciliation`。
 

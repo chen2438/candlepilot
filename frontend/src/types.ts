@@ -333,7 +333,7 @@ export interface TradeFillRecord {
   related_client_order_id: string | null;
   symbol: string;
   side: "BUY" | "SELL" | null;
-  purpose: "entry" | "stop_loss" | "take_profit" | "manual_close" | "rescue_close";
+  purpose: "entry" | "stop_loss" | "take_profit" | "manual_close" | "rescue_close" | "model_close" | "model_reduce" | "other_close";
   reduce_only: boolean;
   realized_pnl: string | null;
   notional_usdt: string | null;
