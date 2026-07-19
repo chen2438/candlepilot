@@ -124,6 +124,63 @@ describe("DecisionPanel", () => {
     expect(outputDetails?.open).toBe(false);
   });
 
+  it("expands running runs by default and collapses stopped runs independently", async () => {
+    const user = userEvent.setup();
+    const runningDecision: DecisionEvent = {
+      ...decision,
+      id: 2,
+      live_run_id: 2,
+      live_run: {
+        id: 2,
+        status: "running",
+        config: { cadences: ["15m"], provider_chain: ["claude-code-auth"] },
+        stop_reason: null,
+        started_at: "2026-07-19T16:53:22Z",
+        ended_at: null,
+      },
+      intent: { ...decision.intent, symbol: "BTCUSDT", action: "HOLD" },
+      created_at: "2026-07-19T17:00:27Z",
+    };
+    const stoppedDecision: DecisionEvent = {
+      ...decision,
+      id: 3,
+      live_run_id: 1,
+      live_run: {
+        id: 1,
+        status: "stopped",
+        config: { cadences: ["15m"], provider_chain: ["openai-compatible:openrouter"] },
+        stop_reason: "stopped by user",
+        started_at: "2026-07-19T15:08:39Z",
+        ended_at: "2026-07-19T16:24:38Z",
+      },
+      intent: { ...decision.intent, symbol: "SOLUSDT", action: "HOLD" },
+      created_at: "2026-07-19T16:20:58Z",
+    };
+
+    render(
+      <DecisionPanel
+        decisions={[runningDecision, stoppedDecision]}
+        filter="all"
+        onFilter={vi.fn()}
+        onLoadOlder={vi.fn(async () => undefined)}
+        exhausted
+      />,
+    );
+
+    const runningGroup = screen.getByText("正式运行 #2 · 运行中").closest("details");
+    const stoppedHeader = screen.getByText("正式运行 #1 · 已停止");
+    const stoppedGroup = stoppedHeader.closest("details");
+
+    expect(runningGroup?.open).toBe(true);
+    expect(stoppedGroup?.open).toBe(false);
+    expect(screen.getAllByText(/1 条决策/)).toHaveLength(2);
+
+    await user.click(stoppedHeader);
+
+    expect(stoppedGroup?.open).toBe(true);
+    expect(runningGroup?.open).toBe(true);
+  });
+
   it("requires valid protective prices on opposite sides of entry", () => {
     expect(intentRewardRiskRatio({ ...decision.intent, take_profit: null })).toBeNull();
     expect(intentRewardRiskRatio({ ...decision.intent, stop_loss: "1880" })).toBeNull();

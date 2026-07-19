@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AccountPortfolio,
   AccountPosition,
@@ -2767,26 +2767,55 @@ function groupDecisionEvents(decisions: DecisionEvent[]) {
   }, []);
 }
 
-function DecisionRunHeader({ run }: { run: NonNullable<DecisionEvent["live_run"]> | null }) {
+function DecisionRunHeader({
+  run,
+  decisionCount,
+}: {
+  run: NonNullable<DecisionEvent["live_run"]> | null;
+  decisionCount: number;
+}) {
   if (run === null) {
-    return <div className="decision-run-header unassigned">
-      <div><strong>历史记录 · 未归属运行</strong><small>运行边界功能启用前产生的决策</small></div>
-    </div>;
+    return <summary className="decision-run-header unassigned">
+      <span className="decision-run-primary"><strong>历史记录 · 未归属运行</strong><small>运行边界功能启用前产生的决策</small></span>
+      <span className="decision-run-summary">{decisionCount} 条决策</span>
+      <i className="decision-run-toggle" aria-hidden="true" />
+    </summary>;
   }
   const config = [
     run.config.cadences?.join(" / "),
     run.config.provider_chain?.map(providerLabel).join(" → "),
   ].filter(Boolean).join(" · ");
-  return <div className={`decision-run-header ${run.status}`}>
-    <div>
+  return <summary className={`decision-run-header ${run.status}`}>
+    <span className="decision-run-primary">
       <strong>正式运行 #{run.id} · {LIVE_RUN_STATUS[run.status]}</strong>
       <small>{formatLocalDateTimeSeconds(new Date(run.started_at))}{run.ended_at ? ` → ${formatLocalDateTimeSeconds(new Date(run.ended_at))}` : " → 现在"}</small>
-    </div>
-    <div className="decision-run-summary">
-      {config && <span>{config}</span>}
+    </span>
+    <span className="decision-run-summary">
+      <span>{[config, `${decisionCount} 条决策`].filter(Boolean).join(" · ")}</span>
       {run.stop_reason && <small>停止原因：{run.stop_reason}</small>}
-    </div>
-  </div>;
+    </span>
+    <i className="decision-run-toggle" aria-hidden="true" />
+  </summary>;
+}
+
+function DecisionRunGroup({
+  run,
+  decisionCount,
+  children,
+}: {
+  run: NonNullable<DecisionEvent["live_run"]> | null;
+  decisionCount: number;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(run === null || run.status === "running");
+  return <details
+    className="decision-run-group"
+    open={open}
+    onToggle={(event) => setOpen(event.currentTarget.open)}
+  >
+    <DecisionRunHeader decisionCount={decisionCount} run={run} />
+    {children}
+  </details>;
 }
 
 export function DecisionPanel({
@@ -2869,8 +2898,7 @@ export function DecisionPanel({
       </div>
       <div className="signal-list">
         {groupDecisionEvents(visible).map((group) => (
-          <section className="decision-run-group" key={group.key}>
-            <DecisionRunHeader run={group.run} />
+          <DecisionRunGroup decisionCount={group.decisions.length} key={group.key} run={group.run}>
             {group.decisions.map((decision) => (
           <div className={`decision-event ${expanded === decision.id ? "expanded" : ""}`} key={decision.id}>
             <button
@@ -2955,7 +2983,7 @@ export function DecisionPanel({
             )}
           </div>
             ))}
-          </section>
+          </DecisionRunGroup>
         ))}
         {!visible.length && <div className="empty cards">当前筛选条件下没有决策记录。</div>}
       </div>
