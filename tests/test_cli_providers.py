@@ -249,6 +249,10 @@ def test_codex_provider_parses_schema_output(tmp_path: Path) -> None:
     assert result.input_payload["market"]["symbol"] == "BTCUSDT"
     assert result.prompt is not None and '"symbol":"BTCUSDT"' in result.prompt
     assert "total initial margin for any single symbol to 10% of equity" in result.prompt
+    assert "risk 0.01" in result.prompt
+    assert "aggregate open stop risk to 4% of equity" in result.prompt
+    assert "reward/risk ratio of at least 1.5:1" in result.prompt
+    assert "rejects anything below 1.3:1" in result.prompt
 
 
 def test_claude_provider_unwraps_result(tmp_path: Path) -> None:

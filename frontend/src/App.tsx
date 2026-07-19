@@ -283,7 +283,7 @@ const TABS: Array<{ key: TabKey; label: string; meta: string }> = [
 const METRIC_DEFINITIONS: Record<string, string> = {
   "候选标的": "最近一次全市场扫描后进入动态候选池的 USDT 永续合约数量；候选池最多保留 20 个，不等于每个周期实际送入模型的数量。",
   "最大杠杆": "硬风控允许模型请求的最高杠杆倍数；实际交易可以更低，不能由模型突破。",
-  "日亏熔断": "当日净亏损达到当日起始权益的 8% 时，硬风控拒绝新增风险仓位。",
+  "日亏熔断": "当日净亏损达到当日起始权益的 5% 时，硬风控拒绝新增风险仓位。",
   "权益": "账户现金或钱包余额加上按最新标记价计算的未实现盈亏。",
   "可用余额": "扣除当前保证金占用后，仍可用于新订单保证金的账户余额。",
   "占用保证金": "当前非零持仓占用的保证金合计，由交易所返回。",
@@ -294,7 +294,7 @@ const METRIC_DEFINITIONS: Record<string, string> = {
   "错误率": "过去 24 小时带 Provider 错误标记的调用数除以调用总数。",
   "钱包余额": "币安测试网账户的钱包余额，不包含当前未实现盈亏。",
   "未实现盈亏": "全部未平仓头寸按最新标记价计算的浮动盈亏合计。",
-  "当日盈亏": "从当日 UTC 00:00 起的已实现盈亏、手续费和资金费，加上当前未实现盈亏；硬风控用它判断 8% 日亏熔断。",
+  "当日盈亏": "从当日 UTC 00:00 起的已实现盈亏、手续费和资金费，加上当前未实现盈亏；硬风控用它判断 5% 日亏熔断。",
   "总收益": "回测结束权益相对初始权益的累计变化比例，包含模型交易产生的费用和资金费影响。",
   "最大回撤": "回测权益曲线从任一历史峰值到后续低点的最大跌幅。",
   "Sharpe": "回测周期收益的年化平均值除以样本标准差，未扣无风险利率；值越高代表单位总波动收益越高。",
@@ -303,7 +303,9 @@ const METRIC_DEFINITIONS: Record<string, string> = {
 };
 
 const RISK_DEFINITIONS: Record<string, string> = {
-  "单笔风险": "单次开仓或加仓在止损触发时允许承担的计划亏损上限，为当前权益的 2%，并在定量时计入费用与保守滑点。",
+  "单笔风险": "单次开仓或加仓在止损触发时允许承担的计划亏损上限，为当前权益的 1%，并在定量时计入手续费、盘口与保守滑点。",
+  "组合止损风险": "全部未平仓头寸按当前交易所保护价计算的计划止损风险合计，不得超过当前权益的 4%；缺少可核验止损时拒绝新增风险。",
+  "最低盈亏比": "开仓与加仓按最新盘口、手续费、双边滑点和交易所精度计算的有效盈亏比不得低于 1.3:1；减仓和平仓不受此限制。",
   "保证金占用": "全部仓位占用保证金不得超过账户权益的 80%。",
   "单标的保证金": "每个标的的初始保证金不得超过账户权益的 10%，增仓也计入同一上限。",
   "持仓模式": "每个标的使用逐仓保证金并维持单向净仓，不同时持有双向仓位。",
@@ -866,7 +868,7 @@ export default function App() {
           <div className="hero-metrics">
             <Metric label="候选标的" value={String(status.candidate_count)} suffix="/ 20" />
             <Metric label="最大杠杆" value="10" suffix="×" />
-            <Metric label="日亏熔断" value="8.0" suffix="%" />
+            <Metric label="日亏熔断" value="5.0" suffix="%" />
           </div>
           <div className="controls">
             <div className="cadence-select" title={status.running ? "运行时锁定" : "选择要分析的决策周期"}>
@@ -1186,13 +1188,15 @@ export default function App() {
             <article className="panel risk-panel">
             <PanelTitle code="02" title="硬风控边界" meta="不可由模型修改" />
             <div className="risk-grid">
-              <RiskItem label="单笔风险" value="2.0%" detail="权益上限" />
+              <RiskItem label="单笔风险" value="1.0%" detail="权益上限" />
+              <RiskItem label="组合止损风险" value="4.0%" detail="权益上限" />
+              <RiskItem label="最低盈亏比" value="1.3:1" detail="有效值" />
               <RiskItem label="保证金占用" value="80%" detail="组合上限" />
               <RiskItem label="单标的保证金" value="10%" detail="权益上限" />
               <RiskItem label="持仓模式" value="逐仓" detail="单向净仓" />
             </div>
             <div className="risk-line"><span style={{ width: "80%" }} /></div>
-            <p>所有开仓必须包含交易所侧止损，并通过精度、陈旧行情和强平缓冲检查。</p>
+            <p>模型以 1.5:1 以上为目标；所有开仓必须包含交易所侧止损，并通过组合风险、有效盈亏比、精度、陈旧行情和强平缓冲检查。</p>
             </article>
 
             <article className="panel universe-panel">

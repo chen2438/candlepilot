@@ -57,21 +57,37 @@ class AggressiveRiskPolicy:
         self,
         *,
         max_leverage: int = 10,
-        max_risk_fraction: Decimal = Decimal("0.02"),
+        max_risk_fraction: Decimal = Decimal("0.01"),
+        max_portfolio_risk_fraction: Decimal = Decimal("0.04"),
         max_margin_fraction: Decimal = Decimal("0.80"),
         max_symbol_margin_fraction: Decimal = Decimal("0.10"),
-        daily_loss_fraction: Decimal = Decimal("0.08"),
+        daily_loss_fraction: Decimal = Decimal("0.05"),
+        minimum_reward_risk_ratio: Decimal = Decimal("1.3"),
+        fee_fraction: Decimal = Decimal("0.0005"),
         slippage_fraction: Decimal = Decimal("0.001"),
         max_snapshot_age_seconds: int = 75,
         require_take_profit: bool = False,
     ) -> None:
         if max_snapshot_age_seconds <= 0:
             raise ValueError("max_snapshot_age_seconds must be positive")
+        if max_risk_fraction < 0:
+            raise ValueError("max_risk_fraction cannot be negative")
+        if max_portfolio_risk_fraction < max_risk_fraction:
+            raise ValueError(
+                "max_portfolio_risk_fraction cannot be below max_risk_fraction"
+            )
+        if minimum_reward_risk_ratio <= 0:
+            raise ValueError("minimum_reward_risk_ratio must be positive")
+        if fee_fraction < 0 or slippage_fraction < 0:
+            raise ValueError("fee and slippage fractions cannot be negative")
         self.max_leverage = max_leverage
         self.max_risk_fraction = max_risk_fraction
+        self.max_portfolio_risk_fraction = max_portfolio_risk_fraction
         self.max_margin_fraction = max_margin_fraction
         self.max_symbol_margin_fraction = max_symbol_margin_fraction
         self.daily_loss_fraction = daily_loss_fraction
+        self.minimum_reward_risk_ratio = minimum_reward_risk_ratio
+        self.fee_fraction = fee_fraction
         self.slippage_fraction = slippage_fraction
         self.max_snapshot_age_seconds = max_snapshot_age_seconds
         self.require_take_profit = require_take_profit
@@ -92,6 +108,13 @@ class AggressiveRiskPolicy:
             return self._reject("intent does not match its market snapshot")
         if intent.action == TradeAction.HOLD:
             return RiskEvaluation(RiskDecision(accepted=True, reason="hold: no order required"))
+
+        existing = portfolio.positions.get(intent.symbol)
+        if intent.action in {TradeAction.REDUCE, TradeAction.CLOSE}:
+            if existing is None:
+                return self._reject("cannot reduce or close a missing position")
+            return self._close_order(intent, existing.side, existing.quantity, rules)
+
         age = (now - snapshot.timestamp).total_seconds()
         if age < -2 or age > self.max_snapshot_age_seconds:
             return self._reject("market snapshot is stale")
@@ -104,7 +127,6 @@ class AggressiveRiskPolicy:
         if intent.risk_fraction > self.max_risk_fraction:
             return self._reject("requested risk exceeds the hard limit")
 
-        existing = portfolio.positions.get(intent.symbol)
         existing_side = existing.side if existing is not None else None
         opening = intent.action in {TradeAction.OPEN_LONG, TradeAction.OPEN_SHORT, TradeAction.ADD}
         if opening and intent.symbol in portfolio.pending_entry_symbols:
@@ -126,11 +148,6 @@ class AggressiveRiskPolicy:
             return self._reject("opposing position must be closed before opening long")
         if intent.action == TradeAction.OPEN_SHORT and existing_side == "LONG":
             return self._reject("opposing position must be closed before opening short")
-
-        if intent.action in {TradeAction.REDUCE, TradeAction.CLOSE}:
-            if existing is None:
-                return self._reject("cannot reduce or close a missing position")
-            return self._close_order(intent, existing.side, existing.quantity, rules)
 
         # A market entry fills at the book, so only a limit price reaches the
         # exchange and needs the grid; snapping it toward our side never turns a
@@ -187,26 +204,53 @@ class AggressiveRiskPolicy:
                 "cannot be attached atomically"
             )
 
-        per_unit_loss = abs(entry - stop) + (entry * self.slippage_fraction)
+        effective_entry = self._effective_entry(
+            requested_side,
+            entry,
+            snapshot,
+            order_type=intent.order_type,
+        )
+        per_unit_loss = self._effective_loss_per_unit(
+            requested_side,
+            effective_entry,
+            stop,
+        )
         requested_risk_budget = portfolio.equity * min(
             intent.risk_fraction, self.max_risk_fraction
         )
         risk_budget = requested_risk_budget
+        existing_symbol_risk = Decimal("0")
         if intent.action == TradeAction.ADD:
             assert existing is not None
-            direction = Decimal("1") if existing.side == "LONG" else Decimal("-1")
-            existing_loss_per_unit = max(
-                Decimal("0"),
-                (existing.entry_price - stop) * direction,
-            ) + (existing.entry_price * self.slippage_fraction)
-            existing_risk = existing.quantity * existing_loss_per_unit
+            existing_symbol_risk = existing.quantity * self._effective_loss_per_unit(
+                existing.side,
+                existing.entry_price,
+                stop,
+            )
             remaining_hard_risk = max(
                 Decimal("0"),
-                (portfolio.equity * self.max_risk_fraction) - existing_risk,
+                (portfolio.equity * self.max_risk_fraction) - existing_symbol_risk,
             )
             risk_budget = min(requested_risk_budget, remaining_hard_risk)
             if risk_budget <= 0:
                 return self._reject("existing position exhausts the symbol risk limit")
+
+        try:
+            portfolio_risk = self._portfolio_stop_risk(
+                portfolio,
+                replacing_symbol=intent.symbol if intent.action == TradeAction.ADD else None,
+            )
+        except ValueError as exc:
+            return self._reject(str(exc))
+        remaining_portfolio_risk = max(
+            Decimal("0"),
+            (portfolio.equity * self.max_portfolio_risk_fraction)
+            - portfolio_risk
+            - existing_symbol_risk,
+        )
+        risk_budget = min(risk_budget, remaining_portfolio_risk)
+        if risk_budget <= 0:
+            return self._reject("portfolio stop risk limit is exhausted")
         risk_quantity = risk_budget / per_unit_loss
         remaining_margin = max(
             Decimal("0"),
@@ -239,6 +283,27 @@ class AggressiveRiskPolicy:
         if quantity * entry < rules.min_notional:
             return self._reject("risk-sized notional is below the exchange minimum")
 
+        reward_risk_entry = effective_entry
+        if intent.action == TradeAction.ADD:
+            assert existing is not None
+            combined_quantity = existing.quantity + quantity
+            reward_risk_entry = (
+                (existing.entry_price * existing.quantity)
+                + (effective_entry * quantity)
+            ) / combined_quantity
+        if take_profit is not None:
+            reward_risk_ratio = self._effective_reward_risk_ratio(
+                requested_side,
+                reward_risk_entry,
+                stop,
+                take_profit,
+            )
+            if reward_risk_ratio < self.minimum_reward_risk_ratio:
+                return self._reject(
+                    "effective reward/risk ratio is below the hard minimum "
+                    f"{self.minimum_reward_risk_ratio}:1"
+                )
+
         order = OrderPlan(
             client_order_id=f"cp-{uuid4().hex[:24]}",
             symbol=intent.symbol,
@@ -263,6 +328,71 @@ class AggressiveRiskPolicy:
             ),
             order=order,
         )
+
+    def _effective_entry(
+        self,
+        side: str,
+        entry: Decimal,
+        snapshot: MarketSnapshot,
+        *,
+        order_type: OrderType,
+    ) -> Decimal:
+        if order_type == OrderType.LIMIT:
+            return entry
+        book_price = snapshot.ask if side == "LONG" else snapshot.bid
+        slip = book_price * self.slippage_fraction
+        return book_price + slip if side == "LONG" else book_price - slip
+
+    def _effective_exit(self, side: str, price: Decimal) -> Decimal:
+        slip = price * self.slippage_fraction
+        return price - slip if side == "LONG" else price + slip
+
+    def _effective_loss_per_unit(
+        self,
+        side: str,
+        entry: Decimal,
+        stop: Decimal,
+    ) -> Decimal:
+        direction = Decimal("1") if side == "LONG" else Decimal("-1")
+        exit_price = self._effective_exit(side, stop)
+        price_loss = max(Decimal("0"), (entry - exit_price) * direction)
+        fees = (entry + exit_price) * self.fee_fraction
+        return price_loss + fees
+
+    def _effective_reward_risk_ratio(
+        self,
+        side: str,
+        entry: Decimal,
+        stop: Decimal,
+        take_profit: Decimal,
+    ) -> Decimal:
+        direction = Decimal("1") if side == "LONG" else Decimal("-1")
+        target_exit = self._effective_exit(side, take_profit)
+        reward = max(Decimal("0"), (target_exit - entry) * direction)
+        reward -= (entry + target_exit) * self.fee_fraction
+        risk = self._effective_loss_per_unit(side, entry, stop)
+        return max(Decimal("0"), reward) / risk
+
+    def _portfolio_stop_risk(
+        self,
+        portfolio: PortfolioState,
+        *,
+        replacing_symbol: str | None,
+    ) -> Decimal:
+        total = Decimal("0")
+        for symbol, position in portfolio.positions.items():
+            if symbol == replacing_symbol:
+                continue
+            if position.stop_loss is None:
+                raise ValueError(
+                    f"cannot measure portfolio stop risk: {symbol} has no stop loss"
+                )
+            total += position.quantity * self._effective_loss_per_unit(
+                position.side,
+                position.entry_price,
+                position.stop_loss,
+            )
+        return total
 
     @staticmethod
     def _reject(reason: str) -> RiskEvaluation:

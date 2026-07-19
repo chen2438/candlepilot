@@ -375,10 +375,12 @@ class Settings:
     bind_host: str = "127.0.0.1"
     bind_port: int = 8000
     max_leverage: int = 10
-    max_risk_fraction: Decimal = Decimal("0.02")
+    max_risk_fraction: Decimal = Decimal("0.01")
+    max_portfolio_risk_fraction: Decimal = Decimal("0.04")
     max_margin_fraction: Decimal = Decimal("0.80")
     max_symbol_margin_fraction: Decimal = Decimal("0.10")
-    daily_loss_fraction: Decimal = Decimal("0.08")
+    daily_loss_fraction: Decimal = Decimal("0.05")
+    minimum_reward_risk_ratio: Decimal = Decimal("1.3")
     inference_timeout_seconds: float = 45.0
     max_snapshot_age_seconds: int = 75
     cadences: tuple[str, ...] = SUPPORTED_CADENCES

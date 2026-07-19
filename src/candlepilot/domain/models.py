@@ -74,7 +74,7 @@ class TradeIntent(StrictModel):
     action: TradeAction
     confidence: float = Field(ge=0, le=1)
     leverage: int = Field(ge=1, le=10)
-    risk_fraction: Decimal = Field(ge=0, le=Decimal("0.02"))
+    risk_fraction: Decimal = Field(ge=0, le=Decimal("0.01"))
     order_type: OrderType = OrderType.MARKET
     entry_price: Decimal | None = Field(default=None, gt=0)
     stop_loss: Decimal | None = Field(default=None, gt=0)

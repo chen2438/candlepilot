@@ -39,7 +39,7 @@ def _intent(action: TradeAction = TradeAction.OPEN_LONG) -> TradeIntent:
         action=action,
         confidence=0.8,
         leverage=5,
-        risk_fraction="0.02",
+        risk_fraction="0.01",
         stop_loss="98" if action != TradeAction.OPEN_SHORT else "102",
         take_profit="104" if action != TradeAction.OPEN_SHORT else "96",
         rationale="test signal",
@@ -67,7 +67,8 @@ def _position(side: str, quantity: str = "1", **changes) -> dict[str, PositionSt
 
 
 def test_single_symbol_initial_margin_is_capped_at_ten_percent_of_equity() -> None:
-    result = AggressiveRiskPolicy().evaluate(_intent(), _snapshot(), _portfolio(), RULES)
+    intent = _intent().model_copy(update={"stop_loss": Decimal("99.95")})
+    result = AggressiveRiskPolicy().evaluate(intent, _snapshot(), _portfolio(), RULES)
     assert result.decision.accepted
     assert result.order is not None
     assert result.order.quantity == Decimal("50.000")
@@ -75,8 +76,9 @@ def test_single_symbol_initial_margin_is_capped_at_ten_percent_of_equity() -> No
 
 
 def test_portfolio_initial_margin_is_capped_at_eighty_percent_of_equity() -> None:
+    intent = _intent().model_copy(update={"stop_loss": Decimal("99.95")})
     result = AggressiveRiskPolicy(max_symbol_margin_fraction=Decimal("1")).evaluate(
-        _intent(),
+        intent,
         _snapshot(),
         _portfolio(margin_used="7000", available_balance="3000"),
         RULES,
@@ -96,7 +98,7 @@ def test_sizes_position_from_stop_distance_and_rounds_down() -> None:
     )
     assert result.decision.accepted
     assert result.order is not None
-    assert result.order.quantity == Decimal("95.238")
+    assert result.order.quantity == Decimal("41.716")
     assert result.order.stop_price == Decimal("98")
     assert result.order.take_profit_price == Decimal("104")
 
@@ -186,7 +188,7 @@ def test_add_subtracts_existing_position_risk_from_the_hard_limit() -> None:
 
 
 def test_add_uses_only_the_remaining_combined_risk_budget() -> None:
-    intent = _intent(TradeAction.ADD).model_copy(update={"risk_fraction": Decimal("0.02")})
+    intent = _intent(TradeAction.ADD)
     portfolio = _portfolio(
         open_positions=1,
         margin_used="500",
@@ -199,10 +201,18 @@ def test_add_uses_only_the_remaining_combined_risk_budget() -> None:
 
     assert result.decision.accepted
     assert result.order is not None
-    existing_risk = Decimal("25") * (Decimal("2") + Decimal("0.1"))
-    new_risk = result.order.quantity * (Decimal("2") + Decimal("0.1"))
-    assert existing_risk + new_risk <= Decimal("200")
-    assert existing_risk + new_risk > Decimal("199.99")
+    policy = AggressiveRiskPolicy(max_symbol_margin_fraction=Decimal("1"))
+    existing_risk = Decimal("25") * policy._effective_loss_per_unit(
+        "LONG", Decimal("100"), Decimal("98")
+    )
+    new_entry = policy._effective_entry(
+        "LONG", Decimal("100"), _snapshot(), order_type=OrderType.MARKET
+    )
+    new_risk = result.order.quantity * policy._effective_loss_per_unit(
+        "LONG", new_entry, Decimal("98")
+    )
+    assert existing_risk + new_risk <= Decimal("100")
+    assert existing_risk + new_risk > Decimal("99.99")
 
 
 def test_add_uses_only_remaining_single_symbol_margin_capacity() -> None:
@@ -220,7 +230,10 @@ def test_add_uses_only_remaining_single_symbol_margin_capacity() -> None:
     )
 
     result = AggressiveRiskPolicy().evaluate(
-        _intent(TradeAction.ADD), _snapshot(), portfolio, RULES
+        _intent(TradeAction.ADD).model_copy(update={"stop_loss": Decimal("99.8")}),
+        _snapshot(),
+        portfolio,
+        RULES,
     )
 
     assert result.decision.accepted
@@ -293,7 +306,11 @@ def test_rejects_crossed_protection_after_refresh() -> None:
 
 def test_allows_and_marks_immediately_marketable_limit_after_refresh() -> None:
     marketable = _intent().model_copy(
-        update={"order_type": OrderType.LIMIT, "entry_price": Decimal("101")}
+        update={
+            "order_type": OrderType.LIMIT,
+            "entry_price": Decimal("101"),
+            "take_profit": Decimal("106"),
+        }
     )
     result = AggressiveRiskPolicy().evaluate(
         marketable, _snapshot(), _portfolio(), RULES
@@ -318,7 +335,11 @@ def test_rejects_a_resting_opening_limit_that_cannot_be_atomically_protected() -
 
 def test_marketable_short_limit_uses_fresh_bid_for_margin_sizing() -> None:
     intent = _intent(TradeAction.OPEN_SHORT).model_copy(
-        update={"order_type": OrderType.LIMIT, "entry_price": Decimal("99")}
+        update={
+            "order_type": OrderType.LIMIT,
+            "entry_price": Decimal("99"),
+            "take_profit": Decimal("94"),
+        }
     )
 
     result = AggressiveRiskPolicy().evaluate(
@@ -342,10 +363,84 @@ def test_snapshot_age_must_be_positive() -> None:
 
 def test_daily_loss_circuit_breaker() -> None:
     result = AggressiveRiskPolicy().evaluate(
-        _intent(), _snapshot(), _portfolio(equity="9200", daily_pnl="-800"), RULES
+        _intent(), _snapshot(), _portfolio(equity="9500", daily_pnl="-500"), RULES
     )
     assert not result.decision.accepted
     assert "circuit breaker" in result.decision.reason
+
+
+def test_daily_loss_circuit_breaker_never_blocks_a_close() -> None:
+    result = AggressiveRiskPolicy().evaluate(
+        _intent(TradeAction.CLOSE),
+        _snapshot(age_seconds=300),
+        _portfolio(
+            equity="9500",
+            daily_pnl="-500",
+            open_positions=1,
+            positions=_position("LONG", "1"),
+        ),
+        RULES,
+    )
+
+    assert result.decision.accepted
+    assert result.order is not None and result.order.reduce_only
+
+
+def test_rejects_effective_reward_risk_below_the_hard_minimum() -> None:
+    intent = _intent().model_copy(update={"take_profit": Decimal("102")})
+
+    result = AggressiveRiskPolicy().evaluate(intent, _snapshot(), _portfolio(), RULES)
+
+    assert not result.decision.accepted
+    assert "reward/risk ratio" in result.decision.reason
+
+
+def test_portfolio_stop_risk_caps_new_exposure_at_four_percent() -> None:
+    positions = {
+        "ETHUSDT": PositionState(
+            side="LONG",
+            quantity="150",
+            entry_price="100",
+            stop_loss="98",
+            take_profit="104",
+        )
+    }
+    portfolio = _portfolio(open_positions=1, positions=positions)
+    policy = AggressiveRiskPolicy(max_symbol_margin_fraction=Decimal("1"))
+
+    result = policy.evaluate(_intent(), _snapshot(), portfolio, RULES)
+
+    assert result.decision.accepted and result.order is not None
+    existing_risk = policy._portfolio_stop_risk(portfolio, replacing_symbol=None)
+    entry = policy._effective_entry(
+        "LONG", Decimal("100"), _snapshot(), order_type=OrderType.MARKET
+    )
+    new_risk = result.order.quantity * policy._effective_loss_per_unit(
+        "LONG", entry, Decimal("98")
+    )
+    assert existing_risk + new_risk <= Decimal("400")
+    assert existing_risk + new_risk > Decimal("399.99")
+
+
+def test_missing_existing_stop_rejects_new_portfolio_risk() -> None:
+    positions = {
+        "ETHUSDT": PositionState(
+            side="LONG",
+            quantity="1",
+            entry_price="100",
+            take_profit="104",
+        )
+    }
+
+    result = AggressiveRiskPolicy().evaluate(
+        _intent(),
+        _snapshot(),
+        _portfolio(open_positions=1, positions=positions),
+        RULES,
+    )
+
+    assert not result.decision.accepted
+    assert "has no stop loss" in result.decision.reason
 
 
 def test_opposing_position_must_close_first() -> None:
@@ -433,7 +528,11 @@ def test_limit_entry_snaps_toward_our_own_side_of_the_book() -> None:
         tick_size=Decimal("0.5"),
     )
     intent = _intent().model_copy(
-        update={"order_type": OrderType.LIMIT, "entry_price": Decimal("100.7")}
+        update={
+            "order_type": OrderType.LIMIT,
+            "entry_price": Decimal("100.7"),
+            "take_profit": Decimal("105"),
+        }
     )
 
     result = AggressiveRiskPolicy().evaluate(intent, _snapshot(), _portfolio(), rules)

@@ -32,6 +32,21 @@ def test_hold_factory_is_safe() -> None:
     assert intent.risk_fraction == Decimal("0")
 
 
+def test_trade_intent_rejects_risk_above_one_percent() -> None:
+    with pytest.raises(ValidationError, match="less than or equal to 0.01"):
+        TradeIntent(
+            symbol="BTCUSDT",
+            cadence="5m",
+            action=TradeAction.OPEN_LONG,
+            confidence=0.8,
+            leverage=2,
+            risk_fraction="0.02",
+            stop_loss="98",
+            take_profit="104",
+            rationale="oversized request",
+        )
+
+
 def test_trade_intent_allows_rationale_up_to_one_thousand_characters() -> None:
     intent = TradeIntent.hold("ETHUSDT", "5m", "x" * RATIONALE_MAX_LENGTH)
     assert len(intent.rationale) == 1_000
