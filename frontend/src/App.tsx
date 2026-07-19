@@ -402,6 +402,28 @@ export function StartupProbeCompletedSummary({
   </div>;
 }
 
+export function StartupProbeRunningSummary({
+  probe,
+}: {
+  probe: NonNullable<EngineStatus["startup_probe"]>;
+}) {
+  return <div className="live-probe-summary live-probe-running">
+    <div>
+      正式试跑：第 {probe.active_decision ?? 1}/{probe.decisions_per_provider} 次
+      · 已完成 {probe.completed_decisions}/{probe.decisions_per_provider}
+      · <span title={probe.probe_symbols.join("、")}>
+        {probe.analysis_symbol_count} 个标的 · {probe.probe_cadence}
+      </span>
+    </div>
+    <div className="live-probe-track" aria-label={`已完成 ${probe.completed_decisions}/${probe.decisions_per_provider}`}>
+      <span style={{ width: `${probe.completed_decisions / probe.decisions_per_provider * 100}%` }} />
+    </div>
+    {Object.entries(probe.durations_seconds).map(([name, values]) => (
+      <small key={name}>{providerLabel(name)}：{values.length ? values.map((seconds) => `${seconds}s`).join(" · ") : "等待首个结果"}</small>
+    ))}
+  </div>;
+}
+
 export default function App() {
   const [tab, setTab] = useState<TabKey>("overview");
   const [status, setStatus] = useState<EngineStatus>(emptyStatus);
@@ -1042,19 +1064,7 @@ export default function App() {
               {busy === "probe" && !status.startup_probe && <div className="live-probe-summary">
                 正在读取真实行情与测试网账户…
               </div>}
-              {status.startup_probe?.running && <div className="live-probe-summary live-probe-running">
-                <div>
-                  正式试跑：第 {status.startup_probe.active_decision ?? 1}/{status.startup_probe.decisions_per_provider} 次
-                  · 已完成 {status.startup_probe.completed_decisions}/{status.startup_probe.decisions_per_provider}
-                  · {status.startup_probe.probe_symbol} {status.startup_probe.probe_cadence}
-                </div>
-                <div className="live-probe-track" aria-label={`已完成 ${status.startup_probe.completed_decisions}/${status.startup_probe.decisions_per_provider}`}>
-                  <span style={{ width: `${status.startup_probe.completed_decisions / status.startup_probe.decisions_per_provider * 100}%` }} />
-                </div>
-                {Object.entries(status.startup_probe.durations_seconds).map(([name, values]) => (
-                  <small key={name}>{providerLabel(name)}：{values.length ? values.map((seconds) => `${seconds}s`).join(" · ") : "等待首个结果"}</small>
-                ))}
-              </div>}
+              {status.startup_probe?.running && <StartupProbeRunningSummary probe={status.startup_probe} />}
               {status.startup_probe && !status.startup_probe.running && status.startup_probe.slowest_seconds !== undefined
                 && <StartupProbeCompletedSummary probe={status.startup_probe} ready={probeReady} />}
             </div>

@@ -7,6 +7,7 @@ import {
   intentRewardRiskRatio,
   LiveRunActionButtons,
   StartupProbeCompletedSummary,
+  StartupProbeRunningSummary,
 } from "./App";
 import type { DecisionEvent } from "./types";
 
@@ -58,6 +59,26 @@ const decision: DecisionEvent = {
 };
 
 describe("DecisionPanel", () => {
+  it("shows a running startup probe as a batch instead of its first symbol", () => {
+    render(<StartupProbeRunningSummary probe={{
+      running: true,
+      ready: false,
+      consumed: false,
+      timeout_seconds: 100,
+      decisions_per_provider: 3,
+      completed_decisions: 0,
+      active_decision: 1,
+      probe_symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+      probe_cadence: "5m",
+      durations_seconds: { "claude-code-auth": [] },
+      analysis_symbol_count: 3,
+      started_at: "2026-07-20T00:00:00Z",
+    }} />);
+    expect(screen.getByText(/3 个标的 · 5m/)).toBeTruthy();
+    expect(screen.queryByText("BTCUSDT 5m")).toBeNull();
+    expect(screen.getByTitle("BTCUSDT、ETHUSDT、SOLUSDT")).toBeTruthy();
+  });
+
   it("describes startup capacity as one shared symbol batch", () => {
     render(<StartupProbeCompletedSummary
       ready
@@ -69,17 +90,17 @@ describe("DecisionPanel", () => {
         decisions_per_provider: 3,
         completed_decisions: 3,
         active_decision: null,
-        probe_symbol: "BTCUSDT",
+        probe_symbols: ["BTCUSDT", "ETHUSDT"],
         probe_cadence: "15m",
         durations_seconds: { "openai-compatible:deepseek": [40, 42, 41] },
         slowest_seconds: 42,
-        analysis_symbol_count: 11,
+        analysis_symbol_count: 2,
         aggregate_utilization: 0.2,
         started_at: "2026-07-19T22:00:00Z",
       }}
     />);
-    expect(screen.getByText(/11 标的批量分析最慢 42s/)).toBeTruthy();
-    expect(screen.queryByText(/× 11 标的/)).toBeNull();
+    expect(screen.getByText(/2 标的批量分析最慢 42s/)).toBeTruthy();
+    expect(screen.queryByText(/× 2 标的/)).toBeNull();
   });
 
   it("keeps startup locked until a separate successful probe", async () => {

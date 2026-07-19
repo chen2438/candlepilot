@@ -273,7 +273,8 @@ def test_live_startup_probe_publishes_each_decision_progress(tmp_path: Path) -> 
             assert progress["active_decision"] == 2
             assert progress["completed_decisions"] == 1
             assert len(progress["durations_seconds"]["api-fixture"]) == 1
-            assert progress["probe_symbol"] == "BTCUSDT"
+            assert progress["probe_symbols"] == ["BTCUSDT"]
+            assert progress["analysis_symbol_count"] == 1
             assert progress["probe_cadence"] == "15m"
         finally:
             release_second_call.set()

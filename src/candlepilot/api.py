@@ -1313,7 +1313,6 @@ def create_app(
         analysis_symbols = list(dict.fromkeys([*candidate_symbols, *portfolio.positions]))
         if not analysis_symbols:
             raise RuntimeError("the live run has no symbols to analyze")
-        probe_symbol = analysis_symbols[0]
         durations: dict[str, list[float]] = {name: [] for name in engine.provider_chain}
         progress: dict[str, Any] = {
             "running": True,
@@ -1323,7 +1322,8 @@ def create_app(
             "decisions_per_provider": 3,
             "completed_decisions": 0,
             "active_decision": None,
-            "probe_symbol": probe_symbol,
+            "probe_symbols": analysis_symbols,
+            "analysis_symbol_count": len(analysis_symbols),
             "probe_cadence": cadence,
             "durations_seconds": {name: [] for name in engine.provider_chain},
             "started_at": datetime.now(UTC).isoformat(),
@@ -1413,7 +1413,7 @@ def create_app(
             "decisions_per_provider": 3,
             "completed_decisions": 3,
             "active_decision": None,
-            "probe_symbol": probe_symbol,
+            "probe_symbols": analysis_symbols,
             "probe_cadence": cadence,
             "durations_seconds": {
                 name: [round(value, 3) for value in values]

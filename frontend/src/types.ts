@@ -56,11 +56,11 @@ export interface EngineStatus {
     decisions_per_provider: number;
     completed_decisions: number;
     active_decision: number | null;
-    probe_symbol: string;
+    probe_symbols: string[];
     probe_cadence: string;
     durations_seconds: Record<string, number[]>;
     slowest_seconds?: number;
-    analysis_symbol_count?: number;
+    analysis_symbol_count: number;
     projected_cycle_seconds?: number;
     aggregate_utilization?: number;
     max_safe_symbols?: number | null;
