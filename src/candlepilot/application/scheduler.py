@@ -210,9 +210,12 @@ class TradingScheduler:
 
     async def _auto_emergency_stop(self) -> None:
         try:
-            await self.engine.emergency_stop()
-        finally:
             await self.stop()
+        finally:
+            # No decision task may survive the account flatten.  Flattening first
+            # leaves a window in which an in-flight provider call can return and
+            # submit a fresh entry after the broker has already closed exposure.
+            await self.engine.emergency_stop()
 
     async def run_cycle(self, cadence: str) -> list[DecisionOutcome]:
         if cadence not in CADENCE_SECONDS:

@@ -447,6 +447,59 @@ def test_guard_emergency_stops_when_the_user_feed_dies(tmp_path: Path) -> None:
     assert reason is not None and "user stream stopped" in reason
 
 
+def test_automatic_emergency_stop_cancels_decisions_before_flattening(
+    tmp_path: Path,
+) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'emergency-order.db'}")
+        await database.initialize()
+        provider_started = asyncio.Event()
+        provider_cancelled = asyncio.Event()
+
+        class GatedProvider(HoldProvider):
+            async def generate_trade_intent(self, snapshot, portfolio):
+                provider_started.set()
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    provider_cancelled.set()
+                    raise
+
+        class OrderingBroker(FakeTestnetBroker):
+            flattened_after_cancellation = False
+
+            async def emergency_flatten(self):
+                self.flattened_after_cancellation = provider_cancelled.is_set()
+                await super().emergency_flatten()
+
+        market = SchedulerMarket()
+        broker = OrderingBroker()
+        engine = TradingEngine(
+            testnet_broker=broker,  # type: ignore[arg-type]
+            providers=ProviderRegistry([GatedProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider_chain(["hold"])
+        await engine.start()
+        scheduler = TradingScheduler(engine, market)  # type: ignore[arg-type]
+        cycle = asyncio.create_task(scheduler.run_cycle("5m"))
+        scheduler._tasks = [cycle]
+        await asyncio.wait_for(provider_started.wait(), timeout=1)
+
+        scheduler.request_emergency_stop("test safety trigger")
+        assert scheduler._auto_stop_task is not None
+        await scheduler._auto_stop_task
+        result = broker.flattened_after_cancellation, cycle.cancelled(), engine.emergency_locked
+        await database.close()
+        return result
+
+    flattened_after_cancellation, cycle_cancelled, emergency_locked = asyncio.run(scenario())
+    assert flattened_after_cancellation is True
+    assert cycle_cancelled is True
+    assert emergency_locked is True
+
+
 def test_guard_only_loads_cost_when_a_budget_is_set(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'guard-cost.db'}")
