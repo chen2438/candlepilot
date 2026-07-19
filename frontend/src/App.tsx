@@ -3138,30 +3138,28 @@ function AccountPanel({
       </p>
       <div className="table-wrap account-table">
         <table>
-          <thead><tr><th>标的</th><th>方向</th><th>持仓价值</th><th>保证金</th><th>均价</th><th>标记价</th><th>杠杆</th><th>未实现盈亏</th><th>盈亏比</th><th>保护</th><th>操作</th></tr></thead>
+          <thead><tr><th>标的</th><th>方向 / 杠杆</th><th>持仓价值 / 保证金</th><th>均价 / 标记价</th><th>未实现盈亏</th><th>盈亏比</th><th>止损</th><th>止盈</th><th>操作</th></tr></thead>
           <tbody>
             {positions.map((position) => {
               const protectionMetrics = positionProtectionMetrics(position);
+              const protectionFallback = position.protection_source === "exchange" ? "交易所侧"
+                : position.protection_source === "missing" ? "缺失"
+                  : position.protection_source === "unknown" ? "待确认" : "—";
               return <tr key={position.symbol}>
                 <td><strong>{position.symbol.replace("USDT", "")}</strong></td>
-                <td className={position.side === "LONG" ? "positive" : "negative"}>{position.side}</td>
-                <td>{money(position.notional)}<small>USDT</small></td>
-                <td>{money(position.margin_used)}<small>USDT</small></td>
-                <td>{Number(position.average_price).toFixed(4)}</td>
-                <td>{Number(position.mark_price).toFixed(4)}</td>
-                <td>{position.leverage}×</td>
+                <td><span className="position-inline-pair"><span className={position.side === "LONG" ? "positive" : "negative"}>{position.side}</span><i>/</i><span>{position.leverage}×</span></span></td>
+                <td><span className="position-inline-pair"><span>{money(position.notional)}</span><i>/</i><span>{money(position.margin_used)} USDT</span></span></td>
+                <td><span className="position-inline-pair"><span>{Number(position.average_price).toFixed(4)}</span><i>/</i><span>{Number(position.mark_price).toFixed(4)}</span></span></td>
                 <td className={Number(position.unrealized_pnl) >= 0 ? "positive" : "negative"}>{money(position.unrealized_pnl)}</td>
                 <td>{protectionMetrics.riskRewardRatio === null
                   ? "—"
                   : `${protectionMetrics.riskRewardRatio.toFixed(2)} : 1`}</td>
-                <td>{position.stop_loss === null && position.take_profit === null
-                  ? position.protection_source === "exchange" ? "交易所侧"
-                    : position.protection_source === "missing" ? "缺失"
-                      : position.protection_source === "unknown" ? "待确认" : "—"
-                  : <span className="protection">
-                      <span>止损 <strong>{position.stop_loss === null ? "缺失" : Number(position.stop_loss).toFixed(4)}</strong> <em className="negative">{signedPositionPercent(protectionMetrics.stopLossPercent)}</em></span>
-                      <span>止盈 <strong>{position.take_profit === null ? "缺失" : Number(position.take_profit).toFixed(4)}</strong> <em className="positive">{signedPositionPercent(protectionMetrics.takeProfitPercent)}</em></span>
-                    </span>}</td>
+                <td>{position.stop_loss === null
+                  ? protectionFallback
+                  : <span className="position-protection"><span>{Number(position.stop_loss).toFixed(4)}</span><em className="negative">{signedPositionPercent(protectionMetrics.stopLossPercent)}</em></span>}</td>
+                <td>{position.take_profit === null
+                  ? protectionFallback
+                  : <span className="position-protection"><span>{Number(position.take_profit).toFixed(4)}</span><em className="positive">{signedPositionPercent(protectionMetrics.takeProfitPercent)}</em></span>}</td>
                 <td className="position-close-cell">
                   {confirmCloseSymbol === position.symbol
                     ? <span className="position-close-confirm">
@@ -3188,7 +3186,7 @@ function AccountPanel({
                 </td>
               </tr>;
             })}
-            {!positions.length && <tr><td colSpan={11} className="empty">当前无持仓。</td></tr>}
+            {!positions.length && <tr><td colSpan={9} className="empty">当前无持仓。</td></tr>}
           </tbody>
         </table>
       </div>
