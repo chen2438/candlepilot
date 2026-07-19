@@ -38,6 +38,13 @@ from api_fixtures import (
     CustomApiProvider,
 )
 
+
+def _probe_and_start(client: TestClient, payload: dict[str, object] | None = None):
+    probe = client.post("/api/engine/probe", json=payload)
+    assert probe.status_code == 200, probe.text
+    assert probe.json()["running"] is False
+    return client.post("/api/engine/start", json=payload)
+
 def test_control_api_lifecycle(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'api.db'}")
     market = ApiMarket()
@@ -88,7 +95,7 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         assert client.get("/api/metrics/providers?hours=0").status_code == 422
         assert client.post("/api/engine/start").status_code == 409
         assert client.post("/api/providers/select", json={"providers": ["api-fixture"]}).status_code == 200
-        assert client.post("/api/engine/start").json()["running"] is True
+        assert _probe_and_start(client).json()["running"] is True
         running_performance = client.get("/api/live-runs/performance").json()
         assert running_performance[0]["total_pnl"] == "0"
         assert running_performance[0]["win_rate"] is None
@@ -161,7 +168,7 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
     asyncio.run(database.close())
 
 
-def test_live_start_runs_three_real_decisions_and_freezes_user_timeout(
+def test_live_probe_runs_three_real_decisions_before_separate_start(
     tmp_path: Path,
 ) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'live-probe.db'}")
@@ -191,10 +198,11 @@ def test_live_start_runs_three_real_decisions_and_freezes_user_timeout(
     with TestClient(app) as client:
         client.post("/api/providers/select", json={"providers": ["api-fixture"]})
         response = client.post(
-            "/api/engine/start", json={"timeout_seconds": 7}
+            "/api/engine/probe", json={"timeout_seconds": 7}
         )
         assert response.status_code == 200, response.text
         status = response.json()
+        assert status["running"] is False
         assert provider.calls == 3
         assert provider.observed_timeouts == [7, 7, 7]
         assert status["decision_timeout_seconds"] == 7
@@ -203,8 +211,30 @@ def test_live_start_runs_three_real_decisions_and_freezes_user_timeout(
         assert status["startup_probe"]["completed_decisions"] == 3
         assert status["startup_probe"]["active_decision"] is None
         assert status["startup_probe"]["analysis_symbol_count"] == 1
+        assert status["startup_probe"]["ready"] is True
+        assert client.post(
+            "/api/engine/start", json={"timeout_seconds": 8}
+        ).status_code == 409
+        started = client.post("/api/engine/start", json={"timeout_seconds": 7})
+        assert started.status_code == 200, started.text
+        assert started.json()["running"] is True
+        assert provider.calls == 3
+        assert started.json()["startup_probe"]["consumed"] is True
         client.post("/api/engine/stop")
         assert provider.timeout == 45
+        assert client.post("/api/engine/start", json={"timeout_seconds": 7}).status_code == 409
+
+        assert client.post(
+            "/api/engine/probe", json={"timeout_seconds": 7}
+        ).status_code == 200
+        invalidated = client.post(
+            "/api/candidates-per-cycle", json={"candidates_per_cycle": 2}
+        ).json()
+        assert invalidated["startup_probe"]["ready"] is False
+        assert "candidates per cycle" in invalidated["startup_probe"]["invalidated_reason"]
+        assert client.post(
+            "/api/engine/start", json={"timeout_seconds": 7}
+        ).status_code == 409
     asyncio.run(database.close())
 
 
@@ -235,7 +265,7 @@ def test_live_startup_probe_publishes_each_decision_progress(tmp_path: Path) -> 
 
     with TestClient(app) as client, ThreadPoolExecutor(max_workers=1) as pool:
         client.post("/api/providers/select", json={"providers": ["api-fixture"]})
-        future = pool.submit(client.post, "/api/engine/start")
+        future = pool.submit(client.post, "/api/engine/probe")
         try:
             assert second_call_started.wait(timeout=2)
             progress = client.get("/api/status").json()["startup_probe"]
@@ -250,6 +280,8 @@ def test_live_startup_probe_publishes_each_decision_progress(tmp_path: Path) -> 
         response = future.result(timeout=2)
         assert response.status_code == 200, response.text
         assert response.json()["startup_probe"]["completed_decisions"] == 3
+        assert response.json()["running"] is False
+        assert client.post("/api/engine/start").json()["running"] is True
         client.post("/api/engine/stop")
     asyncio.run(database.close())
 
@@ -292,7 +324,7 @@ def test_live_startup_probe_cancels_sibling_providers_after_failure(tmp_path: Pa
             "/api/providers/select",
             json={"providers": ["failing-startup", "hanging-startup"]},
         )
-        response = client.post("/api/engine/start")
+        response = client.post("/api/engine/probe")
         assert response.status_code == 409
         assert "startup fixture failed" in response.json()["detail"]
         assert hanging_cancelled.is_set()
@@ -325,7 +357,7 @@ def test_live_start_rejects_a_probe_that_cannot_fit_the_selected_cadence(
     with TestClient(app) as client:
         client.post("/api/providers/select", json={"providers": ["api-fixture"]})
         response = client.post(
-            "/api/engine/start", json={"timeout_seconds": 1}
+            "/api/engine/probe", json={"timeout_seconds": 1}
         )
         assert response.status_code == 422
         assert "Reduce analysis symbols" in response.json()["detail"]
@@ -944,7 +976,7 @@ def test_provider_config_sets_model_and_reasoning_effort(tmp_path: Path) -> None
 
         # Locked while the engine runs.
         client.post("/api/providers/select", json={"providers": ["api-fixture"]})
-        client.post("/api/engine/start")
+        _probe_and_start(client)
         assert (
             client.post(
                 "/api/providers/config", json={"name": "api-fixture", "model": "y"}
@@ -1313,7 +1345,7 @@ def test_restart_is_refused_while_the_engine_runs(tmp_path: Path) -> None:
     app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
     with TestClient(app) as client:
         client.post("/api/providers/select", json={"providers": ["api-fixture"]})
-        client.post("/api/engine/start")
+        _probe_and_start(client)
         # A restart would kill a live run, so it must be refused.
         refused = client.post("/api/restart")
         assert refused.status_code == 409
@@ -1359,7 +1391,7 @@ def test_run_limits_endpoint(tmp_path: Path) -> None:
 
         # Locked while the engine runs.
         client.post("/api/providers/select", json={"providers": ["api-fixture"]})
-        client.post("/api/engine/start")
+        _probe_and_start(client)
         assert client.post("/api/run-limits", json={"max_run_seconds": 60}).status_code == 409
     asyncio.run(database.close())
 
@@ -1417,7 +1449,7 @@ def test_provider_test_endpoint_reports_success_and_failure(tmp_path: Path) -> N
 
         # Locked while the engine runs.
         client.post("/api/providers/select", json={"providers": ["api-fixture"]})
-        client.post("/api/engine/start")
+        _probe_and_start(client)
         assert client.post("/api/providers/test", json={"name": "api-fixture"}).status_code == 409
     asyncio.run(database.close())
 
@@ -1557,7 +1589,7 @@ def test_cadence_selection_endpoint(tmp_path: Path) -> None:
 
         # Locked while the engine runs.
         client.post("/api/providers/select", json={"providers": ["api-fixture"]})
-        client.post("/api/engine/start")
+        _probe_and_start(client)
         assert client.post("/api/cadences", json={"cadences": ["5m"]}).status_code == 409
     asyncio.run(database.close())
 
@@ -1593,7 +1625,7 @@ def test_candidates_per_cycle_endpoint(tmp_path: Path) -> None:
 
         # Locked while the engine runs.
         client.post("/api/providers/select", json={"providers": ["api-fixture"]})
-        client.post("/api/engine/start")
+        _probe_and_start(client)
         assert (
             client.post("/api/candidates-per-cycle", json={"candidates_per_cycle": 3}).status_code
             == 409
@@ -1639,7 +1671,7 @@ def test_provider_route_api_exposes_order_and_locks_while_running(tmp_path: Path
         assert selected.json()["provider_chain"] == ["api-fixture"]
         assert selected.json()["provider_routes"][0]["priority"] == 1
         assert selected.json()["active_provider"] is None
-        assert client.post("/api/engine/start").json()["active_provider"] == "api-fixture"
+        assert _probe_and_start(client).json()["active_provider"] == "api-fixture"
         locked = client.post(
             "/api/providers/select", json={"providers": ["api-fixture"]}
         )

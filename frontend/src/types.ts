@@ -50,6 +50,9 @@ export interface EngineStatus {
   decision_timeout_seconds: number | null;
   startup_probe: {
     running: boolean;
+    ready: boolean;
+    consumed: boolean;
+    timeout_seconds: number | null;
     decisions_per_provider: number;
     completed_decisions: number;
     active_decision: number | null;
@@ -64,6 +67,7 @@ export interface EngineStatus {
     started_at: string;
     checked_at?: string;
     error?: string;
+    invalidated_reason?: string;
   } | null;
   auto_stop_reason: string | null;
   route_failure_count: number;

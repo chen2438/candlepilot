@@ -2,7 +2,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { DecisionPanel, intentRewardRiskRatio } from "./App";
+import { DecisionPanel, intentRewardRiskRatio, LiveRunActionButtons } from "./App";
 import type { DecisionEvent } from "./types";
 
 afterEach(() => {
@@ -53,6 +53,34 @@ const decision: DecisionEvent = {
 };
 
 describe("DecisionPanel", () => {
+  it("keeps startup locked until a separate successful probe", async () => {
+    const user = userEvent.setup();
+    const onProbe = vi.fn();
+    const onStart = vi.fn();
+    const props = {
+      busy: null,
+      running: false,
+      emergencyLocked: false,
+      onProbe,
+      onStart,
+      onStop: vi.fn(),
+      onEmergencyStop: vi.fn(),
+    };
+    const view = render(<LiveRunActionButtons {...props} probeReady={false} />);
+
+    const probe = screen.getByRole("button", { name: "试跑" });
+    const start = screen.getByRole("button", { name: "启动" });
+    expect((start as HTMLButtonElement).disabled).toBe(true);
+    await user.click(probe);
+    expect(onProbe).toHaveBeenCalledOnce();
+    expect(onStart).not.toHaveBeenCalled();
+
+    view.rerender(<LiveRunActionButtons {...props} probeReady />);
+    expect((start as HTMLButtonElement).disabled).toBe(false);
+    await user.click(start);
+    expect(onStart).toHaveBeenCalledOnce();
+  });
+
   it("does not offer the transient approved-only outcome as a filter", () => {
     render(
       <DecisionPanel

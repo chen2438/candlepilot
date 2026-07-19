@@ -279,6 +279,7 @@ def test_backtest_is_refused_while_the_engine_runs(tmp_path: Path) -> None:
 
     with TestClient(app) as client:
         client.post("/api/providers/select", json={"providers": ["api-fixture"]})
+        assert client.post("/api/engine/probe").status_code == 200
         assert client.post("/api/engine/start").json()["running"] is True
 
         response = client.post(

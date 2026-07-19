@@ -118,6 +118,14 @@ class TradingEngine:
         self.startup_probe: dict[str, object] | None = None
         self._provider_timeout_restore: dict[str, float] = {}
 
+    def invalidate_startup_probe(self, reason: str) -> None:
+        """Keep the last result visible, but prevent it from starting a changed run."""
+
+        if self.startup_probe is None or self.startup_probe.get("running"):
+            return
+        self.startup_probe["ready"] = False
+        self.startup_probe["invalidated_reason"] = reason
+
     async def provider_health(self) -> list[ProviderHealth]:
         return await self.providers.health()
 
@@ -131,12 +139,15 @@ class TradingEngine:
             raise ValueError("provider route cannot contain duplicates")
         for name in ordered:
             self.providers.get(name)
+        changed = ordered != self.provider_chain
         self.provider_chain = ordered
         self.active_provider = None
         self._provider_route_states = {
             name: self._provider_route_states.get(name, ProviderRouteState())
             for name in ordered
         }
+        if changed:
+            self.invalidate_startup_probe("provider route changed")
 
     def provider_route_status(self, *, now: datetime | None = None) -> list[dict[str, object]]:
         now = now or datetime.now(UTC)
@@ -179,7 +190,10 @@ class TradingEngine:
     def select_cadences(self, cadences: tuple[str, ...] | list[str]) -> None:
         if self.running:
             raise RuntimeError("cannot change cadences while running")
-        self.active_cadences = self._normalize_cadences(cadences)
+        selected = self._normalize_cadences(cadences)
+        if selected != self.active_cadences:
+            self.active_cadences = selected
+            self.invalidate_startup_probe("analysis cadences changed")
 
     def select_run_limits(
         self,
@@ -199,8 +213,13 @@ class TradingEngine:
             raise ValueError("max_run_seconds must be positive")
         if max_run_cost_usd is not None and max_run_cost_usd <= 0:
             raise ValueError("max_run_cost_usd must be positive")
-        self.max_run_seconds = max_run_seconds
-        self.max_run_cost_usd = max_run_cost_usd
+        if (
+            max_run_seconds != self.max_run_seconds
+            or max_run_cost_usd != self.max_run_cost_usd
+        ):
+            self.max_run_seconds = max_run_seconds
+            self.max_run_cost_usd = max_run_cost_usd
+            self.invalidate_startup_probe("run limits changed")
 
     def configure_decision_timeout(self, seconds: float | None) -> None:
         """Freeze one absolute external-provider timeout for the next live run."""

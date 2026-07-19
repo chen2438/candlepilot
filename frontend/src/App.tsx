@@ -273,6 +273,9 @@ const METRIC_DEFINITIONS: Record<string, string> = {
 };
 
 const RISK_DEFINITIONS: Record<string, string> = {
+  "候选标的": METRIC_DEFINITIONS["候选标的"],
+  "最大杠杆": METRIC_DEFINITIONS["最大杠杆"],
+  "日亏熔断": METRIC_DEFINITIONS["日亏熔断"],
   "单笔风险": "单次开仓或加仓在止损触发时允许承担的计划亏损上限，为当前权益的 1%，并在定量时计入手续费、盘口与保守滑点。",
   "组合止损风险": "全部未平仓头寸按当前交易所保护价计算的计划止损风险合计，不得超过当前权益的 4%；缺少可核验止损时拒绝新增风险。",
   "最低盈亏比": "开仓与加仓按入场、止损和止盈的价格距离计算原始盈亏比，必须大于 1.3:1；手续费和滑点不参与该比例，减仓和平仓不受此限制。",
@@ -349,6 +352,40 @@ function decisionQueryUrl(filter: DecisionFilter, beforeId?: number): string {
   return `/api/decision-events?${params}`;
 }
 
+export function LiveRunActionButtons({
+  busy,
+  running,
+  emergencyLocked,
+  probeReady,
+  onProbe,
+  onStart,
+  onStop,
+  onEmergencyStop,
+}: {
+  busy: string | null;
+  running: boolean;
+  emergencyLocked: boolean;
+  probeReady: boolean;
+  onProbe: () => void;
+  onStart: () => void;
+  onStop: () => void;
+  onEmergencyStop: () => void;
+}) {
+  return <>
+    <button
+      disabled={busy !== null || running || emergencyLocked}
+      onClick={onProbe}
+    >{busy === "probe" ? "真实试跑 3 次…" : "试跑"}</button>
+    <button
+      className="primary"
+      disabled={busy !== null || running || emergencyLocked || !probeReady}
+      onClick={onStart}
+    >{busy === "start" ? "启动中…" : "启动"}</button>
+    <button disabled={busy !== null || !running} onClick={onStop}>优雅停止</button>
+    <button className="danger" disabled={busy !== null} onClick={onEmergencyStop}>紧急熔断</button>
+  </>;
+}
+
 export default function App() {
   const [tab, setTab] = useState<TabKey>("overview");
   const [status, setStatus] = useState<EngineStatus>(emptyStatus);
@@ -402,6 +439,16 @@ export default function App() {
         }),
       });
       setProviders(next);
+      setStatus((current) => ({
+        ...current,
+        startup_probe: current.startup_probe
+          ? {
+            ...current.startup_probe,
+            ready: false,
+            invalidated_reason: "provider model settings changed",
+          }
+          : null,
+      }));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -428,6 +475,16 @@ export default function App() {
           }),
         });
         setProviders(next);
+        setStatus((current) => ({
+          ...current,
+          startup_probe: current.startup_probe
+            ? {
+              ...current.startup_probe,
+              ready: false,
+              invalidated_reason: "provider model settings changed",
+            }
+            : null,
+        }));
       }
       const result = await api<ProviderTestResult>(
         "/api/providers/test",
@@ -790,6 +847,17 @@ export default function App() {
   );
   const displayedDecisionTimeout = decisionTimeoutDraft
     ?? String(status.decision_timeout_seconds ?? selectedExternalProvider?.timeout_seconds ?? 60);
+  const requestedDecisionTimeout = selectedExternalProvider
+    ? Number(displayedDecisionTimeout)
+    : null;
+  const probeReady = Boolean(
+    status.startup_probe?.ready
+    && !status.startup_probe.consumed
+    && (
+      !selectedExternalProvider
+      || status.startup_probe.timeout_seconds === requestedDecisionTimeout
+    ),
+  );
   const allHistorySelected = HISTORY_CATEGORIES.every(
     (category) => historySelected[category.key],
   );
@@ -841,11 +909,6 @@ export default function App() {
             <p className="hero-copy">
               外部模型或本地规则负责提出交易意图，确定性风控拥有最终否决权。当前不支持真钱实盘。
             </p>
-          </div>
-          <div className="hero-metrics">
-            <Metric label="候选标的" value={String(status.candidate_count)} suffix="/ 20" />
-            <Metric label="最大杠杆" value="10" suffix="×" />
-            <Metric label="日亏熔断" value="5.0" suffix="%" />
           </div>
           <div className="controls">
             <div className="cadence-select" title={status.running ? "运行时锁定" : "选择要分析的决策周期"}>
@@ -957,10 +1020,10 @@ export default function App() {
                   <small>秒</small>
                 </label>
                 <small>{selectedExternalProvider
-                  ? "启动时真实试跑 3 次，并校验标的数 × 最慢耗时"
+                  ? "试跑会真实调用 3 次，并校验标的数 × 最慢耗时"
                   : "本地规则无外部调用超时；仍会试跑 3 次校验容量"}</small>
               </div>
-              {busy === "start" && !status.startup_probe && <div className="live-probe-summary">
+              {busy === "probe" && !status.startup_probe && <div className="live-probe-summary">
                 正在读取真实行情与测试网账户…
               </div>}
               {status.startup_probe?.running && <div className="live-probe-summary live-probe-running">
@@ -979,24 +1042,32 @@ export default function App() {
               {status.startup_probe && !status.startup_probe.running && status.startup_probe.slowest_seconds !== undefined && <div className="live-probe-summary">
                 最近试跑：最慢 {status.startup_probe.slowest_seconds}s × {status.startup_probe.analysis_symbol_count} 标的
                 = {status.startup_probe.projected_cycle_seconds}s · 负载 {((status.startup_probe.aggregate_utilization ?? 0) * 100).toFixed(1)}%
+                {!probeReady && <small>{status.startup_probe.consumed
+                  ? "该试跑已用于一次运行，请重新试跑"
+                  : "参数已变化，请重新试跑"}</small>}
               </div>}
             </div>
-            <button
-              className="primary"
-              disabled={busy !== null || status.running || status.emergency_locked}
-              onClick={() => {
+            <LiveRunActionButtons
+              busy={busy}
+              running={status.running}
+              emergencyLocked={status.emergency_locked}
+              probeReady={probeReady}
+              onProbe={() => {
                 const timeout = Number(displayedDecisionTimeout);
                 if (selectedExternalProvider && (!Number.isFinite(timeout) || timeout <= 0)) {
                   setError("请输入有效的正式决策硬超时秒数");
                   return;
                 }
-                void act("start", "/api/engine/start", {
+                void act("probe", "/api/engine/probe", {
                   timeout_seconds: selectedExternalProvider ? timeout : null,
                 });
               }}
-            >{busy === "start" ? "真实试跑 3 次…" : "试跑并启动"}</button>
-            <button disabled={busy !== null || !status.running} onClick={() => act("stop", "/api/engine/stop")}>优雅停止</button>
-            <button className="danger" disabled={busy !== null} onClick={() => act("kill", "/api/engine/emergency-stop")}>紧急熔断</button>
+              onStart={() => void act("start", "/api/engine/start", {
+                timeout_seconds: selectedExternalProvider ? requestedDecisionTimeout : null,
+              })}
+              onStop={() => void act("stop", "/api/engine/stop")}
+              onEmergencyStop={() => void act("kill", "/api/engine/emergency-stop")}
+            />
           </div>
           {status.running && status.scheduler.current_cycles.map((cycle) => <div
             className="live-cycle-strip" key={cycle.cadence}
@@ -1165,6 +1236,9 @@ export default function App() {
             <article className="panel risk-panel">
             <PanelTitle code="02" title="硬风控边界" meta="不可由模型修改" />
             <div className="risk-grid">
+              <RiskItem label="候选标的" value={`${status.candidate_count} / 20`} detail="动态候选池" />
+              <RiskItem label="最大杠杆" value="10×" detail="模型不可突破" />
+              <RiskItem label="日亏熔断" value="5.0%" detail="当日起始权益" />
               <RiskItem label="单笔风险" value="1.0%" detail="权益上限" />
               <RiskItem label="组合止损风险" value="4.0%" detail="权益上限" />
               <RiskItem label="最低盈亏比" value="> 1.3:1" detail="原始值" />

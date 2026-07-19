@@ -851,6 +851,7 @@ def create_app(
                 provider_pricing_ids.pop(config.name, None)
             else:
                 provider_pricing_ids[config.name] = pricing
+        engine.invalidate_startup_probe("provider model settings changed")
         return await get_providers()
 
     @app.post("/api/providers/test")
@@ -1097,7 +1098,10 @@ def create_app(
         selection: CandidatesPerCycleSelection,
     ) -> dict[str, Any]:
         try:
+            previous = scheduler.candidates_per_cycle
             scheduler.select_candidates_per_cycle(selection.candidates_per_cycle)
+            if scheduler.candidates_per_cycle != previous:
+                engine.invalidate_startup_probe("candidates per cycle changed")
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except RuntimeError as exc:
@@ -1283,8 +1287,8 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _status(engine, scheduler)
 
-    async def live_startup_probe() -> dict[str, Any]:
-        """Measure three real, non-trading decisions before every live run."""
+    async def live_startup_probe(*, timeout_seconds: float | None) -> dict[str, Any]:
+        """Measure three real, non-trading decisions without starting a run."""
 
         if not engine.candidates:
             await engine.refresh_universe()
@@ -1303,6 +1307,9 @@ def create_app(
         durations: dict[str, list[float]] = {name: [] for name in engine.provider_chain}
         progress: dict[str, Any] = {
             "running": True,
+            "ready": False,
+            "consumed": False,
+            "timeout_seconds": timeout_seconds,
             "decisions_per_provider": 3,
             "completed_decisions": 0,
             "active_decision": None,
@@ -1400,6 +1407,9 @@ def create_app(
             )
         return {
             "running": False,
+            "ready": True,
+            "consumed": False,
+            "timeout_seconds": timeout_seconds,
             "decisions_per_provider": 3,
             "completed_decisions": 3,
             "active_decision": None,
@@ -1418,6 +1428,71 @@ def create_app(
             "checked_at": datetime.now(UTC).isoformat(),
         }
 
+    def resolve_live_timeout(request: EngineStartRequest) -> tuple[list[Any], float | None]:
+        external = [
+            engine.providers.get(name)
+            for name in engine.provider_chain
+            if engine.providers.get(name).capabilities.external_inference
+        ]
+        timeout_seconds = request.timeout_seconds
+        if external and timeout_seconds is None:
+            configured = {provider.timeout for provider in external}
+            if len(configured) != 1:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "selected external providers have different timeouts; "
+                        "choose one decision timeout for this live run"
+                    ),
+                )
+            timeout_seconds = configured.pop()
+        return external, timeout_seconds
+
+    @app.post("/api/engine/probe")
+    async def probe_engine(request: EngineStartRequest | None = None) -> dict[str, Any]:
+        if background_model_work():
+            raise HTTPException(
+                status_code=409,
+                detail="cannot probe the engine while another probe or backtest runs",
+            )
+        request = request or EngineStartRequest()
+        async with engine_start_lock:
+            if engine.running:
+                raise HTTPException(status_code=409, detail="engine is already running")
+            if not engine.provider_chain:
+                raise HTTPException(
+                    status_code=409,
+                    detail="at least one ready decision provider must be selected",
+                )
+            external, timeout_seconds = resolve_live_timeout(request)
+            try:
+                engine.startup_probe = None
+                engine.configure_decision_timeout(timeout_seconds if external else None)
+                engine.startup_probe = await live_startup_probe(
+                    timeout_seconds=timeout_seconds if external else None
+                )
+            except ValueError as exc:
+                if engine.startup_probe is not None:
+                    engine.startup_probe.update(
+                        running=False,
+                        ready=False,
+                        active_decision=None,
+                        error=str(exc),
+                    )
+                engine.restore_provider_timeouts()
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            except Exception as exc:
+                if engine.startup_probe is not None:
+                    engine.startup_probe.update(
+                        running=False,
+                        ready=False,
+                        active_decision=None,
+                        error=str(exc),
+                    )
+                engine.restore_provider_timeouts()
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _status(engine, scheduler)
+
     @app.post("/api/engine/start")
     async def start_engine(request: EngineStartRequest | None = None) -> dict[str, Any]:
         if background_model_work():
@@ -1434,47 +1509,37 @@ def create_app(
                     status_code=409,
                     detail="at least one ready decision provider must be selected",
                 )
-            external = [
-                engine.providers.get(name)
-                for name in engine.provider_chain
-                if engine.providers.get(name).capabilities.external_inference
-            ]
-            timeout_seconds = request.timeout_seconds
-            if external and timeout_seconds is None:
-                configured = {provider.timeout for provider in external}
-                if len(configured) != 1:
-                    raise HTTPException(
-                        status_code=422,
-                        detail=(
-                            "selected external providers have different timeouts; "
-                            "choose one decision timeout for this live run"
-                        ),
-                    )
-                timeout_seconds = configured.pop()
+            external, timeout_seconds = resolve_live_timeout(request)
+            probe = engine.startup_probe
+            expected_timeout = timeout_seconds if external else None
+            if (
+                probe is None
+                or not probe.get("ready")
+                or probe.get("consumed")
+                or probe.get("timeout_seconds") != expected_timeout
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "a successful startup probe for the current parameters is required "
+                        "before starting the engine"
+                    ),
+                )
             try:
-                engine.startup_probe = None
-                engine.configure_decision_timeout(timeout_seconds if external else None)
-                engine.startup_probe = await live_startup_probe()
                 await engine.start(
                     run_config={"candidates_per_cycle": scheduler.candidates_per_cycle}
                 )
                 scheduler.start()
+                probe["ready"] = False
+                probe["consumed"] = True
             except ValueError as exc:
-                if engine.startup_probe is not None:
-                    engine.startup_probe.update(
-                        running=False,
-                        active_decision=None,
-                        error=str(exc),
-                    )
+                probe["ready"] = False
+                probe["error"] = str(exc)
                 engine.restore_provider_timeouts()
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             except Exception as exc:
-                if engine.startup_probe is not None:
-                    engine.startup_probe.update(
-                        running=False,
-                        active_decision=None,
-                        error=str(exc),
-                    )
+                probe["ready"] = False
+                probe["error"] = str(exc)
                 engine.restore_provider_timeouts()
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _status(engine, scheduler)
@@ -1585,6 +1650,7 @@ def create_app(
     async def refresh_universe() -> list[dict[str, Any]]:
         try:
             await engine.refresh_universe()
+            engine.invalidate_startup_probe("candidate universe refreshed")
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"market refresh failed: {exc}") from exc
         return await get_universe()
@@ -1974,7 +2040,11 @@ def create_app(
         return [task for task in backtest_tasks.values() if not task.done()]
 
     def background_model_work() -> bool:
-        return bool(active_backtest_tasks() or (probe_task and not probe_task.done()))
+        return bool(
+            engine_start_lock.locked()
+            or active_backtest_tasks()
+            or (probe_task and not probe_task.done())
+        )
 
     def _set_probe_task(task: asyncio.Task[None]) -> None:
         nonlocal probe_task
