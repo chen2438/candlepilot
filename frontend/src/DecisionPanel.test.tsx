@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   DecisionPanel,
+  DecisionTiming,
   intentRewardRiskRatio,
   LiveCycleStatus,
   LiveRunActionButtons,
@@ -61,6 +62,20 @@ const decision: DecisionEvent = {
 };
 
 describe("DecisionPanel", () => {
+  it("identifies shared batch inference separately from per-decision completion", () => {
+    render(<DecisionTiming decision={decision} />);
+    expect(screen.getByText("批次耗时 50.98s")).toBeTruthy();
+    expect(screen.getByText("整笔耗时 51.25s")).toBeTruthy();
+    expect(screen.getByText(/批次耗时/).closest("span")?.getAttribute("data-tooltip"))
+      .toContain("不应按决策条数相加");
+  });
+
+  it("hides immaterial audit timing after a shared batch", () => {
+    render(<DecisionTiming decision={{ ...decision, decision_duration_ms: 50990 }} />);
+    expect(screen.getByText("批次耗时 50.98s")).toBeTruthy();
+    expect(screen.queryByText(/整笔耗时/)).toBeNull();
+  });
+
   it("describes a cadence batch instead of showing an empty current symbol", () => {
     render(<LiveCycleStatus cycle={{
       cadence: "5m",
@@ -342,7 +357,8 @@ describe("DecisionPanel", () => {
       expect(label.getAttribute("data-tooltip")).toContain("已完成的平仓笔数");
     }
     expect(screen.getByText("67% (2/3)")).toBeTruthy();
-    expect(screen.getAllByText("耗时 51.25s")).toHaveLength(2);
+    expect(screen.getAllByText("批次耗时 50.98s")).toHaveLength(2);
+    expect(screen.getAllByText("整笔耗时 51.25s")).toHaveLength(2);
 
     await user.click(stoppedHeader);
 

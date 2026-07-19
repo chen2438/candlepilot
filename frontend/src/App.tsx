@@ -408,6 +408,21 @@ export function LiveCycleStatus({
   </div>;
 }
 
+export function DecisionTiming({ decision }: { decision: DecisionEvent }) {
+  const batchSeconds = (decision.duration_ms / 1000).toFixed(2);
+  const decisionDurationMs = decision.decision_duration_ms ?? decision.duration_ms;
+  const decisionSeconds = (decisionDurationMs / 1000).toFixed(2);
+  const hasMaterialPostProcessing = decisionDurationMs - decision.duration_ms >= 100;
+  return <span
+    className="signal-time"
+    data-tooltip="批次耗时是同周期全部标的共享的一次模型调用，不应按决策条数相加；整笔耗时还包含该标的后续风控与执行。"
+  >
+    {new Date(decision.created_at).toLocaleTimeString("zh-CN", { hour12: false })}
+    <small>批次耗时 {batchSeconds}s</small>
+    {hasMaterialPostProcessing && <small>整笔耗时 {decisionSeconds}s</small>}
+  </span>;
+}
+
 export function StartupProbeCompletedSummary({
   probe,
   ready,
@@ -3113,10 +3128,7 @@ export function DecisionPanel({
                   ? <small>损失 {executionLoss(decision.execution.estimated_loss_usdt)}</small>
                   : null}
               </span>
-              <span className="signal-time">
-                {new Date(decision.created_at).toLocaleTimeString("zh-CN", { hour12: false })}
-                <small>耗时 {((decision.decision_duration_ms ?? decision.duration_ms) / 1000).toFixed(2)}s</small>
-              </span>
+              <DecisionTiming decision={decision} />
               <span className="decision-chevron">{expanded === decision.id ? "−" : "+"}</span>
             </button>
             {expanded === decision.id && (
@@ -3251,7 +3263,7 @@ function AnalysisDetail({
     <section className="analysis-detail">
       <div className="analysis-detail-heading">
         <div><strong>AI 分析详情</strong><small>逐次审计 · 本地保存</small></div>
-        <span>{detail.provider} · {detail.model ?? "CLI 默认"} · {(detail.duration_ms / 1000).toFixed(2)}s</span>
+        <span>{detail.provider} · {detail.model ?? "CLI 默认"} · 批次耗时 {(detail.duration_ms / 1000).toFixed(2)}s</span>
       </div>
       <div className="analysis-usage-grid">
         <span>未缓存输入<strong>{Number(usage.input_tokens ?? 0).toLocaleString("zh-CN")}</strong></span>
