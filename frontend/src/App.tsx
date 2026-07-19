@@ -2678,6 +2678,29 @@ function intentPrice(value: string | null): string {
   return value === null ? "—" : Number(value).toFixed(4);
 }
 
+export function intentRewardRiskRatio(intent: DecisionEvent["intent"]): number | null {
+  if (intent.entry_price === null || intent.stop_loss === null || intent.take_profit === null) {
+    return null;
+  }
+  const entry = Number(intent.entry_price);
+  const stopLoss = Number(intent.stop_loss);
+  const takeProfit = Number(intent.take_profit);
+  if (![entry, stopLoss, takeProfit].every(Number.isFinite)) return null;
+
+  const direction = intent.action === "OPEN_SHORT" ? -1
+    : intent.action === "OPEN_LONG" ? 1
+      : takeProfit > entry && stopLoss < entry ? 1
+        : takeProfit < entry && stopLoss > entry ? -1 : 0;
+  const reward = (takeProfit - entry) * direction;
+  const risk = (entry - stopLoss) * direction;
+  return direction !== 0 && reward > 0 && risk > 0 ? reward / risk : null;
+}
+
+function intentRewardRiskLabel(intent: DecisionEvent["intent"]): string {
+  const ratio = intentRewardRiskRatio(intent);
+  return ratio === null ? "—" : `${ratio.toFixed(2)} : 1`;
+}
+
 function executionPrice(value: string | null | undefined): string {
   return value == null ? "—" : Number(value).toFixed(4);
 }
@@ -2767,7 +2790,7 @@ function DecisionRunHeader({ run }: { run: NonNullable<DecisionEvent["live_run"]
   </div>;
 }
 
-function DecisionPanel({
+export function DecisionPanel({
   decisions,
   filter,
   onFilter,
@@ -2894,6 +2917,7 @@ function DecisionPanel({
                   <span>入场价<strong>{intentPrice(decision.intent.entry_price)}</strong></span>
                   <span>止损<strong>{intentPrice(decision.intent.stop_loss)}</strong></span>
                   <span>止盈<strong>{intentPrice(decision.intent.take_profit)}</strong></span>
+                  <span data-tooltip="仅按 AI 返回的入场价、止损和止盈计算，不含交易所 tick 对齐、最新盘口、手续费或滑点；硬风控使用另行重算的有效盈亏比。">AI 原始盈亏比<strong>{intentRewardRiskLabel(decision.intent)}</strong></span>
                   <span>风控数量<strong>{decision.risk?.decision.max_quantity ?? "—"}</strong></span>
                 </div>
                 <div className={`decision-reason ${decision.outcome}`}>
