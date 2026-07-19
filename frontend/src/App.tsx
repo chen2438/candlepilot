@@ -1034,8 +1034,9 @@ export default function App() {
 
         <RunUsage session={runSession} />
 
-        <section className="grid">
-          <article className="panel provider-panel">
+        <section className="grid overview-grid">
+          <div className="overview-column">
+            <article className="panel provider-panel">
             <PanelTitle code="01" title="模型接入" meta="手动路由" />
             <datalist id="runtime-pricing-providers">
               {[...new Set(providers.flatMap((provider) => provider.pricing_options))]
@@ -1180,9 +1181,11 @@ export default function App() {
             <div className="provider-foot">
               <span>实际承载</span><strong>{activeProvider ? providerLabel(activeProvider.provider) : status.running ? "等待可用 Provider" : "引擎未运行"}</strong>
             </div>
-          </article>
+            </article>
+          </div>
 
-          <article className="panel risk-panel">
+          <div className="overview-column">
+            <article className="panel risk-panel">
             <PanelTitle code="02" title="硬风控边界" meta="不可由模型修改" />
             <div className="risk-grid">
               <RiskItem label="单笔风险" value="2.0%" detail="权益上限" />
@@ -1193,9 +1196,9 @@ export default function App() {
             </div>
             <div className="risk-line"><span style={{ width: "80%" }} /></div>
             <p>所有开仓必须包含交易所侧止损，并通过精度、陈旧行情和强平缓冲检查。</p>
-          </article>
+            </article>
 
-          <article className="panel universe-panel">
+            <article className="panel universe-panel">
             <PanelTitle
               code="03"
               title="动态候选池"
@@ -1237,7 +1240,8 @@ export default function App() {
                   : `展开全部 ${candidates.length} 个（还有 ${candidates.length - UNIVERSE_COLLAPSED_ROWS} 个）`}
               </button>
             )}
-          </article>
+            </article>
+          </div>
 
           <DecisionPanel
             decisions={decisions}
