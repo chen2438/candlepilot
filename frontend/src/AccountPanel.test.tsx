@@ -59,6 +59,7 @@ describe("AccountPanel manual close", () => {
     expect(screen.getByText("+5.00%")).toBeTruthy();
     expect(screen.getByText("200.00 USDT")).toBeTruthy();
     expect(screen.getByText("-10.00%")).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "原始盈亏比" })).toBeTruthy();
   });
 
   it("requires an explicit confirmation before closing the whole position", async () => {

@@ -3135,7 +3135,7 @@ export function AccountPanel({
       </p>
       <div className="table-wrap account-table">
         <table>
-          <thead><tr><th>标的</th><th>方向 / 杠杆</th><th>持仓价值 / 保证金</th><th>均价 / 标记价</th><th>未实现盈亏</th><th>盈亏比</th><th>止损</th><th>止盈</th><th>操作</th></tr></thead>
+          <thead><tr><th>标的</th><th>方向 / 杠杆</th><th>持仓价值 / 保证金</th><th>均价 / 标记价</th><th>未实现盈亏</th><th data-tooltip="按交易所持仓均价与当前实际止损、止盈价格计算，不包含手续费或成交滑点。">原始盈亏比</th><th>止损</th><th>止盈</th><th>操作</th></tr></thead>
           <tbody>
             {positions.map((position) => {
               const protectionMetrics = positionProtectionMetrics(position);
