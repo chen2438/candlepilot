@@ -394,7 +394,7 @@ export function StartupProbeCompletedSummary({
   ready: boolean;
 }) {
   return <div className="live-probe-summary">
-    <div>最近试跑：{probe.analysis_symbol_count} 标的批量分析最慢 {probe.slowest_seconds}s
+    <div>最近试跑：{probe.analysis_symbol_count} 标的批量分析 {probe.slowest_seconds}s
       · 负载 {((probe.aggregate_utilization ?? 0) * 100).toFixed(1)}%</div>
     <StartupProbeProviderResults probe={probe} />
     {!ready && <small>{probe.consumed

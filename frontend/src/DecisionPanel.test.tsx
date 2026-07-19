@@ -115,7 +115,7 @@ describe("DecisionPanel", () => {
         started_at: "2026-07-19T22:00:00Z",
       }}
     />);
-    expect(screen.getByText(/2 标的批量分析最慢 42s/)).toBeTruthy();
+    expect(screen.getByText(/2 标的批量分析 42s/)).toBeTruthy();
     expect(screen.queryByText(/× 2 标的/)).toBeNull();
     expect(screen.getByText(/42s · HOLD × 1 · OPEN_LONG × 1/)).toBeTruthy();
     expect(screen.getByText(/Token 12,800/)).toBeTruthy();
