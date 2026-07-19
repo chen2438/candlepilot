@@ -5,11 +5,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DecisionPanel,
   intentRewardRiskRatio,
+  LiveCycleStatus,
   LiveRunActionButtons,
+  RunUsage,
   StartupProbeCompletedSummary,
   StartupProbeRunningSummary,
 } from "./App";
-import type { DecisionEvent } from "./types";
+import type { DecisionEvent, RunSessionMetrics } from "./types";
 
 afterEach(() => {
   cleanup();
@@ -59,6 +61,46 @@ const decision: DecisionEvent = {
 };
 
 describe("DecisionPanel", () => {
+  it("describes a cadence batch instead of showing an empty current symbol", () => {
+    render(<LiveCycleStatus cycle={{
+      cadence: "5m",
+      started_at: "2026-07-20T00:00:00Z",
+      symbol: null,
+      symbol_started_at: null,
+      stage: "batch_decision",
+      completed: 0,
+      total: 11,
+    }} />);
+    expect(screen.getByText("当前 5m 周期 · 11 个标的 · 批量分析中")).toBeTruthy();
+    expect(screen.queryByText(/准备中|batch_decision|0\/11/)).toBeNull();
+  });
+
+  it("labels provider input tokens as the uncached portion", () => {
+    const session: RunSessionMetrics = {
+      state: "running",
+      started_at: "2026-07-20T00:00:00Z",
+      ended_at: null,
+      duration_seconds: 348,
+      call_count: 11,
+      error_count: 0,
+      input_tokens: 4,
+      cached_input_tokens: 45831,
+      cache_creation_input_tokens: 35296,
+      output_tokens: 9059,
+      total_tokens: 90190,
+      priced_call_count: 11,
+      cost_complete: true,
+      equivalent_cost_usd: 0.379836,
+      average_duration_ms: 92110,
+      average_tokens: 8199.1,
+      average_cost_usd: 0.034531,
+    };
+    render(<RunUsage session={session} />);
+    expect(screen.getByText("未缓存输入")).toBeTruthy();
+    expect(screen.queryByText("输入 Token")).toBeNull();
+    expect(screen.getByText("90,190")).toBeTruthy();
+  });
+
   it("shows a running startup probe as a batch instead of its first symbol", () => {
     render(<StartupProbeRunningSummary probe={{
       running: true,

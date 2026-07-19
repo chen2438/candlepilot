@@ -386,6 +386,28 @@ export function LiveRunActionButtons({
   </>;
 }
 
+export function LiveCycleStatus({
+  cycle,
+}: {
+  cycle: EngineStatus["scheduler"]["current_cycles"][number];
+}) {
+  let detail: string;
+  if (cycle.stage === "preparing") {
+    detail = `${cycle.total} 个标的 · 准备合约规则`;
+  } else if (cycle.stage === "market_snapshot") {
+    detail = `${cycle.symbol ?? `${cycle.total} 个标的`} · 采集行情`;
+  } else if (cycle.stage === "portfolio") {
+    detail = `${cycle.total} 个标的 · 读取账户状态`;
+  } else if (cycle.stage === "batch_decision") {
+    detail = `${cycle.total} 个标的 · 批量分析中`;
+  } else {
+    detail = `${cycle.symbol ?? `${cycle.total} 个标的`} · ${cycle.stage}`;
+  }
+  return <div className="live-cycle-strip">
+    当前 {cycle.cadence} 周期 · {detail}
+  </div>;
+}
+
 export function StartupProbeCompletedSummary({
   probe,
   ready,
@@ -439,7 +461,7 @@ function StartupProbeProviderResults({
         .join(" · ");
       const tokens = result.total_tokens == null
         ? "Token 未报告"
-        : `Token ${result.total_tokens.toLocaleString()}（输入 ${result.input_tokens?.toLocaleString() ?? 0} · 缓存 ${result.cached_input_tokens?.toLocaleString() ?? 0} · 输出 ${result.output_tokens?.toLocaleString() ?? 0}）`;
+        : `Token ${result.total_tokens.toLocaleString()}（未缓存 ${result.input_tokens?.toLocaleString() ?? 0} · 缓存 ${result.cached_input_tokens?.toLocaleString() ?? 0} · 输出 ${result.output_tokens?.toLocaleString() ?? 0}）`;
       const cost = result.equivalent_cost_usd == null
         ? "成本未知"
         : `成本 $${result.equivalent_cost_usd.toFixed(6)}`;
@@ -1128,12 +1150,8 @@ export default function App() {
               onEmergencyStop={() => void act("kill", "/api/engine/emergency-stop")}
             />
           </div>
-          {status.running && status.scheduler.current_cycles.map((cycle) => <div
-            className="live-cycle-strip" key={cycle.cadence}
-          >
-            当前 {cycle.cadence} 周期 · {cycle.symbol ?? "准备中"} · {cycle.stage} ·
-            {cycle.completed}/{cycle.total}
-          </div>)}
+          {status.running && status.scheduler.current_cycles.map((cycle) =>
+            <LiveCycleStatus cycle={cycle} key={cycle.cadence} />)}
           {status.scheduler.last_error && <div className="live-cycle-error">
             最近调度错误：{status.scheduler.last_error}
           </div>}
@@ -1915,7 +1933,7 @@ function formatAverageDecision(milliseconds: number | undefined): string {
   return seconds < 60 ? `${seconds.toFixed(2)}s` : formatDuration(Math.round(seconds));
 }
 
-function RunUsage({ session }: { session: RunSessionMetrics }) {
+export function RunUsage({ session }: { session: RunSessionMetrics }) {
   const active = session.state === "running";
   const title = active ? "本次运行用量" : session.state === "completed" ? "上次运行用量" : "运行用量";
   const cost = session.equivalent_cost_usd === null
@@ -1940,7 +1958,7 @@ function RunUsage({ session }: { session: RunSessionMetrics }) {
         </small>
       </div>
       <div className="run-usage-metrics">
-        <span data-tooltip="本次或上次引擎运行中，Provider 报告的非缓存输入 Token 合计。">输入 Token<strong>{session.input_tokens.toLocaleString()}</strong></span>
+        <span data-tooltip="Provider 报告的未缓存输入 Token；缓存命中与缓存写入分别计入右侧两项，因此该值可能很小。">未缓存输入<strong>{session.input_tokens.toLocaleString()}</strong></span>
         <span data-tooltip="本次或上次运行中从 Provider 提示词缓存读取并复用的输入 Token 合计。">缓存输入<strong>{session.cached_input_tokens.toLocaleString()}</strong></span>
         <span data-tooltip="本次或上次运行中新写入 Provider 提示词缓存的输入 Token 合计；并非所有 Provider 都报告此项。">缓存写入<strong>{session.cache_creation_input_tokens.toLocaleString()}</strong></span>
         <span data-tooltip="本次或上次运行中 Provider 报告的输出 Token 合计；是否包含内部思考 Token 取决于 Provider 的计量口径。">输出 Token<strong>{session.output_tokens.toLocaleString()}</strong></span>
@@ -3236,7 +3254,7 @@ function AnalysisDetail({
         <span>{detail.provider} · {detail.model ?? "CLI 默认"} · {(detail.duration_ms / 1000).toFixed(2)}s</span>
       </div>
       <div className="analysis-usage-grid">
-        <span>输入 Token<strong>{Number(usage.input_tokens ?? 0).toLocaleString("zh-CN")}</strong></span>
+        <span>未缓存输入<strong>{Number(usage.input_tokens ?? 0).toLocaleString("zh-CN")}</strong></span>
         <span>缓存输入<strong>{cachedTokens.toLocaleString("zh-CN")}</strong></span>
         <span>输出 Token<strong>{Number(usage.output_tokens ?? 0).toLocaleString("zh-CN")}</strong></span>
         <span>总 Token<strong>{Number(usage.total_tokens ?? 0).toLocaleString("zh-CN")}</strong></span>
