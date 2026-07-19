@@ -661,7 +661,7 @@ Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功
 ### 4.12 设置（编辑本地 .env）
 
 - 前端「设置」标签页按分区列出**全部 `.env` 配置项**（运行模式与服务、决策与运行、
-  Provider 路由、Custom API 单个/多个、币安测试网），`GET /api/settings` 提供字段元数据与
+  Provider 路由、Custom API 端点、币安测试网），`GET /api/settings` 提供字段元数据与
   当前值，`POST /api/settings` 保存。
 - **密钥默认遮罩、Custom API Key 可按需查看**：设置列表、币安测试网 Key/Secret，以及内嵌
   `api_key` 的 `*_PROVIDERS_JSON` / `*_HEADERS_JSON` 默认只返回掩码尾号（如 `sup…abcd`）。

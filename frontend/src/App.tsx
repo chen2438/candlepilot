@@ -332,7 +332,6 @@ function providerLabel(name: string): string {
   if (name === "local-rule") return "本地规则";
   if (name === "codex-auth") return "Codex Auth";
   if (name === "claude-code-auth") return "Claude Code Auth";
-  if (name === "openai-compatible") return "Custom API";
   const id = customProviderId(name);
   if (id) return `Custom API · ${id}`;
   return name;
@@ -347,7 +346,7 @@ function providerIcon(name: string): string {
   if (name === "local-rule") return "FX";
   if (name === "codex-auth") return "CX";
   if (name === "claude-code-auth") return "CC";
-  if (name === "openai-compatible" || customProviderId(name)) return "API";
+  if (customProviderId(name)) return "API";
   return "AI";
 }
 
