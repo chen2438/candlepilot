@@ -1,6 +1,7 @@
 import asyncio
 import json
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import httpx
 import pytest
@@ -26,6 +27,10 @@ def _market() -> MarketSnapshot:
         ask="100.1",
         quote_volume_24h="1000000",
     )
+
+
+def _eth_market() -> MarketSnapshot:
+    return _market().model_copy(update={"symbol": "ETHUSDT", "mark_price": Decimal("200")})
 
 
 def _portfolio() -> PortfolioState:
@@ -104,6 +109,57 @@ def test_custom_provider_calls_chat_completions_and_parses_usage() -> None:
         "xhigh",
         "max",
     )
+
+
+def test_custom_provider_analyzes_multiple_markets_in_one_request() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        prompt = json.loads(request.content)["messages"][0]["content"]
+        assert '"markets":[{' in prompt
+        assert prompt.count('"portfolio":') == 1
+        eth = {**_intent(), "symbol": "ETHUSDT", "rationale": "eth no edge"}
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": json.dumps({"intents": [_intent(), eth]})}}],
+                "usage": {"prompt_tokens": 101, "completion_tokens": 21, "total_tokens": 122},
+            },
+        )
+
+    provider = OpenAICompatibleProvider(
+        name="openai-compatible:test", base_url="https://llm.example/v1",
+        api_key=SecretStr("secret"), model="vendor-model",
+        transport=httpx.MockTransport(handler),
+    )
+    results = asyncio.run(
+        provider.generate_trade_intents([_market(), _eth_market()], _portfolio())
+    )
+
+    assert calls == 1
+    assert [result.intent.symbol for result in results] == ["BTCUSDT", "ETHUSDT"]
+    assert sum(result.usage["input_tokens"] for result in results) == 101
+    assert sum(result.usage["output_tokens"] for result in results) == 21
+    assert all(result.usage["batch_shared_call"] is True for result in results)
+
+
+def test_custom_provider_rejects_reordered_batch_intents() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        eth = {**_intent(), "symbol": "ETHUSDT"}
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": json.dumps({"intents": [eth, _intent()]})}}]},
+        )
+
+    provider = OpenAICompatibleProvider(
+        name="openai-compatible:test", base_url="https://llm.example/v1",
+        api_key=SecretStr("secret"), model="vendor-model",
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(ProviderInvocationError, match="invalid TradeIntent batch"):
+        asyncio.run(provider.generate_trade_intents([_market(), _eth_market()], _portfolio()))
 
 
 def test_custom_provider_calls_responses_with_optional_auth_and_headers() -> None:

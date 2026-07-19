@@ -386,6 +386,22 @@ export function LiveRunActionButtons({
   </>;
 }
 
+export function StartupProbeCompletedSummary({
+  probe,
+  ready,
+}: {
+  probe: NonNullable<EngineStatus["startup_probe"]>;
+  ready: boolean;
+}) {
+  return <div className="live-probe-summary">
+    最近试跑：{probe.analysis_symbol_count} 标的批量分析最慢 {probe.slowest_seconds}s
+    · 负载 {((probe.aggregate_utilization ?? 0) * 100).toFixed(1)}%
+    {!ready && <small>{probe.consumed
+      ? "该试跑已用于一次运行，请重新试跑"
+      : "参数已变化，请重新试跑"}</small>}
+  </div>;
+}
+
 export default function App() {
   const [tab, setTab] = useState<TabKey>("overview");
   const [status, setStatus] = useState<EngineStatus>(emptyStatus);
@@ -1020,7 +1036,7 @@ export default function App() {
                   <small>秒</small>
                 </label>
                 <small>{selectedExternalProvider
-                  ? "试跑会真实调用 3 次，并校验标的数 × 最慢耗时"
+                  ? "试跑会对全部标的真实批量调用 3 次，并校验最慢耗时"
                   : "本地规则无外部调用超时；仍会试跑 3 次校验容量"}</small>
               </div>
               {busy === "probe" && !status.startup_probe && <div className="live-probe-summary">
@@ -1039,13 +1055,8 @@ export default function App() {
                   <small key={name}>{providerLabel(name)}：{values.length ? values.map((seconds) => `${seconds}s`).join(" · ") : "等待首个结果"}</small>
                 ))}
               </div>}
-              {status.startup_probe && !status.startup_probe.running && status.startup_probe.slowest_seconds !== undefined && <div className="live-probe-summary">
-                最近试跑：最慢 {status.startup_probe.slowest_seconds}s × {status.startup_probe.analysis_symbol_count} 标的
-                = {status.startup_probe.projected_cycle_seconds}s · 负载 {((status.startup_probe.aggregate_utilization ?? 0) * 100).toFixed(1)}%
-                {!probeReady && <small>{status.startup_probe.consumed
-                  ? "该试跑已用于一次运行，请重新试跑"
-                  : "参数已变化，请重新试跑"}</small>}
-              </div>}
+              {status.startup_probe && !status.startup_probe.running && status.startup_probe.slowest_seconds !== undefined
+                && <StartupProbeCompletedSummary probe={status.startup_probe} ready={probeReady} />}
             </div>
             <LiveRunActionButtons
               busy={busy}

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 
 from candlepilot.application.engine import DecisionOutcome, TradingEngine
 from candlepilot.application.testnet_feed import TestnetUserFeed
-from candlepilot.domain.models import PortfolioState
+from candlepilot.domain.models import MarketSnapshot, PortfolioState
 from candlepilot.market.binance import BinancePublicClient
+from candlepilot.risk.engine import SymbolRules
 
 
 CADENCE_SECONDS = {"5m": 300, "15m": 900, "30m": 1_800, "1h": 3_600, "4h": 14_400}
@@ -245,6 +247,7 @@ class TradingScheduler:
         self.current_cycles[cadence] = cycle_state
         outcomes = []
         try:
+            rules_by_symbol: dict[str, SymbolRules] = {}
             for symbol in ordered_symbols:
                 if not self.engine.running or self.engine.auto_stop_reason is not None:
                     break
@@ -261,24 +264,37 @@ class TradingScheduler:
                     if contract is None:
                         raise RuntimeError(f"contract rules are unavailable for {symbol}")
                     rules = contract.rules
-                cycle_state.update(
-                    symbol=symbol,
-                    symbol_started_at=datetime.now(UTC).isoformat(),
-                    stage="market_snapshot",
-                )
-                lock = self._symbol_locks.setdefault(symbol, asyncio.Lock())
-                async with lock:
+                rules_by_symbol[symbol] = rules
+
+            if len(rules_by_symbol) != len(ordered_symbols):
+                return []
+
+            # A cadence is one analysis unit: keep all overlapping symbols locked in
+            # canonical order so another cadence cannot make a conflicting decision
+            # while this shared portfolio snapshot is being analyzed.
+            async with AsyncExitStack() as stack:
+                for symbol in sorted(ordered_symbols):
+                    lock = self._symbol_locks.setdefault(symbol, asyncio.Lock())
+                    await stack.enter_async_context(lock)
+                snapshots: list[MarketSnapshot] = []
+                for symbol in ordered_symbols:
+                    cycle_state.update(
+                        symbol=symbol,
+                        symbol_started_at=datetime.now(UTC).isoformat(),
+                        stage="market_snapshot",
+                    )
                     snapshot = await self.market.market_snapshot(symbol, cadence)
-                    cycle_state["stage"] = "portfolio"
-                    portfolio = await self._portfolio()
-                    cycle_state["stage"] = "decision"
-                    outcome = await self.engine.evaluate(snapshot, portfolio, rules)
-                    outcomes.append(outcome)
-                cycle_state["completed"] = int(cycle_state["completed"]) + 1
+                    snapshots.append(snapshot)
+                cycle_state.update(symbol=None, symbol_started_at=None, stage="portfolio")
+                portfolio = await self._portfolio()
+                cycle_state["stage"] = "batch_decision"
+                outcomes = await self.engine.evaluate_batch(
+                    snapshots, portfolio, rules_by_symbol
+                )
+                cycle_state["completed"] = len(outcomes)
                 stop_reason = self.engine.evaluate_stop_reason()
                 if stop_reason is not None:
                     self.request_auto_stop(stop_reason)
-                    break
             return outcomes
         finally:
             self.last_cycle = {

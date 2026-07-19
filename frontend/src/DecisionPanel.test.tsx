@@ -2,7 +2,12 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { DecisionPanel, intentRewardRiskRatio, LiveRunActionButtons } from "./App";
+import {
+  DecisionPanel,
+  intentRewardRiskRatio,
+  LiveRunActionButtons,
+  StartupProbeCompletedSummary,
+} from "./App";
 import type { DecisionEvent } from "./types";
 
 afterEach(() => {
@@ -53,6 +58,30 @@ const decision: DecisionEvent = {
 };
 
 describe("DecisionPanel", () => {
+  it("describes startup capacity as one shared symbol batch", () => {
+    render(<StartupProbeCompletedSummary
+      ready
+      probe={{
+        running: false,
+        ready: true,
+        consumed: false,
+        timeout_seconds: 60,
+        decisions_per_provider: 3,
+        completed_decisions: 3,
+        active_decision: null,
+        probe_symbol: "BTCUSDT",
+        probe_cadence: "15m",
+        durations_seconds: { "openai-compatible:deepseek": [40, 42, 41] },
+        slowest_seconds: 42,
+        analysis_symbol_count: 11,
+        aggregate_utilization: 0.2,
+        started_at: "2026-07-19T22:00:00Z",
+      }}
+    />);
+    expect(screen.getByText(/11 标的批量分析最慢 42s/)).toBeTruthy();
+    expect(screen.queryByText(/× 11 标的/)).toBeNull();
+  });
+
   it("keeps startup locked until a separate successful probe", async () => {
     const user = userEvent.setup();
     const onProbe = vi.fn();

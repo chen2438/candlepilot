@@ -789,6 +789,242 @@ class TradingEngine:
             provider=result.provider,
         )
 
+    async def evaluate_batch(
+        self,
+        snapshots: list[MarketSnapshot],
+        portfolio: PortfolioState,
+        rules_by_symbol: dict[str, SymbolRules],
+    ) -> list[DecisionOutcome]:
+        """Run one physical Provider call for every symbol in a cadence cycle."""
+        if not snapshots:
+            return []
+        if not self.running or not self.provider_chain:
+            raise RuntimeError("engine is not running")
+        async with self._provider_route_lock:
+            if self.route_failure_count >= DECISION_PROVIDER_MAX_ATTEMPTS:
+                raise RuntimeError("provider route failure threshold already reached")
+            now = datetime.now(UTC)
+            candidates = [
+                name for name in self.provider_chain
+                if (state := self._provider_route_states.setdefault(name, ProviderRouteState())).cooldown_until is None
+                or state.cooldown_until <= now
+            ]
+            if not candidates:
+                candidates = [min(
+                    self.provider_chain,
+                    key=lambda name: self._provider_route_states[name].cooldown_until
+                    or datetime.min.replace(tzinfo=UTC),
+                )]
+            analysis_snapshots = list(snapshots)
+            analysis_portfolio = portfolio
+            failed_batches: list[list[ProviderResult]] = []
+            results: list[ProviderResult] | None = None
+            refresh_retry_inputs = False
+            while self.route_failure_count < DECISION_PROVIDER_MAX_ATTEMPTS:
+                attempt_number = self.route_failure_count + 1
+                if refresh_retry_inputs:
+                    try:
+                        analysis_snapshots = [
+                            await self.market.market_snapshot(item.symbol, item.cadence)
+                            for item in snapshots
+                        ]
+                        analysis_portfolio = await self.current_portfolio()
+                    except Exception as exc:
+                        for batch in failed_batches:
+                            for failed_result in batch:
+                                await self.audit.record_inference(
+                                    failed_result, live_run_id=self.live_run_id
+                                )
+                        raise RuntimeError(
+                            f"decision retry input refresh failed: {type(exc).__name__}"
+                        ) from exc
+                    refresh_retry_inputs = False
+                round_candidates = candidates if attempt_number == 1 else list(self.provider_chain)
+                for position, name in enumerate(round_candidates, start=1):
+                    provider = self.providers.get(name)
+                    try:
+                        async with asyncio.timeout(provider.timeout):
+                            results = await provider.generate_trade_intents(
+                                analysis_snapshots, analysis_portfolio
+                            )
+                        if len(results) != len(analysis_snapshots):
+                            raise ProviderError("provider returned the wrong number of batch intents")
+                        expected = [(item.symbol, item.cadence) for item in analysis_snapshots]
+                        actual = [(item.intent.symbol, item.intent.cadence) for item in results]
+                        if actual != expected:
+                            raise ProviderError("provider batch intents do not match input order")
+                    except Exception as exc:
+                        provider_error = (
+                            exc if isinstance(exc, ProviderError)
+                            else ProviderError(f"{type(exc).__name__}: {exc}")
+                        )
+                        failed_at = datetime.now(UTC)
+                        state = self._provider_route_states[name]
+                        state.consecutive_failures += 1
+                        state.cooldown_until = failed_at + PROVIDER_FAILURE_COOLDOWN
+                        state.last_error = str(provider_error)
+                        state.last_failed_at = failed_at
+                        continues = position < len(round_candidates) or attempt_number < DECISION_PROVIDER_MAX_ATTEMPTS
+                        failed_batches.append(self._provider_failure_batch(
+                            provider_name=name, provider=provider, error=provider_error,
+                            snapshots=analysis_snapshots, portfolio=analysis_portfolio,
+                            route_position=self.provider_chain.index(name) + 1,
+                            failover_continues=continues, decision_attempt=attempt_number,
+                        ))
+                        results = None
+                        continue
+                    state = self._provider_route_states[name]
+                    state.consecutive_failures = 0
+                    state.cooldown_until = None
+                    state.last_error = None
+                    state.last_success_at = datetime.now(UTC)
+                    self.active_provider = name
+                    self.route_failure_count = 0
+                    break
+                if results is not None:
+                    break
+                self.active_provider = None
+                self.route_failure_count += 1
+                if self.route_failure_count < DECISION_PROVIDER_MAX_ATTEMPTS:
+                    await self._retry_sleep(
+                        self._provider_retry_delays[self.route_failure_count - 1]
+                    )
+                    refresh_retry_inputs = True
+            for batch in failed_batches:
+                # The last failed batch becomes the final HOLD batch only when no route succeeds.
+                if results is None and batch is failed_batches[-1]:
+                    continue
+                for failed_result in batch:
+                    await self.audit.record_inference(failed_result, live_run_id=self.live_run_id)
+            if results is None:
+                if not failed_batches:
+                    raise RuntimeError("no provider route was attempted")
+                results = failed_batches[-1]
+
+        outcomes: list[DecisionOutcome] = []
+        for snapshot, result in zip(analysis_snapshots, results, strict=True):
+            rules = rules_by_symbol[snapshot.symbol]
+            outcomes.append(
+                await self._evaluate_batch_result(
+                    snapshot, analysis_portfolio, result, rules
+                )
+            )
+        return outcomes
+
+    async def _evaluate_batch_result(
+        self,
+        analysis_snapshot: MarketSnapshot,
+        analysis_portfolio: PortfolioState,
+        result: ProviderResult,
+        rules: SymbolRules,
+    ) -> DecisionOutcome:
+        inference_id = await self.audit.record_inference(result, live_run_id=self.live_run_id)
+        evaluation_snapshot = analysis_snapshot
+        evaluation_portfolio = analysis_portfolio
+        if result.intent.action != TradeAction.HOLD:
+            analysis_age = (datetime.now(UTC) - analysis_snapshot.timestamp).total_seconds()
+            if analysis_age < -2 or analysis_age > self.risk.max_snapshot_age_seconds:
+                rejection = RiskDecision(
+                    accepted=False,
+                    reason="analysis snapshot expired before pre-trade refresh",
+                )
+                await self.audit.record_risk(analysis_snapshot.symbol, rejection, inference_id=inference_id)
+                return DecisionOutcome(result.intent, rejection, None, result.provider)
+            try:
+                evaluation_snapshot = await self.market.market_snapshot(
+                    analysis_snapshot.symbol, analysis_snapshot.cadence
+                )
+                evaluation_portfolio = await self.current_portfolio()
+            except Exception as exc:
+                rejection = RiskDecision(
+                    accepted=False,
+                    reason=f"pre-trade refresh failed: {type(exc).__name__}",
+                )
+                await self.audit.record_risk(analysis_snapshot.symbol, rejection, inference_id=inference_id)
+                return DecisionOutcome(result.intent, rejection, None, result.provider)
+        evaluation = self.risk.evaluate(result.intent, evaluation_snapshot, evaluation_portfolio, rules)
+        await self.audit.record_risk(
+            analysis_snapshot.symbol, evaluation.decision, inference_id=inference_id
+        )
+        execution = None
+        if evaluation.order is not None and evaluation.decision.accepted:
+            try:
+                execution = await self.testnet_broker.execute_with_stop(
+                    evaluation.order, leverage=result.intent.leverage,
+                    replace_existing_protection=result.intent.action == TradeAction.ADD,
+                )
+            except ProtectiveStopError as exc:
+                await self.audit.record_execution(analysis_snapshot.symbol, exc.entry)
+                if exc.rescue is not None:
+                    await self.audit.record_execution(analysis_snapshot.symbol, exc.rescue)
+                await self.audit.record_execution_attempt(
+                    analysis_snapshot.symbol,
+                    ExecutionAttempt(
+                        inference_id=inference_id, client_order_id=evaluation.order.client_order_id,
+                        status="RESCUED" if exc.rescue is not None else "FAILED",
+                        stage=exc.failed_stage, message=str(exc),
+                        exchange_error_code=exc.exchange_error_code, entry_report=exc.entry,
+                        rescue_report=exc.rescue, estimated_loss_usdt=exc.estimated_loss_usdt,
+                    ),
+                )
+                if exc.rescue is not None:
+                    self.rescue_count += 1
+                if exc.requires_emergency_lock:
+                    await self.emergency_stop()
+            except Exception as exc:
+                execution_status = "UNKNOWN" if isinstance(exc, (TimeoutError, OrderStatusUnknown)) else "FAILED"
+                await self.audit.record_execution_attempt(
+                    analysis_snapshot.symbol,
+                    ExecutionAttempt(
+                        inference_id=inference_id, client_order_id=evaluation.order.client_order_id,
+                        status=execution_status, stage="ENTRY", message=f"{type(exc).__name__}: {exc}",
+                        exchange_error_code=exc.code if isinstance(exc, BinanceApiError) else None,
+                    ),
+                )
+                if execution_status == "UNKNOWN":
+                    await self.emergency_stop()
+            else:
+                await self.audit.record_execution(analysis_snapshot.symbol, execution)
+                completed = execution.status in {"NEW", "PARTIALLY_FILLED", "FILLED"}
+                await self.audit.record_execution_attempt(
+                    analysis_snapshot.symbol,
+                    ExecutionAttempt(
+                        inference_id=inference_id, client_order_id=evaluation.order.client_order_id,
+                        status="SUCCEEDED" if completed else "FAILED",
+                        stage="COMPLETE" if completed else "ENTRY",
+                        message="order accepted and required execution checks completed" if completed
+                        else f"exchange returned terminal status {execution.status}", entry_report=execution,
+                    ),
+                )
+        return DecisionOutcome(result.intent, evaluation.decision, execution, result.provider)
+
+    @classmethod
+    def _provider_failure_batch(
+        cls, *, provider_name: str, provider: object, error: ProviderError,
+        snapshots: list[MarketSnapshot], portfolio: PortfolioState, route_position: int,
+        failover_continues: bool, decision_attempt: int,
+    ) -> list[ProviderResult]:
+        results = [
+            cls._provider_failure_result(
+                provider_name=provider_name, provider=provider, error=error, snapshot=snapshot,
+                portfolio=portfolio, route_position=route_position,
+                failover_continues=failover_continues, decision_attempt=decision_attempt,
+            ) for snapshot in snapshots
+        ]
+        size = len(results)
+        for index, result in enumerate(results):
+            usage = dict(result.usage)
+            for key in ("input_tokens", "cached_input_tokens", "cache_read_input_tokens",
+                        "cache_creation_input_tokens", "output_tokens", "total_tokens"):
+                if key in usage:
+                    total = int(usage[key] or 0)
+                    usage[key] = total // size + (1 if index < total % size else 0)
+            if usage.get("cost_usd") is not None:
+                usage["cost_usd"] = float(usage["cost_usd"]) / size
+            usage.update(batch_size=size, batch_index=index + 1, batch_shared_call=True)
+            object.__setattr__(result, "usage", usage)
+        return results
+
     @staticmethod
     def _provider_failure_result(
         *,

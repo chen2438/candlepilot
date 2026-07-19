@@ -126,6 +126,62 @@ def test_scheduler_runs_ranked_candidate_cycle(tmp_path: Path) -> None:
     assert outcomes[0].intent.action.value == "HOLD"
 
 
+def test_scheduler_submits_one_batch_for_all_cycle_symbols(tmp_path: Path) -> None:
+    async def scenario():
+        class TwoSymbolMarket(SchedulerMarket):
+            async def candidate_inputs(self):
+                first = (await super().candidate_inputs())[0]
+                return [
+                    first,
+                    MarketCandidateInput(
+                        "ETHUSDT", Decimal("900000"), Decimal("199.9"),
+                        Decimal("200.1"), Decimal("0.1"), Decimal("0.03"), 1000,
+                    ),
+                ]
+
+            async def exchange_info(self):
+                rules = SymbolRules(
+                    Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")
+                )
+                listed_at = datetime(2020, 1, 1, tzinfo=UTC)
+                return {
+                    "BTCUSDT": ContractInfo("BTCUSDT", listed_at, rules),
+                    "ETHUSDT": ContractInfo("ETHUSDT", listed_at, rules),
+                }
+
+        class BatchProvider(HoldProvider):
+            batch_calls = 0
+
+            async def generate_trade_intents(self, snapshots, portfolio):
+                self.batch_calls += 1
+                return [
+                    await super().generate_trade_intent(snapshot, portfolio)
+                    for snapshot in snapshots
+                ]
+
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'batch-cycle.db'}")
+        await database.initialize()
+        market = TwoSymbolMarket()
+        provider = BatchProvider()
+        engine = TradingEngine(
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+            providers=ProviderRegistry([provider]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider_chain(["hold"])
+        await engine.start()
+        outcomes = await TradingScheduler(
+            engine, market, candidates_per_cycle=2  # type: ignore[arg-type]
+        ).run_cycle("5m")
+        await database.close()
+        return provider.batch_calls, outcomes
+
+    calls, outcomes = asyncio.run(scenario())
+    assert calls == 1
+    assert sorted(outcome.intent.symbol for outcome in outcomes) == ["BTCUSDT", "ETHUSDT"]
+
+
 def test_scheduler_only_runs_selected_cadences(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'cadences.db'}")
@@ -307,13 +363,13 @@ def test_scheduler_uses_testnet_filters_instead_of_production_filters(tmp_path: 
         engine.select_provider_chain(["hold"])
         await engine.start()
         observed: list[SymbolRules] = []
-        evaluate = engine.evaluate
+        evaluate_batch = engine.evaluate_batch
 
-        async def capture(snapshot, portfolio, rules):
-            observed.append(rules)
-            return await evaluate(snapshot, portfolio, rules)
+        async def capture(snapshots, portfolio, rules_by_symbol):
+            observed.extend(rules_by_symbol.values())
+            return await evaluate_batch(snapshots, portfolio, rules_by_symbol)
 
-        engine.evaluate = capture  # type: ignore[method-assign]
+        engine.evaluate_batch = capture  # type: ignore[method-assign]
         scheduler = TradingScheduler(engine, market)  # type: ignore[arg-type]
         await scheduler.run_cycle("5m")
         await database.close()

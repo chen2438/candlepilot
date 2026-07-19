@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import timedelta
+from collections.abc import Sequence
 from typing import Any
 
 from candlepilot.domain.models import MarketSnapshot, PortfolioState, ProviderHealth, TradeIntent
@@ -67,3 +68,18 @@ class DecisionProvider(ABC):
         portfolio: PortfolioState,
     ) -> ProviderResult:
         raise NotImplementedError
+
+    async def generate_trade_intents(
+        self,
+        snapshots: Sequence[MarketSnapshot],
+        portfolio: PortfolioState,
+    ) -> list[ProviderResult]:
+        """Analyze one cadence as a batch.
+
+        The compatibility implementation keeps deterministic/test providers working;
+        external providers override this to make one physical model invocation.
+        """
+        return [
+            await self.generate_trade_intent(snapshot, portfolio)
+            for snapshot in snapshots
+        ]

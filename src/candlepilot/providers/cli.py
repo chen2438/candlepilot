@@ -194,6 +194,15 @@ def _decision_payload(
     }
 
 
+def _batch_decision_payload(
+    snapshots: Sequence[MarketSnapshot], portfolio: PortfolioState
+) -> dict[str, Any]:
+    return {
+        "markets": [snapshot.model_dump(mode="json") for snapshot in snapshots],
+        "portfolio": portfolio.model_dump(mode="json"),
+    }
+
+
 #: Order-flow fields a live snapshot carries and a historical one cannot.
 FLOW_FEATURES = ("book_imbalance", "recent_trade_imbalance")
 
@@ -215,6 +224,16 @@ def _flow_clause(snapshot: MarketSnapshot) -> str:
         "historical order book exists to reconstruct them. Do not treat their absence as "
         "evidence against a setup and do not require flow confirmation here; judge "
         "participation from quote_volume_ratio alone. Everything else applies unchanged."
+    )
+
+
+def _batch_flow_clause(snapshots: Sequence[MarketSnapshot]) -> str:
+    if all(any(name in snapshot.features for name in FLOW_FEATURES) for snapshot in snapshots):
+        return ""
+    return (
+        " Some supplied snapshots are historical and carry no order-flow fields. For those "
+        "markets only, do not treat missing flow as negative evidence and judge participation "
+        "from quote_volume_ratio."
     )
 
 
@@ -298,6 +317,44 @@ def _decision_prompt(
         "per-symbol capacity. "
         f"Keep rationale concise and at most {RATIONALE_TARGET_LENGTH} characters."
         + _flow_clause(snapshot)
+        + schema_clause
+        + "\n"
+        + json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+    )
+
+
+def _batch_decision_prompt(
+    snapshots: Sequence[MarketSnapshot],
+    portfolio: PortfolioState,
+    *,
+    include_schema: bool = False,
+) -> str:
+    if not snapshots:
+        raise ValueError("a decision batch cannot be empty")
+    payload = _batch_decision_payload(snapshots, portfolio)
+    schema_clause = ""
+    if include_schema:
+        schema_clause = (
+            " The reply must be exactly one JSON object (no markdown fences, no prose) "
+            "conforming to this JSON Schema: "
+            + json.dumps(trade_intent_batch_output_schema(), separators=(",", ":"))
+            + "."
+        )
+    # Reuse the established policy text verbatim, replacing only the output contract and
+    # serialized payload. This keeps single-decision tests/backtests behavior unchanged.
+    template = _decision_prompt(snapshots[0], portfolio, include_schema=False)
+    policy, _ = template.rsplit("\n", 1)
+    policy = policy.replace(
+        "Return exactly one object matching the provided TradeIntent schema.",
+        "Return exactly one object with an intents array containing one TradeIntent for every "
+        "market, in the same order as markets. Do not omit, duplicate, or reorder symbols.",
+    )
+    single_flow = _flow_clause(snapshots[0])
+    if single_flow and policy.endswith(single_flow):
+        policy = policy[: -len(single_flow)]
+    return (
+        policy
+        + _batch_flow_clause(snapshots)
         + schema_clause
         + "\n"
         + json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
@@ -417,6 +474,30 @@ def _parse_intent(value: str | dict[str, Any]) -> tuple[TradeIntent, bool]:
     return TradeIntent.model_validate(data), rationale_truncated
 
 
+def _parse_intents(
+    value: str | dict[str, Any], snapshots: Sequence[MarketSnapshot]
+) -> tuple[list[TradeIntent], bool]:
+    data: Any = value
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("```"):
+            text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        data = json.loads(text)
+    if not isinstance(data, dict) or not isinstance(data.get("intents"), list):
+        raise ValueError("batch response must contain an intents array")
+    intents: list[TradeIntent] = []
+    truncated = False
+    for item in data["intents"]:
+        intent, item_truncated = _parse_intent(item)
+        intents.append(intent)
+        truncated = truncated or item_truncated
+    expected = [(item.symbol, item.cadence) for item in snapshots]
+    actual = [(item.symbol, item.cadence) for item in intents]
+    if actual != expected:
+        raise ValueError("batch intents must match market symbols and cadence in input order")
+    return intents, truncated
+
+
 def trade_intent_output_schema() -> dict[str, Any]:
     """Return a strict-output schema accepted by Codex/OpenAI structured output."""
     schema = TradeIntent.model_json_schema()
@@ -435,6 +516,74 @@ def trade_intent_output_schema() -> dict[str, Any]:
     schema["required"] = list(schema.get("properties", {}))
     schema["additionalProperties"] = False
     return schema
+
+
+def trade_intent_batch_output_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "intents": {
+                "type": "array",
+                "items": trade_intent_output_schema(),
+                "minItems": 1,
+            }
+        },
+        "required": ["intents"],
+        "additionalProperties": False,
+    }
+
+
+def _split_batch_results(
+    *,
+    intents: Sequence[TradeIntent],
+    provider: str,
+    model: str | None,
+    duration: timedelta,
+    raw_output: str,
+    usage: dict[str, Any],
+    prompt_version: str | None,
+    data_version: str | None,
+    provider_version: str | None,
+    input_payload: dict[str, Any],
+    prompt: str,
+    reasoning_effort: str | None,
+) -> list[ProviderResult]:
+    size = len(intents)
+    split_keys = {
+        "input_tokens", "cached_input_tokens", "cache_read_input_tokens",
+        "cache_creation_input_tokens", "output_tokens", "total_tokens",
+    }
+    results: list[ProviderResult] = []
+    for index, intent in enumerate(intents):
+        allocated = dict(usage)
+        for key in split_keys:
+            if key in usage:
+                total = int(usage.get(key) or 0)
+                allocated[key] = total // size + (1 if index < total % size else 0)
+        if usage.get("cost_usd") is not None:
+            allocated["cost_usd"] = float(usage["cost_usd"]) / size
+        allocated.update(
+            batch_size=size,
+            batch_index=index + 1,
+            batch_shared_call=True,
+        )
+        results.append(
+            ProviderResult(
+                intent=intent,
+                provider=provider,
+                model=model,
+                duration=duration,
+                raw_output=raw_output,
+                usage=allocated,
+                prompt_version=prompt_version,
+                data_version=data_version,
+                provider_version=provider_version,
+                input_payload=input_payload,
+                prompt=prompt,
+                reasoning_effort=reasoning_effort,
+            )
+        )
+    return results
 
 
 class CodexAuthProvider(DecisionProvider):
@@ -614,6 +763,66 @@ class CodexAuthProvider(DecisionProvider):
             reasoning_effort=self.reasoning_effort,
         )
 
+    async def generate_trade_intents(
+        self, snapshots: Sequence[MarketSnapshot], portfolio: PortfolioState
+    ) -> list[ProviderResult]:
+        if len(snapshots) == 1:
+            return [await self.generate_trade_intent(snapshots[0], portfolio)]
+        if self.executable is None:
+            raise ProviderUnavailable("Codex executable was not found")
+        started = time.monotonic()
+        input_payload = _batch_decision_payload(snapshots, portfolio)
+        prompt = _batch_decision_prompt(snapshots, portfolio)
+        model = self.model or find_codex_model(self.config_path)
+        data_version = content_fingerprint(input_payload, schema_version=MARKET_SNAPSHOT_SCHEMA_VERSION)
+        stdout = ""
+        usage: dict[str, Any] = {}
+        try:
+            async with self._semaphore:
+                active = asyncio.current_task()
+                self._active_task = active
+                try:
+                    with tempfile.TemporaryDirectory(prefix="candlepilot-codex-") as directory:
+                        root = Path(directory)
+                        schema_path = root / "trade-intents.schema.json"
+                        schema_path.write_text(
+                            json.dumps(trade_intent_batch_output_schema(), separators=(",", ":")),
+                            encoding="utf-8",
+                        )
+                        argv = [str(self.executable), "exec", "--ephemeral", "--ignore-user-config",
+                                "--ignore-rules", "--sandbox", "read-only", "--skip-git-repo-check", "--json"]
+                        if self.model:
+                            argv += ["-m", self.model]
+                        if self.reasoning_effort:
+                            argv += ["-c", f"model_reasoning_effort={self.reasoning_effort}"]
+                        argv += ["--output-schema", str(schema_path), "-"]
+                        stdout, _ = await _run_process(argv, cwd=root, stdin=prompt, timeout=self.timeout)
+                finally:
+                    if self._active_task is active:
+                        self._active_task = None
+            result_text, usage = parse_codex_events(stdout)
+            if result_text is None:
+                raise ValueError("Codex did not return an agent message")
+            intents, truncated = _parse_intents(result_text, snapshots)
+        except (ProviderError, ValueError, json.JSONDecodeError, ValidationError) as exc:
+            if isinstance(exc, ProviderInvocationError):
+                raise
+            raise ProviderInvocationError(
+                f"Codex returned an invalid batch: {exc}", model=model,
+                duration=timedelta(seconds=time.monotonic() - started), raw_output=stdout,
+                usage=usage, prompt_version=DECISION_PROMPT_VERSION, data_version=data_version,
+                provider_version=self._provider_version, input_payload=input_payload, prompt=prompt,
+            ) from exc
+        if truncated:
+            usage["rationale_truncated"] = True
+        duration = timedelta(seconds=time.monotonic() - started)
+        return _split_batch_results(
+            intents=intents, provider=self.name, model=model, duration=duration,
+            raw_output=result_text, usage=usage, prompt_version=DECISION_PROMPT_VERSION,
+            data_version=data_version, provider_version=self._provider_version,
+            input_payload=input_payload, prompt=prompt, reasoning_effort=self.reasoning_effort,
+        )
+
 
 class ClaudeCodeAuthProvider(DecisionProvider):
     name = "claude-code-auth"
@@ -781,5 +990,61 @@ class ClaudeCodeAuthProvider(DecisionProvider):
             provider_version=self._provider_version,
             input_payload=input_payload,
             prompt=prompt,
+            reasoning_effort=self.reasoning_effort,
+        )
+
+    async def generate_trade_intents(
+        self, snapshots: Sequence[MarketSnapshot], portfolio: PortfolioState
+    ) -> list[ProviderResult]:
+        if len(snapshots) == 1:
+            return [await self.generate_trade_intent(snapshots[0], portfolio)]
+        if self.executable is None:
+            raise ProviderUnavailable("Claude Code CLI was not found")
+        started = time.monotonic()
+        input_payload = _batch_decision_payload(snapshots, portfolio)
+        prompt = _batch_decision_prompt(snapshots, portfolio, include_schema=True)
+        data_version = content_fingerprint(input_payload, schema_version=MARKET_SNAPSHOT_SCHEMA_VERSION)
+        stdout = ""
+        usage: dict[str, Any] = {}
+        model = self.model
+        try:
+            async with self._semaphore:
+                active = asyncio.current_task()
+                self._active_task = active
+                try:
+                    with tempfile.TemporaryDirectory(prefix="candlepilot-claude-") as directory:
+                        argv = [str(self.executable), "-p", "--output-format", "json",
+                                "--permission-mode", "default", "--max-turns", "4",
+                                "--disallowedTools",
+                                "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit"]
+                        if self.model:
+                            argv += ["--model", self.model]
+                        if self.reasoning_effort:
+                            argv += ["--effort", self.reasoning_effort]
+                        stdout, _ = await _run_process(
+                            argv, stdin=prompt, cwd=Path(directory), timeout=self.timeout
+                        )
+                finally:
+                    if self._active_task is active:
+                        self._active_task = None
+            envelope = json.loads(stdout)
+            if not isinstance(envelope, dict):
+                raise TypeError("Claude Code response envelope must be an object")
+            model, usage = parse_claude_usage(envelope)
+            intents, truncated = _parse_intents(envelope["result"], snapshots)
+        except (ProviderError, KeyError, TypeError, ValueError, json.JSONDecodeError, ValidationError) as exc:
+            raise ProviderInvocationError(
+                f"Claude Code returned an invalid batch: {exc}", model=model,
+                duration=timedelta(seconds=time.monotonic() - started), raw_output=stdout,
+                usage=usage, prompt_version=DECISION_PROMPT_VERSION, data_version=data_version,
+                provider_version=self._provider_version, input_payload=input_payload, prompt=prompt,
+            ) from exc
+        if truncated:
+            usage["rationale_truncated"] = True
+        return _split_batch_results(
+            intents=intents, provider=self.name, model=model,
+            duration=timedelta(seconds=time.monotonic() - started), raw_output=stdout, usage=usage,
+            prompt_version=DECISION_PROMPT_VERSION, data_version=data_version,
+            provider_version=self._provider_version, input_payload=input_payload, prompt=prompt,
             reasoning_effort=self.reasoning_effort,
         )

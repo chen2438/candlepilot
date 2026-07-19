@@ -1336,7 +1336,10 @@ def create_app(
         for attempt in range(3):
             progress["active_decision"] = attempt + 1
             sample_started = time.perf_counter()
-            snapshot = await market.market_snapshot(probe_symbol, cadence)
+            snapshots = [
+                await market.market_snapshot(symbol, cadence)
+                for symbol in analysis_symbols
+            ]
             portfolio = await engine.current_portfolio()
             shared_seconds = time.perf_counter() - sample_started
 
@@ -1345,17 +1348,16 @@ def create_app(
                 started = time.perf_counter()
                 try:
                     async with asyncio.timeout(provider.timeout):
-                        result = await provider.generate_trade_intent(snapshot, portfolio)
+                        results = await provider.generate_trade_intents(snapshots, portfolio)
                 except TimeoutError as exc:
                     raise RuntimeError(
                         f"{name} exceeded the absolute {provider.timeout:g}s startup timeout"
                     ) from exc
-                if (
-                    result.intent.symbol != snapshot.symbol
-                    or result.intent.cadence != snapshot.cadence
-                ):
+                expected = [(item.symbol, item.cadence) for item in snapshots]
+                actual = [(item.intent.symbol, item.intent.cadence) for item in results]
+                if actual != expected:
                     raise RuntimeError(
-                        f"{name} returned an intent for a different symbol or cadence"
+                        f"{name} returned batch intents that do not match the probe inputs"
                     )
                 return name, shared_seconds + time.perf_counter() - started
 
@@ -1380,7 +1382,7 @@ def create_app(
 
         slowest_seconds = max(value for values in durations.values() for value in values)
         symbol_count = len(analysis_symbols)
-        projected_cycle_seconds = slowest_seconds * symbol_count
+        projected_cycle_seconds = slowest_seconds
         cadence_seconds = {
             cadence_name: CADENCE_SECONDS[cadence_name]
             for cadence_name in engine.active_cadences
@@ -1393,27 +1395,15 @@ def create_app(
         utilization = projected_cycle_seconds * sum(
             1 / seconds for seconds in cadence_seconds.values()
         )
-        max_safe_symbols = max(
-            0,
-            int(
-                1
-                / (
-                    slowest_seconds
-                    * sum(1 / seconds for seconds in cadence_seconds.values())
-                )
-            ),
-        )
         if overloaded or utilization > 1:
             cadence_detail = ", ".join(
                 f"{name}={seconds}s" for name, seconds in cadence_seconds.items()
             )
             raise ValueError(
                 "live startup probe rejected this capacity: slowest of 3 real decisions "
-                f"was {slowest_seconds:.2f}s; {symbol_count} symbols project to "
-                f"{projected_cycle_seconds:.2f}s per cycle; selected cadences are "
+                f"for one {symbol_count}-symbol batch was {slowest_seconds:.2f}s; selected cadences are "
                 f"{cadence_detail} and aggregate provider utilization is "
-                f"{utilization * 100:.1f}%. Reduce analysis symbols to at most "
-                f"{max_safe_symbols} or select longer/fewer cadences."
+                f"{utilization * 100:.1f}%. Reduce analysis symbols or select longer/fewer cadences."
             )
         return {
             "running": False,
@@ -1433,7 +1423,7 @@ def create_app(
             "analysis_symbol_count": symbol_count,
             "projected_cycle_seconds": round(projected_cycle_seconds, 3),
             "aggregate_utilization": round(utilization, 4),
-            "max_safe_symbols": max_safe_symbols,
+            "max_safe_symbols": None,
             "started_at": progress["started_at"],
             "checked_at": datetime.now(UTC).isoformat(),
         }

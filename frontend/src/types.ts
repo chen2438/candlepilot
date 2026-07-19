@@ -63,7 +63,7 @@ export interface EngineStatus {
     analysis_symbol_count?: number;
     projected_cycle_seconds?: number;
     aggregate_utilization?: number;
-    max_safe_symbols?: number;
+    max_safe_symbols?: number | null;
     started_at: string;
     checked_at?: string;
     error?: string;
