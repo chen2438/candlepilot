@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -383,18 +383,10 @@ class AuditRepository:
                     await session.execute(delete(LiveRunRow))
         return counts
 
-    async def create_live_run(
-        self,
-        config: Mapping[str, Any],
-        *,
-        start_equity: Decimal | None = None,
-    ) -> int:
-        stored_config = dict(config)
-        if start_equity is not None:
-            stored_config["_performance"] = {"start_equity": str(start_equity)}
+    async def create_live_run(self, config: Mapping[str, Any]) -> int:
         row = LiveRunRow(
             status="running",
-            config_json=json.dumps(stored_config, separators=(",", ":")),
+            config_json=json.dumps(dict(config), separators=(",", ":")),
         )
         async with self.sessions.begin() as session:
             session.add(row)
@@ -408,33 +400,24 @@ class AuditRepository:
         status: str,
         stop_reason: str | None,
         ended_at: datetime | None = None,
-        end_equity: Decimal | None = None,
     ) -> None:
         self._validate_live_run_status(status)
         async with self.sessions.begin() as session:
-            row = await session.scalar(
-                select(LiveRunRow).where(
-                    LiveRunRow.id == run_id,
-                    LiveRunRow.status == "running",
+            await session.execute(
+                update(LiveRunRow)
+                .where(LiveRunRow.id == run_id, LiveRunRow.status == "running")
+                .values(
+                    status=status,
+                    stop_reason=stop_reason,
+                    ended_at=ended_at or datetime.now(UTC),
                 )
             )
-            if row is None:
-                return
-            config = json.loads(row.config_json or "{}")
-            if end_equity is not None:
-                performance = dict(config.get("_performance") or {})
-                performance["end_equity"] = str(end_equity)
-                config["_performance"] = performance
-            row.config_json = json.dumps(config, separators=(",", ":"))
-            row.status = status
-            row.stop_reason = stop_reason
-            row.ended_at = ended_at or datetime.now(UTC)
 
     async def recent_live_run_performance(
         self,
         limit: int = 100,
         *,
-        current_equity: Decimal | None = None,
+        current_positions: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         async with self.sessions() as session:
             runs = (
@@ -445,7 +428,12 @@ class AuditRepository:
             run_ids = [row.id for row in runs]
             attempt_rows = (
                 await session.execute(
-                    select(ExecutionAttemptRow.client_order_id, InferenceRow.live_run_id)
+                    select(
+                        ExecutionAttemptRow.client_order_id,
+                        InferenceRow.live_run_id,
+                        InferenceRow.symbol,
+                        InferenceRow.intent_json,
+                    )
                     .join(InferenceRow, InferenceRow.id == ExecutionAttemptRow.inference_id)
                     .where(
                         InferenceRow.live_run_id.in_(run_ids),
@@ -454,58 +442,116 @@ class AuditRepository:
                 )
             ).all() if run_ids else []
 
-        order_runs = {
-            client_order_id: run_id
-            for client_order_id, run_id in attempt_rows
-            if client_order_id is not None and run_id is not None
-        }
-        runs_by_id = {row.id: row for row in runs}
+        order_contexts: dict[str, tuple[int, str, str | None]] = {}
+        for client_order_id, run_id, symbol, intent_json in attempt_rows:
+            if client_order_id is None or run_id is None:
+                continue
+            action = TradeIntent.model_validate_json(intent_json).action.value
+            side = "BUY" if action == "OPEN_LONG" else "SELL" if action == "OPEN_SHORT" else None
+            order_contexts[client_order_id] = (run_id, symbol, side)
+
+        realized: defaultdict[int, Decimal] = defaultdict(Decimal)
+        unrealized: defaultdict[int, Decimal] = defaultdict(Decimal)
         closed: Counter[int] = Counter()
         wins: Counter[int] = Counter()
-        for fill in await self.recent_trade_fills(10_000):
-            if not fill["reduce_only"] or fill["realized_pnl"] is None:
+        lots_by_symbol: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+        lots_by_order: dict[str, dict[str, Any]] = {}
+        fills = list(reversed(await self.recent_trade_fills(10_000)))
+        for fill in fills:
+            client_order_id = str(fill["client_order_id"])
+            symbol = str(fill["symbol"])
+            quantity = Decimal(str(fill["report"].get("filled_quantity", "0")))
+            if quantity <= 0:
                 continue
-            related_id = fill.get("related_client_order_id") or fill["client_order_id"]
-            run_id = order_runs.get(related_id)
-            if run_id is None:
+            if not fill["reduce_only"]:
+                context = order_contexts.get(client_order_id)
+                average_price = fill["report"].get("average_price")
+                if context is None or average_price is None:
+                    continue
+                run_id, _, intent_side = context
+                lot = {
+                    "client_order_id": client_order_id,
+                    "run_id": run_id,
+                    "symbol": symbol,
+                    "side": fill.get("side") or intent_side,
+                    "entry_price": Decimal(str(average_price)),
+                    "remaining": quantity,
+                }
+                lots_by_symbol[symbol].append(lot)
+                lots_by_order[client_order_id] = lot
                 continue
-            run = runs_by_id[run_id]
-            filled_at = datetime.fromisoformat(str(fill["created_at"]))
-            if run.ended_at is not None and filled_at > self._utc(run.ended_at):
+
+            if fill["realized_pnl"] is None:
                 continue
-            closed[run_id] += 1
-            if Decimal(str(fill["realized_pnl"])) > 0:
-                wins[run_id] += 1
+            remaining_exit = quantity
+            allocations: defaultdict[int, Decimal] = defaultdict(Decimal)
+            related_id = fill.get("related_client_order_id")
+            preferred = lots_by_order.get(str(related_id)) if related_id else None
+            candidates = ([preferred] if preferred is not None else []) + [
+                lot
+                for lot in reversed(lots_by_symbol[symbol])
+                if lot is not preferred and lot["remaining"] > 0
+            ]
+            for lot in candidates:
+                if remaining_exit <= 0:
+                    break
+                consumed = min(remaining_exit, lot["remaining"])
+                if consumed <= 0:
+                    continue
+                lot["remaining"] -= consumed
+                remaining_exit -= consumed
+                allocations[lot["run_id"]] += consumed
+            if not allocations:
+                context = order_contexts.get(client_order_id)
+                if context is not None:
+                    allocations[context[0]] = quantity
+            allocated_quantity = sum(allocations.values(), Decimal("0"))
+            if allocated_quantity <= 0:
+                continue
+            fill_pnl = Decimal(str(fill["realized_pnl"]))
+            for run_id, allocated in allocations.items():
+                allocated_pnl = fill_pnl * allocated / allocated_quantity
+                realized[run_id] += allocated_pnl
+                closed[run_id] += 1
+                if allocated_pnl > 0:
+                    wins[run_id] += 1
+
+        for symbol, position in (current_positions or {}).items():
+            active_lots = [lot for lot in lots_by_symbol[symbol] if lot["remaining"] > 0]
+            if not active_lots:
+                continue
+            owners = {lot["run_id"] for lot in active_lots}
+            if len(owners) == 1:
+                unrealized[next(iter(owners))] += Decimal(
+                    str(position.get("unrealized_pnl", "0"))
+                )
+                continue
+            mark_price = Decimal(str(position.get("mark_price", "0")))
+            for lot in active_lots:
+                direction = Decimal("1") if lot["side"] == "BUY" else Decimal("-1")
+                unrealized[lot["run_id"]] += (
+                    (mark_price - lot["entry_price"]) * lot["remaining"] * direction
+                )
 
         result = []
         for run in runs:
-            config = json.loads(run.config_json or "{}")
-            performance = config.get("_performance") or {}
-            start_equity = performance.get("start_equity")
-            valuation_equity = (
-                current_equity if run.status == "running" else performance.get("end_equity")
-            )
-            total_pnl = (
-                Decimal(str(valuation_equity)) - Decimal(str(start_equity))
-                if start_equity is not None and valuation_equity is not None
-                else None
-            )
+            realized_pnl = realized[run.id]
+            unrealized_pnl = unrealized[run.id]
+            total_pnl = realized_pnl + unrealized_pnl
             closed_trades = closed[run.id]
             result.append(
                 {
                     "live_run_id": run.id,
-                    "total_pnl": str(total_pnl) if total_pnl is not None else None,
+                    "realized_pnl": str(realized_pnl),
+                    "unrealized_pnl": str(unrealized_pnl),
+                    "total_pnl": str(total_pnl),
                     "wins": wins[run.id],
                     "closed_trades": closed_trades,
                     "win_rate": str(Decimal(wins[run.id]) / Decimal(closed_trades))
                     if closed_trades
                     else None,
-                    "includes_end_unrealized": total_pnl is not None,
-                    "valued_at": self._utc(datetime.now(UTC))
-                    if run.status == "running" and total_pnl is not None
-                    else self._utc(run.ended_at)
-                    if total_pnl is not None and run.ended_at is not None
-                    else None,
+                    "includes_unrealized": True,
+                    "valued_at": self._utc(datetime.now(UTC)),
                 }
             )
         return result
@@ -1657,12 +1703,10 @@ class AuditRepository:
     def _live_run_dict(self, row: LiveRunRow | None) -> dict[str, Any] | None:
         if row is None:
             return None
-        config = json.loads(row.config_json or "{}")
-        config.pop("_performance", None)
         return {
             "id": row.id,
             "status": row.status,
-            "config": config,
+            "config": json.loads(row.config_json or "{}"),
             "stop_reason": row.stop_reason,
             "started_at": self._utc(row.started_at),
             "ended_at": self._utc(row.ended_at) if row.ended_at is not None else None,

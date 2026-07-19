@@ -257,10 +257,12 @@ export interface DecisionEvent {
 export interface LiveRunPerformance {
   live_run_id: number;
   total_pnl: string | null;
+  realized_pnl: string;
+  unrealized_pnl: string;
   wins: number;
   closed_trades: number;
   win_rate: string | null;
-  includes_end_unrealized: boolean;
+  includes_unrealized: boolean;
   valued_at: string | null;
 }
 

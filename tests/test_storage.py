@@ -79,8 +79,7 @@ def test_live_runs_group_inferences_and_record_terminal_reason(tmp_path: Path) -
         await database.initialize()
         repository = AuditRepository(database.sessions)
         run_id = await repository.create_live_run(
-            {"provider_chain": ["codex-auth"], "cadences": ["15m"]},
-            start_equity=Decimal("1000"),
+            {"provider_chain": ["codex-auth"], "cadences": ["15m"]}
         )
         intent = TradeIntent.hold("BTCUSDT", "15m", "grouped")
         inference_id = await repository.record_inference(
@@ -98,7 +97,6 @@ def test_live_runs_group_inferences_and_record_terminal_reason(tmp_path: Path) -
             run_id,
             status="auto_stopped",
             stop_reason="run duration limit reached (60s)",
-            end_equity=Decimal("1012.5"),
         )
         events = await repository.recent_decision_events()
         performance = await repository.recent_live_run_performance()
@@ -128,8 +126,7 @@ def test_live_runs_group_inferences_and_record_terminal_reason(tmp_path: Path) -
     assert events[0]["live_run"]["status"] == "auto_stopped"
     assert events[0]["live_run"]["stop_reason"] == "run duration limit reached (60s)"
     assert events[0]["live_run"]["config"]["cadences"] == ["15m"]
-    assert "_performance" not in events[0]["live_run"]["config"]
-    assert performance[0]["total_pnl"] == "12.5"
+    assert performance[0]["total_pnl"] == "0"
     assert performance[0]["win_rate"] is None
     assert stale_id > run_id
     assert interrupted == 1
@@ -304,10 +301,7 @@ def test_trade_fills_include_protective_and_manual_exits_without_duplicate_entri
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'trade-fills.db'}")
         await database.initialize()
         repository = AuditRepository(database.sessions)
-        run_id = await repository.create_live_run(
-            {"provider_chain": ["local-rule"]},
-            start_equity=Decimal("1000"),
-        )
+        run_id = await repository.create_live_run({"provider_chain": ["local-rule"]})
         now = datetime.now(UTC)
         for client_order_id, quantity, average_price in (
             ("cp-entry", "283", "0.11188"),
@@ -425,15 +419,17 @@ def test_trade_fills_include_protective_and_manual_exits_without_duplicate_entri
                 },
             ),
         ]
-        for event in events:
+        for event in events[:3]:
             await repository.record_user_event(event)
         await repository.finish_live_run(
             run_id,
             status="stopped",
             stop_reason="done",
-            ended_at=now + timedelta(minutes=4),
-            end_equity=Decimal("998.8218"),
+            ended_at=now + timedelta(minutes=2, seconds=30),
         )
+        # A manual close belongs to the run that opened the position even when
+        # the operator closes it after that run has stopped.
+        await repository.record_user_event(events[3])
         result = await repository.recent_trade_fills()
         performance = await repository.recent_live_run_performance()
         await database.close()
@@ -468,6 +464,93 @@ def test_trade_fills_include_protective_and_manual_exits_without_duplicate_entri
     assert performance[0]["closed_trades"] == 2
     assert performance[0]["wins"] == 1
     assert performance[0]["win_rate"] == "0.5"
+    assert Decimal(performance[0]["realized_pnl"]) == Decimal("-1.17820")
+    assert Decimal(performance[0]["unrealized_pnl"]) == 0
+    assert Decimal(performance[0]["total_pnl"]) == Decimal("-1.17820")
+
+
+def test_live_run_performance_revalues_partial_manual_close_after_stop(
+    tmp_path: Path,
+) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'partial-close-pnl.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        run_id = await repository.create_live_run({"provider_chain": ["local-rule"]})
+        intent = TradeIntent(
+            symbol="BTCUSDT",
+            cadence="5m",
+            action=TradeAction.OPEN_LONG,
+            confidence=0.8,
+            leverage=2,
+            risk_fraction="0.01",
+            stop_loss="90",
+            take_profit="120",
+            rationale="entry",
+        )
+        inference_id = await repository.record_inference(
+            ProviderResult(intent, "local-rule", "trend-v1", timedelta(), "{}", {}),
+            live_run_id=run_id,
+        )
+        await repository.record_execution(
+            "BTCUSDT",
+            ExecutionReport(
+                client_order_id="cp-partial-entry",
+                status="FILLED",
+                filled_quantity="10",
+                average_price="100",
+            ),
+        )
+        await repository.record_execution_attempt(
+            "BTCUSDT",
+            ExecutionAttempt(
+                inference_id=inference_id,
+                client_order_id="cp-partial-entry",
+                status="SUCCEEDED",
+                stage="COMPLETE",
+                message="filled",
+            ),
+        )
+        now = datetime.now(UTC)
+        await repository.record_user_event(
+            UserStreamEvent(
+                "ORDER_TRADE_UPDATE",
+                now,
+                now,
+                "BTCUSDT",
+                {"o": {"c": "cp-partial-entry", "s": "BTCUSDT", "S": "BUY", "x": "TRADE", "X": "FILLED", "z": "10", "ap": "100", "R": False, "rp": "0"}},
+            )
+        )
+        await repository.finish_live_run(
+            run_id,
+            status="stopped",
+            stop_reason="stopped by user",
+            ended_at=now + timedelta(seconds=1),
+        )
+        await repository.record_user_event(
+            UserStreamEvent(
+                "ORDER_TRADE_UPDATE",
+                now + timedelta(seconds=2),
+                now + timedelta(seconds=2),
+                "BTCUSDT",
+                {"o": {"c": "cp-manual-partial", "s": "BTCUSDT", "S": "SELL", "x": "TRADE", "X": "FILLED", "z": "4", "ap": "110", "R": True, "rp": "40"}},
+            )
+        )
+        performance = await repository.recent_live_run_performance(
+            current_positions={
+                "BTCUSDT": {"mark_price": "105", "unrealized_pnl": "30"}
+            }
+        )
+        await database.close()
+        return performance[0]
+
+    performance = asyncio.run(scenario())
+    assert performance["realized_pnl"] == "40"
+    assert performance["unrealized_pnl"] == "30"
+    assert performance["total_pnl"] == "70"
+    assert performance["wins"] == 1
+    assert performance["closed_trades"] == 1
+    assert performance["win_rate"] == "1"
 
 
 def test_trade_fill_realized_return_uses_combined_add_entry_margin(tmp_path: Path) -> None:

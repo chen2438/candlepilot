@@ -2798,14 +2798,14 @@ function DecisionRunHeader({
     </span>
     <span className="decision-run-summary">
       <span className="decision-run-performance">
-        <span data-tooltip="运行开始至当前或结束时的账户权益变化，包含已实现盈亏和该时点未平仓仓位的未实现盈亏。">
+        <span data-tooltip="该运行仓位的已实现盈亏加当前剩余仓位的未实现盈亏；运行停止后手动平仓也会把对应部分转为已实现并刷新总额。">
           总盈亏<strong className={performance?.total_pnl !== null && Number(performance?.total_pnl) < 0 ? "negative" : "positive"}>
             {performance?.total_pnl === null || performance === undefined
               ? "—"
               : `${Number(performance.total_pnl) > 0 ? "+" : ""}${money(performance.total_pnl)} USDT`}
           </strong>
         </span>
-        <span data-tooltip="盈利平仓笔数除以该运行已完成的平仓笔数；没有平仓时显示 —。">
+        <span data-tooltip="盈利平仓笔数除以该运行已完成的平仓笔数；运行停止后的手动平仓仍按仓位归属计入，没有平仓时显示 —。">
           胜率<strong>{performance?.win_rate === null || performance === undefined
             ? "—"
             : `${(Number(performance.win_rate) * 100).toFixed(0)}% (${performance.wins}/${performance.closed_trades})`}</strong>

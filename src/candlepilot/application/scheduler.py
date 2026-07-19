@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from decimal import Decimal
 
 from candlepilot.application.engine import DecisionOutcome, TradingEngine
 from candlepilot.application.testnet_feed import TestnetUserFeed
@@ -37,7 +36,6 @@ class TradingScheduler:
         universe_refresh_seconds: float = 60,
         guard_interval_seconds: float = 5,
         run_cost_loader: Callable[[], Awaitable[float | None]] | None = None,
-        run_equity_loader: Callable[[], Awaitable[Decimal | None]] | None = None,
         testnet_feed: TestnetUserFeed | None = None,
     ) -> None:
         if universe_refresh_seconds <= 0:
@@ -50,7 +48,6 @@ class TradingScheduler:
         self.universe_refresh_seconds = universe_refresh_seconds
         self.guard_interval_seconds = guard_interval_seconds
         self.run_cost_loader = run_cost_loader
-        self.run_equity_loader = run_equity_loader
         self.testnet_feed = testnet_feed
         self._tasks: list[asyncio.Task[None]] = []
         self._symbol_locks: dict[str, asyncio.Lock] = {}
@@ -208,8 +205,7 @@ class TradingScheduler:
         )
 
     async def _auto_stop(self) -> None:
-        end_equity = await self.run_equity_loader() if self.run_equity_loader else None
-        await self.engine.stop(end_equity=end_equity)
+        await self.engine.stop()
         await self.stop()
 
     async def _auto_emergency_stop(self) -> None:
@@ -219,8 +215,7 @@ class TradingScheduler:
             # No decision task may survive the account flatten.  Flattening first
             # leaves a window in which an in-flight provider call can return and
             # submit a fresh entry after the broker has already closed exposure.
-            end_equity = await self.run_equity_loader() if self.run_equity_loader else None
-            await self.engine.emergency_stop(end_equity=end_equity)
+            await self.engine.emergency_stop()
 
     async def run_cycle(self, cadence: str) -> list[DecisionOutcome]:
         if cadence not in CADENCE_SECONDS:

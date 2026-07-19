@@ -512,25 +512,11 @@ def create_app(
         )
         return metrics.get("equivalent_cost_usd")
 
-    async def current_run_equity() -> Decimal | None:
-        try:
-            account = await testnet_account()
-        except Exception as exc:
-            logging.getLogger("candlepilot").warning(
-                "live run equity snapshot unavailable: %s",
-                type(exc).__name__,
-            )
-            return None
-        return Decimal(
-            str(account.get("totalMarginBalance", account.get("totalWalletBalance", "0")))
-        )
-
     scheduler = TradingScheduler(
         engine,
         market,
         candidates_per_cycle=settings.candidates_per_cycle,
         run_cost_loader=current_run_cost_usd,
-        run_equity_loader=current_run_equity,
         testnet_feed=testnet_feed,
     )
     history_cache = HistoricalMarketCache(settings.data_dir / "market")
@@ -643,7 +629,7 @@ def create_app(
         warm_pricing.cancel()
         await asyncio.gather(warm_pricing, return_exceptions=True)
         await scheduler.stop()
-        await engine.stop(end_equity=await current_run_equity())
+        await engine.stop()
         await collector.stop()
         model_tasks = active_backtest_tasks()
         if probe_task is not None and not probe_task.done():
@@ -1470,8 +1456,7 @@ def create_app(
                 engine.configure_decision_timeout(timeout_seconds if external else None)
                 engine.startup_probe = await live_startup_probe()
                 await engine.start(
-                    run_config={"candidates_per_cycle": scheduler.candidates_per_cycle},
-                    start_equity=await current_run_equity(),
+                    run_config={"candidates_per_cycle": scheduler.candidates_per_cycle}
                 )
                 scheduler.start()
             except ValueError as exc:
@@ -1496,16 +1481,14 @@ def create_app(
 
     @app.post("/api/engine/stop")
     async def stop_engine() -> dict[str, Any]:
-        end_equity = await current_run_equity()
         await scheduler.stop()
-        await engine.stop(end_equity=end_equity)
+        await engine.stop()
         return _status(engine, scheduler)
 
     @app.post("/api/engine/emergency-stop")
     async def emergency_stop() -> dict[str, Any]:
-        end_equity = await current_run_equity()
         await scheduler.stop()
-        await engine.emergency_stop(end_equity=end_equity)
+        await engine.emergency_stop()
         return _status(engine, scheduler)
 
     @app.post("/api/engine/clear-emergency-lock")
@@ -1663,9 +1646,24 @@ def create_app(
     async def get_live_run_performance(limit: int = 100) -> list[dict[str, Any]]:
         if not 1 <= limit <= 500:
             raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+        try:
+            account = await testnet_account()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"live run performance account query failed: {exc}",
+            ) from exc
+        current_positions = {
+            str(item.get("symbol", "")): {
+                "mark_price": str(item.get("markPrice", item.get("entryPrice", "0"))),
+                "unrealized_pnl": str(item.get("unrealizedProfit", "0")),
+            }
+            for item in account.get("positions", [])
+            if Decimal(str(item.get("positionAmt", "0"))) != 0
+        }
         return await engine.audit.recent_live_run_performance(
             limit,
-            current_equity=await current_run_equity(),
+            current_positions=current_positions,
         )
 
     @app.get("/api/testnet/events")

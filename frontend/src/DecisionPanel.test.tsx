@@ -174,10 +174,12 @@ describe("DecisionPanel", () => {
         liveRunPerformance={[{
           live_run_id: 2,
           total_pnl: "12.5",
+          realized_pnl: "10",
+          unrealized_pnl: "2.5",
           wins: 2,
           closed_trades: 3,
           win_rate: "0.6666666667",
-          includes_end_unrealized: true,
+          includes_unrealized: true,
           valued_at: "2026-07-19T17:00:27Z",
         }]}
         filter="all"
