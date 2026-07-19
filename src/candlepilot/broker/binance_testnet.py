@@ -16,6 +16,7 @@ from pydantic import SecretStr
 
 from candlepilot.domain.models import ExecutionReport, OrderPlan, OrderType
 from candlepilot.market.binance import BINANCE_FUTURES_TESTNET
+from candlepilot.risk.engine import SymbolRules
 
 if TYPE_CHECKING:
     from candlepilot.broker.user_stream import UserStreamEvent
@@ -272,9 +273,7 @@ class BinanceTestnetBroker:
             "GET", "/fapi/v1/symbolConfig", {"symbol": symbol}
         )
 
-    async def tradable_symbols(self) -> frozenset[str]:
-        """Return the USDT perpetual contracts the testnet can accept now."""
-
+    async def _exchange_info(self) -> dict[str, Any]:
         path = "/fapi/v1/exchangeInfo"
         try:
             response = await self._client.get(path)
@@ -310,13 +309,36 @@ class BinanceTestnetBroker:
                 method="GET",
                 path=path,
             )
-        return frozenset(
-            str(item["symbol"])
-            for item in payload.get("symbols", [])
-            if item.get("contractType") == "PERPETUAL"
-            and item.get("quoteAsset") == "USDT"
-            and item.get("status") == "TRADING"
-        )
+        return payload
+
+    async def tradable_contract_rules(self) -> dict[str, SymbolRules]:
+        """Return filters from the execution venue, not Binance production."""
+
+        payload = await self._exchange_info()
+        rules: dict[str, SymbolRules] = {}
+        for item in payload.get("symbols", []):
+            if not (
+                item.get("contractType") == "PERPETUAL"
+                and item.get("quoteAsset") == "USDT"
+                and item.get("status") == "TRADING"
+            ):
+                continue
+            filters = {entry["filterType"]: entry for entry in item.get("filters", [])}
+            lot = filters.get("LOT_SIZE", {})
+            notional = filters.get("MIN_NOTIONAL", {})
+            price = filters.get("PRICE_FILTER", {})
+            rules[str(item["symbol"])] = SymbolRules(
+                quantity_step=Decimal(lot.get("stepSize", "1")),
+                min_quantity=Decimal(lot.get("minQty", "1")),
+                min_notional=Decimal(notional.get("notional", "5")),
+                tick_size=Decimal(price.get("tickSize", "0.01")),
+            )
+        return rules
+
+    async def tradable_symbols(self) -> frozenset[str]:
+        """Return the USDT perpetual contracts the testnet can accept now."""
+
+        return frozenset((await self.tradable_contract_rules()).keys())
 
     async def account_snapshot(self) -> dict[str, Any]:
         """Return balances plus exchange-authoritative live position fields."""

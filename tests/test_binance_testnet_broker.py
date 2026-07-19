@@ -46,6 +46,11 @@ def test_testnet_tradable_symbols_excludes_pending_and_non_usdt_contracts() -> N
                         "contractType": "PERPETUAL",
                         "quoteAsset": "USDT",
                         "status": "TRADING",
+                        "filters": [
+                            {"filterType": "LOT_SIZE", "stepSize": "0.010", "minQty": "0.020"},
+                            {"filterType": "MIN_NOTIONAL", "notional": "100"},
+                            {"filterType": "PRICE_FILTER", "tickSize": "0.10"},
+                        ],
                     },
                     {
                         "symbol": "ALLOUSDT",
@@ -69,16 +74,22 @@ def test_testnet_tradable_symbols_excludes_pending_and_non_usdt_contracts() -> N
             },
         )
 
-    async def scenario() -> frozenset[str]:
+    async def scenario() -> tuple[frozenset[str], dict[str, object]]:
         client = httpx.AsyncClient(
             transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
         )
         broker = BinanceTestnetBroker(_credentials(), client=client)
-        symbols = await broker.tradable_symbols()
+        rules = await broker.tradable_contract_rules()
+        symbols = frozenset(rules)
         await client.aclose()
-        return symbols
+        return symbols, rules
 
-    assert asyncio.run(scenario()) == frozenset({"BTCUSDT"})
+    symbols, rules = asyncio.run(scenario())
+    assert symbols == frozenset({"BTCUSDT"})
+    assert rules["BTCUSDT"].quantity_step == Decimal("0.010")
+    assert rules["BTCUSDT"].min_quantity == Decimal("0.020")
+    assert rules["BTCUSDT"].min_notional == Decimal("100")
+    assert rules["BTCUSDT"].tick_size == Decimal("0.10")
 
 
 def test_position_risk_reads_signed_v3_prices() -> None:

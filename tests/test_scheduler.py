@@ -285,6 +285,84 @@ def test_scheduler_always_analyzes_open_positions_outside_candidate_limit(
     assert asyncio.run(scenario()) == ["BTCUSDT", "ETHUSDT"]
 
 
+def test_scheduler_uses_testnet_filters_instead_of_production_filters(tmp_path: Path) -> None:
+    async def scenario():
+        class VenueBroker(FakeTestnetBroker):
+            async def tradable_contract_rules(self):
+                return {
+                    "BTCUSDT": SymbolRules(
+                        Decimal("0.1"), Decimal("0.2"), Decimal("100"), Decimal("0.5")
+                    )
+                }
+
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'venue-rules.db'}")
+        await database.initialize()
+        market = SchedulerMarket()
+        engine = TradingEngine(
+            testnet_broker=VenueBroker(),  # type: ignore[arg-type]
+            providers=ProviderRegistry([HoldProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider_chain(["hold"])
+        await engine.start()
+        observed: list[SymbolRules] = []
+        evaluate = engine.evaluate
+
+        async def capture(snapshot, portfolio, rules):
+            observed.append(rules)
+            return await evaluate(snapshot, portfolio, rules)
+
+        engine.evaluate = capture  # type: ignore[method-assign]
+        scheduler = TradingScheduler(engine, market)  # type: ignore[arg-type]
+        await scheduler.run_cycle("5m")
+        await database.close()
+        return observed
+
+    observed = asyncio.run(scenario())
+    assert len(observed) == 1
+    assert observed[0].quantity_step == Decimal("0.1")
+    assert observed[0].tick_size == Decimal("0.5")
+
+
+def test_scheduler_reports_a_held_symbol_missing_testnet_rules(tmp_path: Path) -> None:
+    async def scenario():
+        class VenueBroker(StatefulTestnetBroker):
+            async def tradable_contract_rules(self):
+                return {
+                    "BTCUSDT": SymbolRules(
+                        Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")
+                    )
+                }
+
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'missing-held-rules.db'}")
+        await database.initialize()
+        market = SchedulerMarket()
+        engine = TradingEngine(
+            testnet_broker=VenueBroker(
+                {"ETHUSDT": ("LONG", Decimal("1"), Decimal("100"))}
+            ),  # type: ignore[arg-type]
+            providers=ProviderRegistry([HoldProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider_chain(["hold"])
+        await engine.start()
+        scheduler = TradingScheduler(engine, market)  # type: ignore[arg-type]
+        try:
+            await scheduler.run_cycle("5m")
+        except RuntimeError as exc:
+            message = str(exc)
+        else:
+            message = None
+        await database.close()
+        return message
+
+    assert asyncio.run(scenario()) == (
+        "testnet contract rules are unavailable for held or selected symbol ETHUSDT"
+    )
+
+
 def test_guard_stops_the_run_when_a_limit_is_reached(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'guard.db'}")

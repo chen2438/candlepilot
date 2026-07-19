@@ -224,7 +224,7 @@ class TradingScheduler:
             return []
         if not self.engine.candidates:
             await self.engine.refresh_universe()
-        contracts = await self.market.exchange_info()
+        production_contracts = None
         portfolio = await self._portfolio()
         symbols = [
             candidate.symbol
@@ -248,9 +248,19 @@ class TradingScheduler:
             for symbol in ordered_symbols:
                 if not self.engine.running or self.engine.auto_stop_reason is not None:
                     break
-                contract = contracts.get(symbol)
-                if contract is None:
-                    continue
+                if self.engine.venue_contract_rules is not None:
+                    rules = self.engine.venue_contract_rules.get(symbol)
+                    if rules is None:
+                        raise RuntimeError(
+                            f"testnet contract rules are unavailable for held or selected symbol {symbol}"
+                        )
+                else:
+                    if production_contracts is None:
+                        production_contracts = await self.market.exchange_info()
+                    contract = production_contracts.get(symbol)
+                    if contract is None:
+                        raise RuntimeError(f"contract rules are unavailable for {symbol}")
+                    rules = contract.rules
                 cycle_state.update(
                     symbol=symbol,
                     symbol_started_at=datetime.now(UTC).isoformat(),
@@ -262,7 +272,7 @@ class TradingScheduler:
                     cycle_state["stage"] = "portfolio"
                     portfolio = await self._portfolio()
                     cycle_state["stage"] = "decision"
-                    outcome = await self.engine.evaluate(snapshot, portfolio, contract.rules)
+                    outcome = await self.engine.evaluate(snapshot, portfolio, rules)
                     outcomes.append(outcome)
                 cycle_state["completed"] = int(cycle_state["completed"]) + 1
                 stop_reason = self.engine.evaluate_stop_reason()

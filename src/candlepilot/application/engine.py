@@ -102,6 +102,7 @@ class TradingEngine:
         self.testnet_reconciliation: ReconciliationReport | None = None
         self.candidates: list[Candidate] = []
         self.venue_excluded_symbols: tuple[str, ...] = ()
+        self.venue_contract_rules: dict[str, SymbolRules] | None = None
         self.universe_refreshed_at: datetime | None = None
         self.run_started_at: datetime | None = None
         self.run_ended_at: datetime | None = None
@@ -393,9 +394,18 @@ class TradingEngine:
 
     async def refresh_universe(self) -> list[Candidate]:
         inputs = await self.market.candidate_inputs()
+        rules_loader = getattr(self.testnet_broker, "tradable_contract_rules", None)
         venue_loader = getattr(self.testnet_broker, "tradable_symbols", None)
-        if callable(venue_loader):
+        if callable(rules_loader):
+            self.venue_contract_rules = await rules_loader()
+            venue_symbols = frozenset(self.venue_contract_rules)
+        elif callable(venue_loader):
+            self.venue_contract_rules = None
             venue_symbols = await venue_loader()
+        else:
+            self.venue_contract_rules = None
+            venue_symbols = None
+        if venue_symbols is not None:
             production_symbols = {item.symbol for item in inputs}
             self.venue_excluded_symbols = tuple(
                 sorted(production_symbols.difference(venue_symbols))
