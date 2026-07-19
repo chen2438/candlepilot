@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "candlepilot"
 version = "0.1.0"
-description = "Local-first, auditable LLM trading system for Binance USD-M perpetuals"
+description = "Local-first, auditable provider-driven trading system for Binance USD-M perpetuals"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "GPL-3.0-only" }
