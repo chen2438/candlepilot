@@ -375,7 +375,7 @@ export function LiveRunActionButtons({
     <button
       disabled={busy !== null || running || emergencyLocked}
       onClick={onProbe}
-    >{busy === "probe" ? "真实试跑 3 次…" : "试跑"}</button>
+    >{busy === "probe" ? "真实批量试跑…" : "试跑"}</button>
     <button
       className="primary"
       disabled={busy !== null || running || emergencyLocked || !probeReady}
@@ -394,8 +394,9 @@ export function StartupProbeCompletedSummary({
   ready: boolean;
 }) {
   return <div className="live-probe-summary">
-    最近试跑：{probe.analysis_symbol_count} 标的批量分析最慢 {probe.slowest_seconds}s
-    · 负载 {((probe.aggregate_utilization ?? 0) * 100).toFixed(1)}%
+    <div>最近试跑：{probe.analysis_symbol_count} 标的批量分析最慢 {probe.slowest_seconds}s
+      · 负载 {((probe.aggregate_utilization ?? 0) * 100).toFixed(1)}%</div>
+    <StartupProbeProviderResults probe={probe} />
     {!ready && <small>{probe.consumed
       ? "该试跑已用于一次运行，请重新试跑"
       : "参数已变化，请重新试跑"}</small>}
@@ -409,18 +410,55 @@ export function StartupProbeRunningSummary({
 }) {
   return <div className="live-probe-summary live-probe-running">
     <div>
-      正式试跑：第 {probe.active_decision ?? 1}/{probe.decisions_per_provider} 次
-      · 已完成 {probe.completed_decisions}/{probe.decisions_per_provider}
+      正式批量试跑：已完成 {probe.completed_providers}/{probe.provider_count} 个 Provider
       · <span title={probe.probe_symbols.join("、")}>
         {probe.analysis_symbol_count} 个标的 · {probe.probe_cadence}
       </span>
     </div>
-    <div className="live-probe-track" aria-label={`已完成 ${probe.completed_decisions}/${probe.decisions_per_provider}`}>
-      <span style={{ width: `${probe.completed_decisions / probe.decisions_per_provider * 100}%` }} />
+    <div className="live-probe-track" aria-label={`已完成 ${probe.completed_providers}/${probe.provider_count} 个 Provider`}>
+      <span style={{ width: `${probe.completed_providers / probe.provider_count * 100}%` }} />
     </div>
-    {Object.entries(probe.durations_seconds).map(([name, values]) => (
-      <small key={name}>{providerLabel(name)}：{values.length ? values.map((seconds) => `${seconds}s`).join(" · ") : "等待首个结果"}</small>
-    ))}
+    <StartupProbeProviderResults probe={probe} />
+  </div>;
+}
+
+function StartupProbeProviderResults({
+  probe,
+}: {
+  probe: NonNullable<EngineStatus["startup_probe"]>;
+}) {
+  return <div className="live-probe-provider-results">
+    {Object.entries(probe.provider_results).map(([name, result]) => {
+      if (result.status !== "completed") {
+        return <div className="live-probe-provider" key={name}>
+          <strong>{providerLabel(name)}</strong><small>等待结果</small>
+        </div>;
+      }
+      const actions = Object.entries(result.actions ?? {})
+        .map(([action, count]) => `${action} × ${count}`)
+        .join(" · ");
+      const tokens = result.total_tokens == null
+        ? "Token 未报告"
+        : `Token ${result.total_tokens.toLocaleString()}（输入 ${result.input_tokens?.toLocaleString() ?? 0} · 缓存 ${result.cached_input_tokens?.toLocaleString() ?? 0} · 输出 ${result.output_tokens?.toLocaleString() ?? 0}）`;
+      const cost = result.equivalent_cost_usd == null
+        ? "成本未知"
+        : `成本 $${result.equivalent_cost_usd.toFixed(6)}`;
+      return <div className="live-probe-provider" key={name}>
+        <div><strong>{providerLabel(name)}</strong>
+          <small>{result.model ?? "默认模型"}{result.reasoning_effort ? ` · ${result.reasoning_effort}` : ""}</small>
+        </div>
+        <div>{result.duration_seconds}s · {actions || "无意图"}</div>
+        <small>{tokens} · {cost}</small>
+        <details>
+          <summary>查看 {result.intents?.length ?? 0} 条意图</summary>
+          <div className="live-probe-intents">
+            {(result.intents ?? []).map((intent) => <span key={intent.symbol}>
+              {intent.symbol} · {intent.action} · {(intent.confidence * 100).toFixed(0)}%
+            </span>)}
+          </div>
+        </details>
+      </div>;
+    })}
   </div>;
 }
 
@@ -1041,7 +1079,7 @@ export default function App() {
                 >{busy === "run-limits" ? "…" : "应用"}</button>
               </div>
             </div>
-            <div className="cadence-select" title="覆盖整次外部模型调用的绝对截止时间；启动前会用当前真实数据试跑 3 次">
+            <div className="cadence-select" title="覆盖整次外部模型调用的绝对截止时间；启动前会用当前真实数据批量试跑 1 次">
               <span>正式决策硬超时</span>
               <div className="limit-row live-timeout-row">
                 <label>
@@ -1058,8 +1096,8 @@ export default function App() {
                   <small>秒</small>
                 </label>
                 <small>{selectedExternalProvider
-                  ? "试跑会对全部标的真实批量调用 3 次，并校验最慢耗时"
-                  : "本地规则无外部调用超时；仍会试跑 3 次校验容量"}</small>
+                  ? "试跑会对全部标的真实批量调用 1 次，并展示耗时、意图、Token 与成本"
+                  : "本地规则无外部调用超时；会批量试跑 1 次并展示具体结果"}</small>
               </div>
               {busy === "probe" && !status.startup_probe && <div className="live-probe-summary">
                 正在读取真实行情与测试网账户…

@@ -36,6 +36,20 @@ export interface SettingsPayload {
   sections: Array<{ title: string; fields: SettingsField[] }>;
 }
 
+export interface StartupProbeProviderResult {
+  status: "pending" | "completed";
+  model?: string | null;
+  reasoning_effort?: string | null;
+  duration_seconds?: number;
+  actions?: Record<string, number>;
+  input_tokens?: number | null;
+  cached_input_tokens?: number | null;
+  output_tokens?: number | null;
+  total_tokens?: number | null;
+  equivalent_cost_usd?: number | null;
+  intents?: Array<{ symbol: string; action: string; confidence: number }>;
+}
+
 export interface EngineStatus {
   running: boolean;
   emergency_locked: boolean;
@@ -53,12 +67,11 @@ export interface EngineStatus {
     ready: boolean;
     consumed: boolean;
     timeout_seconds: number | null;
-    decisions_per_provider: number;
-    completed_decisions: number;
-    active_decision: number | null;
+    provider_count: number;
+    completed_providers: number;
     probe_symbols: string[];
     probe_cadence: string;
-    durations_seconds: Record<string, number[]>;
+    provider_results: Record<string, StartupProbeProviderResult>;
     slowest_seconds?: number;
     analysis_symbol_count: number;
     projected_cycle_seconds?: number;

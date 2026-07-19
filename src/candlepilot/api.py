@@ -1298,7 +1298,7 @@ def create_app(
         return _status(engine, scheduler)
 
     async def live_startup_probe(*, timeout_seconds: float | None) -> dict[str, Any]:
-        """Measure three real, non-trading decisions without starting a run."""
+        """Measure one real, non-trading cadence batch without starting a run."""
 
         if not engine.candidates:
             await engine.refresh_universe()
@@ -1313,74 +1313,127 @@ def create_app(
         analysis_symbols = list(dict.fromkeys([*candidate_symbols, *portfolio.positions]))
         if not analysis_symbols:
             raise RuntimeError("the live run has no symbols to analyze")
-        durations: dict[str, list[float]] = {name: [] for name in engine.provider_chain}
         progress: dict[str, Any] = {
             "running": True,
             "ready": False,
             "consumed": False,
             "timeout_seconds": timeout_seconds,
-            "decisions_per_provider": 3,
-            "completed_decisions": 0,
-            "active_decision": None,
+            "provider_count": len(engine.provider_chain),
+            "completed_providers": 0,
             "probe_symbols": analysis_symbols,
             "analysis_symbol_count": len(analysis_symbols),
             "probe_cadence": cadence,
-            "durations_seconds": {name: [] for name in engine.provider_chain},
+            "provider_results": {
+                name: {"status": "pending"} for name in engine.provider_chain
+            },
             "started_at": datetime.now(UTC).isoformat(),
         }
         # Publish the mutable progress object before the first provider call.
-        # GET /api/status and the event websocket can then show a real counter
-        # while the start request is still waiting for all three decisions.
+        # GET /api/status and the event websocket can then show each concurrently
+        # probed Provider as soon as its one real batch completes.
         engine.startup_probe = progress
+        sample_started = time.perf_counter()
+        snapshots = [
+            await market.market_snapshot(symbol, cadence)
+            for symbol in analysis_symbols
+        ]
+        portfolio = await engine.current_portfolio()
+        shared_seconds = time.perf_counter() - sample_started
+        catalog = await pricing_catalog()
 
-        for attempt in range(3):
-            progress["active_decision"] = attempt + 1
-            sample_started = time.perf_counter()
-            snapshots = [
-                await market.market_snapshot(symbol, cadence)
-                for symbol in analysis_symbols
-            ]
-            portfolio = await engine.current_portfolio()
-            shared_seconds = time.perf_counter() - sample_started
-
-            async def invoke(name: str) -> tuple[str, float]:
-                provider = engine.providers.get(name)
-                started = time.perf_counter()
-                try:
-                    async with asyncio.timeout(provider.timeout):
-                        results = await provider.generate_trade_intents(snapshots, portfolio)
-                except TimeoutError as exc:
-                    raise RuntimeError(
-                        f"{name} exceeded the absolute {provider.timeout:g}s startup timeout"
-                    ) from exc
-                expected = [(item.symbol, item.cadence) for item in snapshots]
-                actual = [(item.intent.symbol, item.intent.cadence) for item in results]
-                if actual != expected:
-                    raise RuntimeError(
-                        f"{name} returned batch intents that do not match the probe inputs"
-                    )
-                return name, shared_seconds + time.perf_counter() - started
-
-            tasks = [
-                asyncio.create_task(invoke(name), name=f"candlepilot-startup-probe-{name}")
-                for name in engine.provider_chain
-            ]
+        async def invoke(name: str) -> tuple[str, dict[str, Any]]:
+            provider = engine.providers.get(name)
+            started = time.perf_counter()
             try:
-                measured = await asyncio.gather(*tasks)
-            except BaseException:
-                for task in tasks:
-                    task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
-                raise
-            for name, seconds in measured:
-                durations[name].append(seconds)
-            progress["durations_seconds"] = {
-                name: [round(value, 3) for value in values]
-                for name, values in durations.items()
+                async with asyncio.timeout(provider.timeout):
+                    results = await provider.generate_trade_intents(snapshots, portfolio)
+            except TimeoutError as exc:
+                raise RuntimeError(
+                    f"{name} exceeded the absolute {provider.timeout:g}s startup timeout"
+                ) from exc
+            expected = [(item.symbol, item.cadence) for item in snapshots]
+            actual = [(item.intent.symbol, item.intent.cadence) for item in results]
+            if actual != expected:
+                raise RuntimeError(
+                    f"{name} returned batch intents that do not match the probe inputs"
+                )
+            duration_seconds = shared_seconds + time.perf_counter() - started
+            token_reported = any(
+                any(
+                    key in result.usage
+                    for key in ("input_tokens", "output_tokens", "total_tokens")
+                )
+                for result in results
+            )
+            actions: dict[str, int] = {}
+            for result in results:
+                action = result.intent.action.value
+                actions[action] = actions.get(action, 0) + 1
+            costs = [
+                _provider_result_cost_usd(result, catalog, provider_pricing_ids)
+                for result in results
+            ]
+            equivalent_cost_usd = (
+                sum(cost for cost in costs if cost is not None)
+                if all(cost is not None for cost in costs)
+                else None
+            )
+            summary = {
+                "status": "completed",
+                "model": results[0].model if results else provider.model,
+                "reasoning_effort": results[0].reasoning_effort if results else provider.reasoning_effort,
+                "duration_seconds": round(duration_seconds, 3),
+                "actions": actions,
+                "input_tokens": sum(int(result.usage.get("input_tokens") or 0) for result in results)
+                if token_reported else None,
+                "cached_input_tokens": sum(
+                    int(
+                        result.usage.get("cached_input_tokens")
+                        or result.usage.get("cache_read_input_tokens")
+                        or 0
+                    )
+                    for result in results
+                ) if token_reported else None,
+                "output_tokens": sum(int(result.usage.get("output_tokens") or 0) for result in results)
+                if token_reported else None,
+                "total_tokens": sum(
+                    int(
+                        result.usage.get("total_tokens")
+                        or int(result.usage.get("input_tokens") or 0)
+                        + int(result.usage.get("output_tokens") or 0)
+                    )
+                    for result in results
+                ) if token_reported else None,
+                "equivalent_cost_usd": equivalent_cost_usd,
+                "intents": [
+                    {
+                        "symbol": result.intent.symbol,
+                        "action": result.intent.action.value,
+                        "confidence": result.intent.confidence,
+                    }
+                    for result in results
+                ],
             }
-            progress["completed_decisions"] = attempt + 1
+            progress["provider_results"][name] = summary
+            progress["completed_providers"] = int(progress["completed_providers"]) + 1
+            return name, summary
 
-        slowest_seconds = max(value for values in durations.values() for value in values)
+        tasks = [
+            asyncio.create_task(invoke(name), name=f"candlepilot-startup-probe-{name}")
+            for name in engine.provider_chain
+        ]
+        try:
+            measured = await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+        provider_results = {name: summary for name, summary in measured}
+        slowest_seconds = max(
+            float(summary["duration_seconds"]) for summary in provider_results.values()
+        )
         symbol_count = len(analysis_symbols)
         projected_cycle_seconds = slowest_seconds
         cadence_seconds = {
@@ -1400,7 +1453,7 @@ def create_app(
                 f"{name}={seconds}s" for name, seconds in cadence_seconds.items()
             )
             raise ValueError(
-                "live startup probe rejected this capacity: slowest of 3 real decisions "
+                "live startup probe rejected this capacity: the real batch "
                 f"for one {symbol_count}-symbol batch was {slowest_seconds:.2f}s; selected cadences are "
                 f"{cadence_detail} and aggregate provider utilization is "
                 f"{utilization * 100:.1f}%. Reduce analysis symbols or select longer/fewer cadences."
@@ -1410,15 +1463,11 @@ def create_app(
             "ready": True,
             "consumed": False,
             "timeout_seconds": timeout_seconds,
-            "decisions_per_provider": 3,
-            "completed_decisions": 3,
-            "active_decision": None,
+            "provider_count": len(engine.provider_chain),
+            "completed_providers": len(engine.provider_chain),
             "probe_symbols": analysis_symbols,
             "probe_cadence": cadence,
-            "durations_seconds": {
-                name: [round(value, 3) for value in values]
-                for name, values in durations.items()
-            },
+            "provider_results": provider_results,
             "slowest_seconds": round(slowest_seconds, 3),
             "analysis_symbol_count": symbol_count,
             "projected_cycle_seconds": round(projected_cycle_seconds, 3),
@@ -1476,7 +1525,6 @@ def create_app(
                     engine.startup_probe.update(
                         running=False,
                         ready=False,
-                        active_decision=None,
                         error=str(exc),
                     )
                 engine.restore_provider_timeouts()
@@ -1486,7 +1534,6 @@ def create_app(
                     engine.startup_probe.update(
                         running=False,
                         ready=False,
-                        active_decision=None,
                         error=str(exc),
                     )
                 engine.restore_provider_timeouts()

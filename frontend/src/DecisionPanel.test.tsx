@@ -65,18 +65,18 @@ describe("DecisionPanel", () => {
       ready: false,
       consumed: false,
       timeout_seconds: 100,
-      decisions_per_provider: 3,
-      completed_decisions: 0,
-      active_decision: 1,
+      provider_count: 1,
+      completed_providers: 0,
       probe_symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
       probe_cadence: "5m",
-      durations_seconds: { "claude-code-auth": [] },
+      provider_results: { "claude-code-auth": { status: "pending" } },
       analysis_symbol_count: 3,
       started_at: "2026-07-20T00:00:00Z",
     }} />);
     expect(screen.getByText(/3 个标的 · 5m/)).toBeTruthy();
     expect(screen.queryByText("BTCUSDT 5m")).toBeNull();
     expect(screen.getByTitle("BTCUSDT、ETHUSDT、SOLUSDT")).toBeTruthy();
+    expect(screen.getByText("等待结果")).toBeTruthy();
   });
 
   it("describes startup capacity as one shared symbol batch", () => {
@@ -87,12 +87,28 @@ describe("DecisionPanel", () => {
         ready: true,
         consumed: false,
         timeout_seconds: 60,
-        decisions_per_provider: 3,
-        completed_decisions: 3,
-        active_decision: null,
+        provider_count: 1,
+        completed_providers: 1,
         probe_symbols: ["BTCUSDT", "ETHUSDT"],
         probe_cadence: "15m",
-        durations_seconds: { "openai-compatible:deepseek": [40, 42, 41] },
+        provider_results: {
+          "openai-compatible:deepseek": {
+            status: "completed",
+            model: "deepseek-v4-pro",
+            reasoning_effort: "high",
+            duration_seconds: 42,
+            actions: { HOLD: 1, OPEN_LONG: 1 },
+            input_tokens: 12000,
+            cached_input_tokens: 6000,
+            output_tokens: 800,
+            total_tokens: 12800,
+            equivalent_cost_usd: 0.02,
+            intents: [
+              { symbol: "BTCUSDT", action: "HOLD", confidence: 0.4 },
+              { symbol: "ETHUSDT", action: "OPEN_LONG", confidence: 0.7 },
+            ],
+          },
+        },
         slowest_seconds: 42,
         analysis_symbol_count: 2,
         aggregate_utilization: 0.2,
@@ -101,6 +117,10 @@ describe("DecisionPanel", () => {
     />);
     expect(screen.getByText(/2 标的批量分析最慢 42s/)).toBeTruthy();
     expect(screen.queryByText(/× 2 标的/)).toBeNull();
+    expect(screen.getByText(/42s · HOLD × 1 · OPEN_LONG × 1/)).toBeTruthy();
+    expect(screen.getByText(/Token 12,800/)).toBeTruthy();
+    expect(screen.getByText(/成本 \$0.020000/)).toBeTruthy();
+    expect(screen.getByText("查看 2 条意图")).toBeTruthy();
   });
 
   it("keeps startup locked until a separate successful probe", async () => {

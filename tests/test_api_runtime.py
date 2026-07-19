@@ -168,7 +168,7 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
     asyncio.run(database.close())
 
 
-def test_live_probe_runs_three_real_decisions_before_separate_start(
+def test_live_probe_runs_one_real_batch_and_reports_its_details(
     tmp_path: Path,
 ) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'live-probe.db'}")
@@ -183,7 +183,22 @@ def test_live_probe_runs_three_real_decisions_before_separate_start(
             self.calls += 1
             self.observed_timeouts.append(self.timeout)
             await asyncio.sleep(0.001)
-            return await super().generate_trade_intent(snapshot, portfolio)
+            result = await super().generate_trade_intent(snapshot, portfolio)
+            return ProviderResult(
+                result.intent,
+                result.provider,
+                "fixture-model",
+                result.duration,
+                result.raw_output,
+                {
+                    "input_tokens": 100,
+                    "cached_input_tokens": 40,
+                    "output_tokens": 20,
+                    "total_tokens": 120,
+                    "cost_usd": 0.01,
+                },
+                reasoning_effort="high",
+            )
 
     provider = MeasuredProvider()
     engine = TradingEngine(
@@ -203,22 +218,31 @@ def test_live_probe_runs_three_real_decisions_before_separate_start(
         assert response.status_code == 200, response.text
         status = response.json()
         assert status["running"] is False
-        assert provider.calls == 3
-        assert provider.observed_timeouts == [7, 7, 7]
+        assert provider.calls == 1
+        assert provider.observed_timeouts == [7]
         assert status["decision_timeout_seconds"] == 7
-        assert status["startup_probe"]["decisions_per_provider"] == 3
+        assert status["startup_probe"]["provider_count"] == 1
         assert status["startup_probe"]["running"] is False
-        assert status["startup_probe"]["completed_decisions"] == 3
-        assert status["startup_probe"]["active_decision"] is None
+        assert status["startup_probe"]["completed_providers"] == 1
         assert status["startup_probe"]["analysis_symbol_count"] == 1
         assert status["startup_probe"]["ready"] is True
+        details = status["startup_probe"]["provider_results"]["api-fixture"]
+        assert details["status"] == "completed"
+        assert details["model"] == "fixture-model"
+        assert details["reasoning_effort"] == "high"
+        assert details["actions"] == {"HOLD": 1}
+        assert details["total_tokens"] == 120
+        assert details["equivalent_cost_usd"] == 0.01
+        assert details["intents"] == [
+            {"symbol": "BTCUSDT", "action": "HOLD", "confidence": 0.0}
+        ]
         assert client.post(
             "/api/engine/start", json={"timeout_seconds": 8}
         ).status_code == 409
         started = client.post("/api/engine/start", json={"timeout_seconds": 7})
         assert started.status_code == 200, started.text
         assert started.json()["running"] is True
-        assert provider.calls == 3
+        assert provider.calls == 1
         assert started.json()["startup_probe"]["consumed"] is True
         client.post("/api/engine/stop")
         assert provider.timeout == 45
@@ -238,20 +262,19 @@ def test_live_probe_runs_three_real_decisions_before_separate_start(
     asyncio.run(database.close())
 
 
-def test_live_startup_probe_publishes_each_decision_progress(tmp_path: Path) -> None:
+def test_live_startup_probe_publishes_provider_progress(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'live-probe-progress.db'}")
     market = ApiMarket()
-    second_call_started = threading.Event()
-    release_second_call = threading.Event()
+    provider_call_started = threading.Event()
+    release_provider_call = threading.Event()
 
     class GatedProvider(ApiProvider):
         calls = 0
 
         async def generate_trade_intent(self, snapshot, portfolio):
             GatedProvider.calls += 1
-            if GatedProvider.calls == 2:
-                second_call_started.set()
-                await asyncio.to_thread(release_second_call.wait)
+            provider_call_started.set()
+            await asyncio.to_thread(release_provider_call.wait)
             return await super().generate_trade_intent(snapshot, portfolio)
 
     engine = TradingEngine(
@@ -267,20 +290,21 @@ def test_live_startup_probe_publishes_each_decision_progress(tmp_path: Path) -> 
         client.post("/api/providers/select", json={"providers": ["api-fixture"]})
         future = pool.submit(client.post, "/api/engine/probe")
         try:
-            assert second_call_started.wait(timeout=2)
+            assert provider_call_started.wait(timeout=2)
             progress = client.get("/api/status").json()["startup_probe"]
             assert progress["running"] is True
-            assert progress["active_decision"] == 2
-            assert progress["completed_decisions"] == 1
-            assert len(progress["durations_seconds"]["api-fixture"]) == 1
+            assert progress["provider_count"] == 1
+            assert progress["completed_providers"] == 0
+            assert progress["provider_results"]["api-fixture"] == {"status": "pending"}
             assert progress["probe_symbols"] == ["BTCUSDT"]
             assert progress["analysis_symbol_count"] == 1
             assert progress["probe_cadence"] == "15m"
         finally:
-            release_second_call.set()
+            release_provider_call.set()
         response = future.result(timeout=2)
         assert response.status_code == 200, response.text
-        assert response.json()["startup_probe"]["completed_decisions"] == 3
+        assert response.json()["startup_probe"]["completed_providers"] == 1
+        assert GatedProvider.calls == 1
         assert response.json()["running"] is False
         assert client.post("/api/engine/start").json()["running"] is True
         client.post("/api/engine/stop")
