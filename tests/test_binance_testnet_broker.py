@@ -172,6 +172,11 @@ def test_signed_testnet_entry_and_bracket() -> None:
         requests.append(request)
         if request.url.path == "/fapi/v1/time":
             return httpx.Response(200, json={"serverTime": 1784040000000})
+        if request.url.path == "/fapi/v1/symbolConfig":
+            return httpx.Response(
+                200,
+                json=[{"symbol": "BTCUSDT", "marginType": "CROSSED", "leverage": 20}],
+            )
         if request.url.path == "/fapi/v1/marginType":
             return httpx.Response(400, json={"code": -4046, "msg": "No need to change"})
         if request.url.path == "/fapi/v1/leverage":
@@ -239,6 +244,34 @@ def test_signed_testnet_entry_and_bracket() -> None:
     )
 
 
+def test_binance_configuration_error_names_the_failing_rest_path() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fapi/v1/symbolConfig":
+            return httpx.Response(
+                200,
+                json=[{"symbol": "BTCUSDT", "marginType": "CROSSED", "leverage": 3}],
+            )
+        return httpx.Response(
+            400,
+            json={"code": -4067, "msg": "Position side cannot be changed"},
+        )
+
+    async def scenario() -> BinanceApiError:
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        with pytest.raises(BinanceApiError) as captured:
+            await broker.configure_symbol("BTCUSDT", 3)
+        await client.aclose()
+        return captured.value
+
+    error = asyncio.run(scenario())
+    assert error.method == "POST"
+    assert error.path == "/fapi/v1/marginType"
+    assert "Binance POST /fapi/v1/marginType error -4067" in str(error)
+
+
 def test_testnet_opening_requires_take_profit() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"status": "FILLED"})
@@ -272,6 +305,11 @@ def test_unfilled_opening_limit_is_canceled_without_creating_fake_protection() -
         requests.append(request)
         if request.url.path == "/fapi/v1/time":
             return httpx.Response(200, json={"serverTime": 1784040000000})
+        if request.url.path == "/fapi/v1/symbolConfig":
+            return httpx.Response(
+                200,
+                json=[{"symbol": "BTCUSDT", "marginType": "CROSSED", "leverage": 20}],
+            )
         if request.url.path == "/fapi/v1/marginType":
             return httpx.Response(400, json={"code": -4046, "msg": "No need to change"})
         if request.url.path == "/fapi/v1/leverage":
@@ -325,6 +363,11 @@ def test_partial_opening_fill_cancels_remainder_before_installing_protection() -
         lifecycle.append((request.method, request.url.path))
         if request.url.path == "/fapi/v1/time":
             return httpx.Response(200, json={"serverTime": 1784040000000})
+        if request.url.path == "/fapi/v1/symbolConfig":
+            return httpx.Response(
+                200,
+                json=[{"symbol": "BTCUSDT", "marginType": "CROSSED", "leverage": 20}],
+            )
         if request.url.path == "/fapi/v1/marginType":
             return httpx.Response(400, json={"code": -4046, "msg": "No need to change"})
         if request.url.path == "/fapi/v1/leverage":
@@ -406,10 +449,18 @@ def test_add_replaces_existing_candlepilot_bracket_after_new_pair_is_active() ->
                     },
                 ],
             )
+        if request.url.path == "/fapi/v1/symbolConfig":
+            return httpx.Response(
+                200,
+                json=[{"symbol": "BTCUSDT", "marginType": "ISOLATED", "leverage": 3}],
+            )
         if request.url.path == "/fapi/v1/marginType":
-            return httpx.Response(400, json={"code": -4046, "msg": "No need to change"})
+            return httpx.Response(
+                400,
+                json={"code": -4067, "msg": "Position side cannot be changed"},
+            )
         if request.url.path == "/fapi/v1/leverage":
-            return httpx.Response(200, json={"leverage": 3})
+            return httpx.Response(500, json={"code": -1000, "msg": "must not be called"})
         query = parse_qs(request.url.query.decode())
         if request.method == "DELETE":
             return httpx.Response(200, json={"status": "CANCELED"})
@@ -462,6 +513,7 @@ def test_add_replaces_existing_candlepilot_bracket_after_new_pair_is_active() ->
         for request in requests
         if request.url.path not in {
             "/fapi/v1/time",
+            "/fapi/v1/symbolConfig",
             "/fapi/v1/marginType",
             "/fapi/v1/leverage",
         }
@@ -474,6 +526,10 @@ def test_add_replaces_existing_candlepilot_bracket_after_new_pair_is_active() ->
         ("DELETE", "/fapi/v1/algoOrder", "cp-old-sl", "cp-old-sl"),
         ("DELETE", "/fapi/v1/algoOrder", "cp-old-tp", "cp-old-tp"),
     ]
+    assert not any(
+        request.url.path in {"/fapi/v1/marginType", "/fapi/v1/leverage"}
+        for request in requests
+    )
 
 
 def test_take_profit_failure_triggers_emergency_reduce() -> None:
@@ -485,6 +541,11 @@ def test_take_profit_failure_triggers_emergency_reduce() -> None:
         requests.append(request)
         if request.url.path == "/fapi/v1/time":
             return httpx.Response(200, json={"serverTime": 1784040000000})
+        if request.url.path == "/fapi/v1/symbolConfig":
+            return httpx.Response(
+                200,
+                json=[{"symbol": "BTCUSDT", "marginType": "CROSSED", "leverage": 20}],
+            )
         if request.url.path == "/fapi/v1/marginType":
             return httpx.Response(400, json={"code": -4046, "msg": "No need to change"})
         if request.url.path == "/fapi/v1/leverage":
@@ -545,6 +606,11 @@ def test_failed_protective_cleanup_requires_an_emergency_lock() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/fapi/v1/time":
             return httpx.Response(200, json={"serverTime": 1784040000000})
+        if request.url.path == "/fapi/v1/symbolConfig":
+            return httpx.Response(
+                200,
+                json=[{"symbol": "BTCUSDT", "marginType": "CROSSED", "leverage": 20}],
+            )
         if request.url.path == "/fapi/v1/marginType":
             return httpx.Response(400, json={"code": -4046, "msg": "No need to change"})
         if request.url.path == "/fapi/v1/leverage":

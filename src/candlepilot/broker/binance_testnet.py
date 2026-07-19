@@ -22,10 +22,21 @@ if TYPE_CHECKING:
 
 
 class BinanceApiError(RuntimeError):
-    def __init__(self, code: int, message: str, status_code: int) -> None:
-        super().__init__(f"Binance error {code}: {message}")
+    def __init__(
+        self,
+        code: int,
+        message: str,
+        status_code: int,
+        *,
+        method: str | None = None,
+        path: str | None = None,
+    ) -> None:
+        request = f" {method} {path}" if method is not None and path is not None else ""
+        super().__init__(f"Binance{request} error {code}: {message}")
         self.code = code
         self.status_code = status_code
+        self.method = method
+        self.path = path
 
 
 class ProtectiveStopError(RuntimeError):
@@ -198,7 +209,13 @@ class BinanceTestnetBroker:
             try:
                 payload = response.json()
             except ValueError as exc:
-                raise BinanceApiError(0, response.text, response.status_code) from exc
+                raise BinanceApiError(
+                    0,
+                    response.text,
+                    response.status_code,
+                    method=method,
+                    path=path,
+                ) from exc
             if response.status_code in {418, 429} and attempt + 1 < self.rate_limit_attempts:
                 retry_after = float(response.headers.get("Retry-After", self.recovery_delay))
                 if retry_after:
@@ -214,9 +231,17 @@ class BinanceTestnetBroker:
                     code,
                     str(payload.get("msg", response.text)),
                     response.status_code,
+                    method=method,
+                    path=path,
                 )
             return payload
-        raise BinanceApiError(0, "rate limit retry budget exhausted", 429)
+        raise BinanceApiError(
+            0,
+            "rate limit retry budget exhausted",
+            429,
+            method=method,
+            path=path,
+        )
 
     async def account(self) -> dict[str, Any]:
         return await self._signed_request("GET", "/fapi/v3/account", {})
@@ -231,10 +256,14 @@ class BinanceTestnetBroker:
 
         return await self._signed_request("GET", "/fapi/v3/positionRisk", {})
 
-    async def symbol_configuration(self) -> list[dict[str, Any]]:
+    async def symbol_configuration(
+        self, symbol: str | None = None
+    ) -> list[dict[str, Any]]:
         """Return leverage and margin mode removed from Binance's v3 snapshots."""
 
-        return await self._signed_request("GET", "/fapi/v1/symbolConfig", {})
+        return await self._signed_request(
+            "GET", "/fapi/v1/symbolConfig", {"symbol": symbol}
+        )
 
     async def account_snapshot(self) -> dict[str, Any]:
         """Return balances plus exchange-authoritative live position fields."""
@@ -389,16 +418,34 @@ class BinanceTestnetBroker:
     async def configure_symbol(self, symbol: str, leverage: int) -> None:
         if not 1 <= leverage <= 10:
             raise ValueError("testnet leverage must be between 1 and 10")
-        try:
-            await self._signed_request(
-                "POST", "/fapi/v1/marginType", {"symbol": symbol, "marginType": "ISOLATED"}
-            )
-        except BinanceApiError as exc:
-            if exc.code != -4046:  # No need to change margin type.
-                raise
-        await self._signed_request(
-            "POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": leverage}
+        rows = await self.symbol_configuration(symbol)
+        current = next(
+            (item for item in rows if str(item.get("symbol", "")) == symbol),
+            None,
         )
+        if current is None:
+            raise AccountReconciliationError(
+                f"symbol configuration response is missing {symbol}"
+            )
+        margin_type = str(current.get("marginType", "")).upper()
+        if margin_type != "ISOLATED":
+            try:
+                await self._signed_request(
+                    "POST",
+                    "/fapi/v1/marginType",
+                    {"symbol": symbol, "marginType": "ISOLATED"},
+                )
+            except BinanceApiError as exc:
+                if exc.code != -4046:  # No need to change margin type.
+                    raise
+        try:
+            current_leverage = int(current.get("leverage", 0))
+        except (TypeError, ValueError):
+            current_leverage = 0
+        if current_leverage != leverage:
+            await self._signed_request(
+                "POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": leverage}
+            )
 
     async def execute_with_stop(
         self,
