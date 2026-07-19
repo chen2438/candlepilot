@@ -91,6 +91,16 @@ def test_no_panel_is_lifted_out_of_the_grid() -> None:
             )
 
 
+def test_the_hero_gives_status_room_and_keeps_actions_on_one_row() -> None:
+    """The status must not collapse while the metric column wastes width."""
+
+    hero = _bodies(".hero")
+    assert _declares(hero, "grid-template-columns:minmax(220px,.85fr)minmax(240px,1fr)minmax(350px,1.35fr)")
+    assert _declares(_bodies(".controls"), "display:grid")
+    assert _declares(_bodies(".controls"), "grid-template-columns:repeat(3,1fr)")
+    assert _declares(_bodies(".controls>.cadence-select"), "grid-column:1/-1")
+
+
 @pytest.mark.parametrize("panel", FULL_WIDTH_PANELS)
 def test_the_wide_panels_fill_their_row(panel: str) -> None:
     """A six-column table in one half of a two-column grid is unreadable."""
