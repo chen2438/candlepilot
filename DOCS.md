@@ -874,6 +874,11 @@ push/PR 的所有新增提交重复执行同一校验，即使本地 hook 被绕
 运行上述 Ruff、Pytest 和构建。
 Python 依赖锁定于 `requirements.lock`，前端锁定于 `frontend/pnpm-lock.yaml`。
 
+API 回归测试按职责拆分：`tests/test_api_runtime.py` 覆盖正式运行、账户、Provider、配置与
+通用控制接口，`tests/test_api_backtest.py` 覆盖回测、试跑、采集与回测历史接口；两者只复用
+`tests/api_fixtures.py` 中不被 Pytest 单独收集的假 Provider、行情和账户适配器。新增 API 用例
+必须进入对应领域文件，禁止重新堆回单个综合测试文件，也不得为缩短耗时删除安全与并发回归。
+
 纯人工提交示例（只有确实没有 Agent 参与时使用）：
 
 ```bash
