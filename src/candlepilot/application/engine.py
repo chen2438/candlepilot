@@ -558,12 +558,17 @@ class TradingEngine:
                             )
                         )
                         continue
-                    except ProviderError as exc:
+                    except Exception as exc:
+                        provider_error = (
+                            exc
+                            if isinstance(exc, ProviderError)
+                            else ProviderError(f"{type(exc).__name__}: {exc}")
+                        )
                         failed_at = datetime.now(UTC)
                         state = self._provider_route_states[name]
                         state.consecutive_failures += 1
                         state.cooldown_until = failed_at + PROVIDER_FAILURE_COOLDOWN
-                        state.last_error = str(exc)
+                        state.last_error = str(provider_error)
                         state.last_failed_at = failed_at
                         retry_continues = (
                             position < len(round_candidates)
@@ -573,7 +578,7 @@ class TradingEngine:
                             self._provider_failure_result(
                                 provider_name=name,
                                 provider=provider,
-                                error=exc,
+                                error=provider_error,
                                 snapshot=snapshot,
                                 portfolio=portfolio,
                                 route_position=self.provider_chain.index(name) + 1,

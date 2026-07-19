@@ -54,6 +54,13 @@ class FailedProvider(DecisionProvider):
         raise ProviderError("fixture failure")
 
 
+class UnexpectedFailedProvider(FailedProvider):
+    name = "unexpected-failure"
+
+    async def generate_trade_intent(self, snapshot, portfolio) -> ProviderResult:
+        raise ValueError("unexpected fixture failure")
+
+
 class FlakyProvider(FakeProvider):
     name = "flaky-auth"
 
@@ -635,7 +642,9 @@ def test_route_failures_retry_three_times_and_success_clears_the_count(tmp_path:
 
         engine = TradingEngine(
             testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
-            providers=ProviderRegistry([FailedProvider(), FakeProvider()]),
+            providers=ProviderRegistry(
+                [FailedProvider(), UnexpectedFailedProvider(), FakeProvider()]
+            ),
             audit=AuditRepository(database.sessions),
             market=market,  # type: ignore[arg-type]
             retry_sleep=capture_retry,
@@ -659,6 +668,15 @@ def test_route_failures_retry_three_times_and_success_clears_the_count(tmp_path:
         exhausted = engine.route_failure_count
         await engine.stop()
 
+        # A provider implementation bug is still a failed provider attempt. It
+        # must not escape to the scheduler and repeat forever outside the route
+        # threshold merely because it used the wrong exception class.
+        engine.select_provider_chain(["unexpected-failure"])
+        await engine.start()
+        await engine.evaluate(snapshot, portfolio, rules)
+        unexpected_exhausted = engine.route_failure_count
+        await engine.stop()
+
         # A working provider clears the exhaustion marker on the next success.
         engine.select_provider_chain(["fake-auth"])
         await engine.start()
@@ -666,12 +684,13 @@ def test_route_failures_retry_three_times_and_success_clears_the_count(tmp_path:
         await engine.evaluate(snapshot, portfolio, rules)
         cleared = engine.route_failure_count
         await database.close()
-        return exhausted, cleared, retry_delays
+        return exhausted, unexpected_exhausted, cleared, retry_delays
 
-    exhausted, cleared, retry_delays = asyncio.run(scenario())
+    exhausted, unexpected_exhausted, cleared, retry_delays = asyncio.run(scenario())
     assert exhausted == 3
+    assert unexpected_exhausted == 3
     assert cleared == 0
-    assert retry_delays == [5.0, 15.0]
+    assert retry_delays == [5.0, 15.0, 5.0, 15.0]
 
 
 def test_testnet_add_requests_protective_bracket_replacement(tmp_path: Path) -> None:

@@ -1342,7 +1342,17 @@ def create_app(
                     )
                 return name, shared_seconds + time.perf_counter() - started
 
-            measured = await asyncio.gather(*(invoke(name) for name in engine.provider_chain))
+            tasks = [
+                asyncio.create_task(invoke(name), name=f"candlepilot-startup-probe-{name}")
+                for name in engine.provider_chain
+            ]
+            try:
+                measured = await asyncio.gather(*tasks)
+            except BaseException:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
             for name, seconds in measured:
                 durations[name].append(seconds)
             progress["durations_seconds"] = {

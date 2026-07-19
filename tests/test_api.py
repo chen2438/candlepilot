@@ -397,6 +397,53 @@ def test_live_startup_probe_publishes_each_decision_progress(tmp_path: Path) -> 
     asyncio.run(database.close())
 
 
+def test_live_startup_probe_cancels_sibling_providers_after_failure(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'live-probe-cancel.db'}")
+    market = ApiMarket()
+    hanging_started = threading.Event()
+    hanging_cancelled = threading.Event()
+
+    class Failing(ApiProvider):
+        name = "failing-startup"
+
+        async def generate_trade_intent(self, snapshot, portfolio):
+            await asyncio.to_thread(hanging_started.wait)
+            raise RuntimeError("startup fixture failed")
+
+    class Hanging(ApiProvider):
+        name = "hanging-startup"
+
+        async def generate_trade_intent(self, snapshot, portfolio):
+            hanging_started.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                hanging_cancelled.set()
+                raise
+
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([Failing(), Hanging()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+        cadences=("15m",),
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        client.post(
+            "/api/providers/select",
+            json={"providers": ["failing-startup", "hanging-startup"]},
+        )
+        response = client.post("/api/engine/start")
+        assert response.status_code == 409
+        assert "startup fixture failed" in response.json()["detail"]
+        assert hanging_cancelled.is_set()
+        assert engine.providers.get("failing-startup").timeout == 45
+        assert engine.providers.get("hanging-startup").timeout == 45
+    asyncio.run(database.close())
+
+
 def test_live_start_rejects_a_probe_that_cannot_fit_the_selected_cadence(
     tmp_path: Path, monkeypatch
 ) -> None:
