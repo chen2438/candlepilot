@@ -217,6 +217,7 @@ export interface DecisionEvent {
     rationale: string;
   };
   duration_ms: number;
+  decision_duration_ms?: number;
   outcome: "hold" | "approved" | "rejected" | "analysis_only" | "executed" | "execution_failed";
   risk: null | {
     id: number;
@@ -251,6 +252,16 @@ export interface DecisionEvent {
     created_at: string;
   };
   created_at: string;
+}
+
+export interface LiveRunPerformance {
+  live_run_id: number;
+  total_pnl: string | null;
+  wins: number;
+  closed_trades: number;
+  win_rate: string | null;
+  includes_end_unrealized: boolean;
+  valued_at: string | null;
 }
 
 export interface DecisionDetail extends DecisionEvent {

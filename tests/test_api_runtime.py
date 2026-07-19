@@ -89,6 +89,11 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         assert client.post("/api/engine/start").status_code == 409
         assert client.post("/api/providers/select", json={"providers": ["api-fixture"]}).status_code == 200
         assert client.post("/api/engine/start").json()["running"] is True
+        running_performance = client.get("/api/live-runs/performance").json()
+        assert running_performance[0]["total_pnl"] == "0"
+        assert running_performance[0]["win_rate"] is None
+        assert running_performance[0]["includes_end_unrealized"] is True
+        assert client.get("/api/live-runs/performance?limit=0").status_code == 422
         universe = client.post("/api/universe/refresh").json()
         assert universe[0]["symbol"] == "BTCUSDT"
         refreshed_at = client.get("/api/status").json()["universe_refreshed_at"]
@@ -126,10 +131,12 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
             decision_event = socket.receive_json()
             assert decision_event["type"] == "decisions"
             assert decision_event["data"][0]["intent"]["rationale"] == "websocket fixture"
+            assert decision_event["data"][0]["decision_duration_ms"] >= 1
             assert decision_event["data"][0]["created_at"].endswith("+00:00")
         stopped = client.post("/api/engine/emergency-stop").json()
         assert stopped["running"] is False
         assert stopped["emergency_locked"] is True
+        assert client.get("/api/live-runs/performance").json()[0]["total_pnl"] == "0"
         completed_usage = client.get("/api/metrics/run-session").json()
         assert completed_usage["state"] == "completed"
         assert completed_usage["total_tokens"] == 150

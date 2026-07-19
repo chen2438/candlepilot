@@ -3,6 +3,7 @@ import type {
   AccountPortfolio,
   AccountPosition,
   ManualCloseResult,
+  LiveRunPerformance,
   BacktestDecision,
   BacktestEstimate,
   BacktestResult,
@@ -354,6 +355,7 @@ export default function App() {
   const [providers, setProviders] = useState<ProviderHealth[]>([]);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [decisions, setDecisions] = useState<DecisionEvent[]>([]);
+  const [liveRunPerformance, setLiveRunPerformance] = useState<LiveRunPerformance[]>([]);
   const [decisionFilter, setDecisionFilter] = useState<DecisionFilter>("all");
   const [decisionsExhausted, setDecisionsExhausted] = useState(false);
   const decisionFilterRef = useRef(decisionFilter);
@@ -629,6 +631,9 @@ export default function App() {
   const refreshDecisions = useCallback(async () => {
     mergeDecisions(await api<DecisionEvent[]>(decisionQueryUrl(decisionFilter)));
   }, [decisionFilter, mergeDecisions]);
+  const refreshLiveRunPerformance = useCallback(async () => {
+    setLiveRunPerformance(await api<LiveRunPerformance[]>("/api/live-runs/performance?limit=100"));
+  }, []);
   const refreshDecisionsRef = useRef(refreshDecisions);
   refreshDecisionsRef.current = refreshDecisions;
 
@@ -666,10 +671,12 @@ export default function App() {
   useEffect(() => {
     refresh().catch((reason: Error) => setError(reason.message));
     refreshAccount().catch((reason: Error) => setError(reason.message));
+    refreshLiveRunPerformance().catch(() => undefined);
     refreshOperations().catch(() => undefined);
     refreshRunSession().catch(() => undefined);
     const account = window.setInterval(() => {
       refreshAccount().catch(() => undefined);
+      refreshLiveRunPerformance().catch(() => undefined);
       refreshOperations().catch(() => undefined);
       api<EngineStatus>("/api/status").then(setStatus).catch(() => undefined);
     }, 5000);
@@ -713,7 +720,7 @@ export default function App() {
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       socket?.close();
     };
-  }, [refresh, refreshAccount, mergeDecisions, refreshOperations, refreshRunSession]);
+  }, [refresh, refreshAccount, mergeDecisions, refreshLiveRunPerformance, refreshOperations, refreshRunSession]);
 
   const act = useCallback(async (name: string, path: string, body?: unknown) => {
     setBusy(name);
@@ -724,13 +731,15 @@ export default function App() {
         body: body === undefined ? undefined : JSON.stringify(body),
       });
       setStatus(next);
-      if (path.startsWith("/api/engine/")) await refreshRunSession();
+      if (path.startsWith("/api/engine/")) {
+        await Promise.all([refreshRunSession(), refreshLiveRunPerformance()]);
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setBusy(null);
     }
-  }, [refreshRunSession]);
+  }, [refreshLiveRunPerformance, refreshRunSession]);
 
   const refreshUniverse = useCallback(async () => {
     setBusy("universe");
@@ -1214,6 +1223,7 @@ export default function App() {
 
           <DecisionPanel
             decisions={decisions}
+            liveRunPerformance={liveRunPerformance}
             filter={decisionFilter}
             onFilter={setDecisionFilter}
             onLoadOlder={loadOlderDecisions}
@@ -2771,9 +2781,11 @@ function groupDecisionEvents(decisions: DecisionEvent[]) {
 function DecisionRunHeader({
   run,
   decisionCount,
+  performance,
 }: {
   run: NonNullable<DecisionEvent["live_run"]>;
   decisionCount: number;
+  performance: LiveRunPerformance | undefined;
 }) {
   const config = [
     run.config.cadences?.join(" / "),
@@ -2785,8 +2797,22 @@ function DecisionRunHeader({
       <small>{formatLocalDateTimeSeconds(new Date(run.started_at))}{run.ended_at ? ` → ${formatLocalDateTimeSeconds(new Date(run.ended_at))}` : " → 现在"}</small>
     </span>
     <span className="decision-run-summary">
-      <span>{[config, `${decisionCount} 条决策`].filter(Boolean).join(" · ")}</span>
-      {run.stop_reason && <small>停止原因：{run.stop_reason}</small>}
+      <span className="decision-run-performance">
+        <span data-tooltip="运行开始至当前或结束时的账户权益变化，包含已实现盈亏和该时点未平仓仓位的未实现盈亏。">
+          总盈亏<strong className={performance?.total_pnl !== null && Number(performance?.total_pnl) < 0 ? "negative" : "positive"}>
+            {performance?.total_pnl === null || performance === undefined
+              ? "—"
+              : `${Number(performance.total_pnl) > 0 ? "+" : ""}${money(performance.total_pnl)} USDT`}
+          </strong>
+        </span>
+        <span data-tooltip="盈利平仓笔数除以该运行已完成的平仓笔数；没有平仓时显示 —。">
+          胜率<strong>{performance?.win_rate === null || performance === undefined
+            ? "—"
+            : `${(Number(performance.win_rate) * 100).toFixed(0)}% (${performance.wins}/${performance.closed_trades})`}</strong>
+        </span>
+      </span>
+      <small className="decision-run-config">{[config, `${decisionCount} 条决策`].filter(Boolean).join(" · ")}</small>
+      {run.stop_reason && <small className="decision-run-stop">停止原因：{run.stop_reason}</small>}
     </span>
     <i className="decision-run-toggle" aria-hidden="true" />
   </summary>;
@@ -2795,10 +2821,12 @@ function DecisionRunHeader({
 function DecisionRunGroup({
   run,
   decisionCount,
+  performance,
   children,
 }: {
   run: NonNullable<DecisionEvent["live_run"]>;
   decisionCount: number;
+  performance: LiveRunPerformance | undefined;
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(run.status === "running");
@@ -2807,19 +2835,21 @@ function DecisionRunGroup({
     open={open}
     onToggle={(event) => setOpen(event.currentTarget.open)}
   >
-    <DecisionRunHeader decisionCount={decisionCount} run={run} />
+    <DecisionRunHeader decisionCount={decisionCount} performance={performance} run={run} />
     {children}
   </details>;
 }
 
 export function DecisionPanel({
   decisions,
+  liveRunPerformance,
   filter,
   onFilter,
   onLoadOlder,
   exhausted,
 }: {
   decisions: DecisionEvent[];
+  liveRunPerformance: LiveRunPerformance[];
   filter: DecisionFilter;
   onFilter: (next: DecisionFilter) => void;
   onLoadOlder: () => Promise<void>;
@@ -2832,6 +2862,9 @@ export function DecisionPanel({
   const [detailErrors, setDetailErrors] = useState<Record<number, string>>({});
   const [copied, setCopied] = useState<string | null>(null);
   const visible = decisions;
+  const performanceByRun = new Map(
+    liveRunPerformance.map((performance) => [performance.live_run_id, performance]),
+  );
 
   const loadOlder = async () => {
     setLoadingOlder(true);
@@ -2892,7 +2925,12 @@ export function DecisionPanel({
       </div>
       <div className="signal-list">
         {groupDecisionEvents(visible).map((group) => (
-          <DecisionRunGroup decisionCount={group.decisions.length} key={group.key} run={group.run}>
+          <DecisionRunGroup
+            decisionCount={group.decisions.length}
+            key={group.key}
+            performance={performanceByRun.get(group.run.id)}
+            run={group.run}
+          >
             {group.decisions.map((decision) => (
           <div className={`decision-event ${expanded === decision.id ? "expanded" : ""}`} key={decision.id}>
             <button
@@ -2924,7 +2962,10 @@ export function DecisionPanel({
                   ? <small>损失 {executionLoss(decision.execution.estimated_loss_usdt)}</small>
                   : null}
               </span>
-              <span className="signal-time">{new Date(decision.created_at).toLocaleTimeString("zh-CN", { hour12: false })}</span>
+              <span className="signal-time">
+                {new Date(decision.created_at).toLocaleTimeString("zh-CN", { hour12: false })}
+                <small>耗时 {((decision.decision_duration_ms ?? decision.duration_ms) / 1000).toFixed(2)}s</small>
+              </span>
               <span className="decision-chevron">{expanded === decision.id ? "−" : "+"}</span>
             </button>
             {expanded === decision.id && (

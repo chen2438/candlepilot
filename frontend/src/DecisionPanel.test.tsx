@@ -39,6 +39,7 @@ const decision: DecisionEvent = {
     rationale: "Trend entry long.",
   },
   duration_ms: 50980,
+  decision_duration_ms: 51250,
   outcome: "rejected",
   risk: {
     id: 1,
@@ -56,6 +57,7 @@ describe("DecisionPanel", () => {
     render(
       <DecisionPanel
         decisions={[decision]}
+        liveRunPerformance={[]}
         filter="all"
         onFilter={vi.fn()}
         onLoadOlder={vi.fn(async () => undefined)}
@@ -78,6 +80,7 @@ describe("DecisionPanel", () => {
     render(
       <DecisionPanel
         decisions={[decision]}
+        liveRunPerformance={[]}
         filter="all"
         onFilter={vi.fn()}
         onLoadOlder={vi.fn(async () => undefined)}
@@ -109,6 +112,7 @@ describe("DecisionPanel", () => {
     render(
       <DecisionPanel
         decisions={[decision]}
+        liveRunPerformance={[]}
         filter="all"
         onFilter={vi.fn()}
         onLoadOlder={vi.fn(async () => undefined)}
@@ -167,6 +171,15 @@ describe("DecisionPanel", () => {
     render(
       <DecisionPanel
         decisions={[runningDecision, stoppedDecision]}
+        liveRunPerformance={[{
+          live_run_id: 2,
+          total_pnl: "12.5",
+          wins: 2,
+          closed_trades: 3,
+          win_rate: "0.6666666667",
+          includes_end_unrealized: true,
+          valued_at: "2026-07-19T17:00:27Z",
+        }]}
         filter="all"
         onFilter={vi.fn()}
         onLoadOlder={vi.fn(async () => undefined)}
@@ -181,6 +194,9 @@ describe("DecisionPanel", () => {
     expect(runningGroup?.open).toBe(true);
     expect(stoppedGroup?.open).toBe(false);
     expect(screen.getAllByText(/1 条决策/)).toHaveLength(2);
+    expect(screen.getByText("+12.50 USDT")).toBeTruthy();
+    expect(screen.getByText("67% (2/3)")).toBeTruthy();
+    expect(screen.getAllByText("耗时 51.25s")).toHaveLength(2);
 
     await user.click(stoppedHeader);
 

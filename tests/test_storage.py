@@ -65,6 +65,7 @@ def test_inference_audit_round_trip(tmp_path: Path) -> None:
     assert replay_rows[0]["model"] == "test-model"
     assert replay_rows[0]["intent"].symbol == "BTCUSDT"
     assert detail is not None
+    assert detail["decision_duration_ms"] >= 123
     assert detail["input"]["market"]["symbol"] == "BTCUSDT"
     assert detail["prompt"] == "fixture prompt"
     assert detail["audit_status"] == "complete"
@@ -78,7 +79,8 @@ def test_live_runs_group_inferences_and_record_terminal_reason(tmp_path: Path) -
         await database.initialize()
         repository = AuditRepository(database.sessions)
         run_id = await repository.create_live_run(
-            {"provider_chain": ["codex-auth"], "cadences": ["15m"]}
+            {"provider_chain": ["codex-auth"], "cadences": ["15m"]},
+            start_equity=Decimal("1000"),
         )
         intent = TradeIntent.hold("BTCUSDT", "15m", "grouped")
         inference_id = await repository.record_inference(
@@ -96,8 +98,10 @@ def test_live_runs_group_inferences_and_record_terminal_reason(tmp_path: Path) -
             run_id,
             status="auto_stopped",
             stop_reason="run duration limit reached (60s)",
+            end_equity=Decimal("1012.5"),
         )
         events = await repository.recent_decision_events()
+        performance = await repository.recent_live_run_performance()
 
         stale_id = await repository.create_live_run({"provider_chain": ["slow"]})
         interrupted = await repository.interrupt_open_live_runs()
@@ -114,14 +118,19 @@ def test_live_runs_group_inferences_and_record_terminal_reason(tmp_path: Path) -
         )
         legacy = await repository.decision_detail(legacy_id)
         await database.close()
-        return run_id, inference_id, events, stale_id, interrupted, legacy
+        return run_id, inference_id, events, performance, stale_id, interrupted, legacy
 
-    run_id, inference_id, events, stale_id, interrupted, legacy = asyncio.run(scenario())
+    run_id, inference_id, events, performance, stale_id, interrupted, legacy = asyncio.run(
+        scenario()
+    )
     assert events[0]["id"] == inference_id
     assert events[0]["live_run_id"] == run_id
     assert events[0]["live_run"]["status"] == "auto_stopped"
     assert events[0]["live_run"]["stop_reason"] == "run duration limit reached (60s)"
     assert events[0]["live_run"]["config"]["cadences"] == ["15m"]
+    assert "_performance" not in events[0]["live_run"]["config"]
+    assert performance[0]["total_pnl"] == "12.5"
+    assert performance[0]["win_rate"] is None
     assert stale_id > run_id
     assert interrupted == 1
     assert legacy is not None
@@ -295,6 +304,10 @@ def test_trade_fills_include_protective_and_manual_exits_without_duplicate_entri
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'trade-fills.db'}")
         await database.initialize()
         repository = AuditRepository(database.sessions)
+        run_id = await repository.create_live_run(
+            {"provider_chain": ["local-rule"]},
+            start_equity=Decimal("1000"),
+        )
         now = datetime.now(UTC)
         for client_order_id, quantity, average_price in (
             ("cp-entry", "283", "0.11188"),
@@ -312,7 +325,8 @@ def test_trade_fills_include_protective_and_manual_exits_without_duplicate_entri
                 rationale="entry",
             )
             inference_id = await repository.record_inference(
-                ProviderResult(intent, "local-rule", "trend-v1", timedelta(), "{}", {})
+                ProviderResult(intent, "local-rule", "trend-v1", timedelta(), "{}", {}),
+                live_run_id=run_id,
             )
             await repository.record_execution(
                 "BANKUSDT",
@@ -413,11 +427,19 @@ def test_trade_fills_include_protective_and_manual_exits_without_duplicate_entri
         ]
         for event in events:
             await repository.record_user_event(event)
+        await repository.finish_live_run(
+            run_id,
+            status="stopped",
+            stop_reason="done",
+            ended_at=now + timedelta(minutes=4),
+            end_equity=Decimal("998.8218"),
+        )
         result = await repository.recent_trade_fills()
+        performance = await repository.recent_live_run_performance()
         await database.close()
-        return result
+        return result, performance
 
-    fills = asyncio.run(scenario())
+    fills, performance = asyncio.run(scenario())
     assert [item["client_order_id"] for item in fills] == [
         "cp-manual-123",
         "cp-entry-2",
@@ -443,6 +465,9 @@ def test_trade_fills_include_protective_and_manual_exits_without_duplicate_entri
     assert Decimal(fills[2]["notional_usdt"]) == Decimal("30.32628")
     assert Decimal(fills[2]["realized_return_percent"]) < 0
     assert sum(item["client_order_id"] == "cp-entry" for item in fills) == 1
+    assert performance[0]["closed_trades"] == 2
+    assert performance[0]["wins"] == 1
+    assert performance[0]["win_rate"] == "0.5"
 
 
 def test_trade_fill_realized_return_uses_combined_add_entry_margin(tmp_path: Path) -> None:

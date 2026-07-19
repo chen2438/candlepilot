@@ -259,7 +259,12 @@ class TradingEngine:
             )
         return None
 
-    async def start(self, *, run_config: Mapping[str, object] | None = None) -> None:
+    async def start(
+        self,
+        *,
+        run_config: Mapping[str, object] | None = None,
+        start_equity: Decimal | None = None,
+    ) -> None:
         if self.running:
             raise RuntimeError("engine is already running")
         await self.restore_runtime_state()
@@ -321,13 +326,21 @@ class TradingEngine:
         }
         if run_config is not None:
             config.update(run_config)
-        self.live_run_id = await self.audit.create_live_run(config)
+        self.live_run_id = await self.audit.create_live_run(
+            config,
+            start_equity=start_equity,
+        )
         self.route_failure_count = 0
         self.rescue_count = 0
         self.auto_stop_reason = None
         self.running = True
 
-    async def stop(self, *, reason: str | None = None) -> None:
+    async def stop(
+        self,
+        *,
+        reason: str | None = None,
+        end_equity: Decimal | None = None,
+    ) -> None:
         if self.running:
             self.run_end_inference_id = await self.audit.latest_inference_id()
             self.run_ended_at = datetime.now(UTC)
@@ -339,11 +352,17 @@ class TradingEngine:
                     status=status,
                     stop_reason=stop_reason,
                     ended_at=self.run_ended_at,
+                    end_equity=end_equity,
                 )
         self.running = False
         self.restore_provider_timeouts()
 
-    async def emergency_stop(self, *, now: datetime | None = None) -> None:
+    async def emergency_stop(
+        self,
+        *,
+        now: datetime | None = None,
+        end_equity: Decimal | None = None,
+    ) -> None:
         now = now or datetime.now(UTC)
         if now.tzinfo is None:
             raise ValueError("emergency stop time must be timezone-aware")
@@ -356,6 +375,7 @@ class TradingEngine:
                     status="emergency_stopped",
                     stop_reason=self.auto_stop_reason or "emergency stop requested",
                     ended_at=now,
+                    end_equity=end_equity,
                 )
         self.running = False
         self.restore_provider_timeouts()

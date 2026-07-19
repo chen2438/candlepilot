@@ -383,10 +383,18 @@ class AuditRepository:
                     await session.execute(delete(LiveRunRow))
         return counts
 
-    async def create_live_run(self, config: Mapping[str, Any]) -> int:
+    async def create_live_run(
+        self,
+        config: Mapping[str, Any],
+        *,
+        start_equity: Decimal | None = None,
+    ) -> int:
+        stored_config = dict(config)
+        if start_equity is not None:
+            stored_config["_performance"] = {"start_equity": str(start_equity)}
         row = LiveRunRow(
             status="running",
-            config_json=json.dumps(dict(config), separators=(",", ":")),
+            config_json=json.dumps(stored_config, separators=(",", ":")),
         )
         async with self.sessions.begin() as session:
             session.add(row)
@@ -400,18 +408,107 @@ class AuditRepository:
         status: str,
         stop_reason: str | None,
         ended_at: datetime | None = None,
+        end_equity: Decimal | None = None,
     ) -> None:
         self._validate_live_run_status(status)
         async with self.sessions.begin() as session:
-            await session.execute(
-                update(LiveRunRow)
-                .where(LiveRunRow.id == run_id, LiveRunRow.status == "running")
-                .values(
-                    status=status,
-                    stop_reason=stop_reason,
-                    ended_at=ended_at or datetime.now(UTC),
+            row = await session.scalar(
+                select(LiveRunRow).where(
+                    LiveRunRow.id == run_id,
+                    LiveRunRow.status == "running",
                 )
             )
+            if row is None:
+                return
+            config = json.loads(row.config_json or "{}")
+            if end_equity is not None:
+                performance = dict(config.get("_performance") or {})
+                performance["end_equity"] = str(end_equity)
+                config["_performance"] = performance
+            row.config_json = json.dumps(config, separators=(",", ":"))
+            row.status = status
+            row.stop_reason = stop_reason
+            row.ended_at = ended_at or datetime.now(UTC)
+
+    async def recent_live_run_performance(
+        self,
+        limit: int = 100,
+        *,
+        current_equity: Decimal | None = None,
+    ) -> list[dict[str, Any]]:
+        async with self.sessions() as session:
+            runs = (
+                await session.scalars(
+                    select(LiveRunRow).order_by(LiveRunRow.id.desc()).limit(limit)
+                )
+            ).all()
+            run_ids = [row.id for row in runs]
+            attempt_rows = (
+                await session.execute(
+                    select(ExecutionAttemptRow.client_order_id, InferenceRow.live_run_id)
+                    .join(InferenceRow, InferenceRow.id == ExecutionAttemptRow.inference_id)
+                    .where(
+                        InferenceRow.live_run_id.in_(run_ids),
+                        ExecutionAttemptRow.client_order_id.is_not(None),
+                    )
+                )
+            ).all() if run_ids else []
+
+        order_runs = {
+            client_order_id: run_id
+            for client_order_id, run_id in attempt_rows
+            if client_order_id is not None and run_id is not None
+        }
+        runs_by_id = {row.id: row for row in runs}
+        closed: Counter[int] = Counter()
+        wins: Counter[int] = Counter()
+        for fill in await self.recent_trade_fills(10_000):
+            if not fill["reduce_only"] or fill["realized_pnl"] is None:
+                continue
+            related_id = fill.get("related_client_order_id") or fill["client_order_id"]
+            run_id = order_runs.get(related_id)
+            if run_id is None:
+                continue
+            run = runs_by_id[run_id]
+            filled_at = datetime.fromisoformat(str(fill["created_at"]))
+            if run.ended_at is not None and filled_at > self._utc(run.ended_at):
+                continue
+            closed[run_id] += 1
+            if Decimal(str(fill["realized_pnl"])) > 0:
+                wins[run_id] += 1
+
+        result = []
+        for run in runs:
+            config = json.loads(run.config_json or "{}")
+            performance = config.get("_performance") or {}
+            start_equity = performance.get("start_equity")
+            valuation_equity = (
+                current_equity if run.status == "running" else performance.get("end_equity")
+            )
+            total_pnl = (
+                Decimal(str(valuation_equity)) - Decimal(str(start_equity))
+                if start_equity is not None and valuation_equity is not None
+                else None
+            )
+            closed_trades = closed[run.id]
+            result.append(
+                {
+                    "live_run_id": run.id,
+                    "total_pnl": str(total_pnl) if total_pnl is not None else None,
+                    "wins": wins[run.id],
+                    "closed_trades": closed_trades,
+                    "win_rate": str(Decimal(wins[run.id]) / Decimal(closed_trades))
+                    if closed_trades
+                    else None,
+                    "includes_end_unrealized": total_pnl is not None,
+                    "valued_at": self._utc(datetime.now(UTC))
+                    if run.status == "running" and total_pnl is not None
+                    else self._utc(run.ended_at)
+                    if total_pnl is not None and run.ended_at is not None
+                    else None,
+                }
+            )
+        return result
 
     async def interrupt_open_live_runs(self, *, ended_at: datetime | None = None) -> int:
         async with self.sessions.begin() as session:
@@ -1488,6 +1585,11 @@ class AuditRepository:
                     else None,
                     "intent": intent.model_dump(mode="json"),
                     "duration_ms": inference.duration_ms,
+                    "decision_duration_ms": self._decision_duration_ms(
+                        inference,
+                        risk,
+                        attempt,
+                    ),
                     "outcome": outcome,
                     "risk": {
                         "id": risk.id,
@@ -1520,6 +1622,26 @@ class AuditRepository:
             return "approved"
         return "executed" if attempt.status == "SUCCEEDED" else "execution_failed"
 
+    def _decision_duration_ms(
+        self,
+        inference: InferenceRow,
+        risk: RiskRow | None,
+        attempt: ExecutionAttemptRow | None,
+    ) -> float:
+        completed_at = (
+            attempt.created_at
+            if attempt is not None
+            else risk.created_at
+            if risk is not None
+            else inference.created_at
+        )
+        audit_ms = max(
+            0.0,
+            (self._utc(completed_at) - self._utc(inference.created_at)).total_seconds()
+            * 1000,
+        )
+        return inference.duration_ms + audit_ms
+
     def _execution_attempt_dict(
         self, attempt: ExecutionAttemptRow | None
     ) -> dict[str, Any] | None:
@@ -1535,10 +1657,12 @@ class AuditRepository:
     def _live_run_dict(self, row: LiveRunRow | None) -> dict[str, Any] | None:
         if row is None:
             return None
+        config = json.loads(row.config_json or "{}")
+        config.pop("_performance", None)
         return {
             "id": row.id,
             "status": row.status,
-            "config": json.loads(row.config_json or "{}"),
+            "config": config,
             "stop_reason": row.stop_reason,
             "started_at": self._utc(row.started_at),
             "ended_at": self._utc(row.ended_at) if row.ended_at is not None else None,
@@ -1615,6 +1739,11 @@ class AuditRepository:
             "provenance": usage.get("_provenance", {}),
             "intent": intent.model_dump(mode="json"),
             "duration_ms": inference.duration_ms,
+            "decision_duration_ms": self._decision_duration_ms(
+                inference,
+                risk,
+                attempt,
+            ),
             "outcome": self._decision_outcome(intent, risk, attempt),
             "risk": {
                 "id": risk.id,
