@@ -3139,6 +3139,9 @@ export function AccountPanel({
           <tbody>
             {positions.map((position) => {
               const protectionMetrics = positionProtectionMetrics(position);
+              const unrealizedReturnPercent = Number(position.margin_used) > 0
+                ? (Number(position.unrealized_pnl) / Number(position.margin_used)) * 100
+                : null;
               const protectionFallback = position.protection_source === "exchange" ? "交易所侧"
                 : position.protection_source === "missing" ? "缺失"
                   : position.protection_source === "unknown" ? "待确认" : "—";
@@ -3147,7 +3150,9 @@ export function AccountPanel({
                 <td><span className="position-inline-pair"><span className={position.side === "LONG" ? "positive" : "negative"}>{position.side}</span><i>/</i><span>{position.leverage}×</span></span></td>
                 <td><span className="position-inline-pair"><span>{money(position.notional)}</span><i>/</i><span>{money(position.margin_used)} USDT</span></span></td>
                 <td><span className="position-inline-pair"><span>{Number(position.average_price).toFixed(4)}</span><i>/</i><span>{Number(position.mark_price).toFixed(4)}</span></span></td>
-                <td className={Number(position.unrealized_pnl) >= 0 ? "positive" : "negative"}>{money(position.unrealized_pnl)}</td>
+                <td className={Number(position.unrealized_pnl) >= 0 ? "positive" : "negative"}>
+                  <span className="pnl-with-return"><span>{money(position.unrealized_pnl)}</span><em>{signedPositionPercent(unrealizedReturnPercent)}</em></span>
+                </td>
                 <td>{protectionMetrics.riskRewardRatio === null
                   ? "—"
                   : `${protectionMetrics.riskRewardRatio.toFixed(2)} : 1`}</td>
@@ -3191,7 +3196,7 @@ export function AccountPanel({
       <h4 className="account-subhead">成交明细</h4>
       <div className="table-wrap account-table">
         <table>
-          <thead><tr><th>时间</th><th>标的</th><th>方向</th><th>用途</th><th>成交量</th><th>成交价</th><th>已实现盈亏</th><th>关联开仓</th><th>订单号</th></tr></thead>
+          <thead><tr><th>时间</th><th>标的</th><th>方向</th><th>用途</th><th>成交额（USDT）</th><th>成交价</th><th data-tooltip="已实现盈亏及其相对于该笔平仓所对应开仓保证金的回报率；无法可靠追溯开仓保证金时回报率显示为「—」。">已实现盈亏 / 回报率</th><th>关联开仓</th><th>订单号</th></tr></thead>
           <tbody>
             {fills.map((fill) => (
               <tr key={`${fill.source}-${fill.id}`}>
@@ -3201,10 +3206,13 @@ export function AccountPanel({
                   {fill.side === "BUY" ? "买入" : fill.side === "SELL" ? "卖出" : "—"}
                 </td>
                 <td><span className={`fill-purpose ${fill.purpose}`}>{fillPurposeLabel(fill.purpose)}</span></td>
-                <td>{Number(fill.report.filled_quantity).toFixed(4)}</td>
+                <td>{fill.notional_usdt === null ? "—" : `${money(fill.notional_usdt)} USDT`}</td>
                 <td>{fill.report.average_price === null ? "—" : Number(fill.report.average_price).toFixed(4)}</td>
                 <td className={fill.realized_pnl !== null && Number(fill.realized_pnl) < 0 ? "fill-pnl negative" : "fill-pnl"}>
-                  {fill.realized_pnl === null || fill.purpose === "entry" ? "—" : `${Number(fill.realized_pnl).toFixed(4)} USDT`}
+                  {fill.realized_pnl === null || fill.purpose === "entry" ? "—" : <span className="pnl-with-return">
+                    <span>{Number(fill.realized_pnl).toFixed(4)} USDT</span>
+                    <em>{signedPositionPercent(fill.realized_return_percent === null ? null : Number(fill.realized_return_percent))}</em>
+                  </span>}
                 </td>
                 <td><small title={fill.related_client_order_id ?? undefined}>{shortOrderId(fill.related_client_order_id)}</small></td>
                 <td><small title={fill.client_order_id}>{shortOrderId(fill.client_order_id)}</small></td>

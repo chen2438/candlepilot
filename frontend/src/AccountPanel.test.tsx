@@ -14,7 +14,7 @@ const position: AccountPosition = {
   average_price: "64797",
   mark_price: "64800",
   leverage: 2,
-  unrealized_pnl: "0.045",
+  unrealized_pnl: "24.3",
   notional: "972",
   margin_used: "486",
   stop_loss: "64000",
@@ -23,6 +23,44 @@ const position: AccountPosition = {
 };
 
 describe("AccountPanel manual close", () => {
+  it("shows position return on margin and USDT fill notional with realized return", () => {
+    render(
+      <AccountPanel
+        portfolio={null}
+        positions={[position]}
+        fills={[{
+          id: 1,
+          source: "exchange_user_stream",
+          client_order_id: "cp-entry-sl",
+          related_client_order_id: "cp-entry",
+          symbol: "BTCUSDT",
+          side: "SELL",
+          purpose: "stop_loss",
+          reduce_only: true,
+          realized_pnl: "-10",
+          notional_usdt: "200",
+          realized_pnl_margin_usdt: "100",
+          realized_return_percent: "-10",
+          status: "FILLED",
+          report: {
+            filled_quantity: "2",
+            average_price: "100",
+            message: "filled",
+          },
+          created_at: "2026-07-19T15:00:00Z",
+        }]}
+        testnetStatus={null}
+        engineRunning={false}
+        busy={null}
+        onClosePosition={vi.fn(async () => true)}
+      />,
+    );
+
+    expect(screen.getByText("+5.00%")).toBeTruthy();
+    expect(screen.getByText("200.00 USDT")).toBeTruthy();
+    expect(screen.getByText("-10.00%")).toBeTruthy();
+  });
+
   it("requires an explicit confirmation before closing the whole position", async () => {
     const user = userEvent.setup();
     const closePosition = vi.fn(async () => true);

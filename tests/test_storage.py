@@ -296,15 +296,43 @@ def test_trade_fills_include_protective_and_manual_exits_without_duplicate_entri
         await database.initialize()
         repository = AuditRepository(database.sessions)
         now = datetime.now(UTC)
-        await repository.record_execution(
-            "BANKUSDT",
-            ExecutionReport(
-                client_order_id="cp-entry",
-                status="FILLED",
-                filled_quantity="283",
-                average_price="0.11188",
-            ),
-        )
+        for client_order_id, quantity, average_price in (
+            ("cp-entry", "283", "0.11188"),
+            ("cp-entry-2", "303", "0.10948"),
+        ):
+            intent = TradeIntent(
+                symbol="BANKUSDT",
+                cadence="5m",
+                action=TradeAction.OPEN_LONG,
+                confidence=0.8,
+                leverage=3,
+                risk_fraction="0.01",
+                stop_loss="0.10",
+                take_profit="0.12",
+                rationale="entry",
+            )
+            inference_id = await repository.record_inference(
+                ProviderResult(intent, "local-rule", "trend-v1", timedelta(), "{}", {})
+            )
+            await repository.record_execution(
+                "BANKUSDT",
+                ExecutionReport(
+                    client_order_id=client_order_id,
+                    status="FILLED",
+                    filled_quantity=quantity,
+                    average_price=average_price,
+                ),
+            )
+            await repository.record_execution_attempt(
+                "BANKUSDT",
+                ExecutionAttempt(
+                    inference_id=inference_id,
+                    client_order_id=client_order_id,
+                    status="SUCCEEDED",
+                    stage="COMPLETE",
+                    message="filled",
+                ),
+            )
         events = [
             UserStreamEvent(
                 "ORDER_TRADE_UPDATE",
@@ -399,11 +427,116 @@ def test_trade_fills_include_protective_and_manual_exits_without_duplicate_entri
     assert fills[0]["purpose"] == "manual_close"
     assert fills[0]["related_client_order_id"] == "cp-entry-2"
     assert fills[0]["realized_pnl"] == "0.15756"
+    assert Decimal(fills[0]["notional_usdt"]) == Decimal("33.33")
+    assert Decimal(fills[0]["realized_pnl_margin_usdt"]) == (
+        Decimal("303") * Decimal("0.10948") / Decimal("3")
+    )
+    assert Decimal(fills[0]["realized_return_percent"]) == (
+        Decimal("0.15756")
+        / (Decimal("303") * Decimal("0.10948") / Decimal("3"))
+        * Decimal("100")
+    )
     assert fills[2]["purpose"] == "stop_loss"
     assert fills[2]["related_client_order_id"] == "cp-entry"
     assert fills[2]["side"] == "SELL"
     assert fills[2]["realized_pnl"] == "-1.33576"
+    assert Decimal(fills[2]["notional_usdt"]) == Decimal("30.32628")
+    assert Decimal(fills[2]["realized_return_percent"]) < 0
     assert sum(item["client_order_id"] == "cp-entry" for item in fills) == 1
+
+
+def test_trade_fill_realized_return_uses_combined_add_entry_margin(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'add-fill-return.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        now = datetime.now(UTC)
+        intent = TradeIntent(
+            symbol="BTCUSDT",
+            cadence="5m",
+            action=TradeAction.ADD,
+            confidence=0.8,
+            leverage=5,
+            risk_fraction="0.01",
+            stop_loss="8",
+            take_profit="14",
+            rationale="add",
+        )
+        inference_id = await repository.record_inference(
+            ProviderResult(
+                intent,
+                "local-rule",
+                "trend-v1",
+                timedelta(),
+                "{}",
+                {},
+                input_payload={
+                    "portfolio": {
+                        "positions": {
+                            "BTCUSDT": {"quantity": "100", "entry_price": "10"}
+                        }
+                    }
+                },
+            )
+        )
+        await repository.record_execution(
+            "BTCUSDT",
+            ExecutionReport(
+                client_order_id="cp-add",
+                status="FILLED",
+                filled_quantity="50",
+                average_price="12",
+            ),
+        )
+        await repository.record_execution_attempt(
+            "BTCUSDT",
+            ExecutionAttempt(
+                inference_id=inference_id,
+                client_order_id="cp-add",
+                status="SUCCEEDED",
+                stage="COMPLETE",
+                message="filled",
+            ),
+        )
+        for client_order_id, side, quantity, average_price, realized_pnl, reduce_only in (
+            ("cp-add", "BUY", "50", "12", "0", False),
+            ("cp-add-tp", "SELL", "150", "14", "500", True),
+        ):
+            await repository.record_user_event(
+                UserStreamEvent(
+                    "ORDER_TRADE_UPDATE",
+                    now,
+                    now,
+                    "BTCUSDT",
+                    {
+                        "o": {
+                            "c": client_order_id,
+                            "s": "BTCUSDT",
+                            "S": side,
+                            "x": "TRADE",
+                            "X": "FILLED",
+                            "z": quantity,
+                            "ap": average_price,
+                            "R": reduce_only,
+                            "rp": realized_pnl,
+                        }
+                    },
+                )
+            )
+        result = await repository.recent_trade_fills()
+        await database.close()
+        return next(item for item in result if item["purpose"] == "take_profit")
+
+    fill = asyncio.run(scenario())
+    combined_entry = (
+        (Decimal("100") * Decimal("10")) + (Decimal("50") * Decimal("12"))
+    ) / Decimal("150")
+    expected_margin = Decimal("150") * combined_entry / Decimal("5")
+    assert Decimal(fill["notional_usdt"]) == Decimal("2100")
+    assert Decimal(fill["realized_pnl_margin_usdt"]) == expected_margin
+    assert Decimal(fill["realized_return_percent"]) == (
+        Decimal("500") / expected_margin * Decimal("100")
+    )
 
 
 def test_decision_events_join_inference_and_risk_outcomes(tmp_path: Path) -> None:

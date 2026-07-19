@@ -319,6 +319,9 @@ export interface TradeFillRecord {
   purpose: "entry" | "stop_loss" | "take_profit" | "manual_close" | "rescue_close";
   reduce_only: boolean;
   realized_pnl: string | null;
+  notional_usdt: string | null;
+  realized_pnl_margin_usdt: string | null;
+  realized_return_percent: string | null;
   status: string;
   report: {
     filled_quantity: string;

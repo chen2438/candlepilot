@@ -715,8 +715,99 @@ class AuditRepository:
                     "created_at": self._utc(row.created_at),
                 }
             )
+        await self._enrich_trade_fill_financials(fills)
         fills.sort(key=lambda item: item["created_at"], reverse=True)
         return fills[:limit]
+
+    async def _enrich_trade_fill_financials(self, fills: list[dict[str, Any]]) -> None:
+        """Attach USDT notional and auditable realized return-on-margin values."""
+
+        related_entry_ids: set[str] = set()
+        for fill in fills:
+            report = fill["report"]
+            quantity = Decimal(str(report.get("filled_quantity", "0")))
+            raw_average = report.get("average_price")
+            average_price = Decimal(str(raw_average)) if raw_average is not None else None
+            fill["notional_usdt"] = (
+                str(abs(quantity * average_price))
+                if quantity > 0 and average_price is not None and average_price > 0
+                else None
+            )
+            fill["realized_pnl_margin_usdt"] = None
+            fill["realized_return_percent"] = None
+            related_entry_id = fill.get("related_client_order_id")
+            if isinstance(related_entry_id, str) and related_entry_id:
+                related_entry_ids.add(related_entry_id)
+
+        if not related_entry_ids:
+            return
+
+        async with self.sessions() as session:
+            entry_rows = (
+                await session.scalars(
+                    select(ExecutionRow).where(
+                        ExecutionRow.client_order_id.in_(related_entry_ids)
+                    )
+                )
+            ).all()
+            context_rows = (
+                await session.execute(
+                    select(ExecutionAttemptRow, InferenceRow, InferenceDetailRow)
+                    .join(
+                        InferenceRow,
+                        InferenceRow.id == ExecutionAttemptRow.inference_id,
+                    )
+                    .outerjoin(
+                        InferenceDetailRow,
+                        InferenceDetailRow.inference_id == InferenceRow.id,
+                    )
+                    .where(ExecutionAttemptRow.client_order_id.in_(related_entry_ids))
+                    .order_by(ExecutionAttemptRow.id.desc())
+                )
+            ).all()
+
+        entry_reports = {
+            row.client_order_id: ExecutionReport.model_validate_json(row.report_json)
+            for row in entry_rows
+        }
+        entry_contexts: dict[str, tuple[Decimal, int]] = {}
+        for attempt, inference, detail in context_rows:
+            client_order_id = attempt.client_order_id
+            if client_order_id is None or client_order_id in entry_contexts:
+                continue
+            report = entry_reports.get(client_order_id)
+            if report is None or report.average_price is None or report.filled_quantity <= 0:
+                continue
+            intent = TradeIntent.model_validate_json(inference.intent_json)
+            entry_basis = report.average_price
+            if intent.action.value == "ADD" and detail is not None and detail.input_json:
+                payload = json.loads(detail.input_json)
+                position = payload.get("portfolio", {}).get("positions", {}).get(inference.symbol)
+                if isinstance(position, dict):
+                    existing_quantity = Decimal(str(position.get("quantity", "0")))
+                    existing_entry = Decimal(str(position.get("entry_price", "0")))
+                    if existing_quantity > 0 and existing_entry > 0:
+                        combined_quantity = existing_quantity + report.filled_quantity
+                        entry_basis = (
+                            (existing_entry * existing_quantity)
+                            + (report.average_price * report.filled_quantity)
+                        ) / combined_quantity
+            entry_contexts[client_order_id] = (entry_basis, intent.leverage)
+
+        for fill in fills:
+            if fill["purpose"] == "entry" or fill["realized_pnl"] is None:
+                continue
+            context = entry_contexts.get(fill.get("related_client_order_id"))
+            if context is None:
+                continue
+            entry_basis, leverage = context
+            quantity = Decimal(str(fill["report"].get("filled_quantity", "0")))
+            margin = abs(quantity * entry_basis) / leverage
+            if margin <= 0:
+                continue
+            realized_pnl = Decimal(str(fill["realized_pnl"]))
+            fill["realized_pnl_margin_usdt"] = str(margin)
+            fill["realized_return_percent"] = str((realized_pnl / margin) * Decimal("100"))
 
     @staticmethod
     def _trade_fill_identity(client_order_id: str) -> tuple[str, str | None]:
