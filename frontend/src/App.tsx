@@ -2880,7 +2880,7 @@ function DecisionRunHeader({
           </strong>
         </span>
         <span data-tooltip="盈利平仓笔数除以该运行已完成的平仓笔数；运行停止后的手动平仓仍按仓位归属计入，没有平仓时显示 —。">
-          胜率<strong>{performance?.win_rate === null || performance === undefined
+          已平仓胜率<strong>{performance?.win_rate === null || performance === undefined
             ? "—"
             : `${(Number(performance.win_rate) * 100).toFixed(0)}% (${performance.wins}/${performance.closed_trades})`}</strong>
         </span>

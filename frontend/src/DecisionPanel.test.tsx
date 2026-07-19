@@ -225,6 +225,10 @@ describe("DecisionPanel", () => {
     expect(stoppedGroup?.open).toBe(false);
     expect(screen.getAllByText(/1 条决策/)).toHaveLength(2);
     expect(screen.getByText("+12.50 USDT")).toBeTruthy();
+    expect(screen.getAllByText("已平仓胜率")).toHaveLength(2);
+    for (const label of screen.getAllByText("已平仓胜率")) {
+      expect(label.getAttribute("data-tooltip")).toContain("已完成的平仓笔数");
+    }
     expect(screen.getByText("67% (2/3)")).toBeTruthy();
     expect(screen.getAllByText("耗时 51.25s")).toHaveLength(2);
 
