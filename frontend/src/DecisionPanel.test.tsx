@@ -44,7 +44,22 @@ const decision: DecisionEvent = {
   created_at: "2026-07-19T15:16:52Z",
 };
 
-describe("DecisionPanel intent reward/risk", () => {
+describe("DecisionPanel", () => {
+  it("does not offer the transient approved-only outcome as a filter", () => {
+    render(
+      <DecisionPanel
+        decisions={[decision]}
+        filter="all"
+        onFilter={vi.fn()}
+        onLoadOlder={vi.fn(async () => undefined)}
+        exhausted
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "风控放行" })).toBeNull();
+    expect(screen.getByRole("button", { name: "下单成功" })).toBeTruthy();
+  });
+
   it("shows the ratio calculated from the AI-returned prices when a decision is expanded", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: false,

@@ -2657,7 +2657,6 @@ function money(value: string): string {
 
 const DECISION_FILTERS: Array<{ key: DecisionFilter; label: string }> = [
   { key: "all", label: "全部" },
-  { key: "approved", label: "风控放行" },
   { key: "executed", label: "下单成功" },
   { key: "execution_failed", label: "下单失败" },
   { key: "rejected", label: "风控否决" },
