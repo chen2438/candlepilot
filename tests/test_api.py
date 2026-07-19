@@ -1661,7 +1661,10 @@ def test_caller_supplied_decision_evaluation_is_not_exposed(tmp_path: Path) -> N
             "/api/decisions/evaluate",
             json={"snapshot": {}, "portfolio": {}, "rules": {}},
         )
-        assert response.status_code == 405
+        # A built frontend mounts StaticFiles and answers an unknown POST with
+        # 405; a clean backend-only checkout has no mount and answers 404. The
+        # security contract is that FastAPI publishes no executable API route.
+        assert response.status_code in {404, 405}
         assert "/api/decisions/evaluate" not in client.get("/openapi.json").json()["paths"]
     asyncio.run(database.close())
 
