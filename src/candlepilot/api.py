@@ -401,6 +401,7 @@ def _status(engine: TradingEngine, scheduler: TradingScheduler | None = None) ->
         "backup_provider": engine.backup_provider,
         "provider_chain": list(engine.provider_chain),
         "active_provider": engine.active_provider,
+        "live_run_id": engine.live_run_id,
         "provider_routes": engine.provider_route_status(),
         "active_cadences": list(engine.active_cadences),
         "run_limits": {
@@ -640,6 +641,9 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await database.initialize()
+        # A live run left open can only mean the previous process did not
+        # execute its graceful shutdown path. Close it before serving history.
+        await engine.audit.interrupt_open_live_runs()
         await engine.restore_runtime_state()
         # Warm the models.dev pricing cache without blocking startup.
         warm_pricing = asyncio.create_task(pricing_catalog())
@@ -1454,7 +1458,9 @@ def create_app(
                 engine.startup_probe = None
                 engine.configure_decision_timeout(timeout_seconds if external else None)
                 engine.startup_probe = await live_startup_probe()
-                await engine.start()
+                await engine.start(
+                    run_config={"candidates_per_cycle": scheduler.candidates_per_cycle}
+                )
                 scheduler.start()
             except ValueError as exc:
                 if engine.startup_probe is not None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
@@ -108,6 +108,7 @@ class TradingEngine:
         self.run_ended_at: datetime | None = None
         self.run_start_inference_id: int | None = None
         self.run_end_inference_id: int | None = None
+        self.live_run_id: int | None = None
         self.route_failure_count = 0
         self.max_run_seconds: int | None = None
         self.max_run_cost_usd: float | None = None
@@ -257,7 +258,7 @@ class TradingEngine:
             )
         return None
 
-    async def start(self) -> None:
+    async def start(self, *, run_config: Mapping[str, object] | None = None) -> None:
         if self.running:
             raise RuntimeError("engine is already running")
         await self.restore_runtime_state()
@@ -309,14 +310,33 @@ class TradingEngine:
         self.run_end_inference_id = None
         self.run_started_at = datetime.now(UTC)
         self.run_ended_at = None
+        config: dict[str, object] = {
+            "provider_chain": list(self.provider_chain),
+            "cadences": list(self.active_cadences),
+            "decision_timeout_seconds": self.decision_timeout_seconds,
+            "max_run_seconds": self.max_run_seconds,
+            "max_run_cost_usd": self.max_run_cost_usd,
+        }
+        if run_config is not None:
+            config.update(run_config)
+        self.live_run_id = await self.audit.create_live_run(config)
         self.route_failure_count = 0
         self.auto_stop_reason = None
         self.running = True
 
-    async def stop(self) -> None:
+    async def stop(self, *, reason: str | None = None) -> None:
         if self.running:
             self.run_end_inference_id = await self.audit.latest_inference_id()
             self.run_ended_at = datetime.now(UTC)
+            stop_reason = reason or self.auto_stop_reason or "stopped by user"
+            status = "auto_stopped" if self.auto_stop_reason else "stopped"
+            if self.live_run_id is not None:
+                await self.audit.finish_live_run(
+                    self.live_run_id,
+                    status=status,
+                    stop_reason=stop_reason,
+                    ended_at=self.run_ended_at,
+                )
         self.running = False
         self.restore_provider_timeouts()
 
@@ -327,6 +347,13 @@ class TradingEngine:
         if self.running:
             self.run_end_inference_id = await self.audit.latest_inference_id()
             self.run_ended_at = now
+            if self.live_run_id is not None:
+                await self.audit.finish_live_run(
+                    self.live_run_id,
+                    status="emergency_stopped",
+                    stop_reason=self.auto_stop_reason or "emergency stop requested",
+                    ended_at=now,
+                )
         self.running = False
         self.restore_provider_timeouts()
         self.emergency_locked = True
@@ -563,14 +590,20 @@ class TradingEngine:
 
             if result is not None:
                 for failed_result in failed_results:
-                    await self.audit.record_inference(failed_result)
+                    await self.audit.record_inference(
+                        failed_result, live_run_id=self.live_run_id
+                    )
             else:
                 if not failed_results:
                     raise RuntimeError("no provider route was attempted")
                 for failed_result in failed_results[:-1]:
-                    await self.audit.record_inference(failed_result)
+                    await self.audit.record_inference(
+                        failed_result, live_run_id=self.live_run_id
+                    )
                 result = failed_results[-1]
-        inference_id = await self.audit.record_inference(result)
+        inference_id = await self.audit.record_inference(
+            result, live_run_id=self.live_run_id
+        )
         evaluation_snapshot = snapshot
         evaluation_portfolio = portfolio
         intent_matches_snapshot = (

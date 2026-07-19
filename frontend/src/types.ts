@@ -44,6 +44,7 @@ export interface EngineStatus {
   backup_provider: string | null;
   provider_chain: string[];
   active_provider: string | null;
+  live_run_id: number | null;
   provider_routes: ProviderRouteStatus[];
   active_cadences: string[];
   supported_cadences: string[];
@@ -177,6 +178,20 @@ export interface Candidate {
 
 export interface DecisionEvent {
   id: number;
+  live_run_id: number | null;
+  live_run: null | {
+    id: number;
+    status: "running" | "stopped" | "auto_stopped" | "emergency_stopped" | "interrupted";
+    config: {
+      provider_chain?: string[];
+      cadences?: string[];
+      candidates_per_cycle?: number;
+      [key: string]: unknown;
+    };
+    stop_reason: string | null;
+    started_at: string;
+    ended_at: string | null;
+  };
   provider: string;
   model: string | null;
   provenance: {

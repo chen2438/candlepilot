@@ -199,14 +199,19 @@ def test_engine_requires_provider_and_audits_paper_fill(tmp_path: Path) -> None:
             SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")),
         )
         intents = await audit.recent_intents()
+        await engine.stop()
+        events = await audit.recent_decision_events()
         await database.close()
-        return candidates, outcome, intents
+        return candidates, outcome, intents, events
 
-    candidates, outcome, intents = asyncio.run(scenario())
+    candidates, outcome, intents, events = asyncio.run(scenario())
     assert candidates[0].symbol == "BTCUSDT"
     assert outcome.risk.accepted
     assert outcome.execution is not None and outcome.execution.status == "FILLED"
     assert intents[0]["intent"]["action"] == "OPEN_LONG"
+    assert events[0]["live_run_id"] is not None
+    assert events[0]["live_run"]["status"] == "stopped"
+    assert events[0]["live_run"]["stop_reason"] == "stopped by user"
 
 
 def test_universe_excludes_symbols_not_tradable_on_the_execution_venue(

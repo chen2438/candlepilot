@@ -23,6 +23,7 @@ from sqlalchemy import (
     not_,
     select,
     text,
+    update,
 )
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -43,10 +44,26 @@ class Base(DeclarativeBase):
     pass
 
 
+class LiveRunRow(Base):
+    __tablename__ = "live_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    status: Mapped[str] = mapped_column(String(16), default="running", index=True)
+    config_json: Mapped[str] = mapped_column(Text, default="{}")
+    stop_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class InferenceRow(Base):
     __tablename__ = "inferences"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    live_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("live_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     provider: Mapped[str] = mapped_column(String(64), index=True)
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     symbol: Mapped[str] = mapped_column(String(32), index=True)
@@ -402,6 +419,23 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             "ADD COLUMN attempts_json TEXT NOT NULL DEFAULT '[]'",
         ),
     ),
+    (
+        12,
+        (
+            # Formal decisions need a durable run boundary. Inference-id/time
+            # heuristics cannot distinguish restarts or explain why a run ended.
+            "CREATE TABLE IF NOT EXISTS live_runs ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, status VARCHAR(16) NOT NULL, "
+            "config_json TEXT NOT NULL DEFAULT '{}', stop_reason TEXT, "
+            "started_at DATETIME NOT NULL, ended_at DATETIME)",
+            "CREATE INDEX IF NOT EXISTS ix_live_runs_status ON live_runs (status)",
+            "CREATE INDEX IF NOT EXISTS ix_live_runs_started_at ON live_runs (started_at)",
+            "ALTER TABLE inferences ADD COLUMN live_run_id INTEGER "
+            "REFERENCES live_runs(id) ON DELETE SET NULL",
+            "CREATE INDEX IF NOT EXISTS ix_inferences_live_run_id "
+            "ON inferences (live_run_id)",
+        ),
+    ),
 )
 CURRENT_SCHEMA_VERSION = max(version for version, _ in MIGRATIONS)
 
@@ -435,10 +469,12 @@ class Database:
             if current is not None and version <= current:
                 continue
             for statement in statements:
-                if version in (9, 10, 11):
+                if version in (9, 10, 11, 12) and statement.startswith("ALTER TABLE"):
                     table = (
                         "backtest_decisions"
                         if version == 11
+                        else "inferences"
+                        if version == 12
                         else "backtest_model_runs"
                     )
                     columns = {
@@ -456,6 +492,7 @@ class Database:
                         9: "usage_json",
                         10: "progress_json",
                         11: "attempts_json",
+                        12: "live_run_id",
                     }[version]
                     if not columns or target in columns:
                         continue
@@ -528,9 +565,64 @@ class AuditRepository:
                     continue
                 result = await session.execute(delete(model))
                 counts[category] = int(result.rowcount or 0)
+                if category == "inferences":
+                    # Run headers are part of formal-decision history. Keeping
+                    # empty headers after their decisions are cleared is both
+                    # misleading and impossible to inspect from the UI.
+                    await session.execute(delete(LiveRunRow))
         return counts
 
-    async def record_inference(self, result: ProviderResult) -> int:
+    async def create_live_run(self, config: Mapping[str, Any]) -> int:
+        row = LiveRunRow(
+            status="running",
+            config_json=json.dumps(dict(config), separators=(",", ":")),
+        )
+        async with self.sessions.begin() as session:
+            session.add(row)
+            await session.flush()
+        return row.id
+
+    async def finish_live_run(
+        self,
+        run_id: int,
+        *,
+        status: str,
+        stop_reason: str | None,
+        ended_at: datetime | None = None,
+    ) -> None:
+        self._validate_live_run_status(status)
+        async with self.sessions.begin() as session:
+            await session.execute(
+                update(LiveRunRow)
+                .where(LiveRunRow.id == run_id, LiveRunRow.status == "running")
+                .values(
+                    status=status,
+                    stop_reason=stop_reason,
+                    ended_at=ended_at or datetime.now(UTC),
+                )
+            )
+
+    async def interrupt_open_live_runs(self, *, ended_at: datetime | None = None) -> int:
+        async with self.sessions.begin() as session:
+            result = await session.execute(
+                update(LiveRunRow)
+                .where(LiveRunRow.status == "running")
+                .values(
+                    status="interrupted",
+                    stop_reason="process restarted before the run closed cleanly",
+                    ended_at=ended_at or datetime.now(UTC),
+                )
+            )
+        return int(result.rowcount or 0)
+
+    @staticmethod
+    def _validate_live_run_status(status: str) -> None:
+        if status not in {"stopped", "auto_stopped", "emergency_stopped", "interrupted"}:
+            raise ValueError(f"unsupported live run status: {status}")
+
+    async def record_inference(
+        self, result: ProviderResult, *, live_run_id: int | None = None
+    ) -> int:
         usage = dict(result.usage)
         usage["_provenance"] = {
             "prompt_version": result.prompt_version,
@@ -539,6 +631,7 @@ class AuditRepository:
             "reasoning_effort": result.reasoning_effort,
         }
         row = InferenceRow(
+            live_run_id=live_run_id,
             provider=result.provider,
             model=result.model,
             symbol=result.intent.symbol,
@@ -1447,12 +1540,13 @@ class AuditRepository:
         outcome: str | None = None,
     ) -> list[dict[str, Any]]:
         query = (
-            select(InferenceRow, RiskRow, ExecutionAttemptRow)
+            select(InferenceRow, RiskRow, ExecutionAttemptRow, LiveRunRow)
             .outerjoin(RiskRow, RiskRow.inference_id == InferenceRow.id)
             .outerjoin(
                 ExecutionAttemptRow,
                 ExecutionAttemptRow.inference_id == InferenceRow.id,
             )
+            .outerjoin(LiveRunRow, LiveRunRow.id == InferenceRow.live_run_id)
         )
         # Keyset paging on the primary key: ids are monotonic with no ties, so a
         # page cannot skip or repeat a row when new decisions land mid-read, the
@@ -1472,13 +1566,15 @@ class AuditRepository:
                 await session.execute(query.order_by(InferenceRow.id.desc()).limit(limit))
             ).all()
         events = []
-        for inference, risk, attempt in rows:
+        for inference, risk, attempt, live_run in rows:
             usage = json.loads(inference.usage_json)
             intent = TradeIntent.model_validate_json(inference.intent_json)
             outcome = self._decision_outcome(intent, risk, attempt)
             events.append(
                 {
                     "id": inference.id,
+                    "live_run_id": inference.live_run_id,
+                    "live_run": self._live_run_dict(live_run),
                     "provider": inference.provider,
                     "model": inference.model,
                     "provenance": usage.get("_provenance", {}),
@@ -1535,6 +1631,18 @@ class AuditRepository:
             "created_at": self._utc(attempt.created_at),
         }
 
+    def _live_run_dict(self, row: LiveRunRow | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {
+            "id": row.id,
+            "status": row.status,
+            "config": json.loads(row.config_json or "{}"),
+            "stop_reason": row.stop_reason,
+            "started_at": self._utc(row.started_at),
+            "ended_at": self._utc(row.ended_at) if row.ended_at is not None else None,
+        }
+
     @staticmethod
     def _inference_cost(
         inference: InferenceRow,
@@ -1570,6 +1678,7 @@ class AuditRepository:
                         RiskRow,
                         InferenceDetailRow,
                         ExecutionAttemptRow,
+                        LiveRunRow,
                     )
                     .outerjoin(RiskRow, RiskRow.inference_id == InferenceRow.id)
                     .outerjoin(
@@ -1580,12 +1689,13 @@ class AuditRepository:
                         ExecutionAttemptRow,
                         ExecutionAttemptRow.inference_id == InferenceRow.id,
                     )
+                    .outerjoin(LiveRunRow, LiveRunRow.id == InferenceRow.live_run_id)
                     .where(InferenceRow.id == inference_id)
                 )
             ).one_or_none()
         if row is None:
             return None
-        inference, risk, detail, attempt = row
+        inference, risk, detail, attempt, live_run = row
         usage = json.loads(inference.usage_json)
         intent = TradeIntent.model_validate_json(inference.intent_json)
         audit_status = "unavailable"
@@ -1597,6 +1707,8 @@ class AuditRepository:
             )
         return {
             "id": inference.id,
+            "live_run_id": inference.live_run_id,
+            "live_run": self._live_run_dict(live_run),
             "provider": inference.provider,
             "model": inference.model,
             "provenance": usage.get("_provenance", {}),

@@ -72,6 +72,63 @@ def test_inference_audit_round_trip(tmp_path: Path) -> None:
     assert detail["usage"]["input_tokens"] == 10
 
 
+def test_live_runs_group_inferences_and_record_terminal_reason(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'live-runs.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        run_id = await repository.create_live_run(
+            {"provider_chain": ["codex-auth"], "cadences": ["15m"]}
+        )
+        intent = TradeIntent.hold("BTCUSDT", "15m", "grouped")
+        inference_id = await repository.record_inference(
+            ProviderResult(
+                intent=intent,
+                provider="codex-auth",
+                model="test-model",
+                duration=timedelta(milliseconds=20),
+                raw_output=intent.model_dump_json(),
+                usage={},
+            ),
+            live_run_id=run_id,
+        )
+        await repository.finish_live_run(
+            run_id,
+            status="auto_stopped",
+            stop_reason="run duration limit reached (60s)",
+        )
+        events = await repository.recent_decision_events()
+
+        stale_id = await repository.create_live_run({"provider_chain": ["slow"]})
+        interrupted = await repository.interrupt_open_live_runs()
+        stale_intent = TradeIntent.hold("ETHUSDT", "15m", "legacy")
+        legacy_id = await repository.record_inference(
+            ProviderResult(
+                intent=stale_intent,
+                provider="local-trend-v1",
+                model="trend-v1",
+                duration=timedelta(),
+                raw_output=stale_intent.model_dump_json(),
+                usage={},
+            )
+        )
+        legacy = await repository.decision_detail(legacy_id)
+        await database.close()
+        return run_id, inference_id, events, stale_id, interrupted, legacy
+
+    run_id, inference_id, events, stale_id, interrupted, legacy = asyncio.run(scenario())
+    assert events[0]["id"] == inference_id
+    assert events[0]["live_run_id"] == run_id
+    assert events[0]["live_run"]["status"] == "auto_stopped"
+    assert events[0]["live_run"]["stop_reason"] == "run duration limit reached (60s)"
+    assert events[0]["live_run"]["config"]["cadences"] == ["15m"]
+    assert stale_id > run_id
+    assert interrupted == 1
+    assert legacy is not None
+    assert legacy["live_run_id"] is None
+    assert legacy["live_run"] is None
+
+
 def test_inference_audit_distinguishes_partial_and_unavailable_details(
     tmp_path: Path,
 ) -> None:
@@ -713,6 +770,50 @@ def test_database_migrations_are_versioned_and_idempotent(tmp_path: Path) -> Non
     # Derived, not hardcoded: the point is that re-running initialize is a
     # no-op, not that the schema happens to be at some particular version.
     assert asyncio.run(scenario()) == (CURRENT_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION)
+
+
+def test_live_run_migration_upgrades_existing_inference_table(tmp_path: Path) -> None:
+    path = tmp_path / "schema-v11.db"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at DATETIME);
+        INSERT INTO schema_migrations VALUES (11, '2026-07-18 00:00:00');
+        CREATE TABLE inferences (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider VARCHAR(64) NOT NULL,
+            model VARCHAR(128),
+            symbol VARCHAR(32) NOT NULL,
+            cadence VARCHAR(8) NOT NULL,
+            intent_json TEXT NOT NULL,
+            raw_output TEXT NOT NULL,
+            usage_json TEXT NOT NULL,
+            duration_ms REAL NOT NULL,
+            created_at DATETIME NOT NULL
+        );
+        """
+    )
+    connection.close()
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{path}")
+        await database.initialize()
+        async with database.engine.connect() as db:
+            inference_columns = {
+                row[1]
+                for row in (await db.execute(text("PRAGMA table_info(inferences)"))).all()
+            }
+            live_run_table = await db.scalar(
+                text("SELECT name FROM sqlite_master WHERE type='table' AND name='live_runs'")
+            )
+        version = await database.schema_version()
+        await database.close()
+        return inference_columns, live_run_table, version
+
+    columns, live_run_table, version = asyncio.run(scenario())
+    assert "live_run_id" in columns
+    assert live_run_table == "live_runs"
+    assert version == CURRENT_SCHEMA_VERSION
 
 
 def test_risk_foreign_key_migration_nulls_existing_orphans(tmp_path: Path) -> None:

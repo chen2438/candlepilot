@@ -189,6 +189,7 @@ const emptyStatus: EngineStatus = {
   backup_provider: null,
   provider_chain: [],
   active_provider: null,
+  live_run_id: null,
   provider_routes: [],
   active_cadences: DECISION_CADENCES,
   run_limits: { max_run_seconds: null, max_run_cost_usd: null },
@@ -2721,6 +2722,53 @@ function executionLoss(value: string | null | undefined): string {
     : `$${Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`;
 }
 
+const LIVE_RUN_STATUS: Record<NonNullable<DecisionEvent["live_run"]>["status"], string> = {
+  running: "运行中",
+  stopped: "已停止",
+  auto_stopped: "自动停止",
+  emergency_stopped: "紧急停止",
+  interrupted: "进程中断",
+};
+
+function groupDecisionEvents(decisions: DecisionEvent[]) {
+  return decisions.reduce<Array<{
+    key: string;
+    run: DecisionEvent["live_run"];
+    decisions: DecisionEvent[];
+  }>>((groups, decision) => {
+    const key = decision.live_run_id === null ? "unassigned" : `run-${decision.live_run_id}`;
+    const last = groups.at(-1);
+    if (last?.key === key) {
+      last.decisions.push(decision);
+    } else {
+      groups.push({ key, run: decision.live_run, decisions: [decision] });
+    }
+    return groups;
+  }, []);
+}
+
+function DecisionRunHeader({ run }: { run: DecisionEvent["live_run"] }) {
+  if (run === null) {
+    return <div className="decision-run-header unassigned">
+      <div><strong>历史记录 · 未归属运行</strong><small>运行边界功能启用前产生的决策</small></div>
+    </div>;
+  }
+  const config = [
+    run.config.cadences?.join(" / "),
+    run.config.provider_chain?.map(providerLabel).join(" → "),
+  ].filter(Boolean).join(" · ");
+  return <div className={`decision-run-header ${run.status}`}>
+    <div>
+      <strong>正式运行 #{run.id} · {LIVE_RUN_STATUS[run.status]}</strong>
+      <small>{formatLocalDateTimeSeconds(new Date(run.started_at))}{run.ended_at ? ` → ${formatLocalDateTimeSeconds(new Date(run.ended_at))}` : " → 现在"}</small>
+    </div>
+    <div className="decision-run-summary">
+      {config && <span>{config}</span>}
+      {run.stop_reason && <small>停止原因：{run.stop_reason}</small>}
+    </div>
+  </div>;
+}
+
 function DecisionPanel({
   decisions,
   filter,
@@ -2800,7 +2848,10 @@ function DecisionPanel({
         ))}
       </div>
       <div className="signal-list">
-        {visible.map((decision) => (
+        {groupDecisionEvents(visible).map((group) => (
+          <section className="decision-run-group" key={group.key}>
+            <DecisionRunHeader run={group.run} />
+            {group.decisions.map((decision) => (
           <div className={`decision-event ${expanded === decision.id ? "expanded" : ""}`} key={decision.id}>
             <button
               className="signal decision-row"
@@ -2882,6 +2933,8 @@ function DecisionPanel({
               </div>
             )}
           </div>
+            ))}
+          </section>
         ))}
         {!visible.length && <div className="empty cards">当前筛选条件下没有决策记录。</div>}
       </div>
