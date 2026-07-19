@@ -3047,7 +3047,7 @@ function AnalysisDetail({
   );
 }
 
-function AccountPanel({
+export function AccountPanel({
   portfolio,
   positions,
   fills,

@@ -861,7 +861,8 @@ Position Risk v3 及 Symbol Config 合并：持仓数量与保证金来自账户
 ```bash
 .venv/bin/ruff check .
 .venv/bin/pytest -q
-cd frontend && pnpm run build
+pnpm --dir frontend run test
+pnpm --dir frontend run build
 .venv/bin/python scripts/check_commit_messages.py --commit HEAD
 ```
 
@@ -878,6 +879,9 @@ API 回归测试按职责拆分：`tests/test_api_runtime.py` 覆盖正式运行
 通用控制接口，`tests/test_api_backtest.py` 覆盖回测、试跑、采集与回测历史接口；两者只复用
 `tests/api_fixtures.py` 中不被 Pytest 单独收集的假 Provider、行情和账户适配器。新增 API 用例
 必须进入对应领域文件，禁止重新堆回单个综合测试文件，也不得为缩短耗时删除安全与并发回归。
+前端使用 Vitest、jsdom 与 Testing Library 执行运行时交互测试；第一组用例覆盖账户页市价平仓的
+二次确认、回调参数以及引擎运行时禁用边界。新交互不能只靠 TypeScript 构建验证，必须在对应
+`*.test.tsx` 中覆盖用户可观察的状态变化，并继续完成真实浏览器检查。
 
 纯人工提交示例（只有确实没有 Agent 参与时使用）：
 
