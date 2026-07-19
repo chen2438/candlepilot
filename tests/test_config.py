@@ -164,6 +164,11 @@ def test_provider_chain_accepts_custom_endpoint_ids(monkeypatch) -> None:
         monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", bad)
         with pytest.raises(ValueError):
             Settings.from_env()
+
+    for internal_name in ("openai-compatible:groq", "codex-auth"):
+        monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", internal_name)
+        with pytest.raises(ValueError, match=r"custom:<id>"):
+            Settings.from_env()
     monkeypatch.delenv("CANDLEPILOT_PROVIDER_CHAIN")
 
 

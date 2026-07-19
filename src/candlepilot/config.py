@@ -151,7 +151,7 @@ def _parse_provider_name(raw: str | None) -> str | None:
     try:
         return DEFAULT_PROVIDER_ALIASES[alias]
     except KeyError as exc:
-        choices = ", ".join(DEFAULT_PROVIDER_ALIASES)
+        choices = ", ".join((*DEFAULT_PROVIDER_ALIASES, "custom:<id>"))
         raise ValueError(
             f"unsupported provider in CANDLEPILOT_PROVIDER_CHAIN: {raw!r}; "
             f"choose one of {choices}"
