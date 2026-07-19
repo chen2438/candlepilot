@@ -124,16 +124,16 @@ def test_rejects_an_entry_when_the_symbol_already_has_a_pending_order() -> None:
     assert "pending entry order" in result.decision.reason
 
 
-def test_pending_entries_consume_the_open_position_count_limit() -> None:
-    result = AggressiveRiskPolicy(max_positions=1).evaluate(
+def test_another_symbols_pending_entry_does_not_block_a_new_position() -> None:
+    result = AggressiveRiskPolicy().evaluate(
         _intent(),
         _snapshot(),
         _portfolio(pending_entry_symbols=("ETHUSDT",)),
         RULES,
     )
 
-    assert not result.decision.accepted
-    assert "maximum open position count" in result.decision.reason
+    assert result.decision.accepted
+    assert result.order is not None
 
 
 def test_reduce_rejects_when_half_the_position_rounds_below_minimum() -> None:

@@ -58,7 +58,6 @@ class AggressiveRiskPolicy:
         *,
         max_leverage: int = 10,
         max_risk_fraction: Decimal = Decimal("0.02"),
-        max_positions: int = 8,
         max_margin_fraction: Decimal = Decimal("0.80"),
         max_symbol_margin_fraction: Decimal = Decimal("0.10"),
         daily_loss_fraction: Decimal = Decimal("0.08"),
@@ -70,7 +69,6 @@ class AggressiveRiskPolicy:
             raise ValueError("max_snapshot_age_seconds must be positive")
         self.max_leverage = max_leverage
         self.max_risk_fraction = max_risk_fraction
-        self.max_positions = max_positions
         self.max_margin_fraction = max_margin_fraction
         self.max_symbol_margin_fraction = max_symbol_margin_fraction
         self.daily_loss_fraction = daily_loss_fraction
@@ -111,15 +109,6 @@ class AggressiveRiskPolicy:
         opening = intent.action in {TradeAction.OPEN_LONG, TradeAction.OPEN_SHORT, TradeAction.ADD}
         if opening and intent.symbol in portfolio.pending_entry_symbols:
             return self._reject("a pending entry order already exists for this symbol")
-        pending_without_positions = sum(
-            symbol not in portfolio.positions for symbol in portfolio.pending_entry_symbols
-        )
-        if (
-            opening
-            and existing_side is None
-            and portfolio.open_positions + pending_without_positions >= self.max_positions
-        ):
-            return self._reject("maximum open position count reached")
         requested_side = (
             existing_side
             if intent.action == TradeAction.ADD

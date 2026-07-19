@@ -172,13 +172,15 @@ def test_four_hour_backtest_decisions_use_the_complete_closed_ladder() -> None:
 def test_the_run_uses_the_real_risk_policy_not_a_copy_of_it() -> None:
     """The old backtest sized positions itself and never called the policy.
 
-    That skipped the daily-loss breaker, the position cap and tick alignment --
+    That skipped the daily-loss breaker, risk limits and tick alignment --
     so it scored a system nobody runs. A policy that vetoes everything must
     therefore produce no trades at all.
     """
 
     spec = _spec()
-    vetoing = AggressiveRiskPolicy(max_positions=0, require_take_profit=True)
+    vetoing = AggressiveRiskPolicy(
+        max_risk_fraction=Decimal("0"), require_take_profit=True
+    )
 
     result = asyncio.run(_runner(spec, vetoing).run(_Provider("model-a"), ModelRun("model-a")))
 

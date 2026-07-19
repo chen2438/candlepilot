@@ -490,7 +490,6 @@ def create_app(
         risk=AggressiveRiskPolicy(
             max_leverage=settings.max_leverage,
             max_risk_fraction=settings.max_risk_fraction,
-            max_positions=settings.max_positions,
             max_margin_fraction=settings.max_margin_fraction,
             max_symbol_margin_fraction=settings.max_symbol_margin_fraction,
             daily_loss_fraction=settings.daily_loss_fraction,

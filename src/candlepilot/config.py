@@ -376,7 +376,6 @@ class Settings:
     bind_port: int = 8000
     max_leverage: int = 10
     max_risk_fraction: Decimal = Decimal("0.02")
-    max_positions: int = 8
     max_margin_fraction: Decimal = Decimal("0.80")
     max_symbol_margin_fraction: Decimal = Decimal("0.10")
     daily_loss_fraction: Decimal = Decimal("0.08")
