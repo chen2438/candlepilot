@@ -2715,6 +2715,38 @@ function executionLoss(value: string | null | undefined): string {
     : `$${Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`;
 }
 
+function positionProtectionMetrics(position: AccountPosition): {
+  takeProfitPercent: number | null;
+  stopLossPercent: number | null;
+  riskRewardRatio: number | null;
+} {
+  const entry = Number(position.average_price);
+  if (!Number.isFinite(entry) || entry <= 0) {
+    return { takeProfitPercent: null, stopLossPercent: null, riskRewardRatio: null };
+  }
+  const direction = position.side === "SHORT" ? -1 : 1;
+  const takeProfit = position.take_profit === null ? null : Number(position.take_profit);
+  const stopLoss = position.stop_loss === null ? null : Number(position.stop_loss);
+  const takeProfitPercent = takeProfit !== null && Number.isFinite(takeProfit)
+    ? direction * ((takeProfit - entry) / entry) * 100
+    : null;
+  const stopLossPercent = stopLoss !== null && Number.isFinite(stopLoss)
+    ? direction * ((stopLoss - entry) / entry) * 100
+    : null;
+  const riskRewardRatio = takeProfitPercent !== null
+    && stopLossPercent !== null
+    && takeProfitPercent > 0
+    && stopLossPercent < 0
+    ? takeProfitPercent / Math.abs(stopLossPercent)
+    : null;
+  return { takeProfitPercent, stopLossPercent, riskRewardRatio };
+}
+
+function signedPositionPercent(value: number | null): string {
+  if (value === null) return "—";
+  return `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
+}
+
 const LIVE_RUN_STATUS: Record<NonNullable<DecisionEvent["live_run"]>["status"], string> = {
   running: "运行中",
   stopped: "已停止",
@@ -3106,24 +3138,29 @@ function AccountPanel({
       </p>
       <div className="table-wrap account-table">
         <table>
-          <thead><tr><th>标的</th><th>方向</th><th>数量</th><th>均价</th><th>标记价</th><th>杠杆</th><th>未实现盈亏</th><th>保护</th><th>操作</th></tr></thead>
+          <thead><tr><th>标的</th><th>方向</th><th>持仓价值</th><th>保证金</th><th>均价</th><th>标记价</th><th>杠杆</th><th>未实现盈亏</th><th>盈亏比</th><th>保护</th><th>操作</th></tr></thead>
           <tbody>
-            {positions.map((position) => (
-              <tr key={position.symbol}>
+            {positions.map((position) => {
+              const protectionMetrics = positionProtectionMetrics(position);
+              return <tr key={position.symbol}>
                 <td><strong>{position.symbol.replace("USDT", "")}</strong></td>
                 <td className={position.side === "LONG" ? "positive" : "negative"}>{position.side}</td>
-                <td>{Number(position.quantity).toFixed(4)}</td>
+                <td>{money(position.notional)}<small>USDT</small></td>
+                <td>{money(position.margin_used)}<small>USDT</small></td>
                 <td>{Number(position.average_price).toFixed(4)}</td>
                 <td>{Number(position.mark_price).toFixed(4)}</td>
                 <td>{position.leverage}×</td>
                 <td className={Number(position.unrealized_pnl) >= 0 ? "positive" : "negative"}>{money(position.unrealized_pnl)}</td>
+                <td>{protectionMetrics.riskRewardRatio === null
+                  ? "—"
+                  : `${protectionMetrics.riskRewardRatio.toFixed(2)} : 1`}</td>
                 <td>{position.stop_loss === null && position.take_profit === null
                   ? position.protection_source === "exchange" ? "交易所侧"
                     : position.protection_source === "missing" ? "缺失"
                       : position.protection_source === "unknown" ? "待确认" : "—"
                   : <span className="protection">
-                      <span>止损 <strong>{position.stop_loss === null ? "缺失" : Number(position.stop_loss).toFixed(4)}</strong></span>
-                      <span>止盈 <strong>{position.take_profit === null ? "缺失" : Number(position.take_profit).toFixed(4)}</strong></span>
+                      <span>止损 <strong>{position.stop_loss === null ? "缺失" : Number(position.stop_loss).toFixed(4)}</strong> <em className="negative">{signedPositionPercent(protectionMetrics.stopLossPercent)}</em></span>
+                      <span>止盈 <strong>{position.take_profit === null ? "缺失" : Number(position.take_profit).toFixed(4)}</strong> <em className="positive">{signedPositionPercent(protectionMetrics.takeProfitPercent)}</em></span>
                     </span>}</td>
                 <td className="position-close-cell">
                   {confirmCloseSymbol === position.symbol
@@ -3149,9 +3186,9 @@ function AccountPanel({
                         onClick={() => setConfirmCloseSymbol(position.symbol)}
                       >市价平仓</button>}
                 </td>
-              </tr>
-            ))}
-            {!positions.length && <tr><td colSpan={9} className="empty">当前无持仓。</td></tr>}
+              </tr>;
+            })}
+            {!positions.length && <tr><td colSpan={11} className="empty">当前无持仓。</td></tr>}
           </tbody>
         </table>
       </div>
