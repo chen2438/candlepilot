@@ -73,7 +73,7 @@ export interface EngineStatus {
   candidates_per_cycle: number | null;
   max_candidates_per_cycle: number;
   candidate_count: number;
-  venue_excluded_symbols?: string[];
+  venue_excluded_symbols: string[];
   universe_refreshed_at: string | null;
   scheduler: {
     current_cycle: {
@@ -178,8 +178,8 @@ export interface Candidate {
 
 export interface DecisionEvent {
   id: number;
-  live_run_id?: number | null;
-  live_run?: null | {
+  live_run_id: number | null;
+  live_run: null | {
     id: number;
     status: "running" | "stopped" | "auto_stopped" | "emergency_stopped" | "interrupted";
     config: {

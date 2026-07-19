@@ -804,9 +804,7 @@ export default function App() {
     () => providers.find((provider) => provider.provider === status.active_provider),
     [providers, status.active_provider],
   );
-  // Keep the freshly built frontend compatible with a still-running backend
-  // until the user can stop the trading engine and restart it safely.
-  const venueExcludedSymbols = status.venue_excluded_symbols ?? [];
+  const venueExcludedSymbols = status.venue_excluded_symbols;
   const selectedExternalProvider = useMemo(
     () => status.provider_chain
       .map((name) => providers.find((provider) => provider.provider === name))
@@ -2736,12 +2734,12 @@ function groupDecisionEvents(decisions: DecisionEvent[]) {
     run: NonNullable<DecisionEvent["live_run"]> | null;
     decisions: DecisionEvent[];
   }>>((groups, decision) => {
-    const key = decision.live_run_id == null ? "unassigned" : `run-${decision.live_run_id}`;
+    const key = decision.live_run_id === null ? "unassigned" : `run-${decision.live_run_id}`;
     const last = groups.at(-1);
     if (last?.key === key) {
       last.decisions.push(decision);
     } else {
-      groups.push({ key, run: decision.live_run ?? null, decisions: [decision] });
+      groups.push({ key, run: decision.live_run, decisions: [decision] });
     }
     return groups;
   }, []);
