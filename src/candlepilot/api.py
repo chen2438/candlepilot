@@ -416,6 +416,7 @@ def _status(engine: TradingEngine, scheduler: TradingScheduler | None = None) ->
         "candidates_per_cycle": scheduler.candidates_per_cycle if scheduler is not None else None,
         "max_candidates_per_cycle": MAX_CANDIDATES_PER_CYCLE,
         "candidate_count": len(engine.candidates),
+        "venue_excluded_symbols": list(engine.venue_excluded_symbols),
         "universe_refreshed_at": engine.universe_refreshed_at.isoformat()
         if engine.universe_refreshed_at
         else None,

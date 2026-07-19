@@ -35,6 +35,52 @@ def test_broker_uses_current_official_demo_endpoint() -> None:
         BinanceTestnetBroker(_credentials(), base_url="https://testnet.binancefuture.com")
 
 
+def test_testnet_tradable_symbols_excludes_pending_and_non_usdt_contracts() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "symbols": [
+                    {
+                        "symbol": "BTCUSDT",
+                        "contractType": "PERPETUAL",
+                        "quoteAsset": "USDT",
+                        "status": "TRADING",
+                    },
+                    {
+                        "symbol": "ALLOUSDT",
+                        "contractType": "PERPETUAL",
+                        "quoteAsset": "USDT",
+                        "status": "PENDING_TRADING",
+                    },
+                    {
+                        "symbol": "ETHUSDT_260925",
+                        "contractType": "CURRENT_QUARTER",
+                        "quoteAsset": "USDT",
+                        "status": "TRADING",
+                    },
+                    {
+                        "symbol": "ETHUSDC",
+                        "contractType": "PERPETUAL",
+                        "quoteAsset": "USDC",
+                        "status": "TRADING",
+                    },
+                ]
+            },
+        )
+
+    async def scenario() -> frozenset[str]:
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        symbols = await broker.tradable_symbols()
+        await client.aclose()
+        return symbols
+
+    assert asyncio.run(scenario()) == frozenset({"BTCUSDT"})
+
+
 def test_position_risk_reads_signed_v3_prices() -> None:
     captured: list[httpx.Request] = []
 

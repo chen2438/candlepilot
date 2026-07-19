@@ -102,6 +102,7 @@ class TradingEngine:
         self.emergency_locked_until: datetime | None = None
         self.testnet_reconciliation: ReconciliationReport | None = None
         self.candidates: list[Candidate] = []
+        self.venue_excluded_symbols: tuple[str, ...] = ()
         self.universe_refreshed_at: datetime | None = None
         self.run_started_at: datetime | None = None
         self.run_ended_at: datetime | None = None
@@ -363,6 +364,16 @@ class TradingEngine:
 
     async def refresh_universe(self) -> list[Candidate]:
         inputs = await self.market.candidate_inputs()
+        venue_loader = getattr(self.testnet_broker, "tradable_symbols", None)
+        if callable(venue_loader):
+            venue_symbols = await venue_loader()
+            production_symbols = {item.symbol for item in inputs}
+            self.venue_excluded_symbols = tuple(
+                sorted(production_symbols.difference(venue_symbols))
+            )
+            inputs = [item for item in inputs if item.symbol in venue_symbols]
+        else:
+            self.venue_excluded_symbols = ()
         self.candidates = self.scanner.scan(inputs)
         self.universe_refreshed_at = datetime.now(UTC)
         return self.candidates

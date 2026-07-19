@@ -209,6 +209,46 @@ def test_engine_requires_provider_and_audits_paper_fill(tmp_path: Path) -> None:
     assert intents[0]["intent"]["action"] == "OPEN_LONG"
 
 
+def test_universe_excludes_symbols_not_tradable_on_the_execution_venue(
+    tmp_path: Path,
+) -> None:
+    class ProductionMarket(FakeMarket):
+        async def candidate_inputs(self):
+            btc = (await super().candidate_inputs())[0]
+            return [
+                btc,
+                MarketCandidateInput(
+                    symbol="ALLOUSDT",
+                    quote_volume_24h=Decimal("2000000"),
+                    bid=Decimal("0.46"),
+                    ask=Decimal("0.461"),
+                    volatility=Decimal("0.2"),
+                    trend_strength=Decimal("0.05"),
+                    listing_age_days=100,
+                ),
+            ]
+
+    class TestnetVenue(FakeTestnetBroker):
+        async def tradable_symbols(self):
+            return frozenset({"BTCUSDT"})
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'venue-universe.db'}")
+        engine = TradingEngine(
+            testnet_broker=TestnetVenue(),  # type: ignore[arg-type]
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=ProductionMarket(),  # type: ignore[arg-type]
+        )
+        candidates = await engine.refresh_universe()
+        await database.close()
+        return candidates, engine.venue_excluded_symbols
+
+    candidates, excluded = asyncio.run(scenario())
+    assert [candidate.symbol for candidate in candidates] == ["BTCUSDT"]
+    assert excluded == ("ALLOUSDT",)
+
+
 def test_engine_refreshes_market_and_rejects_crossed_price_before_execution(
     tmp_path: Path,
 ) -> None:

@@ -265,6 +265,52 @@ class BinanceTestnetBroker:
             "GET", "/fapi/v1/symbolConfig", {"symbol": symbol}
         )
 
+    async def tradable_symbols(self) -> frozenset[str]:
+        """Return the USDT perpetual contracts the testnet can accept now."""
+
+        path = "/fapi/v1/exchangeInfo"
+        try:
+            response = await self._client.get(path)
+        except httpx.HTTPError as exc:
+            raise BinanceApiError(
+                0,
+                "testnet exchange-info transport failure",
+                0,
+                method="GET",
+                path=path,
+            ) from exc
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise BinanceApiError(
+                0,
+                response.text,
+                response.status_code,
+                method="GET",
+                path=path,
+            ) from exc
+        if response.is_error:
+            code = int(payload.get("code", 0)) if isinstance(payload, dict) else 0
+            message = (
+                str(payload.get("msg", response.text))
+                if isinstance(payload, dict)
+                else response.text
+            )
+            raise BinanceApiError(
+                code,
+                message,
+                response.status_code,
+                method="GET",
+                path=path,
+            )
+        return frozenset(
+            str(item["symbol"])
+            for item in payload.get("symbols", [])
+            if item.get("contractType") == "PERPETUAL"
+            and item.get("quoteAsset") == "USDT"
+            and item.get("status") == "TRADING"
+        )
+
     async def account_snapshot(self) -> dict[str, Any]:
         """Return balances plus exchange-authoritative live position fields."""
 

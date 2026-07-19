@@ -72,6 +72,7 @@ export interface EngineStatus {
   candidates_per_cycle: number | null;
   max_candidates_per_cycle: number;
   candidate_count: number;
+  venue_excluded_symbols?: string[];
   universe_refreshed_at: string | null;
   scheduler: {
     current_cycle: {

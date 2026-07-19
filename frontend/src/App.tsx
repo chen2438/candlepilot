@@ -201,6 +201,7 @@ const emptyStatus: EngineStatus = {
   candidates_per_cycle: 5,
   max_candidates_per_cycle: 20,
   candidate_count: 0,
+  venue_excluded_symbols: [],
   universe_refreshed_at: null,
   scheduler: {
     current_cycle: null,
@@ -802,6 +803,9 @@ export default function App() {
     () => providers.find((provider) => provider.provider === status.active_provider),
     [providers, status.active_provider],
   );
+  // Keep the freshly built frontend compatible with a still-running backend
+  // until the user can stop the trading engine and restart it safely.
+  const venueExcludedSymbols = status.venue_excluded_symbols ?? [];
   const selectedExternalProvider = useMemo(
     () => status.provider_chain
       .map((name) => providers.find((provider) => provider.provider === name))
@@ -1192,8 +1196,18 @@ export default function App() {
           </article>
 
           <article className="panel universe-panel">
-            <PanelTitle code="03" title="动态候选池" meta="USDT 永续" />
+            <PanelTitle
+              code="03"
+              title="动态候选池"
+              meta={venueExcludedSymbols.length
+                ? `测试网可交易 · 已过滤 ${venueExcludedSymbols.length}`
+                : "测试网可交易"}
+            />
             <button className="compact" disabled={busy !== null} onClick={refreshUniverse}>{busy === "universe" ? "扫描中…" : "刷新全市场"}</button>
+            {venueExcludedSymbols.length > 0 && <p className="universe-filter-note" title={venueExcludedSymbols.join(", ")}>
+              已在模型调用前排除测试网未开放的生产行情标的：{venueExcludedSymbols.slice(0, 5).map((symbol) => symbol.replace("USDT", "")).join("、")}
+              {venueExcludedSymbols.length > 5 ? ` 等 ${venueExcludedSymbols.length} 个` : ""}
+            </p>}
             <div className="table-wrap">
               <table>
                 <thead><tr><th>标的</th><th data-tooltip={CANDIDATE_DEFINITIONS.score}>评分</th><th data-tooltip={CANDIDATE_DEFINITIONS.volumeRank}>成交额排名</th><th data-tooltip={CANDIDATE_DEFINITIONS.spread}>价差</th><th data-tooltip={CANDIDATE_DEFINITIONS.volatility}>24h 波动</th><th data-tooltip={CANDIDATE_DEFINITIONS.trend}>趋势</th></tr></thead>
