@@ -150,7 +150,7 @@ def test_provider_chain_accepts_custom_endpoint_ids(monkeypatch) -> None:
             ]
         ),
     )
-    monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", "codex, custom:groq, openai-compatible:local")
+    monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", "codex, custom:groq, custom:local")
     assert Settings.from_env().provider_chain == (
         "codex-auth",
         "openai-compatible:groq",
@@ -167,7 +167,7 @@ def test_provider_chain_accepts_custom_endpoint_ids(monkeypatch) -> None:
     monkeypatch.delenv("CANDLEPILOT_PROVIDER_CHAIN")
 
 
-def test_local_rule_is_a_first_class_provider_alias(monkeypatch) -> None:
+def test_local_rule_is_a_first_class_provider_name(monkeypatch) -> None:
     monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", "local, codex")
 
     settings = Settings.from_env()
@@ -222,7 +222,7 @@ def test_removed_default_provider_env_is_rejected(monkeypatch) -> None:
         Settings.from_env()
 
 
-def test_provider_chain_accepts_aliases_and_preserves_order(monkeypatch) -> None:
+def test_provider_chain_accepts_current_names_and_preserves_order(monkeypatch) -> None:
     monkeypatch.setenv(
         "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON",
         '[{"id":"main","base_url":"https://main.example/v1"}]',
@@ -237,8 +237,26 @@ def test_provider_chain_accepts_aliases_and_preserves_order(monkeypatch) -> None
     )
 
 
+@pytest.mark.parametrize(
+    "retired",
+    (
+        "local-rule",
+        "codex-auth",
+        "claude",
+        "claude code",
+        "claude-code-auth",
+        "custom-api:main",
+        "openai-compatible:main",
+    ),
+)
+def test_provider_chain_rejects_retired_aliases(monkeypatch, retired) -> None:
+    monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", retired)
+    with pytest.raises(ValueError, match="unsupported provider"):
+        Settings.from_env()
+
+
 def test_provider_chain_rejects_duplicates(monkeypatch) -> None:
-    monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", "codex,codex-auth")
+    monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", "codex,codex")
     with pytest.raises(ValueError, match="duplicates"):
         Settings.from_env()
 

@@ -32,7 +32,6 @@ from candlepilot.provenance import (
 
 CODEX_APP_BINARIES = (
     Path("/Applications/ChatGPT.app/Contents/Resources/codex"),
-    Path("/Applications/Codex.app/Contents/Resources/codex"),
 )
 USER_CLI_DIRECTORY = Path.home() / ".local" / "bin"
 MAX_OUTPUT_BYTES = 1_000_000

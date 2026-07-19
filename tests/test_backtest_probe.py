@@ -15,7 +15,7 @@ from candlepilot.backtest.probe import (
 from candlepilot.backtest.runner import BacktestSpec
 from candlepilot.backtest.snapshots import HistoricalSnapshotBuilder
 from candlepilot.domain.models import PortfolioState, ProviderHealth, TradeIntent
-from candlepilot.providers.base import LLMProvider, ProviderResult
+from candlepilot.providers.base import DecisionProvider, ProviderResult
 
 START = datetime(2026, 6, 1, tzinfo=UTC)
 
@@ -58,7 +58,7 @@ def _spec(**overrides) -> BacktestSpec:
     return BacktestSpec(**values)  # type: ignore[arg-type]
 
 
-class _Provider(LLMProvider):
+class _Provider(DecisionProvider):
     def __init__(self, name: str = "model-a", *, fail: int = 0) -> None:
         self.name = name
         self._fail = fail
@@ -77,7 +77,7 @@ class _Provider(LLMProvider):
         return ProviderResult(intent, self.name, None, timedelta(0), "{}", {})
 
 
-def _run(provider: LLMProvider, spec: BacktestSpec | None = None) -> ProviderProbe:
+def _run(provider: DecisionProvider, spec: BacktestSpec | None = None) -> ProviderProbe:
     spec = spec or _spec()
     return asyncio.run(
         probe_provider(

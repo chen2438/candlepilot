@@ -23,13 +23,8 @@ ENV_FILE_VARIABLE = "CANDLEPILOT_ENV_FILE"
 DOTENV_INJECTED_KEYS: set[str] = set()
 DEFAULT_PROVIDER_ALIASES = {
     "local": "local-rule",
-    "local-rule": "local-rule",
     "codex": "codex-auth",
-    "codex-auth": "codex-auth",
-    "claude": "claude-code-auth",
-    "claude code": "claude-code-auth",
     "claude-code": "claude-code-auth",
-    "claude-code-auth": "claude-code-auth",
 }
 CUSTOM_LLM_WIRE_APIS = {"chat-completions", "responses"}
 CUSTOM_PROVIDER_PREFIX = "openai-compatible:"
@@ -146,7 +141,7 @@ def _parse_provider_name(raw: str | None) -> str | None:
     alias = raw.strip().lower()
     # Additional custom endpoints are addressed by id, e.g. "custom:groq".
     prefix, separator, identifier = alias.partition(":")
-    if separator and prefix in {"custom", "custom-api", "openai-compatible"}:
+    if separator and prefix == "custom":
         if not CUSTOM_PROVIDER_ID_PATTERN.fullmatch(identifier):
             raise ValueError(
                 f"invalid custom LLM provider id in {raw!r}: "

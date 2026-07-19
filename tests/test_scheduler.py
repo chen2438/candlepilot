@@ -8,14 +8,14 @@ from candlepilot.application.scheduler import TradingScheduler
 from candlepilot.domain.models import MarketSnapshot, ProviderHealth, TradeIntent
 from candlepilot.market.binance import ContractInfo
 from candlepilot.market.scanner import MarketCandidateInput
-from candlepilot.providers.base import LLMProvider, ProviderResult
+from candlepilot.providers.base import DecisionProvider, ProviderResult
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.risk.engine import SymbolRules
 from candlepilot.storage.database import AuditRepository, Database
 from conftest import FakeTestnetBroker, StatefulTestnetBroker
 
 
-class HoldProvider(LLMProvider):
+class HoldProvider(DecisionProvider):
     name = "hold"
 
     async def health_check(self):
@@ -26,7 +26,7 @@ class HoldProvider(LLMProvider):
         return ProviderResult(intent, self.name, None, timedelta(0), intent.model_dump_json(), {})
 
 
-class ConflictingProvider(LLMProvider):
+class ConflictingProvider(DecisionProvider):
     name = "conflicting"
 
     async def health_check(self):

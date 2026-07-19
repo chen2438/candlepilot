@@ -67,8 +67,3 @@ class DecisionProvider(ABC):
         portfolio: PortfolioState,
     ) -> ProviderResult:
         raise NotImplementedError
-
-
-# Compatibility for integrations and tests written before local deterministic
-# strategies made the provider boundary broader than LLM inference.
-LLMProvider = DecisionProvider

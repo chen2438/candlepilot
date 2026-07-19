@@ -76,6 +76,7 @@ def test_custom_provider_calls_chat_completions_and_parses_usage() -> None:
         )
 
     provider = OpenAICompatibleProvider(
+        name="openai-compatible:test",
         base_url="https://llm.example/v1/",
         api_key=SecretStr(secret),
         model="vendor-model",
@@ -85,7 +86,7 @@ def test_custom_provider_calls_chat_completions_and_parses_usage() -> None:
     result = asyncio.run(provider.generate_trade_intent(_market(), _portfolio()))
 
     assert result.intent.action == TradeAction.HOLD
-    assert result.provider == "openai-compatible"
+    assert result.provider == "openai-compatible:test"
     assert result.model == "vendor-model-202607"
     assert result.usage == {
         "input_tokens": 1200,
@@ -119,9 +120,7 @@ def test_custom_provider_calls_responses_with_optional_auth_and_headers() -> Non
                 "output": [
                     {
                         "type": "message",
-                        "content": [
-                            {"type": "output_text", "text": json.dumps(_intent())}
-                        ],
+                        "content": [{"type": "output_text", "text": json.dumps(_intent())}],
                     }
                 ],
                 "usage": {
@@ -135,6 +134,7 @@ def test_custom_provider_calls_responses_with_optional_auth_and_headers() -> Non
         )
 
     provider = OpenAICompatibleProvider(
+        name="openai-compatible:test",
         base_url="https://llm.example/v1",
         api_key=None,
         model="vendor-model",
@@ -173,6 +173,7 @@ def test_custom_provider_truncates_oversized_rationale_but_keeps_raw_output() ->
         )
 
     provider = OpenAICompatibleProvider(
+        name="openai-compatible:test",
         base_url="https://llm.example/v1",
         api_key=SecretStr("secret"),
         model="vendor-model",
@@ -216,6 +217,7 @@ def test_custom_base_url_accepts_https_and_loopback(value: str, expected: str) -
 
 def test_custom_provider_health_reports_only_safe_configuration_state() -> None:
     provider = OpenAICompatibleProvider(
+        name="openai-compatible:test",
         base_url="https://llm.example/v1",
         api_key=None,
         model=None,
@@ -229,6 +231,7 @@ def test_custom_provider_health_reports_only_safe_configuration_state() -> None:
 
 def test_responses_provider_health_allows_header_only_auth() -> None:
     provider = OpenAICompatibleProvider(
+        name="openai-compatible:test",
         base_url="https://llm.example/v1",
         api_key=None,
         model="vendor-model",
@@ -244,6 +247,7 @@ def test_responses_provider_health_allows_header_only_auth() -> None:
 def test_custom_provider_http_errors_do_not_expose_key_or_url() -> None:
     secret = "test-secret-never-returned"
     provider = OpenAICompatibleProvider(
+        name="openai-compatible:test",
         base_url="https://private.example/v1",
         api_key=SecretStr(secret),
         model="vendor-model",
@@ -269,6 +273,7 @@ def test_custom_provider_timeout_is_an_absolute_wall_clock_deadline() -> None:
         return httpx.Response(200, json={})
 
     provider = OpenAICompatibleProvider(
+        name="openai-compatible:test",
         base_url="https://llm.example/v1",
         api_key=SecretStr("secret"),
         model="vendor-model",
@@ -302,6 +307,7 @@ def test_cancel_targets_the_running_request_not_a_serialized_waiter() -> None:
             )
 
         provider = OpenAICompatibleProvider(
+            name="openai-compatible:test",
             base_url="https://llm.example/v1",
             api_key=SecretStr("secret"),
             model="vendor-model",

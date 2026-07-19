@@ -18,7 +18,7 @@ from candlepilot.backtest.runner import (
 from candlepilot.backtest.snapshots import INTERVAL_MILLISECONDS
 from candlepilot.domain.models import ProviderHealth, TradeAction, TradeIntent
 from candlepilot.market.features import DECISION_FEATURE_INTERVALS
-from candlepilot.providers.base import LLMProvider, ProviderResult
+from candlepilot.providers.base import DecisionProvider, ProviderResult
 from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
 
 WINDOW_START = datetime(2026, 6, 1, tzinfo=UTC)
@@ -65,7 +65,7 @@ def _spec(**changes) -> BacktestSpec:
     return BacktestSpec(**values)  # type: ignore[arg-type]
 
 
-class _Provider(LLMProvider):
+class _Provider(DecisionProvider):
     def __init__(self, name: str, action: TradeAction = TradeAction.OPEN_LONG) -> None:
         self.name = name
         self._action = action

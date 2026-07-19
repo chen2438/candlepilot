@@ -25,7 +25,7 @@ from candlepilot.domain.models import (
     TradeIntent,
 )
 from candlepilot.market.scanner import MarketCandidateInput
-from candlepilot.providers.base import LLMProvider, ProviderResult
+from candlepilot.providers.base import DecisionProvider, ProviderResult
 from candlepilot.providers.local import LocalRuleProvider
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.settings_file import read_env_file
@@ -36,7 +36,7 @@ from candlepilot.storage.database import (
 )
 
 
-class ApiProvider(LLMProvider):
+class ApiProvider(DecisionProvider):
     name = "api-fixture"
 
     async def health_check(self):
@@ -56,7 +56,7 @@ class CustomApiProvider(ApiProvider):
     name = "openai-compatible:main"
 
 
-class BrokenProvider(LLMProvider):
+class BrokenProvider(DecisionProvider):
     name = "broken-fixture"
 
     async def health_check(self):

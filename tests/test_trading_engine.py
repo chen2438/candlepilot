@@ -15,7 +15,7 @@ from candlepilot.domain.models import (
     TradeIntent,
 )
 from candlepilot.market.scanner import MarketCandidateInput
-from candlepilot.providers.base import LLMProvider, ProviderResult
+from candlepilot.providers.base import DecisionProvider, ProviderResult
 from candlepilot.providers.cli import ProviderError, ProviderInvocationError
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.risk.engine import SymbolRules
@@ -23,7 +23,7 @@ from candlepilot.storage.database import AuditRepository, Database
 from conftest import FakeTestnetBroker
 
 
-class FakeProvider(LLMProvider):
+class FakeProvider(DecisionProvider):
     name = "fake-auth"
 
     async def health_check(self) -> ProviderHealth:
@@ -44,7 +44,7 @@ class FakeProvider(LLMProvider):
         return ProviderResult(intent, self.name, "fixture", timedelta(milliseconds=1), "{}", {})
 
 
-class FailedProvider(LLMProvider):
+class FailedProvider(DecisionProvider):
     name = "failed-primary"
 
     async def health_check(self) -> ProviderHealth:
@@ -94,7 +94,7 @@ class UnavailableProvider(FailedProvider):
         raise AssertionError("startup health failure should put this provider in cooldown")
 
 
-class AuditedFailedProvider(LLMProvider):
+class AuditedFailedProvider(DecisionProvider):
     name = "audited-failure"
     model = "fixture-model"
 
