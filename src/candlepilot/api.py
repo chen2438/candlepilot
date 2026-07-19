@@ -1816,42 +1816,77 @@ def create_app(
     async def get_fills(limit: int = 100) -> list[dict[str, Any]]:
         if not 1 <= limit <= 500:
             raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
-        fills = await engine.audit.recent_trade_fills(limit)
         broker = engine.testnet_broker
-        resolver = getattr(broker, "completed_order_fill_event", None)
-        if resolver is None or not any(
-            fill["source"] == "execution_audit" and fill["purpose"] == "manual_close"
-            for fill in fills
-        ):
-            return fills
+        manual_resolver = getattr(broker, "completed_order_fill_event", None)
+        exit_resolver = getattr(broker, "completed_exit_fill_event", None)
         async with trade_fill_reconciliation_lock:
             fills = await engine.audit.recent_trade_fills(limit)
-            missing = [
-                fill
-                for fill in fills
-                if fill["source"] == "execution_audit" and fill["purpose"] == "manual_close"
-                and trade_fill_retry_after.get(fill["client_order_id"], 0) <= time.monotonic()
-            ]
-            for fill in missing:
-                client_order_id = fill["client_order_id"]
+            requests: list[tuple[str, Any, str, str]] = []
+            if manual_resolver is not None:
+                requests.extend(
+                    (
+                        f"manual:{fill['client_order_id']}",
+                        manual_resolver,
+                        fill["symbol"],
+                        fill["client_order_id"],
+                    )
+                    for fill in fills
+                    if fill["source"] == "execution_audit"
+                    and fill["purpose"] == "manual_close"
+                )
+            if exit_resolver is not None:
                 try:
-                    event = await resolver(fill["symbol"], client_order_id)
+                    account = await testnet_account()
+                except Exception as exc:
+                    account = None
+                    logging.getLogger("candlepilot").warning(
+                        "offline exit fill reconciliation skipped: account query failed (%s)",
+                        type(exc).__name__,
+                    )
+                if account is not None:
+                    open_symbols = {
+                        str(position.get("symbol", ""))
+                        for position in account.get("positions", [])
+                        if Decimal(str(position.get("positionAmt", "0"))) != 0
+                    }
+                    related_entries = {
+                        fill["related_client_order_id"]
+                        for fill in fills
+                        if fill["related_client_order_id"] is not None
+                    }
+                    requests.extend(
+                        (
+                            f"exit:{fill['client_order_id']}",
+                            exit_resolver,
+                            fill["symbol"],
+                            fill["client_order_id"],
+                        )
+                        for fill in fills
+                        if fill["purpose"] == "entry"
+                        and fill["symbol"] not in open_symbols
+                        and fill["client_order_id"] not in related_entries
+                    )
+            for retry_key, resolver, symbol, client_order_id in requests:
+                if trade_fill_retry_after.get(retry_key, 0) > time.monotonic():
+                    continue
+                try:
+                    event = await resolver(symbol, client_order_id)
                 except Exception as exc:
                     event = None
                     logging.getLogger("candlepilot").warning(
-                        "manual close fill reconciliation failed for %s: %s",
+                        "trade fill reconciliation failed for %s: %s",
                         client_order_id,
                         type(exc).__name__,
                     )
                 if event is not None:
                     await engine.audit.record_user_event(event)
-                    trade_fill_retry_after.pop(client_order_id, None)
-                    trade_fill_failure_count.pop(client_order_id, None)
+                    trade_fill_retry_after.pop(retry_key, None)
+                    trade_fill_failure_count.pop(retry_key, None)
                     continue
-                failures = trade_fill_failure_count.get(client_order_id, 0) + 1
-                trade_fill_failure_count[client_order_id] = failures
+                failures = trade_fill_failure_count.get(retry_key, 0) + 1
+                trade_fill_failure_count[retry_key] = failures
                 delays = (5, 15, 60, 300)
-                trade_fill_retry_after[client_order_id] = (
+                trade_fill_retry_after[retry_key] = (
                     time.monotonic() + delays[min(failures - 1, len(delays) - 1)]
                 )
             return await engine.audit.recent_trade_fills(limit)

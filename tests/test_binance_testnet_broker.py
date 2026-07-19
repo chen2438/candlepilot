@@ -9,6 +9,7 @@ from pydantic import SecretStr
 
 from candlepilot.broker.binance_testnet import (
     AccountReconciliationError,
+    BinanceApiError,
     BinanceTestnetBroker,
     BinanceTestnetCredentials,
     ManualCloseError,
@@ -1022,6 +1023,36 @@ def test_completed_order_fill_event_uses_real_exchange_trades() -> None:
         "/fapi/v1/order",
         "/fapi/v1/userTrades",
     ]
+
+
+def test_completed_exit_fill_event_checks_bracket_ids_until_one_filled() -> None:
+    async def scenario():
+        client = httpx.AsyncClient(base_url=BINANCE_FUTURES_TESTNET)
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        attempts: list[str] = []
+        now = datetime.now(UTC)
+        expected = UserStreamEvent(
+            "ORDER_TRADE_UPDATE",
+            now,
+            now,
+            "AKEUSDT",
+            {"o": {"c": "cp-entry-tp", "X": "FILLED", "x": "TRADE"}},
+        )
+
+        async def completed(_symbol: str, client_order_id: str):
+            attempts.append(client_order_id)
+            if client_order_id.endswith("-sl"):
+                raise BinanceApiError(-2013, "Order does not exist", 400)
+            return expected
+
+        broker.completed_order_fill_event = completed  # type: ignore[method-assign]
+        event = await broker.completed_exit_fill_event("AKEUSDT", "cp-entry")
+        await client.aclose()
+        return event, attempts, expected
+
+    event, attempts, expected = asyncio.run(scenario())
+    assert event is expected
+    assert attempts == ["cp-entry-sl", "cp-entry-tp"]
 
 
 def test_recovers_timed_out_order_by_client_id() -> None:

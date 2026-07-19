@@ -792,6 +792,24 @@ class BinanceTestnetBroker:
             payload=payload,
         )
 
+    async def completed_exit_fill_event(
+        self, symbol: str, entry_client_order_id: str
+    ) -> UserStreamEvent | None:
+        """Find the exchange-owned exit for one CandlePilot entry."""
+
+        for suffix in ("-sl", "-tp", "-rescue"):
+            try:
+                event = await self.completed_order_fill_event(
+                    symbol, f"{entry_client_order_id}{suffix}"
+                )
+            except BinanceApiError as exc:
+                if exc.code == -2013:  # No triggered regular order under this bracket ID.
+                    continue
+                raise
+            if event is not None:
+                return event
+        return None
+
     @staticmethod
     def _estimated_rescue_loss(
         order: OrderPlan,

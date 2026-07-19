@@ -753,6 +753,80 @@ def test_missing_manual_fill_reconciliation_uses_retry_backoff(tmp_path: Path) -
     asyncio.run(database.close())
 
 
+def test_flat_entry_reconciles_protective_exit_but_open_position_is_skipped(
+    tmp_path: Path,
+) -> None:
+    from candlepilot.broker.user_stream import UserStreamEvent
+    from candlepilot.domain.models import ExecutionReport
+
+    class ExitFillBroker(StatefulTestnetBroker):
+        def __init__(self) -> None:
+            super().__init__({"BTCUSDT": ("LONG", Decimal("0.1"), Decimal("65000"))})
+            self.exit_queries: list[tuple[str, str]] = []
+
+        async def completed_exit_fill_event(
+            self, symbol: str, entry_client_order_id: str
+        ) -> UserStreamEvent:
+            self.exit_queries.append((symbol, entry_client_order_id))
+            now = datetime.now(UTC)
+            return UserStreamEvent(
+                "ORDER_TRADE_UPDATE",
+                now,
+                now,
+                symbol,
+                {
+                    "_source": "rest_trade_reconciliation",
+                    "o": {
+                        "c": f"{entry_client_order_id}-sl",
+                        "s": symbol,
+                        "S": "SELL",
+                        "x": "TRADE",
+                        "X": "FILLED",
+                        "z": "1000",
+                        "ap": "0.00194",
+                        "R": True,
+                        "rp": "-25",
+                    },
+                },
+            )
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'offline-exit-fill.db'}")
+    broker = ExitFillBroker()
+    engine = TradingEngine(
+        testnet_broker=broker,  # type: ignore[arg-type]
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=ApiMarket(),  # type: ignore[arg-type]
+    )
+    asyncio.run(database.initialize())
+    for symbol, client_order_id, quantity in (
+        ("AKEUSDT", "cp-ake-entry", "1000"),
+        ("BTCUSDT", "cp-btc-entry", "0.1"),
+    ):
+        asyncio.run(
+            engine.audit.record_execution(
+                symbol,
+                ExecutionReport(
+                    client_order_id=client_order_id,
+                    status="FILLED",
+                    filled_quantity=quantity,
+                ),
+            )
+        )
+    app = create_app(database=database, market=ApiMarket(), engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        fills = client.get("/api/fills").json()
+        exit_fill = next(fill for fill in fills if fill["purpose"] == "stop_loss")
+        assert exit_fill["client_order_id"] == "cp-ake-entry-sl"
+        assert exit_fill["related_client_order_id"] == "cp-ake-entry"
+        assert exit_fill["realized_pnl"] == "-25"
+        assert broker.exit_queries == [("AKEUSDT", "cp-ake-entry")]
+        assert client.get("/api/fills").status_code == 200
+        assert broker.exit_queries == [("AKEUSDT", "cp-ake-entry")]
+    asyncio.run(database.close())
+
+
 def test_alert_transitions_are_logged_and_persisted(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'alerts-api.db'}")
     market = ApiMarket()
