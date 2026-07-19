@@ -13,7 +13,7 @@
 - 完全由用户本人实现且没有 Agent 参与的提交可以改以 `Human-authored: true` 结尾；Agent 禁止
   使用或建议冒用该标记来绕过共同作者要求。
 - 本地仓库必须使用 `git config core.hooksPath .githooks` 启用版本化 `commit-msg` hook；提交后、
-  推送前必须执行 `python scripts/check_commit_messages.py --commit HEAD` 再次验证 Git 实际解析的
+  推送前必须执行 `.venv/bin/python scripts/check_commit_messages.py --commit HEAD` 再次验证 Git 实际解析的
   message。不得用字面量 `\\n` 拼接提交正文或 trailer。
 - 禁止只有标题、没有正文的提交。当安全行为、兼容性影响或验证结果对后续维护有实际帮助时，
   必须在 description 中记录。

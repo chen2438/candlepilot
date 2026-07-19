@@ -706,8 +706,8 @@ Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功
   重新执行自身（进程被替换，之后无法再发响应），前端轮询 `/api/health/live` 直到恢复再刷新。
   **重启前会剔除本进程当初由 `.env` 注入的环境变量**（`DOTENV_INJECTED_KEYS`）：`load_dotenv`
   不覆盖已有变量，若继承旧值则重写后的 `.env` 会被忽略、重启等于白做；shell 中显式 `export`
-  的变量会保留（它本就优先于 `.env`）。重新执行统一走 `python -m candlepilot.cli`，
-  因此 `candlepilot serve` 与 `python -m candlepilot.cli serve` 两种启动方式都能恢复。
+  的变量会保留（它本就优先于 `.env`）。重新执行统一走 `.venv/bin/python -m candlepilot.cli`，
+  因此 `candlepilot serve` 与 `.venv/bin/python -m candlepilot.cli serve` 两种启动方式都能恢复。
 - `.env` 路径默认为工作目录下的 `.env`，可用 `CANDLEPILOT_ENV_FILE` 指定。
 
 ### 4.11 数据管理
@@ -834,7 +834,7 @@ Position Risk v3 及 Symbol Config 合并：持仓数量与保证金来自账户
 .venv/bin/ruff check .
 .venv/bin/pytest -q
 cd frontend && pnpm run build
-python scripts/check_commit_messages.py --commit HEAD
+.venv/bin/python scripts/check_commit_messages.py --commit HEAD
 ```
 
 首次克隆后执行 `git config core.hooksPath .githooks`，启用版本化 `commit-msg` hook。该 hook
