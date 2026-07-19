@@ -50,50 +50,23 @@ type SymbolBreakdown = {
 };
 
 function backtestSymbolBreakdown(result: BacktestResult): SymbolBreakdown[] {
-  if (result.symbol_results) {
-    return result.symbol_results.map((item) => ({
-      symbol: item.symbol,
-      grossPnl: Number(item.gross_price_pnl),
-      fees: Number(item.total_fees),
-      funding: Number(item.total_funding),
-      netPnl: Number(item.net_pnl),
-      tradeCount: item.trade_count,
-      contributionReturn: Number(item.contribution_return),
-    }));
-  }
-  const initialEquity = Number(result.initial_equity);
-  const grouped = new Map<string, SymbolBreakdown>();
-  for (const trade of result.trades ?? []) {
-    const current = grouped.get(trade.symbol) ?? {
-      symbol: trade.symbol, grossPnl: 0, fees: 0, funding: 0,
-      netPnl: 0, tradeCount: 0, contributionReturn: 0,
-    };
-    const net = Number(trade.net_pnl);
-    const fees = Number(trade.fees);
-    const funding = Number(trade.funding);
-    current.netPnl += net;
-    current.fees += fees;
-    current.funding += funding;
-    current.grossPnl += net + fees + funding;
-    current.tradeCount += 1;
-    current.contributionReturn = initialEquity ? current.netPnl / initialEquity : 0;
-    grouped.set(trade.symbol, current);
-  }
-  return [...grouped.values()].sort((left, right) => left.symbol.localeCompare(right.symbol));
+  return result.symbol_results.map((item) => ({
+    symbol: item.symbol,
+    grossPnl: Number(item.gross_price_pnl),
+    fees: Number(item.total_fees),
+    funding: Number(item.total_funding),
+    netPnl: Number(item.net_pnl),
+    tradeCount: item.trade_count,
+    contributionReturn: Number(item.contribution_return),
+  }));
 }
 
 function BacktestResultDetail({ result }: { result: BacktestResult | null }) {
   if (!result) return <div className="backtest-result-empty">正在读取收益明细；未完成的运行会在结束后生成。</div>;
-  const netPnl = result.net_pnl === undefined
-    ? Number(result.final_equity) - Number(result.initial_equity)
-    : Number(result.net_pnl);
+  const netPnl = Number(result.net_pnl);
   const fees = Number(result.total_fees);
   const fundingCost = Number(result.total_funding);
-  const grossPnl = result.gross_price_pnl === undefined
-    ? netPnl + fees + fundingCost
-    : Number(result.gross_price_pnl);
-  const forcedCloses = result.run_end_trade_count
-    ?? result.trades?.filter((trade) => trade.exit_reason === "run_end").length;
+  const grossPnl = Number(result.gross_price_pnl);
   const symbolBreakdown = backtestSymbolBreakdown(result);
 
   return (
@@ -143,17 +116,13 @@ function BacktestResultDetail({ result }: { result: BacktestResult | null }) {
       <div className="backtest-closeout">
         <strong>收尾处理</strong>
         <span>
-          {forcedCloses === undefined
-            ? "旧记录未保存强制平仓计数"
-            : `按最后可用价格强制平仓 ${forcedCloses} 笔（含退出滑点与手续费）`}
+          按最后可用价格强制平仓 {result.run_end_trade_count} 笔（含退出滑点与手续费）
         </span>
         <span>
-          {result.cancelled_pending_orders === undefined
-            ? "旧记录未保存挂单撤销计数"
-            : `撤销未成交挂单 ${result.cancelled_pending_orders} 笔（不产生盈亏）`}
+          撤销未成交挂单 {result.cancelled_pending_orders} 笔（不产生盈亏）
         </span>
       </div>
-      {result.trades && result.trades.length > 0 && (
+      {result.trades.length > 0 && (
         <div className="backtest-trades table-wrap">
           <table>
             <thead><tr><th>交易</th><th>入场 → 出场</th><th>价格盈亏</th><th>手续费</th><th>资金费影响</th><th>净盈亏</th><th>退出</th></tr></thead>
@@ -340,8 +309,7 @@ function providerLabel(name: string): string {
   return name;
 }
 
-function modelConfigSummary(model: string | null, effort: string | null, recorded = true): string {
-  if (!recorded) return "旧记录未保存模型配置";
+function modelConfigSummary(model: string | null, effort: string | null): string {
   return `${model ?? "Provider 默认模型"} · ${effort ? `推理 ${effort}` : "默认推理强度"}`;
 }
 
@@ -2496,14 +2464,13 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                     ? <small className="run-real">真实回测 · 含订单流</small>
                     : <small>普通回测 · 无订单流</small>}
                   {run.spec.timeout_seconds
+                    !== null
                     ? <small>
                         超时 {run.spec.timeout_seconds}s · {run.spec.timeout_source === "provider_config"
                           ? "继承配置"
-                          : run.spec.timeout_source === "explicit"
-                            ? "本次指定"
-                            : "本次指定（旧记录）"}
+                          : "本次指定"}
                       </small>
-                    : <small>超时未固化（旧记录）</small>}
+                    : <small>本地规则 · 超时不适用</small>}
                   <small className="run-timing" data-tooltip="任务从创建到结束的墙钟耗时；运行中随列表轮询继续计时。">
                     耗时 {backtestElapsed(run)}
                   </small>
@@ -2518,7 +2485,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                     {openDecisions === `${run.id}-${model.provider}` ? "▾" : "▸"}
                     <span>
                       {providerLabel(model.provider)}
-                      <small>{modelConfigSummary(model.model, model.reasoning_effort, model.config_recorded)}</small>
+                      <small>{modelConfigSummary(model.model, model.reasoning_effort)}</small>
                     </span>
                   </button>
                 </td>
@@ -2548,7 +2515,6 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                   {headline ? headline.trade_count : "—"}</td>
                 {index === 0 && <td rowSpan={run.models.length}>
                   {run.status === "running" && <button className="text-button danger-text" onClick={() => void cancel(run.id)}>取消</button>}
-                  {run.status === "unreliable" && <small className="negative" title={run.error ?? ""}>丢了太多决策</small>}
                   {run.status === "failed" && run.error && <small className="negative" title={run.error}>失败</small>}
                 </td>}
               </tr>;
@@ -2632,7 +2598,6 @@ const DECISION_OUTCOME_CLASS: Record<BacktestDecision["outcome"], string> = {
 const RUN_STATUS: Record<BacktestRun["status"], string> = {
   running: "进行中",
   completed: "已完成",
-  unreliable: "不可信",
   failed: "失败",
   cancelled: "已取消",
 };

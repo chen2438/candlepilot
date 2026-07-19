@@ -1,10 +1,10 @@
 import asyncio
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
-from decimal import Decimal
-from sqlalchemy import text
+import pytest
 
 from candlepilot.broker.user_stream import UserStreamEvent
 from candlepilot.domain.models import (
@@ -772,25 +772,13 @@ def test_database_migrations_are_versioned_and_idempotent(tmp_path: Path) -> Non
     assert asyncio.run(scenario()) == (CURRENT_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION)
 
 
-def test_live_run_migration_upgrades_existing_inference_table(tmp_path: Path) -> None:
-    path = tmp_path / "schema-v11.db"
+def test_current_database_baseline_advances_without_legacy_migrations(tmp_path: Path) -> None:
+    path = tmp_path / "schema-v12.db"
     connection = sqlite3.connect(path)
     connection.executescript(
         """
         CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at DATETIME);
-        INSERT INTO schema_migrations VALUES (11, '2026-07-18 00:00:00');
-        CREATE TABLE inferences (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            provider VARCHAR(64) NOT NULL,
-            model VARCHAR(128),
-            symbol VARCHAR(32) NOT NULL,
-            cadence VARCHAR(8) NOT NULL,
-            intent_json TEXT NOT NULL,
-            raw_output TEXT NOT NULL,
-            usage_json TEXT NOT NULL,
-            duration_ms REAL NOT NULL,
-            created_at DATETIME NOT NULL
-        );
+        INSERT INTO schema_migrations VALUES (12, '2026-07-18 00:00:00');
         """
     )
     connection.close()
@@ -798,62 +786,33 @@ def test_live_run_migration_upgrades_existing_inference_table(tmp_path: Path) ->
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{path}")
         await database.initialize()
-        async with database.engine.connect() as db:
-            inference_columns = {
-                row[1]
-                for row in (await db.execute(text("PRAGMA table_info(inferences)"))).all()
-            }
-            live_run_table = await db.scalar(
-                text("SELECT name FROM sqlite_master WHERE type='table' AND name='live_runs'")
-            )
         version = await database.schema_version()
         await database.close()
-        return inference_columns, live_run_table, version
+        return version
 
-    columns, live_run_table, version = asyncio.run(scenario())
-    assert "live_run_id" in columns
-    assert live_run_table == "live_runs"
-    assert version == CURRENT_SCHEMA_VERSION
+    assert asyncio.run(scenario()) == CURRENT_SCHEMA_VERSION
 
 
-def test_risk_foreign_key_migration_nulls_existing_orphans(tmp_path: Path) -> None:
-    path = tmp_path / "risk-v7.db"
+def test_prebaseline_database_is_rejected_instead_of_guessed_forward(tmp_path: Path) -> None:
+    path = tmp_path / "schema-v11.db"
     connection = sqlite3.connect(path)
     connection.executescript(
         """
         CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at DATETIME);
-        INSERT INTO schema_migrations VALUES (7, '2026-07-17 00:00:00');
-        CREATE TABLE inferences (id INTEGER PRIMARY KEY);
-        INSERT INTO inferences VALUES (1);
-        CREATE TABLE risk_decisions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            inference_id INTEGER,
-            symbol VARCHAR(32) NOT NULL,
-            accepted INTEGER NOT NULL,
-            reason TEXT NOT NULL,
-            decision_json TEXT NOT NULL,
-            created_at DATETIME NOT NULL
-        );
-        INSERT INTO risk_decisions VALUES
-            (1, 1, 'BTCUSDT', 1, 'linked', '{}', '2026-07-17 00:00:00'),
-            (2, 99, 'ETHUSDT', 0, 'orphan', '{}', '2026-07-17 00:00:00');
+        INSERT INTO schema_migrations VALUES (11, '2026-07-18 00:00:00');
         """
     )
     connection.close()
 
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{path}")
-        async with database.engine.begin() as migration_connection:
-            await database._apply_migrations(migration_connection)
-            rows = (
-                await migration_connection.execute(
-                    text("SELECT id, inference_id FROM risk_decisions ORDER BY id")
-                )
-            ).all()
-        await database.close()
-        return rows
+        try:
+            with pytest.raises(RuntimeError, match="before v12"):
+                await database.initialize()
+        finally:
+            await database.close()
 
-    assert asyncio.run(scenario()) == [(1, 1), (2, None)]
+    asyncio.run(scenario())
 
 
 async def _seed_decisions(repository: AuditRepository) -> None:

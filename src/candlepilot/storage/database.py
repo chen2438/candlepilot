@@ -264,180 +264,13 @@ class SchemaMigrationRow(Base):
     applied_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
-MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
-    (
-        1,
-        (
-            "CREATE INDEX IF NOT EXISTS ix_user_stream_event_symbol_time "
-            "ON user_stream_events (event_type, symbol, event_time)",
-        ),
-    ),
-    (
-        2,
-        (
-            "CREATE TABLE IF NOT EXISTS inference_details ("
-            "inference_id INTEGER NOT NULL PRIMARY KEY, "
-            "input_json TEXT, prompt_text TEXT, "
-            "FOREIGN KEY(inference_id) REFERENCES inferences(id) ON DELETE CASCADE)",
-        ),
-    ),
-    (
-        3,
-        (
-            "CREATE TABLE IF NOT EXISTS execution_attempts ("
-            "id INTEGER NOT NULL PRIMARY KEY, "
-            "inference_id INTEGER NOT NULL, symbol VARCHAR(32) NOT NULL, "
-            "client_order_id VARCHAR(64), status VARCHAR(32) NOT NULL, "
-            "stage VARCHAR(32) NOT NULL, attempt_json TEXT NOT NULL, "
-            "created_at DATETIME NOT NULL, "
-            "FOREIGN KEY(inference_id) REFERENCES inferences(id) ON DELETE CASCADE)",
-            "CREATE UNIQUE INDEX IF NOT EXISTS ix_execution_attempts_inference_id "
-            "ON execution_attempts (inference_id)",
-            "CREATE INDEX IF NOT EXISTS ix_execution_attempts_symbol "
-            "ON execution_attempts (symbol)",
-            "CREATE INDEX IF NOT EXISTS ix_execution_attempts_client_order_id "
-            "ON execution_attempts (client_order_id)",
-            "CREATE INDEX IF NOT EXISTS ix_execution_attempts_status "
-            "ON execution_attempts (status)",
-            "CREATE INDEX IF NOT EXISTS ix_execution_attempts_created_at "
-            "ON execution_attempts (created_at)",
-        ),
-    ),
-    (
-        4,
-        # The old backtest is gone. Its stored results came from a payload that
-        # never matched what live sends -- single timeframe, unprefixed, no
-        # daily levels -- so keeping them would invite comparing them against
-        # the rewrite's numbers as though the two measured the same thing.
-        (
-            "DROP TABLE IF EXISTS backtests",
-            # The simulated account is gone too: testnet is the only account now.
-            "DELETE FROM runtime_state WHERE key = 'paper_account'",
-        ),
-    ),
-    (
-        5,
-        (
-            "CREATE TABLE IF NOT EXISTS backtest_runs ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT, spec_json TEXT NOT NULL, "
-            "status VARCHAR(16) NOT NULL, error TEXT, "
-            "created_at DATETIME NOT NULL, ended_at DATETIME)",
-            "CREATE INDEX IF NOT EXISTS ix_backtest_runs_status ON backtest_runs (status)",
-            "CREATE INDEX IF NOT EXISTS ix_backtest_runs_created_at "
-            "ON backtest_runs (created_at)",
-            "CREATE TABLE IF NOT EXISTS backtest_model_runs ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-            "run_id INTEGER NOT NULL REFERENCES backtest_runs(id) ON DELETE CASCADE, "
-            "provider VARCHAR(64) NOT NULL, decisions_done INTEGER NOT NULL DEFAULT 0, "
-            "decisions_total INTEGER NOT NULL DEFAULT 0, "
-            "calls_failed INTEGER NOT NULL DEFAULT 0, result_json TEXT, error TEXT)",
-            "CREATE INDEX IF NOT EXISTS ix_backtest_model_runs_run_id "
-            "ON backtest_model_runs (run_id)",
-        ),
-    ),
-    (
-        6,
-        (
-            "CREATE TABLE IF NOT EXISTS book_captures ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT, symbol VARCHAR(32) NOT NULL, "
-            "captured_at DATETIME NOT NULL, schema_version VARCHAR(32) NOT NULL, "
-            "payload_json TEXT NOT NULL)",
-            # One capture per symbol per boundary: a restarted collector must
-            # not double-write the instant it resumes on.
-            "CREATE UNIQUE INDEX IF NOT EXISTS ix_book_captures_symbol_time "
-            "ON book_captures (symbol, captured_at)",
-            "CREATE INDEX IF NOT EXISTS ix_book_captures_captured_at "
-            "ON book_captures (captured_at)",
-        ),
-    ),
-    (
-        7,
-        (
-            # A backtest only reported its totals, so a 0% return over 0 trades
-            # was indistinguishable from a model that held all day, one whose
-            # every intent the risk policy vetoed, and one whose calls failed.
-            "CREATE TABLE IF NOT EXISTS backtest_decisions ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-            "run_id INTEGER NOT NULL REFERENCES backtest_runs(id) ON DELETE CASCADE, "
-            "provider VARCHAR(64) NOT NULL, decided_at DATETIME NOT NULL, "
-            "symbol VARCHAR(32) NOT NULL, cadence VARCHAR(8) NOT NULL, "
-            "outcome VARCHAR(16) NOT NULL, action VARCHAR(16), "
-            "confidence REAL, rationale TEXT, detail TEXT, fill_json TEXT)",
-            # Read back per run, in decision order, filtered to one model.
-            "CREATE INDEX IF NOT EXISTS ix_backtest_decisions_run "
-            "ON backtest_decisions (run_id, provider, id)",
-        ),
-    ),
-    (
-        8,
-        (
-            # Linked risk rows remain useful when users clear only model-call
-            # history, but their old integer must not impersonate a future
-            # inference that later reuses it. SET NULL preserves the standalone
-            # risk audit without leaving a dangling identity.
-            "CREATE TABLE risk_decisions_v8 ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT, inference_id INTEGER, "
-            "symbol VARCHAR(32) NOT NULL, accepted INTEGER NOT NULL, "
-            "reason TEXT NOT NULL, decision_json TEXT NOT NULL, created_at DATETIME NOT NULL, "
-            "FOREIGN KEY(inference_id) REFERENCES inferences(id) ON DELETE SET NULL)",
-            "INSERT INTO risk_decisions_v8 "
-            "(id, inference_id, symbol, accepted, reason, decision_json, created_at) "
-            "SELECT r.id, CASE WHEN i.id IS NULL THEN NULL ELSE r.inference_id END, "
-            "r.symbol, r.accepted, r.reason, r.decision_json, r.created_at "
-            "FROM risk_decisions r LEFT JOIN inferences i ON i.id = r.inference_id",
-            "DROP TABLE risk_decisions",
-            "ALTER TABLE risk_decisions_v8 RENAME TO risk_decisions",
-            "CREATE INDEX ix_risk_decisions_inference_id ON risk_decisions (inference_id)",
-            "CREATE INDEX ix_risk_decisions_symbol ON risk_decisions (symbol)",
-            "CREATE INDEX ix_risk_decisions_created_at ON risk_decisions (created_at)",
-        ),
-    ),
-    (
-        9,
-        (
-            # Backtests can run for hours, so token use and equivalent cost
-            # must survive each progress poll and a process restart.
-            "ALTER TABLE backtest_model_runs "
-            "ADD COLUMN usage_json TEXT NOT NULL DEFAULT '{}'",
-        ),
-    ),
-    (
-        10,
-        (
-            # Running backtests expose provisional portfolio statistics and a
-            # throughput-based ETA without pretending they are final results.
-            "ALTER TABLE backtest_model_runs "
-            "ADD COLUMN progress_json TEXT NOT NULL DEFAULT '{}'",
-        ),
-    ),
-    (
-        11,
-        (
-            # Historical decision time and actual local dispatch time are
-            # different clocks; retain every provider attempt for audit.
-            "ALTER TABLE backtest_decisions "
-            "ADD COLUMN attempts_json TEXT NOT NULL DEFAULT '[]'",
-        ),
-    ),
-    (
-        12,
-        (
-            # Formal decisions need a durable run boundary. Inference-id/time
-            # heuristics cannot distinguish restarts or explain why a run ended.
-            "CREATE TABLE IF NOT EXISTS live_runs ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT, status VARCHAR(16) NOT NULL, "
-            "config_json TEXT NOT NULL DEFAULT '{}', stop_reason TEXT, "
-            "started_at DATETIME NOT NULL, ended_at DATETIME)",
-            "CREATE INDEX IF NOT EXISTS ix_live_runs_status ON live_runs (status)",
-            "CREATE INDEX IF NOT EXISTS ix_live_runs_started_at ON live_runs (started_at)",
-            "ALTER TABLE inferences ADD COLUMN live_run_id INTEGER "
-            "REFERENCES live_runs(id) ON DELETE SET NULL",
-            "CREATE INDEX IF NOT EXISTS ix_inferences_live_run_id "
-            "ON inferences (live_run_id)",
-        ),
-    ),
-)
-CURRENT_SCHEMA_VERSION = max(version for version, _ in MIGRATIONS)
+# Historical data and all pre-v12 databases have been retired.  Keep one empty
+# baseline migration so the user's current v12 database advances without
+# replaying upgrade logic, while fresh databases are created directly from the
+# ORM metadata at the current shape.
+MINIMUM_SUPPORTED_SCHEMA_VERSION = 12
+MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = ((13, ()),)
+CURRENT_SCHEMA_VERSION = 13
 
 
 class Database:
@@ -465,37 +298,15 @@ class Database:
         current = await connection.scalar(
             select(SchemaMigrationRow.version).order_by(SchemaMigrationRow.version.desc()).limit(1)
         )
+        if current is not None and current < MINIMUM_SUPPORTED_SCHEMA_VERSION:
+            raise RuntimeError(
+                "database schemas before v12 are no longer supported; clear the old "
+                "database and start CandlePilot with a fresh schema"
+            )
         for version, statements in MIGRATIONS:
             if current is not None and version <= current:
                 continue
             for statement in statements:
-                if version in (9, 10, 11, 12) and statement.startswith("ALTER TABLE"):
-                    table = (
-                        "backtest_decisions"
-                        if version == 11
-                        else "inferences"
-                        if version == 12
-                        else "backtest_model_runs"
-                    )
-                    columns = {
-                        row[1]
-                        for row in (
-                            await connection.execute(
-                                text(f"PRAGMA table_info({table})")
-                            )
-                        ).all()
-                    }
-                    # create_all() gives a brand-new database the current ORM
-                    # shape before versioned migrations run. Existing earlier
-                    # databases still need the ALTER; fresh ones must skip it.
-                    target = {
-                        9: "usage_json",
-                        10: "progress_json",
-                        11: "attempts_json",
-                        12: "live_run_id",
-                    }[version]
-                    if not columns or target in columns:
-                        continue
                 await connection.execute(text(statement))
             await connection.execute(
                 insert(SchemaMigrationRow).values(
@@ -1514,7 +1325,6 @@ class AuditRepository:
             "provider": row.provider,
             "model": config.get("model"),
             "reasoning_effort": config.get("reasoning_effort"),
-            "config_recorded": "model" in config or "reasoning_effort" in config,
             "decisions_done": row.decisions_done,
             "decisions_total": row.decisions_total,
             "calls_failed": row.calls_failed,

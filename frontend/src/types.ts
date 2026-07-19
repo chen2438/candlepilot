@@ -432,8 +432,8 @@ export interface BacktestTrade {
 export interface BacktestResult {
   initial_equity: string;
   final_equity: string;
-  gross_price_pnl?: string;
-  net_pnl?: string;
+  gross_price_pnl: string;
+  net_pnl: string;
   total_return: string;
   max_drawdown: string;
   win_rate: string;
@@ -441,9 +441,9 @@ export interface BacktestResult {
   trade_count: number;
   total_fees: string;
   total_funding: string;
-  run_end_trade_count?: number;
-  cancelled_pending_orders?: number;
-  symbol_results?: Array<{
+  run_end_trade_count: number;
+  cancelled_pending_orders: number;
+  symbol_results: Array<{
     symbol: string;
     gross_price_pnl: string;
     net_pnl: string;
@@ -452,14 +452,13 @@ export interface BacktestResult {
     total_fees: string;
     total_funding: string;
   }>;
-  trades?: BacktestTrade[];
+  trades: BacktestTrade[];
 }
 
 export interface BacktestModelRun {
   provider: string;
   model: string | null;
   reasoning_effort: string | null;
-  config_recorded: boolean;
   decisions_done: number;
   decisions_total: number;
   calls_failed: number;
@@ -492,7 +491,7 @@ export interface BacktestModelRun {
 
 export interface BacktestRun {
   id: number;
-  status: "running" | "completed" | "unreliable" | "failed" | "cancelled";
+  status: "running" | "completed" | "failed" | "cancelled";
   error: string | null;
   spec: {
     symbols: string[];
@@ -501,10 +500,10 @@ export interface BacktestRun {
     end: string;
     requested_end?: string;
     providers: string[];
-    provider_configs?: Record<string, { model: string | null; reasoning_effort: string | null }>;
-    use_recorded_book?: boolean;
-    timeout_seconds?: number | null;
-    timeout_source?: "explicit" | "provider_config" | "not_applicable";
+    provider_configs: Record<string, { model: string | null; reasoning_effort: string | null }>;
+    use_recorded_book: boolean;
+    timeout_seconds: number | null;
+    timeout_source: "explicit" | "provider_config" | "not_applicable";
     estimate: { decisions_per_model: number; total_calls: number; estimated_hours: number };
   };
   created_at: string;

@@ -2037,7 +2037,6 @@ def test_backtest_runs_in_the_background_and_reports_each_model(tmp_path: Path) 
         model = run["models"][0]
         assert model["model"] == "fixture-model"
         assert model["reasoning_effort"] == "high"
-        assert model["config_recorded"] is True
         assert run["spec"]["provider_configs"]["api-fixture"] == {
             "model": "fixture-model",
             "reasoning_effort": "high",
