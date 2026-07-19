@@ -12,8 +12,15 @@ afterEach(() => {
 
 const decision: DecisionEvent = {
   id: 1,
-  live_run_id: null,
-  live_run: null,
+  live_run_id: 1,
+  live_run: {
+    id: 1,
+    status: "running",
+    config: { cadences: ["15m"], provider_chain: ["openai-compatible:openrouter"] },
+    stop_reason: null,
+    started_at: "2026-07-19T15:08:39Z",
+    ended_at: null,
+  },
   provider: "openai-compatible:openrouter",
   model: "tencent/hy3:free",
   provenance: { reasoning_effort: "low" },

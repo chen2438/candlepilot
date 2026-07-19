@@ -2753,10 +2753,11 @@ const LIVE_RUN_STATUS: Record<NonNullable<DecisionEvent["live_run"]>["status"], 
 function groupDecisionEvents(decisions: DecisionEvent[]) {
   return decisions.reduce<Array<{
     key: string;
-    run: NonNullable<DecisionEvent["live_run"]> | null;
+    run: NonNullable<DecisionEvent["live_run"]>;
     decisions: DecisionEvent[];
   }>>((groups, decision) => {
-    const key = decision.live_run_id === null ? "unassigned" : `run-${decision.live_run_id}`;
+    if (decision.live_run_id === null || decision.live_run === null) return groups;
+    const key = `run-${decision.live_run_id}`;
     const last = groups.at(-1);
     if (last?.key === key) {
       last.decisions.push(decision);
@@ -2771,16 +2772,9 @@ function DecisionRunHeader({
   run,
   decisionCount,
 }: {
-  run: NonNullable<DecisionEvent["live_run"]> | null;
+  run: NonNullable<DecisionEvent["live_run"]>;
   decisionCount: number;
 }) {
-  if (run === null) {
-    return <summary className="decision-run-header unassigned">
-      <span className="decision-run-primary"><strong>历史记录 · 未归属运行</strong><small>运行边界功能启用前产生的决策</small></span>
-      <span className="decision-run-summary">{decisionCount} 条决策</span>
-      <i className="decision-run-toggle" aria-hidden="true" />
-    </summary>;
-  }
   const config = [
     run.config.cadences?.join(" / "),
     run.config.provider_chain?.map(providerLabel).join(" → "),
@@ -2803,11 +2797,11 @@ function DecisionRunGroup({
   decisionCount,
   children,
 }: {
-  run: NonNullable<DecisionEvent["live_run"]> | null;
+  run: NonNullable<DecisionEvent["live_run"]>;
   decisionCount: number;
   children: ReactNode;
 }) {
-  const [open, setOpen] = useState(run === null || run.status === "running");
+  const [open, setOpen] = useState(run.status === "running");
   return <details
     className="decision-run-group"
     open={open}
