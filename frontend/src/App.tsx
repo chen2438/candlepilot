@@ -2733,21 +2733,21 @@ const LIVE_RUN_STATUS: Record<NonNullable<DecisionEvent["live_run"]>["status"], 
 function groupDecisionEvents(decisions: DecisionEvent[]) {
   return decisions.reduce<Array<{
     key: string;
-    run: DecisionEvent["live_run"];
+    run: NonNullable<DecisionEvent["live_run"]> | null;
     decisions: DecisionEvent[];
   }>>((groups, decision) => {
-    const key = decision.live_run_id === null ? "unassigned" : `run-${decision.live_run_id}`;
+    const key = decision.live_run_id == null ? "unassigned" : `run-${decision.live_run_id}`;
     const last = groups.at(-1);
     if (last?.key === key) {
       last.decisions.push(decision);
     } else {
-      groups.push({ key, run: decision.live_run, decisions: [decision] });
+      groups.push({ key, run: decision.live_run ?? null, decisions: [decision] });
     }
     return groups;
   }, []);
 }
 
-function DecisionRunHeader({ run }: { run: DecisionEvent["live_run"] }) {
+function DecisionRunHeader({ run }: { run: NonNullable<DecisionEvent["live_run"]> | null }) {
   if (run === null) {
     return <div className="decision-run-header unassigned">
       <div><strong>历史记录 · 未归属运行</strong><small>运行边界功能启用前产生的决策</small></div>

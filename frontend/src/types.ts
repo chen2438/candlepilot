@@ -178,8 +178,8 @@ export interface Candidate {
 
 export interface DecisionEvent {
   id: number;
-  live_run_id: number | null;
-  live_run: null | {
+  live_run_id?: number | null;
+  live_run?: null | {
     id: number;
     status: "running" | "stopped" | "auto_stopped" | "emergency_stopped" | "interrupted";
     config: {
