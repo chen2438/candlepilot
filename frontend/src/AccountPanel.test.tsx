@@ -60,6 +60,12 @@ describe("AccountPanel manual close", () => {
     expect(screen.getByText("200.00 USDT")).toBeTruthy();
     expect(screen.getByText("-10.00%")).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "原始盈亏比" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "未实现盈亏" }).getAttribute("data-tooltip"))
+      .toContain("保证金回报率");
+    expect(screen.getByRole("columnheader", { name: "止损" }).getAttribute("data-tooltip"))
+      .toContain("不乘杠杆");
+    expect(screen.getByRole("columnheader", { name: "止盈" }).getAttribute("data-tooltip"))
+      .toContain("不乘杠杆");
   });
 
   it("requires an explicit confirmation before closing the whole position", async () => {

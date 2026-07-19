@@ -3275,7 +3275,7 @@ export function AccountPanel({
       </p>
       <div className="table-wrap account-table">
         <table>
-          <thead><tr><th>标的</th><th>方向 / 杠杆</th><th>持仓价值 / 保证金</th><th>均价 / 标记价</th><th>未实现盈亏</th><th data-tooltip="按交易所持仓均价与当前实际止损、止盈价格计算，不包含手续费或成交滑点。">原始盈亏比</th><th>止损</th><th>止盈</th><th>操作</th></tr></thead>
+          <thead><tr><th>标的</th><th>方向 / 杠杆</th><th>持仓价值 / 保证金</th><th>均价 / 标记价</th><th data-tooltip="百分比是保证金回报率：未实现盈亏 ÷ 当前初始保证金 × 100%。它会随杠杆放大，不是标记价相对均价的价格涨跌幅。">未实现盈亏</th><th data-tooltip="按交易所持仓均价与当前实际止损、止盈价格计算，不包含手续费或成交滑点。">原始盈亏比</th><th data-tooltip="百分比是止损价相对持仓均价的方向化价格距离：多单为 (止损价 − 均价) ÷ 均价，空单方向相反。它不乘杠杆，不是保证金回报率。">止损</th><th data-tooltip="百分比是止盈价相对持仓均价的方向化价格距离：多单为 (止盈价 − 均价) ÷ 均价，空单方向相反。它不乘杠杆，不是保证金回报率。">止盈</th><th>操作</th></tr></thead>
           <tbody>
             {positions.map((position) => {
               const protectionMetrics = positionProtectionMetrics(position);
