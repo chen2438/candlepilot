@@ -96,6 +96,13 @@ class ProtectiveLevels:
 
 
 @dataclass(frozen=True, slots=True)
+class ProtectiveAlgoOrder:
+    client_order_id: str
+    order_type: Literal["STOP_MARKET", "TAKE_PROFIT_MARKET"]
+    trigger_price: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
 class ReconciliationReport:
     position_symbols: tuple[str, ...]
     open_order_count: int
@@ -512,6 +519,14 @@ class BinanceTestnetBroker:
             if replace_existing_protection
             else ()
         )
+        invalid_stale = next(
+            (item.client_order_id for item in stale_protection if item.trigger_price is None),
+            None,
+        )
+        if invalid_stale is not None:
+            raise AccountReconciliationError(
+                f"protective order {invalid_stale} has no valid trigger price"
+            )
         await self.configure_symbol(order.symbol, leverage)
         entry = await self._place_order(order)
         if entry.status not in {"NEW", "PARTIALLY_FILLED", "FILLED"}:
@@ -556,8 +571,15 @@ class BinanceTestnetBroker:
             else order
         )
         exit_side = "SELL" if order.side == "BUY" else "BUY"
+        cancelled_stale: list[ProtectiveAlgoOrder] = []
         fresh_protection: list[str] = []
         try:
+            # Binance rejects a second closePosition stop/take-profit in the same
+            # direction with -4130. Preserve the old bracket through the entry,
+            # then remove it before placing the replacement pair.
+            for stale_order in stale_protection:
+                await self._cancel_algo_order(stale_order.client_order_id)
+                cancelled_stale.append(stale_order)
             fresh_protection.append(
                 await self._place_protective(
                     protected_order, exit_side, "STOP_MARKET", order.stop_price, "sl"
@@ -585,6 +607,20 @@ class BinanceTestnetBroker:
                 rescue = await self._emergency_reduce(protected_order, exit_side)
             except Exception as emergency_exc:
                 rescue_error = emergency_exc
+            restoration_failed = False
+            for stale_order in cancelled_stale:
+                try:
+                    assert stale_order.trigger_price is not None
+                    await self._place_protective(
+                        protected_order,
+                        exit_side,
+                        stale_order.order_type,
+                        stale_order.trigger_price,
+                        "sl" if stale_order.order_type == "STOP_MARKET" else "tp",
+                        client_order_id=stale_order.client_order_id,
+                    )
+                except Exception:
+                    restoration_failed = True
             error_code = exc.code if isinstance(exc, BinanceApiError) else None
             message = (
                 "entry succeeded but protective bracket failed; "
@@ -596,6 +632,8 @@ class BinanceTestnetBroker:
                 message = f"{message}: {type(rescue_error).__name__}"
             if cleanup_failed:
                 message = f"{message}; protective-order cleanup failed"
+            if restoration_failed:
+                message = f"{message}; previous protective bracket restoration failed"
             raise ProtectiveStopError(
                 message,
                 entry=entry,
@@ -605,35 +643,41 @@ class BinanceTestnetBroker:
                     protected_order, entry, rescue
                 ),
                 failed_stage="PROTECTION" if rescue is not None else "RESCUE",
-                requires_emergency_lock=rescue is None or cleanup_failed,
-            ) from exc
-        try:
-            for client_order_id in stale_protection:
-                await self._cancel_algo_order(client_order_id)
-        except Exception as exc:
-            raise ProtectiveStopError(
-                "replacement bracket is active but stale protection could not be removed",
-                entry=entry,
-                rescue=None,
-                exchange_error_code=exc.code if isinstance(exc, BinanceApiError) else None,
-                estimated_loss_usdt=None,
-                failed_stage="PROTECTION",
-                requires_emergency_lock=False,
+                requires_emergency_lock=(
+                    rescue is None or cleanup_failed or restoration_failed
+                ),
             ) from exc
         return entry
 
-    async def _candlepilot_protective_orders(self, symbol: str) -> tuple[str, ...]:
+    async def _candlepilot_protective_orders(
+        self, symbol: str
+    ) -> tuple[ProtectiveAlgoOrder, ...]:
         orders = await self._signed_request(
             "GET", "/fapi/v1/openAlgoOrders", {"symbol": symbol}
         )
-        return tuple(
-            str(item["clientAlgoId"])
-            for item in orders
-            if item.get("orderType") in {"STOP", "STOP_MARKET", "TAKE_PROFIT_MARKET"}
-            and item.get("closePosition") in {True, "true", "TRUE"}
-            and str(item.get("clientAlgoId", "")).startswith("cp-")
-            and str(item["clientAlgoId"]).endswith(("-sl", "-tp"))
-        )
+        protective_orders: list[ProtectiveAlgoOrder] = []
+        for item in orders:
+            order_type = item.get("orderType")
+            client_order_id = str(item.get("clientAlgoId", ""))
+            if (
+                order_type not in {"STOP_MARKET", "TAKE_PROFIT_MARKET"}
+                or item.get("closePosition") not in {True, "true", "TRUE"}
+                or not client_order_id.startswith("cp-")
+                or not client_order_id.endswith(("-sl", "-tp"))
+            ):
+                continue
+            raw_trigger = item.get("triggerPrice", item.get("stopPrice"))
+            trigger_price = Decimal(str(raw_trigger)) if raw_trigger is not None else None
+            if trigger_price is not None and trigger_price <= 0:
+                trigger_price = None
+            protective_orders.append(
+                ProtectiveAlgoOrder(
+                    client_order_id=client_order_id,
+                    order_type=order_type,
+                    trigger_price=trigger_price,
+                )
+            )
+        return tuple(protective_orders)
 
     async def _cancel_algo_order(self, client_order_id: str) -> None:
         try:
@@ -653,6 +697,8 @@ class BinanceTestnetBroker:
         order_type: str,
         trigger_price: Decimal,
         suffix: str,
+        *,
+        client_order_id: str | None = None,
     ) -> str:
         """Place a close-position protective trigger (stop loss or take profit).
 
@@ -661,7 +707,7 @@ class BinanceTestnetBroker:
         ``TAKE_PROFIT_MARKET`` both read ``stopPrice`` as the trigger.
         """
 
-        client_order_id = f"{order.client_order_id}-{suffix}"
+        client_order_id = client_order_id or f"{order.client_order_id}-{suffix}"
         await self._signed_request(
             "POST",
             "/fapi/v1/algoOrder",
@@ -800,7 +846,10 @@ class BinanceTestnetBroker:
                 stage="VERIFY",
             )
         cancellations = await asyncio.gather(
-            *(self._cancel_algo_order(client_id) for client_id in bracket_ids),
+            *(
+                self._cancel_algo_order(protection.client_order_id)
+                for protection in bracket_ids
+            ),
             return_exceptions=True,
         )
         failed_cancellations = [
