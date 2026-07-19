@@ -872,7 +872,9 @@ pnpm --dir frontend run build
 完全由用户本人实现、没有 Agent 参与的提交使用 `Human-authored: true`，Agent 不得冒用该标记。
 包含字面量 `\\n` 的错误消息会被拒绝。GitHub Actions CI（`.github/workflows/ci.yml`）会对每次
 push/PR 的所有新增提交重复执行同一校验，即使本地 hook 被绕过也会失败；其余 CI 检查同样
-运行上述 Ruff、Pytest 和构建。
+运行上述 Ruff、Pytest、前端 Vitest 和构建。CI 使用 Node.js 24，并采用以 Node.js 24 为
+执行运行时的 `actions/checkout@v7`、`actions/setup-node@v7`、`actions/setup-python@v6` 与
+`pnpm/action-setup@v6`，不再依赖 GitHub 已弃用的 Action Node.js 20 运行时。
 Python 依赖锁定于 `requirements.lock`，前端锁定于 `frontend/pnpm-lock.yaml`。
 
 API 回归测试按职责拆分：`tests/test_api_runtime.py` 覆盖正式运行、账户、Provider、配置与
