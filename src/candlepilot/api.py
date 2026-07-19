@@ -1309,8 +1309,23 @@ def create_app(
             raise RuntimeError("the live run has no symbols to analyze")
         probe_symbol = analysis_symbols[0]
         durations: dict[str, list[float]] = {name: [] for name in engine.provider_chain}
+        progress: dict[str, Any] = {
+            "running": True,
+            "decisions_per_provider": 3,
+            "completed_decisions": 0,
+            "active_decision": None,
+            "probe_symbol": probe_symbol,
+            "probe_cadence": cadence,
+            "durations_seconds": {name: [] for name in engine.provider_chain},
+            "started_at": datetime.now(UTC).isoformat(),
+        }
+        # Publish the mutable progress object before the first provider call.
+        # GET /api/status and the event websocket can then show a real counter
+        # while the start request is still waiting for all three decisions.
+        engine.startup_probe = progress
 
-        for _ in range(3):
+        for attempt in range(3):
+            progress["active_decision"] = attempt + 1
             sample_started = time.perf_counter()
             snapshot = await market.market_snapshot(probe_symbol, cadence)
             portfolio = await engine.current_portfolio()
@@ -1338,6 +1353,11 @@ def create_app(
             measured = await asyncio.gather(*(invoke(name) for name in engine.provider_chain))
             for name, seconds in measured:
                 durations[name].append(seconds)
+            progress["durations_seconds"] = {
+                name: [round(value, 3) for value in values]
+                for name, values in durations.items()
+            }
+            progress["completed_decisions"] = attempt + 1
 
         slowest_seconds = max(value for values in durations.values() for value in values)
         symbol_count = len(analysis_symbols)
@@ -1377,7 +1397,10 @@ def create_app(
                 f"{max_safe_symbols} or select longer/fewer cadences."
             )
         return {
+            "running": False,
             "decisions_per_provider": 3,
+            "completed_decisions": 3,
+            "active_decision": None,
             "probe_symbol": probe_symbol,
             "probe_cadence": cadence,
             "durations_seconds": {
@@ -1389,6 +1412,7 @@ def create_app(
             "projected_cycle_seconds": round(projected_cycle_seconds, 3),
             "aggregate_utilization": round(utilization, 4),
             "max_safe_symbols": max_safe_symbols,
+            "started_at": progress["started_at"],
             "checked_at": datetime.now(UTC).isoformat(),
         }
 
@@ -1432,9 +1456,21 @@ def create_app(
                 await engine.start()
                 scheduler.start()
             except ValueError as exc:
+                if engine.startup_probe is not None:
+                    engine.startup_probe.update(
+                        running=False,
+                        active_decision=None,
+                        error=str(exc),
+                    )
                 engine.restore_provider_timeouts()
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             except Exception as exc:
+                if engine.startup_probe is not None:
+                    engine.startup_probe.update(
+                        running=False,
+                        active_decision=None,
+                        error=str(exc),
+                    )
                 engine.restore_provider_timeouts()
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _status(engine, scheduler)

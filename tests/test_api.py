@@ -1,6 +1,8 @@
 import asyncio
 import json
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -340,9 +342,58 @@ def test_live_start_runs_three_real_decisions_and_freezes_user_timeout(
         assert provider.observed_timeouts == [7, 7, 7]
         assert status["decision_timeout_seconds"] == 7
         assert status["startup_probe"]["decisions_per_provider"] == 3
+        assert status["startup_probe"]["running"] is False
+        assert status["startup_probe"]["completed_decisions"] == 3
+        assert status["startup_probe"]["active_decision"] is None
         assert status["startup_probe"]["analysis_symbol_count"] == 1
         client.post("/api/engine/stop")
         assert provider.timeout == 45
+    asyncio.run(database.close())
+
+
+def test_live_startup_probe_publishes_each_decision_progress(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'live-probe-progress.db'}")
+    market = ApiMarket()
+    second_call_started = threading.Event()
+    release_second_call = threading.Event()
+
+    class GatedProvider(ApiProvider):
+        calls = 0
+
+        async def generate_trade_intent(self, snapshot, portfolio):
+            GatedProvider.calls += 1
+            if GatedProvider.calls == 2:
+                second_call_started.set()
+                await asyncio.to_thread(release_second_call.wait)
+            return await super().generate_trade_intent(snapshot, portfolio)
+
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([GatedProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+        cadences=("15m",),
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=1) as pool:
+        client.post("/api/providers/select", json={"name": "api-fixture"})
+        future = pool.submit(client.post, "/api/engine/start")
+        try:
+            assert second_call_started.wait(timeout=2)
+            progress = client.get("/api/status").json()["startup_probe"]
+            assert progress["running"] is True
+            assert progress["active_decision"] == 2
+            assert progress["completed_decisions"] == 1
+            assert len(progress["durations_seconds"]["api-fixture"]) == 1
+            assert progress["probe_symbol"] == "BTCUSDT"
+            assert progress["probe_cadence"] == "15m"
+        finally:
+            release_second_call.set()
+        response = future.result(timeout=2)
+        assert response.status_code == 200, response.text
+        assert response.json()["startup_probe"]["completed_decisions"] == 3
+        client.post("/api/engine/stop")
     asyncio.run(database.close())
 
 

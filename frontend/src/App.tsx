@@ -979,9 +979,25 @@ export default function App() {
                   ? "启动时真实试跑 3 次，并校验标的数 × 最慢耗时"
                   : "本地规则无外部调用超时；仍会试跑 3 次校验容量"}</small>
               </div>
-              {status.startup_probe && <div className="live-probe-summary">
+              {busy === "start" && !status.startup_probe && <div className="live-probe-summary">
+                正在读取真实行情与测试网账户…
+              </div>}
+              {status.startup_probe?.running && <div className="live-probe-summary live-probe-running">
+                <div>
+                  正式试跑：第 {status.startup_probe.active_decision ?? 1}/{status.startup_probe.decisions_per_provider} 次
+                  · 已完成 {status.startup_probe.completed_decisions}/{status.startup_probe.decisions_per_provider}
+                  · {status.startup_probe.probe_symbol} {status.startup_probe.probe_cadence}
+                </div>
+                <div className="live-probe-track" aria-label={`已完成 ${status.startup_probe.completed_decisions}/${status.startup_probe.decisions_per_provider}`}>
+                  <span style={{ width: `${status.startup_probe.completed_decisions / status.startup_probe.decisions_per_provider * 100}%` }} />
+                </div>
+                {Object.entries(status.startup_probe.durations_seconds).map(([name, values]) => (
+                  <small key={name}>{providerLabel(name)}：{values.length ? values.map((seconds) => `${seconds}s`).join(" · ") : "等待首个结果"}</small>
+                ))}
+              </div>}
+              {status.startup_probe && !status.startup_probe.running && status.startup_probe.slowest_seconds !== undefined && <div className="live-probe-summary">
                 最近试跑：最慢 {status.startup_probe.slowest_seconds}s × {status.startup_probe.analysis_symbol_count} 标的
-                = {status.startup_probe.projected_cycle_seconds}s · 负载 {(status.startup_probe.aggregate_utilization * 100).toFixed(1)}%
+                = {status.startup_probe.projected_cycle_seconds}s · 负载 {((status.startup_probe.aggregate_utilization ?? 0) * 100).toFixed(1)}%
               </div>}
             </div>
             <button

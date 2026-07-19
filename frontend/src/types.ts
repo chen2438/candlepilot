@@ -50,16 +50,21 @@ export interface EngineStatus {
   run_limits: { max_run_seconds: number | null; max_run_cost_usd: number | null };
   decision_timeout_seconds: number | null;
   startup_probe: {
+    running: boolean;
     decisions_per_provider: number;
+    completed_decisions: number;
+    active_decision: number | null;
     probe_symbol: string;
     probe_cadence: string;
     durations_seconds: Record<string, number[]>;
-    slowest_seconds: number;
-    analysis_symbol_count: number;
-    projected_cycle_seconds: number;
-    aggregate_utilization: number;
-    max_safe_symbols: number;
-    checked_at: string;
+    slowest_seconds?: number;
+    analysis_symbol_count?: number;
+    projected_cycle_seconds?: number;
+    aggregate_utilization?: number;
+    max_safe_symbols?: number;
+    started_at: string;
+    checked_at?: string;
+    error?: string;
   } | null;
   auto_stop_reason: string | null;
   route_failure_count: number;
