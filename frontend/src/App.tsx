@@ -3051,19 +3051,23 @@ function AnalysisDetail({
       )}
       <div className="analysis-blocks">
         {blocks.map((block) => (
-          <div className="analysis-block" key={block.key}>
-            <div>
-              <strong>{block.title}</strong>
+          <details className="analysis-block" key={block.key}>
+            <summary>
+              <strong><i aria-hidden="true" />{block.title}</strong>
               {block.value !== null && (
-                <button onClick={() => void onCopy(block.key, block.value ?? "")}>
+                <button onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  void onCopy(block.key, block.value ?? "");
+                }}>
                   {copied === block.key ? "已复制" : "复制"}
                 </button>
               )}
-            </div>
+            </summary>
             {block.value === null
               ? <p>{missingAuditMessage}</p>
               : <pre>{block.value}</pre>}
-          </div>
+          </details>
         ))}
       </div>
     </section>

@@ -84,6 +84,46 @@ describe("DecisionPanel", () => {
     expect(screen.getByText("1.71 : 1")).toBeTruthy();
   });
 
+  it("collapses each large AI audit block by default and expands it independently", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        ...decision,
+        audit_status: "complete",
+        input: { market: { symbol: "ETHUSDT" }, portfolio: { equity: "10000" } },
+        prompt: "Choose one action.",
+        raw_output: '{"action":"OPEN_LONG"}',
+        usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+        equivalent_cost_usd: 0.001,
+      }),
+    })));
+    const user = userEvent.setup();
+
+    render(
+      <DecisionPanel
+        decisions={[decision]}
+        filter="all"
+        onFilter={vi.fn()}
+        onLoadOlder={vi.fn(async () => undefined)}
+        exhausted
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /OPEN_LONG/ }));
+    await screen.findByText("AI 分析详情");
+    const inputDetails = screen.getByText("结构化输入").closest("details");
+    const promptDetails = screen.getByText("实际 Prompt").closest("details");
+    const outputDetails = screen.getByText("模型原始输出").closest("details");
+
+    expect(inputDetails?.open).toBe(false);
+    expect(promptDetails?.open).toBe(false);
+    expect(outputDetails?.open).toBe(false);
+    await user.click(screen.getByText("结构化输入"));
+    expect(inputDetails?.open).toBe(true);
+    expect(promptDetails?.open).toBe(false);
+    expect(outputDetails?.open).toBe(false);
+  });
+
   it("requires valid protective prices on opposite sides of entry", () => {
     expect(intentRewardRiskRatio({ ...decision.intent, take_profit: null })).toBeNull();
     expect(intentRewardRiskRatio({ ...decision.intent, stop_loss: "1880" })).toBeNull();
