@@ -121,7 +121,8 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
                         "total_tokens": 150,
                         "cost_usd": 0.004,
                     },
-                )
+                ),
+                live_run_id=engine.live_run_id,
             )
         )
         running_usage = client.get("/api/metrics/run-session").json()
@@ -1839,4 +1840,9 @@ def test_decision_events_reject_filters_they_cannot_honour(tmp_path: Path) -> No
         assert client.get("/api/decision-events?cadence=7m").status_code == 422
         assert client.get("/api/decision-events?before_id=0").status_code == 422
         assert client.get("/api/decision-events?limit=501").status_code == 422
+        assert client.get("/api/decision-events?run_limit=10").status_code == 200
+        assert client.get("/api/decision-events?run_limit=0").status_code == 422
+        assert client.get("/api/decision-events?before_run_id=0&run_limit=10").status_code == 422
+        assert client.get("/api/decision-events?before_run_id=1").status_code == 422
+        assert client.get("/api/decision-events?run_limit=10&before_id=1").status_code == 422
     asyncio.run(database.close())

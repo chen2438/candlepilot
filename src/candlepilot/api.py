@@ -1740,6 +1740,8 @@ def create_app(
     async def get_decision_events(
         limit: int = 100,
         before_id: int | None = None,
+        run_limit: int | None = None,
+        before_run_id: int | None = None,
         symbol: str | None = None,
         cadence: str | None = None,
         provider: str | None = None,
@@ -1749,6 +1751,14 @@ def create_app(
             raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
         if before_id is not None and before_id < 1:
             raise HTTPException(status_code=422, detail="before_id must be positive")
+        if run_limit is not None and not 1 <= run_limit <= 100:
+            raise HTTPException(status_code=422, detail="run_limit must be between 1 and 100")
+        if before_run_id is not None and before_run_id < 1:
+            raise HTTPException(status_code=422, detail="before_run_id must be positive")
+        if before_run_id is not None and run_limit is None:
+            raise HTTPException(status_code=422, detail="before_run_id requires run_limit")
+        if run_limit is not None and before_id is not None:
+            raise HTTPException(status_code=422, detail="run paging cannot use before_id")
         # An unknown filter value would otherwise return an empty page, which
         # reads as "no such decisions" rather than "you asked for nonsense".
         if outcome is not None and outcome not in DECISION_OUTCOMES:
@@ -1764,6 +1774,8 @@ def create_app(
         return await engine.audit.recent_decision_events(
             limit,
             before_id=before_id,
+            run_limit=run_limit,
+            before_run_id=before_run_id,
             symbol=symbol,
             cadence=cadence,
             provider=provider,
@@ -2728,7 +2740,7 @@ def create_app(
         try:
             while True:
                 await websocket.send_json({"type": "status", "data": _status(engine, scheduler)})
-                decisions = await engine.audit.recent_decision_events(50)
+                decisions = await engine.audit.recent_decision_events(run_limit=10)
                 if decisions != last_decisions:
                     await websocket.send_json({"type": "decisions", "data": _json_value(decisions)})
                     last_decisions = decisions

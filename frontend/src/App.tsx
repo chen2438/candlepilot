@@ -379,18 +379,22 @@ function percent(value: string): string {
   return `${(Number(value) * 100).toFixed(2)}%`;
 }
 
-const DECISION_PAGE_SIZE = 50;
+const DECISION_RUN_PAGE_SIZE = 10;
 
 type DecisionFilter = "all" | DecisionEvent["outcome"];
 
-function decisionQueryUrl(filter: DecisionFilter, beforeId?: number): string {
-  const params = new URLSearchParams({ limit: String(DECISION_PAGE_SIZE) });
+export function decisionQueryUrl(filter: DecisionFilter, beforeRunId?: number): string {
+  const params = new URLSearchParams({ run_limit: String(DECISION_RUN_PAGE_SIZE) });
   // Filtering happens server-side over the whole table. Filtering the loaded
   // page in the browser instead would answer "show me every rejection" with
-  // only the rejections that happen to be in the newest 50 rows.
+  // only the rejections that happen to be in the newest 10 runs.
   if (filter !== "all") params.set("outcome", filter);
-  if (beforeId !== undefined) params.set("before_id", String(beforeId));
+  if (beforeRunId !== undefined) params.set("before_run_id", String(beforeRunId));
   return `/api/decision-events?${params}`;
+}
+
+function decisionRunCount(events: DecisionEvent[]): number {
+  return new Set(events.map((event) => event.live_run_id).filter((runId) => runId !== null)).size;
 }
 
 export function LiveRunActionButtons({
@@ -880,7 +884,9 @@ export default function App() {
   }, []);
 
   const refreshDecisions = useCallback(async () => {
-    mergeDecisions(await api<DecisionEvent[]>(decisionQueryUrl(decisionFilter)));
+    const latest = await api<DecisionEvent[]>(decisionQueryUrl(decisionFilter));
+    setDecisionsExhausted(decisionRunCount(latest) < DECISION_RUN_PAGE_SIZE);
+    mergeDecisions(latest);
   }, [decisionFilter, mergeDecisions]);
   const refreshLiveRunPerformance = useCallback(async () => {
     setLiveRunPerformance(await api<LiveRunPerformance[]>("/api/live-runs/performance?limit=100"));
@@ -889,11 +895,14 @@ export default function App() {
   refreshDecisionsRef.current = refreshDecisions;
 
   const loadOlderDecisions = useCallback(async () => {
-    const oldest = decisions.at(-1);
+    const runIds = decisions
+      .map((decision) => decision.live_run_id)
+      .filter((runId): runId is number => runId !== null);
+    const oldestRunId = runIds.length ? Math.min(...runIds) : undefined;
     const older = await api<DecisionEvent[]>(
-      decisionQueryUrl(decisionFilter, oldest ? oldest.id : undefined),
+      decisionQueryUrl(decisionFilter, oldestRunId),
     );
-    setDecisionsExhausted(!older.length);
+    setDecisionsExhausted(decisionRunCount(older) < DECISION_RUN_PAGE_SIZE);
     mergeDecisions(older);
   }, [decisions, decisionFilter, mergeDecisions]);
 

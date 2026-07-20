@@ -1623,11 +1623,22 @@ class AuditRepository:
         limit: int = 100,
         *,
         before_id: int | None = None,
+        run_limit: int | None = None,
+        before_run_id: int | None = None,
         symbol: str | None = None,
         cadence: str | None = None,
         provider: str | None = None,
         outcome: str | None = None,
     ) -> list[dict[str, Any]]:
+        conditions = []
+        if symbol is not None:
+            conditions.append(InferenceRow.symbol == symbol)
+        if cadence is not None:
+            conditions.append(InferenceRow.cadence == cadence)
+        if provider is not None:
+            conditions.append(InferenceRow.provider == provider)
+        if outcome is not None:
+            conditions.append(self._outcome_filter(outcome))
         query = (
             select(InferenceRow, RiskRow, ExecutionAttemptRow, LiveRunRow)
             .outerjoin(RiskRow, RiskRow.inference_id == InferenceRow.id)
@@ -1636,24 +1647,56 @@ class AuditRepository:
                 ExecutionAttemptRow.inference_id == InferenceRow.id,
             )
             .outerjoin(LiveRunRow, LiveRunRow.id == InferenceRow.live_run_id)
+            .where(*conditions)
         )
-        # Keyset paging on the primary key: ids are monotonic with no ties, so a
-        # page cannot skip or repeat a row when new decisions land mid-read, the
-        # way an OFFSET would.
-        if before_id is not None:
-            query = query.where(InferenceRow.id < before_id)
-        if symbol is not None:
-            query = query.where(InferenceRow.symbol == symbol)
-        if cadence is not None:
-            query = query.where(InferenceRow.cadence == cadence)
-        if provider is not None:
-            query = query.where(InferenceRow.provider == provider)
-        if outcome is not None:
-            query = query.where(self._outcome_filter(outcome))
         async with self.sessions() as session:
-            rows = (
-                await session.execute(query.order_by(InferenceRow.id.desc()).limit(limit))
-            ).all()
+            if run_limit is not None:
+                run_query = (
+                    select(InferenceRow.live_run_id)
+                    .outerjoin(RiskRow, RiskRow.inference_id == InferenceRow.id)
+                    .outerjoin(
+                        ExecutionAttemptRow,
+                        ExecutionAttemptRow.inference_id == InferenceRow.id,
+                    )
+                    .where(InferenceRow.live_run_id.is_not(None), *conditions)
+                )
+                if before_run_id is not None:
+                    run_query = run_query.where(
+                        InferenceRow.live_run_id < before_run_id
+                    )
+                run_ids = tuple(
+                    (
+                        await session.scalars(
+                            run_query
+                            .distinct()
+                            .order_by(InferenceRow.live_run_id.desc())
+                            .limit(run_limit)
+                        )
+                    ).all()
+                )
+                rows = (
+                    (
+                        await session.execute(
+                            query.where(InferenceRow.live_run_id.in_(run_ids)).order_by(
+                                InferenceRow.live_run_id.desc(),
+                                InferenceRow.id.desc(),
+                            )
+                        )
+                    ).all()
+                    if run_ids
+                    else []
+                )
+            else:
+                # Keyset paging on the primary key: ids are monotonic with no ties,
+                # so a page cannot skip or repeat a row when new decisions land
+                # mid-read, the way an OFFSET would.
+                if before_id is not None:
+                    query = query.where(InferenceRow.id < before_id)
+                rows = (
+                    await session.execute(
+                        query.order_by(InferenceRow.id.desc()).limit(limit)
+                    )
+                ).all()
         events = []
         for inference, risk, attempt, live_run in rows:
             usage = json.loads(inference.usage_json)

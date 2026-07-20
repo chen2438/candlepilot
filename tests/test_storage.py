@@ -1303,6 +1303,54 @@ def test_decision_events_page_backwards_without_skipping_or_repeating(tmp_path: 
     assert len(walked) == len(set(walked))
 
 
+def test_decision_events_page_by_complete_live_runs(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'run-paging.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        for run_number in range(1, 13):
+            run_id = await repository.create_live_run({"run_number": run_number})
+            for symbol in ("BTCUSDT", "ETHUSDT"):
+                intent = TradeIntent.hold(symbol, "15m", f"run {run_number}")
+                await repository.record_inference(
+                    ProviderResult(
+                        intent=intent,
+                        provider="local-rule",
+                        model="trend-v1",
+                        duration=timedelta(milliseconds=1),
+                        raw_output=intent.model_dump_json(),
+                        usage={},
+                    ),
+                    live_run_id=run_id,
+                )
+            await repository.finish_live_run(
+                run_id,
+                status="stopped",
+                stop_reason="fixture",
+            )
+
+        first = await repository.recent_decision_events(run_limit=10)
+        first_run_ids = [event["live_run_id"] for event in first]
+        second = await repository.recent_decision_events(
+            run_limit=10,
+            before_run_id=min(first_run_ids),
+        )
+        filtered = await repository.recent_decision_events(
+            run_limit=10,
+            symbol="BTCUSDT",
+        )
+        await database.close()
+        return first, second, filtered
+
+    first, second, filtered = asyncio.run(scenario())
+    assert [event["live_run_id"] for event in first] == [
+        run_id for run_id in range(12, 2, -1) for _ in range(2)
+    ]
+    assert [event["live_run_id"] for event in second] == [2, 2, 1, 1]
+    assert [event["live_run_id"] for event in filtered] == list(range(12, 2, -1))
+    assert all(event["intent"]["symbol"] == "BTCUSDT" for event in filtered)
+
+
 def test_paging_and_filtering_compose(tmp_path: Path) -> None:
     """A cursor must stay inside the filtered result, not the whole table."""
 

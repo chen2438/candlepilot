@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DecisionPanel,
   DecisionTiming,
+  decisionQueryUrl,
   EmergencyLockBanner,
   intentRewardRiskRatio,
   LiveCycleStatus,
@@ -63,6 +64,13 @@ const decision: DecisionEvent = {
 };
 
 describe("DecisionPanel", () => {
+  it("pages decision history by ten complete runs", () => {
+    expect(decisionQueryUrl("all")).toBe("/api/decision-events?run_limit=10");
+    expect(decisionQueryUrl("rejected", 21)).toBe(
+      "/api/decision-events?run_limit=10&outcome=rejected&before_run_id=21",
+    );
+  });
+
   it("identifies shared batch inference separately from per-decision completion", () => {
     render(<DecisionTiming decision={decision} />);
     expect(screen.getByText("批次耗时 50.98s")).toBeTruthy();
