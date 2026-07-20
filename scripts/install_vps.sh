@@ -247,7 +247,16 @@ for _ in $(seq 1 30); do
 done
 curl --silent --fail http://127.0.0.1:8000/api/health/ready >/dev/null \
   || { journalctl -u candlepilot --no-pager -n 80; fail "backend did not become ready"; }
-systemctl enable --now nginx
+systemctl enable nginx
+systemctl reload-or-restart nginx
+for _ in $(seq 1 10); do
+  if curl --silent --fail --insecure "https://127.0.0.1:$PUBLIC_PORT/api/health/ready" >/dev/null; then
+    break
+  fi
+  sleep 1
+done
+curl --silent --fail --insecure "https://127.0.0.1:$PUBLIC_PORT/api/health/ready" >/dev/null \
+  || { journalctl -u nginx --no-pager -n 80; fail "HTTPS reverse proxy did not become ready"; }
 
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
   ufw allow "$PUBLIC_PORT/tcp"

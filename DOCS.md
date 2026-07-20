@@ -1035,7 +1035,9 @@ CLI，构建前端，并创建 systemd 服务。后端仍绑定 `127.0.0.1:8000`
 提供 HTTPS、转发 REST 与 WebSocket。脚本生成包含 VPS IP SAN 的自签名证书，完成后输出 SHA-256
 指纹；首次访问只有在核对该指纹后才能接受浏览器警告。安装目录先以应用用户身份创建并保留，
 Git 直接克隆到该空目录，应用用户不需要也不能在 root 所有的 `/opt` 下自行创建目录。其他发行版
-或版本会在修改系统前被拒绝。
+或版本会在修改系统前被拒绝。脚本写入站点配置后会重载已由系统包启动的 Nginx（未运行时则
+启动），并通过本机 HTTPS 反向代理检查 `/api/health/ready`；只有公网监听配置实际生效后才会
+报告安装成功。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/chen2438/candlepilot/main/scripts/install_vps.sh \
