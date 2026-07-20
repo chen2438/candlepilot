@@ -236,6 +236,7 @@ export interface DecisionEvent {
     entry_price: string | null;
     stop_loss: string | null;
     take_profit: string | null;
+    ttl_seconds?: number;
     rationale: string;
   };
   duration_ms: number;
@@ -249,6 +250,8 @@ export interface DecisionEvent {
       max_quantity: string | null;
       pre_trade_entry_price?: string | null;
       pre_trade_reward_risk_ratio?: string | null;
+      pending_entry?: boolean;
+      pending_expires_at?: string | null;
     };
     created_at: string;
   };

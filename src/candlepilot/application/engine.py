@@ -20,6 +20,7 @@ from candlepilot.domain.models import (
     ExecutionAttempt,
     ExecutionReport,
     MarketSnapshot,
+    OrderPlan,
     PortfolioState,
     PositionState,
     ProviderHealth,
@@ -37,7 +38,7 @@ from candlepilot.providers.retry import (
     DECISION_PROVIDER_RETRY_DELAYS,
     validate_retry_delays,
 )
-from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
+from candlepilot.risk.engine import AggressiveRiskPolicy, RiskEvaluation, SymbolRules
 from candlepilot.storage.database import AuditRepository
 
 
@@ -286,6 +287,9 @@ class TradingEngine:
             raise RuntimeError("engine is emergency locked")
         if not self.provider_chain:
             raise RuntimeError("at least one ready decision provider must be selected")
+        await self.cancel_pending_entries(
+            "pending limit intent cancelled because its originating run is no longer active"
+        )
         report = await self.testnet_broker.reconcile_account()
         self.testnet_reconciliation = report
         if report.unprotected_symbols:
@@ -348,6 +352,10 @@ class TradingEngine:
 
     async def stop(self, *, reason: str | None = None) -> None:
         if self.running:
+            await self.cancel_pending_entries(
+                "pending limit intent cancelled because the run stopped",
+                live_run_id=self.live_run_id,
+            )
             self.run_end_inference_id = await self.audit.latest_inference_id()
             self.run_ended_at = datetime.now(UTC)
             stop_reason = reason or self.auto_stop_reason or "stopped by user"
@@ -372,6 +380,10 @@ class TradingEngine:
         if now.tzinfo is None:
             raise ValueError("emergency stop time must be timezone-aware")
         if self.running:
+            await self.cancel_pending_entries(
+                "pending limit intent cancelled by emergency stop",
+                live_run_id=self.live_run_id,
+            )
             self.run_end_inference_id = await self.audit.latest_inference_id()
             self.run_ended_at = now
             if self.live_run_id is not None:
@@ -515,6 +527,12 @@ class TradingEngine:
             if account_unrealized is not None
             else sum((position.unrealized_pnl for position in positions.values()), Decimal("0"))
         )
+        local_pending_symbols = {
+            item["intent"].symbol
+            for item in await self.audit.pending_local_entries(
+                live_run_id=self.live_run_id if self.running else None
+            )
+        }
         return PortfolioState(
             equity=account.get("totalMarginBalance", account.get("totalWalletBalance", "0")),
             available_balance=account.get("availableBalance", "0"),
@@ -522,8 +540,219 @@ class TradingEngine:
             open_positions=len(positions),
             margin_used=account.get("totalInitialMargin", "0"),
             positions=positions,
-            pending_entry_symbols=tuple(pending_entry_symbols),
+            pending_entry_symbols=tuple(
+                dict.fromkeys((*pending_entry_symbols, *sorted(local_pending_symbols)))
+            ),
         )
+
+    async def pending_entry_symbols(self) -> tuple[str, ...]:
+        entries = await self.audit.pending_local_entries(live_run_id=self.live_run_id)
+        return tuple(dict.fromkeys(item["intent"].symbol for item in entries))
+
+    async def cancel_pending_entries(
+        self,
+        reason: str,
+        *,
+        live_run_id: int | None = None,
+    ) -> int:
+        entries = await self.audit.pending_local_entries(live_run_id=live_run_id)
+        for item in entries:
+            decision = item["decision"].model_copy(
+                update={
+                    "accepted": False,
+                    "reason": reason,
+                    "pending_entry": False,
+                    "evaluated_at": datetime.now(UTC),
+                }
+            )
+            await self.audit.update_risk(
+                item["inference_id"], decision, completed=True
+            )
+        return len(entries)
+
+    async def process_pending_entry(self, symbol: str) -> str | None:
+        entries = [
+            item
+            for item in await self.audit.pending_local_entries(
+                live_run_id=self.live_run_id
+            )
+            if item["intent"].symbol == symbol
+        ]
+        if not entries:
+            return None
+        if len(entries) != 1:
+            raise RuntimeError(f"multiple local pending entries exist for {symbol}")
+        item = entries[0]
+        intent: TradeIntent = item["intent"]
+        prior: RiskDecision = item["decision"]
+        expires_at = prior.pending_expires_at
+        now = datetime.now(UTC)
+        if expires_at is None:
+            expires_at = item["created_at"] + timedelta(seconds=intent.ttl_seconds)
+        if now >= expires_at:
+            expired = prior.model_copy(
+                update={
+                    "accepted": False,
+                    "reason": (
+                        f"pending limit intent expired after {intent.ttl_seconds}s"
+                    ),
+                    "pending_entry": False,
+                    "pending_expires_at": expires_at,
+                    "evaluated_at": now,
+                }
+            )
+            await self.audit.update_risk(
+                item["inference_id"], expired, completed=True
+            )
+            return "expired"
+
+        snapshot = await self.market.market_snapshot(intent.symbol, intent.cadence)
+        portfolio = await self.current_portfolio()
+        portfolio = portfolio.model_copy(
+            update={
+                "pending_entry_symbols": tuple(
+                    pending_symbol
+                    for pending_symbol in portfolio.pending_entry_symbols
+                    if pending_symbol != intent.symbol
+                )
+            }
+        )
+        rules = await self._rules_for_symbol(intent.symbol)
+        evaluation = self.risk.evaluate(
+            intent,
+            snapshot,
+            portfolio,
+            rules,
+            now=datetime.now(UTC),
+        )
+        decision = evaluation.decision.model_copy(
+            update={"pending_expires_at": expires_at}
+        )
+        evaluation = RiskEvaluation(decision=decision, order=evaluation.order)
+        if decision.pending_entry:
+            await self.audit.update_risk(
+                item["inference_id"], decision, completed=False
+            )
+            return "waiting"
+
+        await self.audit.update_risk(
+            item["inference_id"], decision, completed=True
+        )
+        if not decision.accepted or evaluation.order is None:
+            return "cancelled"
+        await self._execute_order(
+            intent.symbol,
+            item["inference_id"],
+            intent,
+            evaluation.order,
+        )
+        return "triggered"
+
+    async def _rules_for_symbol(self, symbol: str) -> SymbolRules:
+        if self.venue_contract_rules is not None:
+            rules = self.venue_contract_rules.get(symbol)
+            if rules is None:
+                raise RuntimeError(f"testnet contract rules are unavailable for {symbol}")
+            return rules
+        contract = (await self.market.exchange_info()).get(symbol)
+        if contract is None:
+            raise RuntimeError(f"contract rules are unavailable for {symbol}")
+        return contract.rules
+
+    async def _execute_order(
+        self,
+        symbol: str,
+        inference_id: int,
+        intent: TradeIntent,
+        order: OrderPlan,
+    ) -> ExecutionReport | None:
+        try:
+            execution = await self.testnet_broker.execute_with_stop(
+                order,
+                leverage=intent.leverage,
+                replace_existing_protection=intent.action == TradeAction.ADD,
+            )
+        except ProtectiveStopError as exc:
+            await self.audit.record_execution(symbol, exc.entry)
+            if exc.rescue is not None:
+                await self.audit.record_execution(symbol, exc.rescue)
+            await self.audit.record_execution_attempt(
+                symbol,
+                ExecutionAttempt(
+                    inference_id=inference_id,
+                    client_order_id=order.client_order_id,
+                    status="RESCUED" if exc.rescue is not None else "FAILED",
+                    stage=exc.failed_stage,
+                    message=str(exc),
+                    exchange_error_code=exc.exchange_error_code,
+                    entry_report=exc.entry,
+                    rescue_report=exc.rescue,
+                    estimated_loss_usdt=exc.estimated_loss_usdt,
+                ),
+            )
+            if exc.rescue is not None:
+                self.rescue_count += 1
+            if exc.requires_emergency_lock:
+                await self.emergency_stop()
+            return None
+        except Exception as exc:
+            execution_status = (
+                "UNKNOWN"
+                if isinstance(exc, (TimeoutError, OrderStatusUnknown))
+                else "FAILED"
+            )
+            await self.audit.record_execution_attempt(
+                symbol,
+                ExecutionAttempt(
+                    inference_id=inference_id,
+                    client_order_id=order.client_order_id,
+                    status=execution_status,
+                    stage="ENTRY",
+                    message=f"{type(exc).__name__}: {exc}",
+                    exchange_error_code=exc.code
+                    if isinstance(exc, BinanceApiError)
+                    else None,
+                ),
+            )
+            if execution_status == "UNKNOWN":
+                await self.emergency_stop(
+                    reason=f"entry execution status unknown: {order.client_order_id}"
+                )
+            return None
+
+        await self.audit.record_execution(symbol, execution)
+        completed = execution.status in {"NEW", "PARTIALLY_FILLED", "FILLED"}
+        await self.audit.record_execution_attempt(
+            symbol,
+            ExecutionAttempt(
+                inference_id=inference_id,
+                client_order_id=order.client_order_id,
+                status="SUCCEEDED" if completed else "FAILED",
+                stage="COMPLETE" if completed else "ENTRY",
+                message=(
+                    "order accepted and required execution checks completed"
+                    if completed
+                    else f"exchange returned terminal status {execution.status}"
+                ),
+                entry_report=execution,
+            ),
+        )
+        return execution
+
+    @staticmethod
+    def _prepare_pending_evaluation(
+        intent: TradeIntent,
+        evaluation: RiskEvaluation,
+    ) -> RiskEvaluation:
+        if not evaluation.decision.pending_entry:
+            return evaluation
+        decision = evaluation.decision.model_copy(
+            update={
+                "pending_expires_at": datetime.now(UTC)
+                + timedelta(seconds=intent.ttl_seconds)
+            }
+        )
+        return RiskEvaluation(decision=decision, order=evaluation.order)
 
     async def evaluate(
         self,
@@ -727,89 +956,30 @@ class TradingEngine:
                     provider=result.provider,
                 )
 
-        evaluation = self.risk.evaluate(
+        evaluation = self._prepare_pending_evaluation(
             result.intent,
-            evaluation_snapshot,
-            evaluation_portfolio,
-            rules,
+            self.risk.evaluate(
+                result.intent,
+                evaluation_snapshot,
+                evaluation_portfolio,
+                rules,
+            ),
         )
         await self.audit.record_risk(
             analysis_snapshot.symbol, evaluation.decision, inference_id=inference_id
         )
         execution = None
-        if evaluation.order is not None and evaluation.decision.accepted:
-            try:
-                execution = await self.testnet_broker.execute_with_stop(
-                    evaluation.order,
-                    leverage=result.intent.leverage,
-                    replace_existing_protection=result.intent.action == TradeAction.ADD,
-                )
-            except ProtectiveStopError as exc:
-                await self.audit.record_execution(analysis_snapshot.symbol, exc.entry)
-                if exc.rescue is not None:
-                    await self.audit.record_execution(analysis_snapshot.symbol, exc.rescue)
-                await self.audit.record_execution_attempt(
-                    analysis_snapshot.symbol,
-                    ExecutionAttempt(
-                        inference_id=inference_id,
-                        client_order_id=evaluation.order.client_order_id,
-                        status="RESCUED" if exc.rescue is not None else "FAILED",
-                        stage=exc.failed_stage,
-                        message=str(exc),
-                        exchange_error_code=exc.exchange_error_code,
-                        entry_report=exc.entry,
-                        rescue_report=exc.rescue,
-                        estimated_loss_usdt=exc.estimated_loss_usdt,
-                    ),
-                )
-                if exc.rescue is not None:
-                    self.rescue_count += 1
-                if exc.requires_emergency_lock:
-                    await self.emergency_stop()
-            except Exception as exc:
-                execution_status = (
-                    "UNKNOWN"
-                    if isinstance(exc, (TimeoutError, OrderStatusUnknown))
-                    else "FAILED"
-                )
-                await self.audit.record_execution_attempt(
-                    analysis_snapshot.symbol,
-                    ExecutionAttempt(
-                        inference_id=inference_id,
-                        client_order_id=evaluation.order.client_order_id,
-                        status=execution_status,
-                        stage="ENTRY",
-                        message=f"{type(exc).__name__}: {exc}",
-                        exchange_error_code=exc.code
-                        if isinstance(exc, BinanceApiError)
-                        else None,
-                    ),
-                )
-                if execution_status == "UNKNOWN":
-                    await self.emergency_stop(
-                        reason=(
-                            "entry execution status unknown: "
-                            f"{evaluation.order.client_order_id}"
-                        )
-                    )
-            else:
-                await self.audit.record_execution(analysis_snapshot.symbol, execution)
-                completed = execution.status in {"NEW", "PARTIALLY_FILLED", "FILLED"}
-                await self.audit.record_execution_attempt(
-                    analysis_snapshot.symbol,
-                    ExecutionAttempt(
-                        inference_id=inference_id,
-                        client_order_id=evaluation.order.client_order_id,
-                        status="SUCCEEDED" if completed else "FAILED",
-                        stage="COMPLETE" if completed else "ENTRY",
-                        message=(
-                            "order accepted and required execution checks completed"
-                            if completed
-                            else f"exchange returned terminal status {execution.status}"
-                        ),
-                        entry_report=execution,
-                    ),
-                )
+        if (
+            evaluation.order is not None
+            and evaluation.decision.accepted
+            and not evaluation.decision.pending_entry
+        ):
+            execution = await self._execute_order(
+                analysis_snapshot.symbol,
+                inference_id,
+                result.intent,
+                evaluation.order,
+            )
         return DecisionOutcome(
             intent=result.intent,
             risk=evaluation.decision,
@@ -970,65 +1140,30 @@ class TradingEngine:
                 )
                 await self.audit.record_risk(analysis_snapshot.symbol, rejection, inference_id=inference_id)
                 return DecisionOutcome(result.intent, rejection, None, result.provider)
-        evaluation = self.risk.evaluate(result.intent, evaluation_snapshot, evaluation_portfolio, rules)
+        evaluation = self._prepare_pending_evaluation(
+            result.intent,
+            self.risk.evaluate(
+                result.intent,
+                evaluation_snapshot,
+                evaluation_portfolio,
+                rules,
+            ),
+        )
         await self.audit.record_risk(
             analysis_snapshot.symbol, evaluation.decision, inference_id=inference_id
         )
         execution = None
-        if evaluation.order is not None and evaluation.decision.accepted:
-            try:
-                execution = await self.testnet_broker.execute_with_stop(
-                    evaluation.order, leverage=result.intent.leverage,
-                    replace_existing_protection=result.intent.action == TradeAction.ADD,
-                )
-            except ProtectiveStopError as exc:
-                await self.audit.record_execution(analysis_snapshot.symbol, exc.entry)
-                if exc.rescue is not None:
-                    await self.audit.record_execution(analysis_snapshot.symbol, exc.rescue)
-                await self.audit.record_execution_attempt(
-                    analysis_snapshot.symbol,
-                    ExecutionAttempt(
-                        inference_id=inference_id, client_order_id=evaluation.order.client_order_id,
-                        status="RESCUED" if exc.rescue is not None else "FAILED",
-                        stage=exc.failed_stage, message=str(exc),
-                        exchange_error_code=exc.exchange_error_code, entry_report=exc.entry,
-                        rescue_report=exc.rescue, estimated_loss_usdt=exc.estimated_loss_usdt,
-                    ),
-                )
-                if exc.rescue is not None:
-                    self.rescue_count += 1
-                if exc.requires_emergency_lock:
-                    await self.emergency_stop()
-            except Exception as exc:
-                execution_status = "UNKNOWN" if isinstance(exc, (TimeoutError, OrderStatusUnknown)) else "FAILED"
-                await self.audit.record_execution_attempt(
-                    analysis_snapshot.symbol,
-                    ExecutionAttempt(
-                        inference_id=inference_id, client_order_id=evaluation.order.client_order_id,
-                        status=execution_status, stage="ENTRY", message=f"{type(exc).__name__}: {exc}",
-                        exchange_error_code=exc.code if isinstance(exc, BinanceApiError) else None,
-                    ),
-                )
-                if execution_status == "UNKNOWN":
-                    await self.emergency_stop(
-                        reason=(
-                            "entry execution status unknown: "
-                            f"{evaluation.order.client_order_id}"
-                        )
-                    )
-            else:
-                await self.audit.record_execution(analysis_snapshot.symbol, execution)
-                completed = execution.status in {"NEW", "PARTIALLY_FILLED", "FILLED"}
-                await self.audit.record_execution_attempt(
-                    analysis_snapshot.symbol,
-                    ExecutionAttempt(
-                        inference_id=inference_id, client_order_id=evaluation.order.client_order_id,
-                        status="SUCCEEDED" if completed else "FAILED",
-                        stage="COMPLETE" if completed else "ENTRY",
-                        message="order accepted and required execution checks completed" if completed
-                        else f"exchange returned terminal status {execution.status}", entry_report=execution,
-                    ),
-                )
+        if (
+            evaluation.order is not None
+            and evaluation.decision.accepted
+            and not evaluation.decision.pending_entry
+        ):
+            execution = await self._execute_order(
+                analysis_snapshot.symbol,
+                inference_id,
+                result.intent,
+                evaluation.order,
+            )
         return DecisionOutcome(result.intent, evaluation.decision, execution, result.provider)
 
     @classmethod

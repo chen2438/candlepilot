@@ -162,10 +162,11 @@ class TradingScheduler:
                             "testnet user stream stopped; account safety state is unknown"
                         )
                         return
+                    pending_errors = await self._process_pending_entries()
                     reason = self.engine.evaluate_stop_reason(
                         run_cost_usd=await self._run_cost()
                     )
-                    self.guard_last_error = None
+                    self.guard_last_error = "; ".join(pending_errors) or None
                     if reason is not None:
                         self.request_auto_stop(reason)
                         return
@@ -178,6 +179,19 @@ class TradingScheduler:
                 return
             except TimeoutError:
                 pass
+
+    async def _process_pending_entries(self) -> list[str]:
+        errors: list[str] = []
+        for symbol in await self.engine.pending_entry_symbols():
+            lock = self._symbol_locks.setdefault(symbol, asyncio.Lock())
+            if lock.locked():
+                continue
+            try:
+                async with lock:
+                    await self.engine.process_pending_entry(symbol)
+            except Exception as exc:
+                errors.append(f"{symbol}: {type(exc).__name__}: {exc}")
+        return errors
 
     async def _run_cost(self) -> float | None:
         if self.run_cost_loader is None or self.engine.max_run_cost_usd is None:

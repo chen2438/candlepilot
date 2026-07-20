@@ -629,6 +629,9 @@ def create_app(
             # With exclusive ownership established, a live run left open can only
             # mean the previous owner did not execute its graceful shutdown path.
             await engine.audit.interrupt_open_live_runs()
+            await engine.cancel_pending_entries(
+                "pending limit intent cancelled because the process restarted"
+            )
             await engine.restore_runtime_state()
             # Warm the models.dev pricing cache without blocking startup.
             warm_pricing = asyncio.create_task(pricing_catalog())

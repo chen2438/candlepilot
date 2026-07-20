@@ -294,6 +294,46 @@ describe("DecisionPanel", () => {
     expect(screen.getByText("1.2800 : 1")).toBeTruthy();
   });
 
+  it("shows a local pending limit and its hard expiry", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false,
+      text: async () => "detail unavailable",
+    })));
+    const user = userEvent.setup();
+    const pending: DecisionEvent = {
+      ...decision,
+      outcome: "approved",
+      intent: { ...decision.intent, order_type: "LIMIT", ttl_seconds: 60 },
+      risk: {
+        ...decision.risk!,
+        accepted: true,
+        reason: "resting limit intent queued locally until trigger",
+        decision: {
+          ...decision.risk!.decision,
+          pending_entry: true,
+          pending_expires_at: "2026-07-20T10:30:00Z",
+        },
+      },
+    };
+
+    render(
+      <DecisionPanel
+        decisions={[pending]}
+        liveRunPerformance={[]}
+        filter="all"
+        onFilter={vi.fn()}
+        onLoadOlder={vi.fn(async () => undefined)}
+        exhausted
+      />,
+    );
+
+    expect(screen.getByText("等待触发")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /OPEN_LONG/ }));
+    expect(screen.getByText("本地待触发")).toBeTruthy();
+    expect(screen.getByText("意图有效至")).toBeTruthy();
+    expect(screen.getByText(/2026\/07\/20/)).toBeTruthy();
+  });
+
   it("collapses each large AI audit block by default and expands it independently", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: true,

@@ -141,6 +141,25 @@ class MarketableLimitProvider(FakeProvider):
         return ProviderResult(intent, self.name, "fixture", timedelta(0), "{}", {})
 
 
+class RestingLimitProvider(FakeProvider):
+    async def generate_trade_intent(self, snapshot, portfolio) -> ProviderResult:
+        intent = TradeIntent(
+            symbol=snapshot.symbol,
+            cadence=snapshot.cadence,
+            action=TradeAction.OPEN_LONG,
+            confidence=0.8,
+            leverage=3,
+            risk_fraction="0.01",
+            order_type=OrderType.LIMIT,
+            entry_price="99",
+            stop_loss="98",
+            take_profit="102",
+            ttl_seconds=60,
+            rationale="resting limit fixture",
+        )
+        return ProviderResult(intent, self.name, "fixture", timedelta(0), "{}", {})
+
+
 class RefreshSafeProvider(FakeProvider):
     async def generate_trade_intent(self, snapshot, portfolio) -> ProviderResult:
         intent = TradeIntent(
@@ -435,6 +454,94 @@ def test_engine_executes_and_audits_marketable_limit_after_refresh(tmp_path: Pat
     assert "immediately marketable after refresh" in outcome.risk.reason
     assert risk_events[0]["reason"] == outcome.risk.reason
     assert len(executions) == 1
+
+
+def test_engine_queues_resting_limit_then_rechecks_and_executes(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'pending-limit.db'}")
+        await database.initialize()
+        audit = AuditRepository(database.sessions)
+        broker = FakeTestnetBroker()
+        market = FakeMarket()
+        engine = TradingEngine(
+            testnet_broker=broker,  # type: ignore[arg-type]
+            providers=ProviderRegistry([RestingLimitProvider()]),
+            audit=audit,
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider_chain(["fake-auth"])
+        await engine.start()
+        rules = SymbolRules(
+            Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")
+        )
+        engine.venue_contract_rules = {"BTCUSDT": rules}
+        outcome = (
+            await engine.evaluate_batch(
+                [await market.market_snapshot("BTCUSDT", "5m")],
+                PortfolioState(equity="10000", available_balance="8000"),
+                {"BTCUSDT": rules},
+            )
+        )[0]
+        queued = await audit.pending_local_entries(live_run_id=engine.live_run_id)
+        orders_before_trigger = list(broker.orders)
+
+        market.mark_price = Decimal("98.8")
+        trigger_result = await engine.process_pending_entry("BTCUSDT")
+        remaining = await audit.pending_local_entries(live_run_id=engine.live_run_id)
+        await database.close()
+        return outcome, queued, orders_before_trigger, trigger_result, remaining, broker.orders
+
+    outcome, queued, orders_before, trigger_result, remaining, orders = asyncio.run(
+        scenario()
+    )
+    assert outcome.risk.accepted and outcome.risk.pending_entry
+    assert outcome.risk.pending_expires_at is not None
+    assert len(queued) == 1
+    assert orders_before == []
+    assert trigger_result == "triggered"
+    assert remaining == []
+    assert len(orders) == 1
+
+
+def test_engine_expires_pending_limit_without_submitting(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'expired-pending.db'}")
+        await database.initialize()
+        audit = AuditRepository(database.sessions)
+        broker = FakeTestnetBroker()
+        market = FakeMarket()
+        engine = TradingEngine(
+            testnet_broker=broker,  # type: ignore[arg-type]
+            providers=ProviderRegistry([RestingLimitProvider()]),
+            audit=audit,
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider_chain(["fake-auth"])
+        await engine.start()
+        rules = SymbolRules(
+            Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")
+        )
+        engine.venue_contract_rules = {"BTCUSDT": rules}
+        await engine.evaluate_batch(
+            [await market.market_snapshot("BTCUSDT", "5m")],
+            PortfolioState(equity="10000", available_balance="8000"),
+            {"BTCUSDT": rules},
+        )
+        queued = (await audit.pending_local_entries(live_run_id=engine.live_run_id))[0]
+        expired = queued["decision"].model_copy(
+            update={"pending_expires_at": datetime.now(UTC) - timedelta(seconds=1)}
+        )
+        await audit.update_risk(queued["inference_id"], expired, completed=False)
+        result = await engine.process_pending_entry("BTCUSDT")
+        events = await audit.recent_decision_events()
+        await database.close()
+        return result, broker.orders, events
+
+    result, orders, events = asyncio.run(scenario())
+    assert result == "expired"
+    assert orders == []
+    assert events[0]["risk"]["accepted"] is False
+    assert "expired after 60s" in events[0]["risk"]["reason"]
 
 
 def test_engine_rejects_expired_analysis_before_market_refresh(tmp_path: Path) -> None:

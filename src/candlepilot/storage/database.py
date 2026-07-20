@@ -707,6 +707,62 @@ class AuditRepository:
             session.add(row)
         return row.id
 
+    async def update_risk(
+        self,
+        inference_id: int,
+        decision: RiskDecision,
+        *,
+        completed: bool,
+    ) -> None:
+        values: dict[str, Any] = {
+            "accepted": int(decision.accepted),
+            "reason": decision.reason,
+            "decision_json": decision.model_dump_json(),
+        }
+        if completed:
+            values["created_at"] = datetime.now(UTC)
+        async with self.sessions.begin() as session:
+            result = await session.execute(
+                update(RiskRow)
+                .where(RiskRow.inference_id == inference_id)
+                .values(**values)
+            )
+            if result.rowcount != 1:
+                raise RuntimeError(
+                    f"expected one risk decision for inference {inference_id}, "
+                    f"updated {result.rowcount or 0}"
+                )
+
+    async def pending_local_entries(
+        self, *, live_run_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        conditions = [
+            RiskRow.accepted == 1,
+            func.json_extract(RiskRow.decision_json, "$.pending_entry") == 1,
+        ]
+        if live_run_id is not None:
+            conditions.append(InferenceRow.live_run_id == live_run_id)
+        async with self.sessions() as session:
+            rows = (
+                await session.execute(
+                    select(InferenceRow, RiskRow)
+                    .join(RiskRow, RiskRow.inference_id == InferenceRow.id)
+                    .where(*conditions)
+                    .order_by(InferenceRow.id.asc())
+                )
+            ).all()
+        return [
+            {
+                "inference_id": inference.id,
+                "live_run_id": inference.live_run_id,
+                "provider": inference.provider,
+                "intent": TradeIntent.model_validate_json(inference.intent_json),
+                "decision": RiskDecision.model_validate_json(risk.decision_json),
+                "created_at": self._utc(inference.created_at),
+            }
+            for inference, risk in rows
+        ]
+
     async def record_execution(self, symbol: str, report: ExecutionReport) -> int:
         row = ExecutionRow(
             client_order_id=report.client_order_id,

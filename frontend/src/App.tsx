@@ -2966,6 +2966,16 @@ const OUTCOME_LABELS: Record<DecisionEvent["outcome"], string> = {
   analysis_only: "仅推理",
 };
 
+function decisionOutcomeLabel(decision: DecisionEvent): string {
+  if (decision.risk?.decision.pending_entry) return "等待触发";
+  return decision.failover ? "故障切换" : OUTCOME_LABELS[decision.outcome];
+}
+
+function pendingExpiryLabel(decision: DecisionEvent): string {
+  const expiresAt = decision.risk?.decision.pending_expires_at;
+  return expiresAt ? formatLocalDateTimeSeconds(new Date(expiresAt)) : "—";
+}
+
 function intentPrice(value: string | null): string {
   return value === null ? "—" : Number(value).toFixed(4);
 }
@@ -3249,8 +3259,8 @@ export function DecisionPanel({
                 {Math.round(decision.intent.confidence * 100)}%
                 <small>{decision.intent.action === "HOLD" ? "机会强度" : "执行置信度"}</small>
               </span>}
-              <span className={`decision-outcome ${decision.outcome}`}>
-                {decision.failover ? "故障切换" : OUTCOME_LABELS[decision.outcome]}
+              <span className={`decision-outcome ${decision.risk?.decision.pending_entry ? "pending" : decision.outcome}`}>
+                {decisionOutcomeLabel(decision)}
                 {decision.outcome === "execution_failed" && decision.execution?.estimated_loss_usdt != null
                   ? <small>损失 {executionLoss(decision.execution.estimated_loss_usdt)}</small>
                   : null}
@@ -3272,9 +3282,10 @@ export function DecisionPanel({
                   <span data-tooltip="仅按 AI 返回的入场价、止损和止盈计算，不含交易所 tick 对齐或最新行情。">AI 原始盈亏比<strong>{intentRewardRiskLabel(decision.intent)}</strong></span>
                   <span data-tooltip="硬风控按下单前刷新行情得到的实际入场基准，以及对齐交易所精度后的止损和止盈计算；这是最低 1.3:1 边界真正校验的数值。">下单前盈亏比<strong>{preTradeRewardRiskLabel(decision)}</strong></span>
                   <span>风控数量<strong>{decision.risk?.decision.max_quantity ?? "—"}</strong></span>
+                  {decision.risk?.decision.pending_expires_at ? <span data-tooltip="本地待触发意图不会预先提交到交易所；截止前每次检查都会重新获取行情与账户并完整复跑硬风控。过期后该时间仍保留用于审计。">意图有效至<strong>{pendingExpiryLabel(decision)}</strong></span> : null}
                 </div>
-                <div className={`decision-reason ${decision.outcome}`}>
-                  <strong>{decision.failover ? "故障切换" : decision.risk?.accepted ? "风控放行" : OUTCOME_LABELS[decision.outcome]}</strong>
+                <div className={`decision-reason ${decision.risk?.decision.pending_entry ? "pending" : decision.outcome}`}>
+                  <strong>{decision.risk?.decision.pending_entry ? "本地待触发" : decision.failover ? "故障切换" : decision.risk?.accepted ? "风控放行" : OUTCOME_LABELS[decision.outcome]}</strong>
                   <span>{decision.failover?.error ?? decision.risk?.reason ?? "该记录只有模型推理，未进入实时硬风控流程。"}</span>
                 </div>
                 {decision.execution && (

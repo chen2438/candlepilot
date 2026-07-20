@@ -408,16 +408,17 @@ def test_allows_and_marks_immediately_marketable_limit_after_refresh() -> None:
     assert result.order.price == Decimal("101")
 
 
-def test_rejects_a_resting_opening_limit_that_cannot_be_atomically_protected() -> None:
+def test_queues_a_resting_opening_limit_without_submitting_it() -> None:
     resting = _intent().model_copy(
         update={"order_type": OrderType.LIMIT, "entry_price": Decimal("99")}
     )
 
     result = AggressiveRiskPolicy().evaluate(resting, _snapshot(), _portfolio(), RULES)
 
-    assert not result.decision.accepted
-    assert result.order is None
-    assert "cannot be attached atomically" in result.decision.reason
+    assert result.decision.accepted
+    assert result.decision.pending_entry
+    assert result.order is not None
+    assert "queued locally until trigger" in result.decision.reason
 
 
 def test_marketable_short_limit_uses_fresh_bid_for_margin_sizing() -> None:

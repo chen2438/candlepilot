@@ -227,11 +227,7 @@ class AggressiveRiskPolicy:
             (requested_side == "LONG" and snapshot.ask <= entry)
             or (requested_side == "SHORT" and snapshot.bid >= entry)
         )
-        if intent.order_type == OrderType.LIMIT and not immediately_marketable:
-            return self._reject(
-                "resting limit entries are not supported because protection "
-                "cannot be attached atomically"
-            )
+        pending_entry = intent.order_type == OrderType.LIMIT and not immediately_marketable
 
         effective_entry = self._effective_entry(
             requested_side,
@@ -372,6 +368,8 @@ class AggressiveRiskPolicy:
             )
         if immediately_marketable:
             accepted_reasons.append("limit entry is immediately marketable after refresh")
+        if pending_entry:
+            accepted_reasons.append("resting limit intent queued locally until trigger")
         return RiskEvaluation(
             decision=RiskDecision(
                 accepted=True,
@@ -381,6 +379,7 @@ class AggressiveRiskPolicy:
                 pre_trade_reward_risk_ratio=reward_risk_ratio
                 if take_profit is not None
                 else None,
+                pending_entry=pending_entry,
             ),
             order=order,
         )
