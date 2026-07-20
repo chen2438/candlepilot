@@ -339,19 +339,8 @@ def restart_command() -> tuple[list[str], dict[str, str]]:
 
 
 def _validate_startup_settings(settings: Settings) -> None:
-    """Reject values the parsers accept but startup would later choke on.
+    """Reject startup constraints that are not scalar environment parsing."""
 
-    ``Settings`` parsing is lenient about the remaining keys here — the engine
-    and scheduler do those range checks at construction. Saving such a value
-    would brick the next start, so mirror those checks here. Cadences are not
-    among them: ``_parse_cadences`` validates them, so a bad one never reaches
-    this function.
-    """
-
-    if not 1 <= settings.candidates_per_cycle <= MAX_CANDIDATES_PER_CYCLE:
-        raise ValueError(
-            f"candidates_per_cycle must be between 1 and {MAX_CANDIDATES_PER_CYCLE}"
-        )
     if settings.bind_host not in {"127.0.0.1", "localhost", "::1"}:
         raise ValueError("bind host must be localhost")
 

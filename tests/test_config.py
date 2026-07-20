@@ -193,10 +193,18 @@ def test_run_limits_default_to_unbounded_and_read_env(monkeypatch) -> None:
     assert settings.max_run_seconds == 7200
     assert settings.max_run_cost_usd == 3.5
 
-    # Blank, zero, negative and malformed values all mean "unbounded".
-    for bad in ("", "0", "-5", "abc"):
+    monkeypatch.setenv("CANDLEPILOT_MAX_RUN_SECONDS", "")
+    assert Settings.from_env().max_run_seconds is None
+
+    for bad in ("0", "-5", "abc"):
         monkeypatch.setenv("CANDLEPILOT_MAX_RUN_SECONDS", bad)
-        assert Settings.from_env().max_run_seconds is None
+        with pytest.raises(ValueError, match="CANDLEPILOT_MAX_RUN_SECONDS"):
+            Settings.from_env()
+    for bad in ("0", "-5", "abc", "nan", "inf"):
+        monkeypatch.setenv("CANDLEPILOT_MAX_RUN_SECONDS", "")
+        monkeypatch.setenv("CANDLEPILOT_MAX_RUN_COST_USD", bad)
+        with pytest.raises(ValueError, match="CANDLEPILOT_MAX_RUN_COST_USD"):
+            Settings.from_env()
 
 
 def test_candidates_per_cycle_default_and_env_override(monkeypatch) -> None:
@@ -204,8 +212,19 @@ def test_candidates_per_cycle_default_and_env_override(monkeypatch) -> None:
     assert Settings.from_env().candidates_per_cycle == 5
     monkeypatch.setenv("CANDLEPILOT_CANDIDATES_PER_CYCLE", "8")
     assert Settings.from_env().candidates_per_cycle == 8
-    monkeypatch.setenv("CANDLEPILOT_CANDIDATES_PER_CYCLE", "not-a-number")
-    assert Settings.from_env().candidates_per_cycle == 5
+    for bad in ("not-a-number", "0", "21"):
+        monkeypatch.setenv("CANDLEPILOT_CANDIDATES_PER_CYCLE", bad)
+        with pytest.raises(ValueError, match="CANDLEPILOT_CANDIDATES_PER_CYCLE"):
+            Settings.from_env()
+
+
+def test_port_and_inference_timeout_reject_invalid_values() -> None:
+    for raw in ("not-a-port", "0", "65536"):
+        with pytest.raises(ValueError, match="CANDLEPILOT_PORT"):
+            Settings.from_mapping({"CANDLEPILOT_PORT": raw})
+    for raw in ("slow", "0", "-1", "nan", "inf"):
+        with pytest.raises(ValueError, match="CANDLEPILOT_LLM_TIMEOUT"):
+            Settings.from_mapping({"CANDLEPILOT_LLM_TIMEOUT": raw})
 
 
 def test_snapshot_age_default_override_and_validation(monkeypatch) -> None:

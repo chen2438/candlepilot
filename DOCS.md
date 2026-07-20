@@ -878,7 +878,7 @@ Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功
 
 | 变量 | 说明 |
 |---|---|
-| `CANDLEPILOT_HOST` / `CANDLEPILOT_PORT` | 绑定地址（仅 localhost）与端口（默认 8000）|
+| `CANDLEPILOT_HOST` / `CANDLEPILOT_PORT` | 绑定地址（仅 localhost）与端口（默认 8000，范围 1–65535）|
 | `CANDLEPILOT_DATABASE_URL` | SQLite 连接串 |
 | `CANDLEPILOT_DATA_DIR` | 数据目录（Parquet 行情缓存、models.dev 定价缓存）|
 | `CANDLEPILOT_AUTH_ENABLED` | 是否启用控制台鉴权；localhost 开发默认 `false`，VPS 远程访问必须为 `true` |
@@ -887,12 +887,12 @@ Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功
 | `CANDLEPILOT_AUTH_SESSION_SECRET` | 至少 32 字符的随机 HMAC 密钥；修改后所有已有会话失效 |
 | `CANDLEPILOT_AUTH_SESSION_TTL_SECONDS` | 会话有效期，默认 43200 秒，范围 300–604800 |
 | `CANDLEPILOT_AUTH_COOKIE_SECURE` | 是否只允许 HTTPS 发送会话 Cookie；VPS 必须为 `true` |
-| `CANDLEPILOT_LLM_TIMEOUT` | 外部 Provider 调用默认硬超时（秒，默认 45）；正式运行可在试跑时覆盖并固化本次值 |
+| `CANDLEPILOT_LLM_TIMEOUT` | 外部 Provider 调用默认硬超时（秒，默认 45，必须为有限正数）；正式运行可在试跑时覆盖并固化本次值 |
 | `CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS` | LLM 分析快照允许进入下单前行情刷新的最大年龄（秒，默认 75，必须为正整数）|
 | `CANDLEPILOT_CADENCES` | 唯一分析周期，可选 `5m`/`15m`/`30m`/`1h`/`4h`，默认 `15m`；多个值会被拒绝 |
 | `CANDLEPILOT_CANDIDATES_PER_CYCLE` | 每周期分析候选池前 N 个标的，默认 5（范围 1–20）|
-| `CANDLEPILOT_MAX_RUN_SECONDS` | 单次运行时长上限（秒）；留空/非正数=不限 |
-| `CANDLEPILOT_MAX_RUN_COST_USD` | 单次运行等效成本预算（USD）；留空/非正数=不限 |
+| `CANDLEPILOT_MAX_RUN_SECONDS` | 单次运行时长上限（秒）；留空=不限，非正数或格式错误会拒绝启动/保存 |
+| `CANDLEPILOT_MAX_RUN_COST_USD` | 单次运行等效成本预算（USD）；留空=不限，必须为有限正数，否则拒绝启动/保存 |
 | `CANDLEPILOT_PROVIDER_CHAIN` | 启动时默认的逗号分隔有序 Provider 路由，例如 `local,codex,claude-code,custom:main`；只接受这四种面向 `.env` 的短名称，不允许重复，所有 Custom API ID 必须存在；状态/API 返回的 `local-rule`、`codex-auth`、`claude-code-auth`、`openai-compatible:<id>` 是内部注册名，不允许写回该变量 |
 | `CANDLEPILOT_CODEX_MODEL` / `CANDLEPILOT_CODEX_REASONING_EFFORT` | Codex 模型 / 推理强度（minimal/low/medium/high）|
 | `CANDLEPILOT_CLAUDE_MODEL` / `CANDLEPILOT_CLAUDE_EFFORT` | Claude 模型 / 强度（low/medium/high/xhigh/max）|

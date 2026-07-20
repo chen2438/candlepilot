@@ -1405,6 +1405,10 @@ def test_settings_endpoint_reads_masked_and_writes_env(tmp_path: Path, monkeypat
             {"CANDLEPILOT_HOST": "0.0.0.0"},
             {"CANDLEPILOT_MODE": "bogus"},
             {"CANDLEPILOT_PORT": "not-a-port"},
+            {"CANDLEPILOT_PORT": "70000"},
+            {"CANDLEPILOT_LLM_TIMEOUT": "nan"},
+            {"CANDLEPILOT_MAX_RUN_SECONDS": "forever"},
+            {"CANDLEPILOT_MAX_RUN_COST_USD": "-1"},
             {"CANDLEPILOT_PROVIDER_CHAIN": "custom:missing,codex"},
             {"CANDLEPILOT_DEFAULT_PROVIDER": "custom:missing"},
         ):

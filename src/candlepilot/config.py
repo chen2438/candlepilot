@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from collections.abc import Collection, Mapping
@@ -105,25 +106,56 @@ def _parse_cadences(raw: str | None) -> tuple[str, ...]:
     return tuple(cadence for cadence in SUPPORTED_CADENCES if cadence in requested)
 
 
-def _parse_positive_number[T: (int, float)](raw: str | None, cast: type[T]) -> T | None:
-    """Parse an optional positive run limit; blank or invalid means unbounded."""
+def _parse_positive_number[T: (int, float)](
+    raw: str | None, cast: type[T], *, name: str
+) -> T | None:
+    """Parse an optional positive run limit; only a blank value is unbounded."""
 
     if not raw or not raw.strip():
         return None
     try:
         value = cast(raw.strip())
-    except ValueError:
-        return None
-    return value if value > 0 else None
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"{name} must be finite")
+    if value <= 0:
+        raise ValueError(f"{name} must be positive")
+    return value
+
+
+def _parse_bind_port(raw: str | None) -> int:
+    try:
+        value = int((raw or "").strip())
+    except ValueError as exc:
+        raise ValueError("CANDLEPILOT_PORT must be an integer") from exc
+    if not 1 <= value <= 65535:
+        raise ValueError("CANDLEPILOT_PORT must be between 1 and 65535")
+    return value
+
+
+def _parse_inference_timeout(raw: str | None) -> float:
+    try:
+        value = float((raw or "").strip())
+    except ValueError as exc:
+        raise ValueError("CANDLEPILOT_LLM_TIMEOUT must be a number") from exc
+    if not math.isfinite(value):
+        raise ValueError("CANDLEPILOT_LLM_TIMEOUT must be finite")
+    if value <= 0:
+        raise ValueError("CANDLEPILOT_LLM_TIMEOUT must be positive")
+    return value
 
 
 def _parse_candidates_per_cycle(raw: str | None) -> int:
-    if not raw:
+    if not raw or not raw.strip():
         return 5
     try:
-        return int(raw.strip())
-    except ValueError:
-        return 5
+        value = int(raw.strip())
+    except ValueError as exc:
+        raise ValueError("CANDLEPILOT_CANDIDATES_PER_CYCLE must be an integer") from exc
+    if not 1 <= value <= 20:
+        raise ValueError("CANDLEPILOT_CANDIDATES_PER_CYCLE must be between 1 and 20")
+    return value
 
 
 def _parse_snapshot_age(raw: str | None) -> int:
@@ -429,8 +461,10 @@ class Settings:
             database_url=get("CANDLEPILOT_DATABASE_URL", DEFAULT_DATABASE_URL),
             data_dir=Path(get("CANDLEPILOT_DATA_DIR", "data")),
             bind_host=get("CANDLEPILOT_HOST", "127.0.0.1"),
-            bind_port=int(get("CANDLEPILOT_PORT", "8000")),
-            inference_timeout_seconds=float(get("CANDLEPILOT_LLM_TIMEOUT", "45")),
+            bind_port=_parse_bind_port(get("CANDLEPILOT_PORT", "8000")),
+            inference_timeout_seconds=_parse_inference_timeout(
+                get("CANDLEPILOT_LLM_TIMEOUT", "45")
+            ),
             max_snapshot_age_seconds=_parse_snapshot_age(
                 get("CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS")
             ),
@@ -439,10 +473,14 @@ class Settings:
                 get("CANDLEPILOT_CANDIDATES_PER_CYCLE")
             ),
             max_run_seconds=_parse_positive_number(
-                get("CANDLEPILOT_MAX_RUN_SECONDS"), int
+                get("CANDLEPILOT_MAX_RUN_SECONDS"),
+                int,
+                name="CANDLEPILOT_MAX_RUN_SECONDS",
             ),
             max_run_cost_usd=_parse_positive_number(
-                get("CANDLEPILOT_MAX_RUN_COST_USD"), float
+                get("CANDLEPILOT_MAX_RUN_COST_USD"),
+                float,
+                name="CANDLEPILOT_MAX_RUN_COST_USD",
             ),
             provider_chain=_parse_provider_chain(get("CANDLEPILOT_PROVIDER_CHAIN")),
             codex_model=get("CANDLEPILOT_CODEX_MODEL") or None,
