@@ -362,7 +362,12 @@ class TradingEngine:
         self.running = False
         self.restore_provider_timeouts()
 
-    async def emergency_stop(self, *, now: datetime | None = None) -> None:
+    async def emergency_stop(
+        self,
+        *,
+        now: datetime | None = None,
+        reason: str | None = None,
+    ) -> None:
         now = now or datetime.now(UTC)
         if now.tzinfo is None:
             raise ValueError("emergency stop time must be timezone-aware")
@@ -373,7 +378,9 @@ class TradingEngine:
                 await self.audit.finish_live_run(
                     self.live_run_id,
                     status="emergency_stopped",
-                    stop_reason=self.auto_stop_reason or "emergency stop requested",
+                    stop_reason=reason
+                    or self.auto_stop_reason
+                    or "emergency stop requested",
                     ended_at=now,
                 )
         self.running = False
@@ -763,7 +770,12 @@ class TradingEngine:
                     ),
                 )
                 if execution_status == "UNKNOWN":
-                    await self.emergency_stop()
+                    await self.emergency_stop(
+                        reason=(
+                            "entry execution status unknown: "
+                            f"{evaluation.order.client_order_id}"
+                        )
+                    )
             else:
                 await self.audit.record_execution(analysis_snapshot.symbol, execution)
                 completed = execution.status in {"NEW", "PARTIALLY_FILLED", "FILLED"}
@@ -982,7 +994,12 @@ class TradingEngine:
                     ),
                 )
                 if execution_status == "UNKNOWN":
-                    await self.emergency_stop()
+                    await self.emergency_stop(
+                        reason=(
+                            "entry execution status unknown: "
+                            f"{evaluation.order.client_order_id}"
+                        )
+                    )
             else:
                 await self.audit.record_execution(analysis_snapshot.symbol, execution)
                 completed = execution.status in {"NEW", "PARTIALLY_FILLED", "FILLED"}

@@ -582,16 +582,20 @@ class BinanceTestnetBroker:
                         "origClientOrderId": order.client_order_id,
                     },
                 )
-            except Exception as exc:
-                raise OrderStatusUnknown(order.client_order_id) from exc
+            except Exception:
+                cancellation = await self._recover_terminal_order(order)
             canceled_quantity = Decimal(
                 str(cancellation.get("executedQty", entry.filled_quantity))
             )
             canceled_average = Decimal(
                 str(cancellation.get("avgPrice", entry.average_price or "0"))
             )
+            resolved_status = cancellation.get("status", entry.status)
+            if canceled_quantity >= order.quantity:
+                resolved_status = "FILLED"
             entry = entry.model_copy(
                 update={
+                    "status": resolved_status,
                     "filled_quantity": max(entry.filled_quantity, canceled_quantity),
                     "average_price": canceled_average
                     if canceled_average > 0
@@ -606,6 +610,8 @@ class BinanceTestnetBroker:
                         "timestamp": datetime.now(UTC),
                     }
                 )
+            if entry.status != "FILLED":
+                entry = entry.model_copy(update={"status": "PARTIALLY_FILLED"})
         protected_order = (
             order.model_copy(update={"quantity": entry.filled_quantity})
             if entry.status == "PARTIALLY_FILLED" and entry.filled_quantity > 0
@@ -810,6 +816,34 @@ class BinanceTestnetBroker:
                 if exc.code != -2013:
                     raise
         raise OrderStatusUnknown(order.client_order_id)
+
+    async def _recover_terminal_order(self, order: OrderPlan) -> dict[str, Any]:
+        terminal_statuses = {
+            "FILLED",
+            "CANCELED",
+            "REJECTED",
+            "EXPIRED",
+            "EXPIRED_IN_MATCH",
+        }
+        last_error: Exception | None = None
+        for attempt in range(self.recovery_attempts):
+            if attempt and self.recovery_delay:
+                await asyncio.sleep(self.recovery_delay * (2 ** (attempt - 1)))
+            try:
+                payload = await self._signed_request(
+                    "GET",
+                    "/fapi/v1/order",
+                    {
+                        "symbol": order.symbol,
+                        "origClientOrderId": order.client_order_id,
+                    },
+                )
+            except Exception as exc:
+                last_error = exc
+                continue
+            if payload.get("status") in terminal_statuses:
+                return payload
+        raise OrderStatusUnknown(order.client_order_id) from last_error
 
     async def _emergency_reduce(self, order: OrderPlan, side: str) -> ExecutionReport:
         return await self._place_order(

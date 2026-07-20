@@ -490,6 +490,124 @@ def test_partial_opening_fill_cancels_remainder_before_installing_protection() -
     assert report.filled_quantity == Decimal("0.4")
 
 
+def test_opening_limit_reconciles_fill_when_cancel_loses_the_matching_race() -> None:
+    requests: list[httpx.Request] = []
+    order_queries = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal order_queries
+        requests.append(request)
+        if request.url.path == "/fapi/v1/time":
+            return httpx.Response(200, json={"serverTime": 1784040000000})
+        if request.url.path == "/fapi/v1/symbolConfig":
+            return httpx.Response(
+                200,
+                json=[{"symbol": "BTCUSDT", "marginType": "ISOLATED", "leverage": 3}],
+            )
+        if request.url.path == "/fapi/v1/order" and request.method == "DELETE":
+            return httpx.Response(400, json={"code": -2011, "msg": "Unknown order sent"})
+        if request.url.path == "/fapi/v1/order" and request.method == "GET":
+            order_queries += 1
+            status = "NEW" if order_queries == 1 else "FILLED"
+            return httpx.Response(
+                200,
+                json={
+                    "clientOrderId": "cp-cancel-race",
+                    "status": status,
+                    "executedQty": "0" if status == "NEW" else "1",
+                    "avgPrice": "0" if status == "NEW" else "100",
+                },
+            )
+        if request.url.path == "/fapi/v1/algoOrder":
+            return httpx.Response(200, json={"status": "NEW"})
+        return httpx.Response(
+            200,
+            json={
+                "clientOrderId": "cp-cancel-race",
+                "status": "NEW",
+                "executedQty": "0",
+                "avgPrice": "0",
+            },
+        )
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(
+            _credentials(), client=client, recovery_attempts=3, recovery_delay=0
+        )
+        report = await broker.execute_with_stop(
+            OrderPlan(
+                client_order_id="cp-cancel-race",
+                symbol="BTCUSDT",
+                side="BUY",
+                quantity=Decimal("1"),
+                order_type=OrderType.LIMIT,
+                price=Decimal("101"),
+                stop_price=Decimal("98"),
+                take_profit_price=Decimal("104"),
+            ),
+            leverage=3,
+        )
+        await client.aclose()
+        return report
+
+    report = asyncio.run(scenario())
+    assert report.status == "FILLED"
+    assert report.filled_quantity == Decimal("1")
+    assert report.average_price == Decimal("100")
+    assert order_queries == 2
+    assert sum(request.url.path == "/fapi/v1/algoOrder" for request in requests) == 2
+
+
+def test_opening_limit_keeps_unknown_status_when_cancel_reconciliation_is_not_terminal() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fapi/v1/time":
+            return httpx.Response(200, json={"serverTime": 1784040000000})
+        if request.url.path == "/fapi/v1/symbolConfig":
+            return httpx.Response(
+                200,
+                json=[{"symbol": "BTCUSDT", "marginType": "ISOLATED", "leverage": 3}],
+            )
+        if request.url.path == "/fapi/v1/order" and request.method == "DELETE":
+            raise httpx.ReadTimeout("cancel status unknown", request=request)
+        return httpx.Response(
+            200,
+            json={
+                "clientOrderId": "cp-cancel-unknown",
+                "status": "NEW",
+                "executedQty": "0",
+                "avgPrice": "0",
+            },
+        )
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(
+            _credentials(), client=client, recovery_attempts=2, recovery_delay=0
+        )
+        with pytest.raises(OrderStatusUnknown):
+            await broker.execute_with_stop(
+                OrderPlan(
+                    client_order_id="cp-cancel-unknown",
+                    symbol="BTCUSDT",
+                    side="BUY",
+                    quantity=Decimal("1"),
+                    order_type=OrderType.LIMIT,
+                    price=Decimal("101"),
+                    stop_price=Decimal("98"),
+                    take_profit_price=Decimal("104"),
+                ),
+                leverage=3,
+            )
+        await client.aclose()
+
+    asyncio.run(scenario())
+
+
 def test_add_removes_existing_candlepilot_bracket_before_creating_replacement() -> None:
     requests: list[httpx.Request] = []
 
