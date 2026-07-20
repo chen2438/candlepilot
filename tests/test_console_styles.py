@@ -101,6 +101,16 @@ def test_the_hero_uses_two_columns_and_keeps_four_actions_on_one_row() -> None:
     assert _declares(_bodies(".controls>.cadence-select"), "grid-column:1/-1")
 
 
+def test_the_overview_stacks_before_provider_cards_can_overlap() -> None:
+    """The zoomed two-column overview is too narrow for provider controls at 1200px."""
+
+    css = (FRONTEND / "styles.css").read_text(encoding="utf-8").replace(" ", "")
+    assert (
+        "@media(max-width:1200px){.overview-grid{grid-template-columns:1fr}"
+        ".overview-grid>.signals-panel{grid-column:auto}}"
+    ) in css
+
+
 @pytest.mark.parametrize("panel", FULL_WIDTH_PANELS)
 def test_the_wide_panels_fill_their_row(panel: str) -> None:
     """A six-column table in one half of a two-column grid is unreadable."""
