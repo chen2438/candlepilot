@@ -216,6 +216,8 @@ class TradingScheduler:
     async def _process_pending_entries(self) -> list[str]:
         errors: list[str] = []
         for symbol in await self.engine.pending_entry_symbols():
+            if not self.engine.running or self.engine.auto_stop_reason is not None:
+                break
             lock = self._symbol_locks.setdefault(symbol, asyncio.Lock())
             if lock.locked():
                 continue
@@ -254,8 +256,8 @@ class TradingScheduler:
         )
 
     async def _auto_stop(self) -> None:
-        await self.engine.stop()
         await self.stop()
+        await self.engine.stop()
 
     async def _auto_emergency_stop(self) -> None:
         try:

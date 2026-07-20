@@ -588,6 +588,19 @@ class TradingEngine:
         item = entries[0]
         intent: TradeIntent = item["intent"]
         prior: RiskDecision = item["decision"]
+        if reason := self._order_submission_block_reason():
+            cancelled = prior.model_copy(
+                update={
+                    "accepted": False,
+                    "reason": reason,
+                    "pending_entry": False,
+                    "evaluated_at": datetime.now(UTC),
+                }
+            )
+            await self.audit.update_risk(
+                item["inference_id"], cancelled, completed=True
+            )
+            return "cancelled"
         expires_at = prior.pending_expires_at
         now = datetime.now(UTC)
         if expires_at is None:
@@ -643,6 +656,14 @@ class TradingEngine:
         )
         if not decision.accepted or evaluation.order is None:
             return "cancelled"
+        if reason := self._order_submission_block_reason():
+            cancelled = decision.model_copy(
+                update={"accepted": False, "reason": reason, "evaluated_at": datetime.now(UTC)}
+            )
+            await self.audit.update_risk(
+                item["inference_id"], cancelled, completed=True
+            )
+            return "cancelled"
         await self._execute_order(
             intent.symbol,
             item["inference_id"],
@@ -669,6 +690,18 @@ class TradingEngine:
         intent: TradeIntent,
         order: OrderPlan,
     ) -> ExecutionReport | None:
+        if reason := self._order_submission_block_reason():
+            await self.audit.record_execution_attempt(
+                symbol,
+                ExecutionAttempt(
+                    inference_id=inference_id,
+                    client_order_id=order.client_order_id,
+                    status="FAILED",
+                    stage="ENTRY",
+                    message=f"order not submitted: {reason}",
+                ),
+            )
+            return None
         try:
             execution = await self.testnet_broker.execute_with_stop(
                 order,
@@ -741,6 +774,17 @@ class TradingEngine:
             ),
         )
         return execution
+
+    def _order_submission_block_reason(self) -> str | None:
+        """Why a new exchange order may no longer leave this process."""
+
+        if self.emergency_locked:
+            return "order submission blocked by the emergency lock"
+        if self.auto_stop_reason is not None:
+            return f"order submission blocked because the run is stopping: {self.auto_stop_reason}"
+        if not self.running:
+            return "order submission blocked because the engine is stopped"
+        return None
 
     @staticmethod
     def _prepare_pending_evaluation(
@@ -915,6 +959,15 @@ class TradingEngine:
         inference_id = await self.audit.record_inference(
             result, live_run_id=self.live_run_id
         )
+        if (
+            result.intent.action != TradeAction.HOLD
+            and (reason := self._order_submission_block_reason()) is not None
+        ):
+            rejection = RiskDecision(accepted=False, reason=reason)
+            await self.audit.record_risk(
+                analysis_snapshot.symbol, rejection, inference_id=inference_id
+            )
+            return DecisionOutcome(result.intent, rejection, None, result.provider)
         evaluation_snapshot = analysis_snapshot
         evaluation_portfolio = analysis_portfolio
         intent_matches_snapshot = (
@@ -968,6 +1021,15 @@ class TradingEngine:
                 rules,
             ),
         )
+        if (
+            evaluation.order is not None
+            and evaluation.decision.accepted
+            and (reason := self._order_submission_block_reason()) is not None
+        ):
+            evaluation = RiskEvaluation(
+                decision=RiskDecision(accepted=False, reason=reason),
+                order=None,
+            )
         await self.audit.record_risk(
             analysis_snapshot.symbol, evaluation.decision, inference_id=inference_id
         )
@@ -1120,6 +1182,15 @@ class TradingEngine:
         rules: SymbolRules,
     ) -> DecisionOutcome:
         inference_id = await self.audit.record_inference(result, live_run_id=self.live_run_id)
+        if (
+            result.intent.action != TradeAction.HOLD
+            and (reason := self._order_submission_block_reason()) is not None
+        ):
+            rejection = RiskDecision(accepted=False, reason=reason)
+            await self.audit.record_risk(
+                analysis_snapshot.symbol, rejection, inference_id=inference_id
+            )
+            return DecisionOutcome(result.intent, rejection, None, result.provider)
         evaluation_snapshot = analysis_snapshot
         evaluation_portfolio = analysis_portfolio
         if result.intent.action != TradeAction.HOLD:
@@ -1152,6 +1223,15 @@ class TradingEngine:
                 rules,
             ),
         )
+        if (
+            evaluation.order is not None
+            and evaluation.decision.accepted
+            and (reason := self._order_submission_block_reason()) is not None
+        ):
+            evaluation = RiskEvaluation(
+                decision=RiskDecision(accepted=False, reason=reason),
+                order=None,
+            )
         await self.audit.record_risk(
             analysis_snapshot.symbol, evaluation.decision, inference_id=inference_id
         )

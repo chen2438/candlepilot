@@ -712,6 +712,51 @@ def test_automatic_emergency_stop_cancels_decisions_before_flattening(
     assert emergency_locked is True
 
 
+def test_automatic_graceful_stop_cancels_decisions_before_finishing_run(
+    tmp_path: Path,
+) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'graceful-order.db'}")
+        await database.initialize()
+        provider_started = asyncio.Event()
+        provider_cancelled = asyncio.Event()
+
+        class GatedProvider(HoldProvider):
+            async def generate_trade_intent(self, snapshot, portfolio):
+                provider_started.set()
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    provider_cancelled.set()
+                    raise
+
+        market = SchedulerMarket()
+        engine = TradingEngine(
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+            providers=ProviderRegistry([GatedProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider_chain(["hold"])
+        await engine.start()
+        scheduler = TradingScheduler(engine, market)  # type: ignore[arg-type]
+        cycle = asyncio.create_task(scheduler.run_cycle("5m"))
+        scheduler._tasks = [cycle]
+        await asyncio.wait_for(provider_started.wait(), timeout=1)
+
+        scheduler.request_auto_stop("test graceful trigger")
+        assert scheduler._auto_stop_task is not None
+        await scheduler._auto_stop_task
+        result = provider_cancelled.is_set(), cycle.cancelled(), engine.running
+        await database.close()
+        return result
+
+    provider_cancelled, cycle_cancelled, running = asyncio.run(scenario())
+    assert provider_cancelled is True
+    assert cycle_cancelled is True
+    assert running is False
+
+
 def test_guard_only_loads_cost_when_a_budget_is_set(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'guard-cost.db'}")

@@ -1279,6 +1279,88 @@ def test_unrescued_protection_failure_emergency_locks_engine(tmp_path: Path) -> 
     assert execution["stage"] == "RESCUE"
 
 
+def test_batch_does_not_submit_after_internal_emergency_stop(tmp_path: Path) -> None:
+    from candlepilot.broker.binance_testnet import ProtectiveStopError, ReconciliationReport
+
+    class FirstOrderTriggersEmergency:
+        def __init__(self) -> None:
+            self.orders = []
+            self.flattened = False
+
+        async def reconcile_account(self):
+            return ReconciliationReport((), 0, ())
+
+        async def account(self):
+            return {
+                "totalMarginBalance": "10000",
+                "availableBalance": "8000",
+                "totalInitialMargin": "0",
+                "positions": [],
+            }
+
+        async def protective_levels(self):
+            return {}
+
+        async def execute_with_stop(self, order, **_):
+            self.orders.append(order.symbol)
+            if len(self.orders) == 1:
+                raise ProtectiveStopError(
+                    "entry protection and rescue failed",
+                    entry=ExecutionReport(
+                        client_order_id=order.client_order_id,
+                        status="FILLED",
+                        filled_quantity=order.quantity,
+                        average_price="100",
+                    ),
+                    rescue=None,
+                    exchange_error_code=-4120,
+                    estimated_loss_usdt=None,
+                    failed_stage="RESCUE",
+                    requires_emergency_lock=True,
+                )
+            raise AssertionError("no later batch order may be submitted after emergency stop")
+
+        async def emergency_flatten(self):
+            self.flattened = True
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'batch-emergency.db'}")
+        await database.initialize()
+        broker = FirstOrderTriggersEmergency()
+        market = FakeMarket()
+        engine = TradingEngine(
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+            testnet_broker=broker,  # type: ignore[arg-type]
+        )
+        engine.select_provider_chain(["fake-auth"])
+        await engine.start()
+        rules = SymbolRules(
+            Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")
+        )
+        snapshots = [
+            await market.market_snapshot(symbol, "5m")
+            for symbol in ("BTCUSDT", "ETHUSDT")
+        ]
+        outcomes = await engine.evaluate_batch(
+            snapshots,
+            PortfolioState(equity="10000", available_balance="8000"),
+            {"BTCUSDT": rules, "ETHUSDT": rules},
+        )
+        result = broker.orders, broker.flattened, engine.emergency_locked, outcomes
+        await database.close()
+        return result
+
+    orders, flattened, locked, outcomes = asyncio.run(scenario())
+    assert orders == ["BTCUSDT"]
+    assert flattened is True and locked is True
+    assert len(outcomes) == 2
+    assert outcomes[1].execution is None
+    assert outcomes[1].risk.accepted is False
+    assert "emergency lock" in outcomes[1].risk.reason
+
+
 def test_engine_fails_over_once_to_explicit_backup_provider(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'fallback.db'}")
