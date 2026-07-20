@@ -337,6 +337,7 @@ describe("DecisionPanel", () => {
           unrealized_pnl: "2.5",
           wins: 2,
           closed_trades: 3,
+          open_position_count: 2,
           win_rate: "0.6666666667",
           includes_unrealized: true,
           valued_at: "2026-07-19T17:00:27Z",
@@ -361,6 +362,8 @@ describe("DecisionPanel", () => {
       expect(label.getAttribute("data-tooltip")).toContain("已完成的平仓笔数");
     }
     expect(screen.getByText("67% (2/3)")).toBeTruthy();
+    expect(screen.getAllByText("未平仓")).toHaveLength(2);
+    expect(screen.getByText("2", { selector: ".decision-run-performance strong" })).toBeTruthy();
     expect(screen.getAllByText("批次耗时 50.98s")).toHaveLength(2);
     expect(screen.getAllByText("整笔耗时 51.25s")).toHaveLength(2);
 

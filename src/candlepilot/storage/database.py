@@ -453,6 +453,7 @@ class AuditRepository:
 
         realized: defaultdict[int, Decimal] = defaultdict(Decimal)
         unrealized: defaultdict[int, Decimal] = defaultdict(Decimal)
+        open_symbols: defaultdict[int, set[str]] = defaultdict(set)
         closed: Counter[int] = Counter()
         wins: Counter[int] = Counter()
         lots_by_symbol: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -522,6 +523,8 @@ class AuditRepository:
             if not active_lots:
                 continue
             owners = {lot["run_id"] for lot in active_lots}
+            for run_id in owners:
+                open_symbols[run_id].add(symbol)
             if len(owners) == 1:
                 unrealized[next(iter(owners))] += Decimal(
                     str(position.get("unrealized_pnl", "0"))
@@ -548,6 +551,7 @@ class AuditRepository:
                     "total_pnl": str(total_pnl),
                     "wins": wins[run.id],
                     "closed_trades": closed_trades,
+                    "open_position_count": len(open_symbols[run.id]),
                     "win_rate": str(Decimal(wins[run.id]) / Decimal(closed_trades))
                     if closed_trades
                     else None,

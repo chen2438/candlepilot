@@ -3054,6 +3054,9 @@ function DecisionRunHeader({
             ? "—"
             : `${(Number(performance.win_rate) * 100).toFixed(0)}% (${performance.wins}/${performance.closed_trades})`}</strong>
         </span>
+        <span data-tooltip="当前交易所账户中由该运行开仓且尚有剩余数量的标的数；同一标的多次开仓或加仓只计一个，停止后手动平仓会实时减少。">
+          未平仓<strong>{performance?.open_position_count ?? "—"}</strong>
+        </span>
       </span>
       <small className="decision-run-config">{[config, `${decisionCount} 条决策`].filter(Boolean).join(" · ")}</small>
       {run.stop_reason && <small className="decision-run-stop">停止原因：{run.stop_reason}</small>}

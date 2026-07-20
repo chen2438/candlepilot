@@ -99,6 +99,7 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         running_performance = client.get("/api/live-runs/performance").json()
         assert running_performance[0]["total_pnl"] == "0"
         assert running_performance[0]["win_rate"] is None
+        assert running_performance[0]["open_position_count"] == 0
         assert running_performance[0]["includes_unrealized"] is True
         assert client.get("/api/live-runs/performance?limit=0").status_code == 422
         universe = client.post("/api/universe/refresh").json()

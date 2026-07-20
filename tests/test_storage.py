@@ -128,6 +128,7 @@ def test_live_runs_group_inferences_and_record_terminal_reason(tmp_path: Path) -
     assert events[0]["live_run"]["stop_reason"] == "run duration limit reached (60s)"
     assert events[0]["live_run"]["config"]["cadences"] == ["15m"]
     assert performance[0]["total_pnl"] == "0"
+    assert performance[0]["open_position_count"] == 0
     assert performance[0]["win_rate"] is None
     assert stale_id > run_id
     assert interrupted == 1
@@ -565,6 +566,7 @@ def test_live_run_performance_revalues_partial_manual_close_after_stop(
     assert performance["realized_pnl"] == "40"
     assert performance["unrealized_pnl"] == "30"
     assert performance["total_pnl"] == "70"
+    assert performance["open_position_count"] == 1
     assert performance["wins"] == 1
     assert performance["closed_trades"] == 1
     assert performance["win_rate"] == "1"

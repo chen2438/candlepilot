@@ -283,6 +283,7 @@ export interface LiveRunPerformance {
   unrealized_pnl: string;
   wins: number;
   closed_trades: number;
+  open_position_count?: number;
   win_rate: string | null;
   includes_unrealized: boolean;
   valued_at: string | null;
