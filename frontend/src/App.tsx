@@ -3589,7 +3589,7 @@ export function AccountPanel({
       <h4 className="account-subhead">成交明细</h4>
       <div className="table-wrap account-table">
         <table>
-          <thead><tr><th>时间</th><th>标的</th><th>方向</th><th>用途</th><th>成交额（USDT）</th><th>成交价</th><th data-tooltip="已实现盈亏及其相对于该笔平仓所对应开仓保证金的回报率；无法可靠追溯开仓保证金时回报率显示为「—」。">已实现盈亏 / 回报率</th><th>关联开仓</th><th>订单号</th></tr></thead>
+          <thead><tr><th>时间</th><th>标的</th><th>方向</th><th>用途</th><th data-tooltip="该笔实际成交数量 × 实际成交均价得到的 USDT 名义价值。它不是保证金、账户扣款或盈亏；初始保证金通常约为成交额 ÷ 杠杆。">成交额（USDT）</th><th>成交价</th><th data-tooltip="已实现盈亏及其相对于该笔平仓所对应开仓保证金的回报率；无法可靠追溯开仓保证金时回报率显示为「—」。">已实现盈亏 / 回报率</th><th>关联开仓</th><th>订单号</th></tr></thead>
           <tbody>
             {fills.map((fill) => (
               <tr key={`${fill.source}-${fill.id}`}>

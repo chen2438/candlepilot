@@ -97,6 +97,8 @@ describe("AccountPanel manual close", () => {
     expect(screen.getByText("平多")).toBeTruthy();
     expect(screen.getByText("其他平仓")).toBeTruthy();
     expect(screen.getByText("-10.00%")).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "成交额（USDT）" }).getAttribute("data-tooltip"))
+      .toContain("不是保证金、账户扣款或盈亏");
     expect(screen.getByRole("columnheader", { name: "原始盈亏比" })).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "未实现盈亏" }).getAttribute("data-tooltip"))
       .toContain("保证金回报率");
