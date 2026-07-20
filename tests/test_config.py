@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 
 from candlepilot.config import DEFAULT_DATABASE_URL, Settings, load_dotenv
+from candlepilot.auth import hash_password
+from pydantic import SecretStr
 
 
 def test_settings_use_concrete_database_default(monkeypatch) -> None:
@@ -217,6 +219,35 @@ def test_snapshot_age_default_override_and_validation(monkeypatch) -> None:
     monkeypatch.setenv("CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS", "slow")
     with pytest.raises(ValueError, match="must be an integer"):
         Settings.from_env()
+
+
+def test_authentication_configuration_is_complete_or_rejected() -> None:
+    password_hash = hash_password("correct horse battery staple")
+    settings = Settings.from_mapping(
+        {
+            "CANDLEPILOT_AUTH_ENABLED": "true",
+            "CANDLEPILOT_AUTH_USERNAME": "operator",
+            "CANDLEPILOT_AUTH_PASSWORD_HASH": password_hash,
+            "CANDLEPILOT_AUTH_SESSION_SECRET": "x" * 32,
+            "CANDLEPILOT_AUTH_COOKIE_SECURE": "true",
+            "CANDLEPILOT_AUTH_SESSION_TTL_SECONDS": "3600",
+        }
+    )
+    assert settings.auth_enabled is True
+    assert settings.auth_username == "operator"
+    assert isinstance(settings.auth_password_hash, SecretStr)
+    assert settings.auth_cookie_secure is True
+    assert settings.auth_session_ttl_seconds == 3600
+
+    incomplete = {
+        "CANDLEPILOT_AUTH_ENABLED": "true",
+        "CANDLEPILOT_AUTH_USERNAME": "operator",
+        "CANDLEPILOT_AUTH_PASSWORD_HASH": password_hash,
+    }
+    with pytest.raises(ValueError, match="SESSION_SECRET"):
+        Settings.from_mapping(incomplete)
+    with pytest.raises(ValueError, match="supported scrypt"):
+        Settings.from_mapping({**incomplete, "CANDLEPILOT_AUTH_SESSION_SECRET": "x" * 32, "CANDLEPILOT_AUTH_PASSWORD_HASH": "plain-text"})
 
 
 def test_removed_default_provider_env_is_rejected(monkeypatch) -> None:

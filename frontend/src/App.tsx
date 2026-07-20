@@ -248,10 +248,71 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
   if (!response.ok) {
+    if (response.status === 401 && !path.startsWith("/api/auth/")) {
+      window.dispatchEvent(new Event("candlepilot:unauthorized"));
+    }
     const body = await response.json().catch(() => ({ detail: response.statusText }));
     throw new Error(body.detail ?? `HTTP ${response.status}`);
   }
   return response.json() as Promise<T>;
+}
+
+type AuthStatus = {
+  enabled: boolean;
+  authenticated: boolean;
+  username: string | null;
+  expires_at?: number | null;
+};
+
+export function LoginScreen({ onAuthenticated }: { onAuthenticated: (status: AuthStatus) => void }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      const body = await response.json().catch(() => ({ detail: response.statusText }));
+      if (!response.ok) throw new Error(body.detail ?? `HTTP ${response.status}`);
+      setPassword("");
+      onAuthenticated(body as AuthStatus);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <main className="login-shell">
+      <section className="login-card panel">
+        <div className="brand login-brand">
+          <span className="brand-mark"><i /><i /><i /></span>
+          <div><strong>CANDLEPILOT</strong><small>SECURE OPERATOR CONSOLE</small></div>
+        </div>
+        <div className="login-copy">
+          <span className="eyebrow">REMOTE ACCESS</span>
+          <h1>登录控制台</h1>
+          <p>请输入 VPS 安装时设置的管理员凭据。登录状态仅保存在受保护的浏览器 Cookie 中。</p>
+        </div>
+        <form className="login-form" onSubmit={submit}>
+          <label><span>用户名</span><input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required /></label>
+          <label><span>密码</span><input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
+          {error && <div className="login-error" role="alert">{error}</div>}
+          <button type="submit" disabled={busy}>{busy ? "验证中…" : "登录"}</button>
+        </form>
+        <small className="login-security">仅通过 HTTPS 远程登录；核对安装输出的证书指纹后，再接受首次访问的证书警告。</small>
+      </section>
+    </main>
+  );
 }
 
 const HISTORY_CATEGORIES: Array<{ key: string; label: string; hint: string }> = [
@@ -627,7 +688,7 @@ function StartupProbeProviderResults({
   </div>;
 }
 
-export default function App() {
+function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void }) {
   const [tab, setTab] = useState<TabKey>("overview");
   const [status, setStatus] = useState<EngineStatus>(emptyStatus);
   const [providers, setProviders] = useState<ProviderHealth[]>([]);
@@ -1131,7 +1192,8 @@ export default function App() {
         </div>
         <div className="live-state">
           <span className={`dot ${socketOnline ? "online" : ""}`} />
-          {socketOnline ? "FRONTEND ONLINE" : "FRONTEND OFFLINE"}
+          <span>{socketOnline ? "FRONTEND ONLINE" : "FRONTEND OFFLINE"}</span>
+          {auth.enabled && <button className="logout-button" onClick={onLogout} title={`当前用户：${auth.username ?? "—"}`}>退出</button>}
         </div>
       </header>
 
@@ -1692,9 +1754,44 @@ export default function App() {
         </section>
         )}
       </main>
-      <footer><span>CANDLEPILOT / GPL-3.0</span><span>LOCALHOST ONLY · NO LIVE MONEY</span></footer>
+      <footer><span>CANDLEPILOT / GPL-3.0</span><span>{auth.enabled ? "AUTHENTICATED CONSOLE" : "LOCALHOST ONLY"} · NO LIVE MONEY</span></footer>
     </div>
   );
+}
+
+export default function App() {
+  const [auth, setAuth] = useState<AuthStatus | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/auth/status", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json() as Promise<AuthStatus>;
+      })
+      .then((status) => { if (active) setAuth(status); })
+      .catch((reason) => { if (active) setAuthError(reason instanceof Error ? reason.message : String(reason)); });
+    const unauthorized = () => setAuth((current) => current ? { ...current, authenticated: false, username: null } : current);
+    window.addEventListener("candlepilot:unauthorized", unauthorized);
+    return () => {
+      active = false;
+      window.removeEventListener("candlepilot:unauthorized", unauthorized);
+    };
+  }, []);
+
+  const logout = useCallback(async () => {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } finally {
+      setAuth((current) => current ? { ...current, authenticated: false, username: null } : current);
+    }
+  }, []);
+
+  if (authError) return <main className="login-shell"><section className="login-card panel"><h1>控制台不可用</h1><p role="alert">无法读取认证状态：{authError}</p></section></main>;
+  if (auth === null) return <main className="login-shell"><section className="login-card panel"><p>正在检查登录状态…</p></section></main>;
+  if (!auth.authenticated) return <LoginScreen onAuthenticated={setAuth} />;
+  return <ConsoleApp auth={auth} onLogout={logout} />;
 }
 
 function RestartPanel({

@@ -11,6 +11,7 @@ from pathlib import Path
 from pydantic import SecretStr
 
 from candlepilot.domain.models import DEFAULT_DECISION_CADENCE, SUPPORTED_CADENCES
+from candlepilot.auth import validate_password_hash
 
 
 
@@ -397,6 +398,12 @@ class Settings:
     custom_llm_providers: tuple[CustomLlmProvider, ...] = ()
     binance_testnet_api_key: SecretStr | None = None
     binance_testnet_api_secret: SecretStr | None = None
+    auth_enabled: bool = False
+    auth_username: str | None = None
+    auth_password_hash: SecretStr | None = None
+    auth_session_secret: SecretStr | None = None
+    auth_session_ttl_seconds: int = 12 * 60 * 60
+    auth_cookie_secure: bool = False
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -451,7 +458,38 @@ class Settings:
             binance_testnet_api_secret=SecretStr(get("BINANCE_TESTNET_API_SECRET") or "")
             if get("BINANCE_TESTNET_API_SECRET")
             else None,
+            auth_enabled=_parse_boolean(
+                get("CANDLEPILOT_AUTH_ENABLED"),
+                name="CANDLEPILOT_AUTH_ENABLED",
+                default=False,
+            ),
+            auth_username=(get("CANDLEPILOT_AUTH_USERNAME") or "").strip() or None,
+            auth_password_hash=SecretStr(get("CANDLEPILOT_AUTH_PASSWORD_HASH") or "")
+            if get("CANDLEPILOT_AUTH_PASSWORD_HASH")
+            else None,
+            auth_session_secret=SecretStr(get("CANDLEPILOT_AUTH_SESSION_SECRET") or "")
+            if get("CANDLEPILOT_AUTH_SESSION_SECRET")
+            else None,
+            auth_session_ttl_seconds=int(get("CANDLEPILOT_AUTH_SESSION_TTL_SECONDS", "43200")),
+            auth_cookie_secure=_parse_boolean(
+                get("CANDLEPILOT_AUTH_COOKIE_SECURE"),
+                name="CANDLEPILOT_AUTH_COOKIE_SECURE",
+                default=False,
+            ),
         )
+        if settings.auth_enabled:
+            if not settings.auth_username or not re.fullmatch(r"[A-Za-z0-9_.@-]{3,64}", settings.auth_username):
+                raise ValueError("CANDLEPILOT_AUTH_USERNAME must contain 3-64 safe characters")
+            if settings.auth_password_hash is None:
+                raise ValueError("CANDLEPILOT_AUTH_PASSWORD_HASH is required when authentication is enabled")
+            validate_password_hash(settings.auth_password_hash.get_secret_value())
+            if (
+                settings.auth_session_secret is None
+                or len(settings.auth_session_secret.get_secret_value()) < 32
+            ):
+                raise ValueError("CANDLEPILOT_AUTH_SESSION_SECRET must contain at least 32 characters")
+            if not 300 <= settings.auth_session_ttl_seconds <= 7 * 24 * 60 * 60:
+                raise ValueError("CANDLEPILOT_AUTH_SESSION_TTL_SECONDS must be between 300 and 604800")
         validate_provider_references(settings)
         return settings
 

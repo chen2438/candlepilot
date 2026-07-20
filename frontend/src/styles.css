@@ -112,3 +112,98 @@ footer{width:min(1460px,calc(100% - 64px));margin:30px auto;display:flex;justify
 /* Account owns all testnet state; operations is reserved for provider metrics. */
 .account-testnet-status{display:grid;grid-template-columns:minmax(260px,.7fr) minmax(0,1.3fr);margin-bottom:12px}.account-testnet-status .testnet-checks{grid-template-columns:repeat(3,1fr);align-content:center;margin:0;border-left:0}.account-metrics{grid-template-columns:repeat(6,1fr)}.operations-grid{grid-template-columns:1fr}.provider-metrics-list{grid-template-columns:repeat(2,minmax(0,1fr))}
 @media(max-width:1000px){.account-testnet-status{grid-template-columns:1fr}.account-testnet-status .testnet-checks{grid-template-columns:1fr;border-left:1px solid var(--line);border-top:0}.provider-metrics-list{grid-template-columns:1fr}}
+/* Authenticated VPS entry point. The console itself keeps the existing dense
+   desktop layout; the login card remains usable on a phone-sized viewport. */
+.login-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    linear-gradient(135deg, rgba(143, 198, 39, 0.08), transparent 45%),
+    #f3f6ef;
+}
+
+.login-card {
+  width: min(460px, 100%);
+  padding: 30px;
+}
+
+.login-brand {
+  margin-bottom: 42px;
+}
+
+.login-copy h1 {
+  margin: 8px 0 12px;
+  font-size: 32px;
+}
+
+.login-copy p {
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.login-form {
+  display: grid;
+  gap: 16px;
+  margin-top: 28px;
+}
+
+.login-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.login-form input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  background: #fff;
+  color: var(--ink);
+}
+
+.login-form button {
+  min-height: 44px;
+  margin-top: 4px;
+  border-color: var(--accent);
+  background: var(--accent-bright);
+  color: #17210d;
+  font-weight: 700;
+}
+
+.login-error {
+  padding: 10px 12px;
+  border: 1px solid var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.login-security {
+  display: block;
+  margin-top: 22px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.live-state {
+  gap: 8px;
+}
+
+.logout-button {
+  margin-left: 8px;
+  padding: 5px 9px;
+  border-color: var(--line-strong);
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+@media (max-width: 540px) {
+  .login-shell { padding: 12px; }
+  .login-card { padding: 22px; }
+  .login-brand { margin-bottom: 30px; }
+}

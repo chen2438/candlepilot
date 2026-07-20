@@ -10,8 +10,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
+from starlette.websockets import WebSocketDisconnect
 
 from candlepilot.api import create_app
+from candlepilot.auth import hash_password
 from candlepilot.application.engine import TradingEngine
 from candlepilot.application.scheduler import CADENCE_SECONDS
 from conftest import FakeTestnetBroker, StatefulTestnetBroker
@@ -46,6 +48,63 @@ def _probe_and_start(client: TestClient, payload: dict[str, object] | None = Non
     assert probe.status_code == 200, probe.text
     assert probe.json()["running"] is False
     return client.post("/api/engine/start", json=payload)
+
+
+def test_remote_console_authentication_protects_http_and_websocket(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'authenticated-api.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    settings = replace(
+        Settings(),
+        auth_enabled=True,
+        auth_username="operator",
+        auth_password_hash=SecretStr(hash_password("correct horse battery staple")),
+        auth_session_secret=SecretStr("s" * 32),
+        auth_session_ttl_seconds=3600,
+        auth_cookie_secure=False,
+    )
+    application = create_app(
+        settings=settings,
+        database=database,
+        market=market,  # type: ignore[arg-type]
+        engine=engine,
+    )
+    with TestClient(application) as client:
+        assert client.get("/api/health/live").status_code == 200
+        assert client.get("/api/status").status_code == 401
+        assert client.get("/api/auth/status").json()["authenticated"] is False
+        with pytest.raises(WebSocketDisconnect) as closed:
+            with client.websocket_connect("/ws/events"):
+                pass
+        assert closed.value.code == 4401
+
+        wrong = client.post(
+            "/api/auth/login", json={"username": "operator", "password": "wrong"}
+        )
+        assert wrong.status_code == 401
+        logged_in = client.post(
+            "/api/auth/login",
+            json={"username": "operator", "password": "correct horse battery staple"},
+        )
+        assert logged_in.status_code == 200
+        assert "HttpOnly" in logged_in.headers["set-cookie"]
+        assert "SameSite=strict" in logged_in.headers["set-cookie"]
+        assert client.get("/api/status").status_code == 200
+        with client.websocket_connect("/ws/events") as socket:
+            assert socket.receive_json()["type"] == "status"
+
+        cross_site = client.post(
+            "/api/universe/refresh",
+            headers={"Origin": "https://attacker.example"},
+        )
+        assert cross_site.status_code == 403
+        assert client.post("/api/auth/logout").status_code == 200
+        assert client.get("/api/status").status_code == 401
 
 def test_control_api_lifecycle(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'api.db'}")

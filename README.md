@@ -135,6 +135,23 @@ CANDLEPILOT_PROVIDER_CHAIN=codex,claude-code,custom:main
 早期的单端点变量（`CANDLEPILOT_CUSTOM_LLM_BASE_URL` 等）已移除。它们若仍留在 `.env` 中，
 启动会直接报错并指向上面的替代写法，而不是静默丢掉你以为已配置好的 Provider。
 
+## Ubuntu VPS 一键安装
+
+全新 Ubuntu 24.04 VPS 可直接运行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/chen2438/candlepilot/main/scripts/install_vps.sh \
+  | sudo bash
+```
+
+脚本交互式读取 VPS 公网 IPv4、控制台管理员密码和 Binance Demo 凭据，创建非 root systemd
+服务，并通过 Nginx 在 `https://VPS-IP:8443` 提供前端。后端继续只监听 127.0.0.1，远程控制台使用
+scrypt 密码哈希、受签名的 HttpOnly 会话 Cookie、登录限速与跨站写入保护；自签名证书的 SHA-256
+指纹会在安装结束时输出，首次访问前必须核对。不要向公网开放后端 8000 端口。
+
+最低建议 1 vCPU / 2 GB RAM / 25 GB SSD；持续运行建议 2 vCPU / 4 GB RAM / 40 GB SSD。
+详细变量、无人值守安装参数、Codex 设备码登录与密码重置见 [DOCS.md](DOCS.md#81-ubuntu-vps-一键安装)。
+
 ## 测试网
 
 **必填。** 测试网是唯一被交易的账户，缺少凭证时后端拒绝启动。在

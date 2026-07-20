@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -21,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from candlepilot.application.engine import MAX_RESCUES_PER_RUN, TradingEngine
+from candlepilot.auth import AuthManager, SESSION_COOKIE
 from candlepilot.application.scheduler import (
     CADENCE_SECONDS,
     MAX_CANDIDATES_PER_CYCLE,
@@ -118,6 +120,11 @@ from candlepilot.storage.database import (
 
 class ApiModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class LoginRequest(ApiModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=1024)
 
 
 class ProviderSelection(ApiModel):
@@ -541,6 +548,14 @@ def create_app(
     testnet_account_memo: dict[str, Any] = {"account": None, "expires_at": 0.0}
     testnet_levels_lock = asyncio.Lock()
     testnet_levels_memo: dict[str, Any] = {"levels": None, "expires_at": 0.0}
+    auth = AuthManager(
+        enabled=settings.auth_enabled,
+        username=settings.auth_username,
+        password_hash=settings.auth_password_hash,
+        session_secret=settings.auth_session_secret,
+        session_ttl_seconds=settings.auth_session_ttl_seconds,
+        cookie_secure=settings.auth_cookie_secure,
+    )
 
     async def pricing_catalog() -> ModelPricingCatalog | None:
         now = datetime.now(UTC)
@@ -693,7 +708,7 @@ def create_app(
     app = FastAPI(
         title="CandlePilot API",
         version="0.1.0",
-        description="Local-only API for Binance testnet trading and historical backtests",
+        description="Loopback API for the authenticated Binance testnet control console",
         lifespan=lifespan,
     )
     app.state.engine = engine
@@ -703,6 +718,37 @@ def create_app(
     app.state.history_cache = history_cache
     app.state.testnet_feed = testnet_feed
     app.state.operational_metrics = operational_metrics
+    app.state.auth = auth
+
+    public_api_paths = {
+        "/api/auth/status",
+        "/api/auth/login",
+        "/api/health/live",
+        "/api/health/ready",
+    }
+
+    @app.middleware("http")
+    async def authenticate_request(request: Request, call_next: Any) -> Any:
+        path = request.url.path
+        if not auth.enabled or not path.startswith("/api/") or path in public_api_paths:
+            return await call_next(request)
+        identity = auth.validate_session(request.cookies.get(SESSION_COOKIE))
+        if identity is None:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "authentication required"},
+                headers={"Cache-Control": "no-store"},
+            )
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            origin = request.headers.get("origin")
+            if origin and urlsplit(origin).netloc != request.headers.get("host"):
+                return JSONResponse(status_code=403, content={"detail": "cross-site request denied"})
+            if request.headers.get("sec-fetch-site") == "cross-site":
+                return JSONResponse(status_code=403, content={"detail": "cross-site request denied"})
+        request.state.auth_identity = identity
+        response = await call_next(request)
+        response.headers.setdefault("Cache-Control", "no-store")
+        return response
 
     @app.middleware("http")
     async def observe_request(request: Request, call_next: Any) -> Any:
@@ -761,6 +807,69 @@ def create_app(
         candles = build_backtest_candles(rows, events, cadence)
         await asyncio.to_thread(history_cache.store, symbol, cadence, start, end, limit, candles)
         return candles
+
+    @app.get("/api/auth/status")
+    async def auth_status(request: Request) -> JSONResponse:
+        identity = auth.validate_session(request.cookies.get(SESSION_COOKIE))
+        return JSONResponse(
+            content={
+                "enabled": auth.enabled,
+                "authenticated": identity is not None,
+                "username": identity.username if identity is not None and auth.enabled else None,
+                "expires_at": identity.expires_at if identity is not None and auth.enabled else None,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post("/api/auth/login")
+    async def auth_login(request: Request, credentials: LoginRequest) -> JSONResponse:
+        if not auth.enabled:
+            return JSONResponse(
+                content={"enabled": False, "authenticated": True, "username": None},
+                headers={"Cache-Control": "no-store"},
+            )
+        client = request.client.host if request.client is not None else "unknown"
+        retry_after = auth.blocked_for(client)
+        if retry_after:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "too many login attempts; try again later"},
+                headers={"Retry-After": str(retry_after), "Cache-Control": "no-store"},
+            )
+        if not auth.authenticate(credentials.username, credentials.password, client):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "invalid username or password"},
+                headers={"Cache-Control": "no-store"},
+            )
+        response = JSONResponse(
+            content={"enabled": True, "authenticated": True, "username": auth.username},
+            headers={"Cache-Control": "no-store"},
+        )
+        response.set_cookie(
+            SESSION_COOKIE,
+            auth.issue_session(),
+            max_age=auth.session_ttl_seconds,
+            httponly=True,
+            secure=auth.cookie_secure,
+            samesite="strict",
+            path="/",
+        )
+        return response
+
+    @app.post("/api/auth/logout")
+    async def auth_logout() -> JSONResponse:
+        response = JSONResponse(
+            content={"authenticated": False}, headers={"Cache-Control": "no-store"}
+        )
+        response.delete_cookie(
+            SESSION_COOKIE,
+            httponly=True,
+            secure=auth.cookie_secure,
+            samesite="strict",
+            path="/",
+        )
+        return response
 
     @app.get("/api/status")
     async def get_status() -> dict[str, Any]:
@@ -2827,6 +2936,13 @@ def create_app(
 
     @app.websocket("/ws/events")
     async def event_stream(websocket: WebSocket) -> None:
+        origin = websocket.headers.get("origin")
+        if origin and urlsplit(origin).netloc != websocket.headers.get("host"):
+            await websocket.close(code=4403, reason="cross-site websocket denied")
+            return
+        if auth.enabled and auth.validate_session(websocket.cookies.get(SESSION_COOKIE)) is None:
+            await websocket.close(code=4401, reason="authentication required")
+            return
         await websocket.accept()
         last_decisions: list[dict[str, Any]] | None = None
         try:
