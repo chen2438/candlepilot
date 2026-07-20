@@ -220,6 +220,7 @@ describe("DecisionPanel", () => {
   it("allows one-shot trading without a probe but keeps continuous startup locked", async () => {
     const user = userEvent.setup();
     const onProbe = vi.fn();
+    const onProbeAndStart = vi.fn();
     const onRunOnce = vi.fn();
     const onStart = vi.fn();
     const props = {
@@ -227,6 +228,7 @@ describe("DecisionPanel", () => {
       running: false,
       emergencyLocked: false,
       onProbe,
+      onProbeAndStart,
       onRunOnce,
       onStart,
       onStop: vi.fn(),
@@ -235,10 +237,14 @@ describe("DecisionPanel", () => {
     const view = render(<LiveRunActionButtons {...props} probeReady={false} />);
 
     const probe = screen.getByRole("button", { name: "试跑" });
+    const probeAndStart = screen.getByRole("button", { name: "试跑并启动" });
     const start = screen.getByRole("button", { name: "启动" });
     const runOnce = screen.getByRole("button", { name: "运行一次" });
     expect((start as HTMLButtonElement).disabled).toBe(true);
+    expect((probeAndStart as HTMLButtonElement).disabled).toBe(false);
     expect((runOnce as HTMLButtonElement).disabled).toBe(false);
+    await user.click(probeAndStart);
+    expect(onProbeAndStart).toHaveBeenCalledOnce();
     await user.click(runOnce);
     expect(onRunOnce).toHaveBeenCalledOnce();
     await user.click(probe);

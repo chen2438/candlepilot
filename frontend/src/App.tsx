@@ -432,6 +432,7 @@ export function LiveRunActionButtons({
   emergencyLocked,
   probeReady,
   onProbe,
+  onProbeAndStart,
   onRunOnce,
   onStart,
   onStop,
@@ -442,6 +443,7 @@ export function LiveRunActionButtons({
   emergencyLocked: boolean;
   probeReady: boolean;
   onProbe: () => void;
+  onProbeAndStart: () => void;
   onRunOnce: () => void;
   onStart: () => void;
   onStop: () => void;
@@ -452,6 +454,11 @@ export function LiveRunActionButtons({
       disabled={busy !== null || running || emergencyLocked}
       onClick={onProbe}
     >{busy === "probe" ? "真实批量试跑…" : "试跑"}</button>
+    <button
+      className="primary"
+      disabled={busy !== null || running || emergencyLocked}
+      onClick={onProbeAndStart}
+    >{busy === "probe-and-start" ? "试跑并启动中…" : "试跑并启动"}</button>
     <button
       disabled={busy !== null || running || emergencyLocked}
       onClick={onRunOnce}
@@ -1266,7 +1273,7 @@ export default function App() {
                   ? "持续启动前需试跑；运行一次直接分析并交易，无需试跑"
                   : "本地规则无外部调用超时；运行一次无需试跑"}</small>
               </div>
-              {busy === "probe" && !status.startup_probe && <div className="live-probe-summary">
+              {(busy === "probe" || busy === "probe-and-start") && !status.startup_probe && <div className="live-probe-summary">
                 正在读取真实行情与测试网账户…
               </div>}
               {status.startup_probe?.running && <StartupProbeRunningSummary probe={status.startup_probe} />}
@@ -1285,6 +1292,16 @@ export default function App() {
                   return;
                 }
                 void act("probe", "/api/engine/probe", {
+                  timeout_seconds: selectedExternalProvider ? timeout : null,
+                });
+              }}
+              onProbeAndStart={() => {
+                const timeout = Number(displayedDecisionTimeout);
+                if (selectedExternalProvider && (!Number.isFinite(timeout) || timeout <= 0)) {
+                  setError("请输入有效的正式决策硬超时秒数");
+                  return;
+                }
+                void act("probe-and-start", "/api/engine/probe-and-start", {
                   timeout_seconds: selectedExternalProvider ? timeout : null,
                 });
               }}

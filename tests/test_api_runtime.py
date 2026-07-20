@@ -296,6 +296,15 @@ def test_live_probe_runs_one_real_batch_and_reports_its_details(
         assert client.post(
             "/api/engine/start", json={"timeout_seconds": 7}
         ).status_code == 409
+
+        combined = client.post(
+            "/api/engine/probe-and-start", json={"timeout_seconds": 7}
+        )
+        assert combined.status_code == 200, combined.text
+        assert combined.json()["running"] is True
+        assert combined.json()["startup_probe"]["consumed"] is True
+        assert provider.calls == 3
+        client.post("/api/engine/stop")
     asyncio.run(database.close())
 
 
@@ -467,7 +476,7 @@ def test_live_startup_probe_cancels_sibling_providers_after_failure(tmp_path: Pa
     asyncio.run(database.close())
 
 
-def test_live_start_rejects_a_probe_that_cannot_fit_the_selected_cadence(
+def test_probe_and_start_stays_stopped_when_probe_exceeds_selected_cadence(
     tmp_path: Path, monkeypatch
 ) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'live-capacity.db'}")
@@ -491,7 +500,7 @@ def test_live_start_rejects_a_probe_that_cannot_fit_the_selected_cadence(
     with TestClient(app) as client:
         client.post("/api/providers/select", json={"providers": ["api-fixture"]})
         response = client.post(
-            "/api/engine/probe", json={"timeout_seconds": 1}
+            "/api/engine/probe-and-start", json={"timeout_seconds": 1}
         )
         assert response.status_code == 422
         assert "Reduce analysis symbols" in response.json()["detail"]

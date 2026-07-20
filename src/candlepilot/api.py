@@ -1528,6 +1528,42 @@ def create_app(
             timeout_seconds = configured.pop()
         return external, timeout_seconds
 
+    async def perform_startup_probe(request: EngineStartRequest) -> None:
+        """Run and store one startup probe while the startup lock is held."""
+
+        if engine.running:
+            raise HTTPException(status_code=409, detail="engine is already running")
+        if not engine.provider_chain:
+            raise HTTPException(
+                status_code=409,
+                detail="at least one ready decision provider must be selected",
+            )
+        external, timeout_seconds = resolve_live_timeout(request)
+        try:
+            engine.startup_probe = None
+            engine.configure_decision_timeout(timeout_seconds if external else None)
+            engine.startup_probe = await live_startup_probe(
+                timeout_seconds=timeout_seconds if external else None
+            )
+        except ValueError as exc:
+            if engine.startup_probe is not None:
+                engine.startup_probe.update(
+                    running=False,
+                    ready=False,
+                    error=str(exc),
+                )
+            engine.restore_provider_timeouts()
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            if engine.startup_probe is not None:
+                engine.startup_probe.update(
+                    running=False,
+                    ready=False,
+                    error=str(exc),
+                )
+            engine.restore_provider_timeouts()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.post("/api/engine/probe")
     async def probe_engine(request: EngineStartRequest | None = None) -> dict[str, Any]:
         if background_model_work():
@@ -1537,38 +1573,7 @@ def create_app(
             )
         request = request or EngineStartRequest()
         async with engine_start_lock:
-            if engine.running:
-                raise HTTPException(status_code=409, detail="engine is already running")
-            if not engine.provider_chain:
-                raise HTTPException(
-                    status_code=409,
-                    detail="at least one ready decision provider must be selected",
-                )
-            external, timeout_seconds = resolve_live_timeout(request)
-            try:
-                engine.startup_probe = None
-                engine.configure_decision_timeout(timeout_seconds if external else None)
-                engine.startup_probe = await live_startup_probe(
-                    timeout_seconds=timeout_seconds if external else None
-                )
-            except ValueError as exc:
-                if engine.startup_probe is not None:
-                    engine.startup_probe.update(
-                        running=False,
-                        ready=False,
-                        error=str(exc),
-                    )
-                engine.restore_provider_timeouts()
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
-            except Exception as exc:
-                if engine.startup_probe is not None:
-                    engine.startup_probe.update(
-                        running=False,
-                        ready=False,
-                        error=str(exc),
-                    )
-                engine.restore_provider_timeouts()
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            await perform_startup_probe(request)
         return _status(engine, scheduler)
 
     async def begin_live_run(
@@ -1646,6 +1651,24 @@ def create_app(
             )
         request = request or EngineStartRequest()
         async with engine_start_lock:
+            await begin_live_run(request)
+            scheduler.start()
+        return _status(engine, scheduler)
+
+    @app.post("/api/engine/probe-and-start")
+    async def probe_and_start_engine(
+        request: EngineStartRequest | None = None,
+    ) -> dict[str, Any]:
+        """Probe current live parameters and start only when that probe succeeds."""
+
+        if background_model_work():
+            raise HTTPException(
+                status_code=409,
+                detail="cannot probe and start while another probe or backtest runs",
+            )
+        request = request or EngineStartRequest()
+        async with engine_start_lock:
+            await perform_startup_probe(request)
             await begin_live_run(request)
             scheduler.start()
         return _status(engine, scheduler)
