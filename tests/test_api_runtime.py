@@ -97,6 +97,8 @@ def test_remote_console_authentication_protects_http_and_websocket(tmp_path: Pat
         assert client.get("/api/status").status_code == 200
         with client.websocket_connect("/ws/events") as socket:
             assert socket.receive_json()["type"] == "status"
+            decisions = socket.receive_json()
+            assert decisions == {"type": "decisions", "data": []}
 
         cross_site = client.post(
             "/api/universe/refresh",

@@ -998,8 +998,8 @@ reduce-only 成交按关联决策区分模型平仓/减仓，无法关联的 red
 
 **数据管理**：`POST /api/history/clear`。
 
-**实时**：`WS /ws/events`（每 2 秒推送引擎状态；仅在最近 10 次运行的决策发生变化时推送
-`decisions` 事件）。
+**实时**：`WS /ws/events`（连接成功后依次发送当前 `status` 与最近 10 次运行的 `decisions`
+快照；此后每 2 秒推送引擎状态，仅在决策发生变化时再次推送 `decisions` 事件）。
 
 ## 8. 运行与验证
 
