@@ -823,7 +823,13 @@ def test_decision_events_join_inference_and_risk_outcomes(tmp_path: Path) -> Non
         )
         await repository.record_risk(
             "SOLUSDT",
-            RiskDecision(accepted=True, reason="within limits", max_quantity="2.5"),
+            RiskDecision(
+                accepted=True,
+                reason="within limits",
+                max_quantity="2.5",
+                pre_trade_entry_price="100.1",
+                pre_trade_reward_risk_ratio="1.55",
+            ),
             inference_id=approved_id,
         )
         await repository.record_execution_attempt(
@@ -889,6 +895,8 @@ def test_decision_events_join_inference_and_risk_outcomes(tmp_path: Path) -> Non
     assert events[1]["execution"]["status"] == "RESCUED"
     assert events[1]["execution"]["estimated_loss_usdt"] == "1.25"
     assert events[2]["risk"]["decision"]["max_quantity"] == "2.5"
+    assert events[2]["risk"]["decision"]["pre_trade_entry_price"] == "100.1"
+    assert events[2]["risk"]["decision"]["pre_trade_reward_risk_ratio"] == "1.55"
     assert events[2]["execution"]["status"] == "SUCCEEDED"
     assert events[3]["intent"]["symbol"] == "ETHUSDT"
     assert events[3]["risk"]["accepted"] is True

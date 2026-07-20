@@ -2993,6 +2993,13 @@ function intentRewardRiskLabel(intent: DecisionEvent["intent"]): string {
   return ratio === null ? "—" : `${ratio.toFixed(2)} : 1`;
 }
 
+function preTradeRewardRiskLabel(decision: DecisionEvent): string {
+  const rawValue = decision.risk?.decision.pre_trade_reward_risk_ratio;
+  if (rawValue == null) return "—";
+  const value = Number(rawValue);
+  return Number.isFinite(value) ? `${value.toFixed(4)} : 1` : "—";
+}
+
 function executionPrice(value: string | null | undefined): string {
   return value == null ? "—" : Number(value).toFixed(4);
 }
@@ -3262,7 +3269,8 @@ export function DecisionPanel({
                   <span>入场价<strong>{intentPrice(decision.intent.entry_price)}</strong></span>
                   <span>止损<strong>{intentPrice(decision.intent.stop_loss)}</strong></span>
                   <span>止盈<strong>{intentPrice(decision.intent.take_profit)}</strong></span>
-                  <span data-tooltip="仅按 AI 返回的入场价、止损和止盈计算，不含交易所 tick 对齐或最新行情；硬风控同样使用原始价格距离公式，但会采用刷新后的实际入场基准和对齐交易所精度后的保护价。">AI 原始盈亏比<strong>{intentRewardRiskLabel(decision.intent)}</strong></span>
+                  <span data-tooltip="仅按 AI 返回的入场价、止损和止盈计算，不含交易所 tick 对齐或最新行情。">AI 原始盈亏比<strong>{intentRewardRiskLabel(decision.intent)}</strong></span>
+                  <span data-tooltip="硬风控按下单前刷新行情得到的实际入场基准，以及对齐交易所精度后的止损和止盈计算；这是最低 1.3:1 边界真正校验的数值。">下单前盈亏比<strong>{preTradeRewardRiskLabel(decision)}</strong></span>
                   <span>风控数量<strong>{decision.risk?.decision.max_quantity ?? "—"}</strong></span>
                 </div>
                 <div className={`decision-reason ${decision.outcome}`}>

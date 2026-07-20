@@ -336,9 +336,17 @@ class AggressiveRiskPolicy:
                 take_profit,
             )
             if reward_risk_ratio <= self.minimum_reward_risk_ratio:
-                return self._reject(
-                    "raw reward/risk ratio must be greater than "
-                    f"{self.minimum_reward_risk_ratio}:1"
+                return RiskEvaluation(
+                    RiskDecision(
+                        accepted=False,
+                        reason=(
+                            "pre-trade reward/risk ratio "
+                            f"{reward_risk_ratio:.4f}:1 must be greater than "
+                            f"{self.minimum_reward_risk_ratio}:1"
+                        ),
+                        pre_trade_entry_price=reward_risk_entry,
+                        pre_trade_reward_risk_ratio=reward_risk_ratio,
+                    )
                 )
 
         order = OrderPlan(
@@ -369,6 +377,10 @@ class AggressiveRiskPolicy:
                 accepted=True,
                 reason="; ".join(accepted_reasons),
                 max_quantity=quantity,
+                pre_trade_entry_price=reward_risk_entry,
+                pre_trade_reward_risk_ratio=reward_risk_ratio
+                if take_profit is not None
+                else None,
             ),
             order=order,
         )

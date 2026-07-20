@@ -393,7 +393,7 @@ def test_engine_rejects_when_refreshed_market_breaks_raw_reward_risk(tmp_path: P
 
     outcome, snapshot_calls, orders = asyncio.run(scenario())
     assert not outcome.risk.accepted and outcome.execution is None
-    assert "raw reward/risk ratio" in outcome.risk.reason
+    assert "pre-trade reward/risk ratio" in outcome.risk.reason
     assert snapshot_calls == 1
     assert orders == []
 

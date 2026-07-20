@@ -55,8 +55,12 @@ const decision: DecisionEvent = {
   risk: {
     id: 1,
     accepted: false,
-    reason: "raw reward/risk ratio must be greater than 1.3:1",
-    decision: { max_quantity: null },
+    reason: "pre-trade reward/risk ratio 1.2800:1 must be greater than 1.3:1",
+    decision: {
+      max_quantity: null,
+      pre_trade_entry_price: "1871.5000",
+      pre_trade_reward_risk_ratio: "1.2800",
+    },
     created_at: "2026-07-19T15:16:52Z",
   },
   execution: null,
@@ -286,6 +290,8 @@ describe("DecisionPanel", () => {
 
     expect(screen.getByText("AI 原始盈亏比")).toBeTruthy();
     expect(screen.getByText("1.71 : 1")).toBeTruthy();
+    expect(screen.getByText("下单前盈亏比")).toBeTruthy();
+    expect(screen.getByText("1.2800 : 1")).toBeTruthy();
   });
 
   it("collapses each large AI audit block by default and expands it independently", async () => {

@@ -479,7 +479,12 @@ def test_rejects_raw_reward_risk_at_the_strict_threshold() -> None:
     result = AggressiveRiskPolicy().evaluate(intent, _snapshot(), _portfolio(), RULES)
 
     assert not result.decision.accepted
-    assert "raw reward/risk ratio must be greater than 1.3:1" in result.decision.reason
+    assert result.decision.pre_trade_entry_price == Decimal("100")
+    assert result.decision.pre_trade_reward_risk_ratio == Decimal("1.3")
+    assert (
+        result.decision.reason
+        == "pre-trade reward/risk ratio 1.3000:1 must be greater than 1.3:1"
+    )
 
 
 def test_raw_reward_risk_above_threshold_ignores_fees_and_slippage() -> None:
@@ -488,6 +493,8 @@ def test_raw_reward_risk_above_threshold_ignores_fees_and_slippage() -> None:
     result = AggressiveRiskPolicy().evaluate(intent, _snapshot(), _portfolio(), RULES)
 
     assert result.decision.accepted
+    assert result.decision.pre_trade_entry_price == Decimal("100")
+    assert result.decision.pre_trade_reward_risk_ratio == Decimal("1.31")
 
 
 def test_rejects_raw_reward_risk_below_the_threshold() -> None:
@@ -496,7 +503,7 @@ def test_rejects_raw_reward_risk_below_the_threshold() -> None:
     result = AggressiveRiskPolicy().evaluate(intent, _snapshot(), _portfolio(), RULES)
 
     assert not result.decision.accepted
-    assert "raw reward/risk ratio" in result.decision.reason
+    assert "pre-trade reward/risk ratio 1.0000:1" in result.decision.reason
 
 
 def test_portfolio_stop_risk_caps_new_exposure_at_four_percent() -> None:

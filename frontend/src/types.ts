@@ -245,7 +245,11 @@ export interface DecisionEvent {
     id: number;
     accepted: boolean;
     reason: string;
-    decision: { max_quantity: string | null };
+    decision: {
+      max_quantity: string | null;
+      pre_trade_entry_price?: string | null;
+      pre_trade_reward_risk_ratio?: string | null;
+    };
     created_at: string;
   };
   execution: null | {
