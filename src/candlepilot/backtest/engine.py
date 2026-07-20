@@ -2,15 +2,15 @@
 
 The one rule here: everything the live path decides is decided by the live
 code. This module owns only what an exchange owns -- whether a resting trigger
-was touched, at what price, and what it cost. Sizing, leverage caps, the daily
-loss breaker and tick alignment all come from ``AggressiveRiskPolicy``, because
+was touched, at what price, and what it cost. Sizing, leverage caps, the rolling
+24-hour loss breaker and tick alignment all come from ``AggressiveRiskPolicy``, because
 a backtest that re-implements them measures the re-implementation.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from candlepilot.domain.models import (
@@ -136,8 +136,7 @@ class SimulatedExchange:
         self._positions: dict[str, _Position] = {}
         self._pending: dict[str, _PendingOrder] = {}
         self.trades: list[BacktestTrade] = []
-        self._daily_date: date | None = None
-        self._daily_start_equity = self.config.initial_equity
+        self._equity_window: list[EquityPoint] = []
 
     def portfolio_state(
         self, marks: dict[str, Decimal], *, as_of: datetime | None = None
@@ -162,19 +161,31 @@ class SimulatedExchange:
                 take_profit=position.take_profit,
             )
         equity = self.cash + unrealized
+        window_start_equity = self.config.initial_equity
         if as_of is not None:
             if as_of.tzinfo is None:
                 raise ValueError("portfolio time must be timezone-aware")
-            current_date = as_of.astimezone(UTC).date()
-            if self._daily_date is None:
-                self._daily_date = current_date
-            elif current_date != self._daily_date:
-                self._daily_date = current_date
-                self._daily_start_equity = equity
+            current_time = as_of.astimezone(UTC)
+            if self._equity_window and current_time < self._equity_window[-1].timestamp:
+                raise ValueError("portfolio time cannot move backwards")
+            point = EquityPoint(current_time, equity)
+            if self._equity_window and current_time == self._equity_window[-1].timestamp:
+                self._equity_window[-1] = point
+            else:
+                self._equity_window.append(point)
+            cutoff = current_time - timedelta(hours=24)
+            while (
+                len(self._equity_window) > 1
+                and self._equity_window[1].timestamp <= cutoff
+            ):
+                self._equity_window.pop(0)
+            window_start_equity = self._equity_window[0].equity
+        elif self._equity_window:
+            window_start_equity = self._equity_window[0].equity
         return PortfolioState(
             equity=max(Decimal("0.00000001"), equity),
             available_balance=max(Decimal("0"), equity - margin_used),
-            daily_pnl=equity - self._daily_start_equity,
+            pnl_24h=equity - window_start_equity,
             open_positions=len(self._positions),
             margin_used=margin_used,
             positions=positions,

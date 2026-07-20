@@ -141,7 +141,7 @@ class PositionState(StrictModel):
 class PortfolioState(StrictModel):
     equity: PositiveDecimal
     available_balance: NonNegativeDecimal
-    daily_pnl: Decimal = Decimal("0")
+    pnl_24h: Decimal = Decimal("0")
     open_positions: int = Field(default=0, ge=0)
     margin_used: NonNegativeDecimal = Decimal("0")
     positions: dict[str, PositionState] = Field(default_factory=dict)

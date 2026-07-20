@@ -309,7 +309,7 @@ export interface AccountPortfolio {
   cash: string;
   equity: string;
   available_balance: string;
-  daily_pnl: string | null;
+  pnl_24h: string | null;
   unrealized_pnl: string;
   open_positions: number;
   margin_used: string;

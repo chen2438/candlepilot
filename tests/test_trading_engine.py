@@ -1424,7 +1424,7 @@ def test_testnet_portfolio_carries_entry_price_and_live_bracket(tmp_path: Path) 
         async def protective_levels(self):
             return {"BTCUSDT": ProtectiveLevels(stop_loss=Decimal("104"))}
 
-        async def daily_income(self):
+        async def income_24h(self):
             return Decimal("-10")
 
         async def pending_entry_symbols(self):
@@ -1455,7 +1455,7 @@ def test_testnet_portfolio_carries_entry_price_and_live_bracket(tmp_path: Path) 
     assert position.stop_loss == Decimal("104")
     # No take-profit leg on the exchange must read as absent, not as invented.
     assert position.take_profit is None
-    assert portfolio.daily_pnl == Decimal("-13.75")
+    assert portfolio.pnl_24h == Decimal("-13.75")
     assert portfolio.pending_entry_symbols == ("ETHUSDT",)
     # A flat symbol is not a position.
     assert "ETHUSDT" not in portfolio.positions

@@ -263,16 +263,21 @@ def test_position_state_carries_the_context_the_model_needs() -> None:
     assert position.leverage == 3
 
 
-def test_daily_pnl_resets_when_the_utc_date_changes() -> None:
+def test_pnl_24h_uses_a_rolling_window_instead_of_resetting_at_midnight() -> None:
     exchange = SimulatedExchange()
     exchange.portfolio_state({}, as_of=START)
     exchange.cash = Decimal("9200")
 
-    same_day = exchange.portfolio_state({}, as_of=START + timedelta(hours=12))
-    next_day = exchange.portfolio_state({}, as_of=START + timedelta(days=1))
+    before_midnight = exchange.portfolio_state({}, as_of=START + timedelta(hours=12))
+    after_midnight = exchange.portfolio_state({}, as_of=START + timedelta(days=1))
+    exchange.cash = Decimal("9000")
+    trailing_window = exchange.portfolio_state(
+        {}, as_of=START + timedelta(days=1, hours=12)
+    )
 
-    assert same_day.daily_pnl == Decimal("-800")
-    assert next_day.daily_pnl == Decimal("0")
+    assert before_midnight.pnl_24h == Decimal("-800")
+    assert after_midnight.pnl_24h == Decimal("-800")
+    assert trailing_window.pnl_24h == Decimal("-200")
 
 
 def test_profit_factor_is_undefined_rather_than_zero_without_losses() -> None:

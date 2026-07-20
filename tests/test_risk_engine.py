@@ -50,7 +50,7 @@ def _portfolio(**changes) -> PortfolioState:
     values = {
         "equity": "10000",
         "available_balance": "8000",
-        "daily_pnl": "0",
+        "pnl_24h": "0",
         "open_positions": 0,
         "margin_used": "0",
     }
@@ -448,21 +448,21 @@ def test_snapshot_age_must_be_positive() -> None:
         AggressiveRiskPolicy(max_snapshot_age_seconds=0)
 
 
-def test_daily_loss_circuit_breaker() -> None:
+def test_24h_loss_circuit_breaker() -> None:
     result = AggressiveRiskPolicy().evaluate(
-        _intent(), _snapshot(), _portfolio(equity="9500", daily_pnl="-500"), RULES
+        _intent(), _snapshot(), _portfolio(equity="9500", pnl_24h="-500"), RULES
     )
     assert not result.decision.accepted
     assert "circuit breaker" in result.decision.reason
 
 
-def test_daily_loss_circuit_breaker_never_blocks_a_close() -> None:
+def test_24h_loss_circuit_breaker_never_blocks_a_close() -> None:
     result = AggressiveRiskPolicy().evaluate(
         _intent(TradeAction.CLOSE),
         _snapshot(age_seconds=300),
         _portfolio(
             equity="9500",
-            daily_pnl="-500",
+            pnl_24h="-500",
             open_positions=1,
             positions=_position("LONG", "1"),
         ),

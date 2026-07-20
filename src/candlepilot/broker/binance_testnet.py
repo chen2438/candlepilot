@@ -5,7 +5,7 @@ import hmac
 import asyncio
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlencode
@@ -141,19 +141,19 @@ class BinanceTestnetBroker:
         )
         self._time_offset_ms = 0
 
-    async def daily_income(self, *, now: datetime | None = None) -> Decimal:
-        """Return today's trading income components from the UTC session.
+    async def income_24h(self, *, now: datetime | None = None) -> Decimal:
+        """Return trading income components from the trailing 24-hour window.
 
-        Deposits and transfers are deliberately excluded: the daily loss breaker
+        Deposits and transfers are deliberately excluded: the 24-hour loss breaker
         measures trading performance, not account funding. Unrealized PnL comes
         from the account payload and is added by the portfolio assembler.
         """
 
         now = now or datetime.now(UTC)
         if now.tzinfo is None:
-            raise ValueError("daily income time must be timezone-aware")
+            raise ValueError("24-hour income time must be timezone-aware")
         now = now.astimezone(UTC)
-        start = datetime.combine(now.date(), datetime.min.time(), tzinfo=UTC)
+        start = now - timedelta(hours=24)
         total = Decimal("0")
         page = 1
         while True:

@@ -438,10 +438,10 @@ class TradingEngine:
 
     async def current_portfolio(self) -> PortfolioState:
         broker = self.testnet_broker
-        daily_income_loader = getattr(broker, "daily_income", None)
-        daily_income = (
-            daily_income_loader()
-            if callable(daily_income_loader)
+        income_24h_loader = getattr(broker, "income_24h", None)
+        income_24h = (
+            income_24h_loader()
+            if callable(income_24h_loader)
             else asyncio.sleep(0, result=Decimal("0"))
         )
         pending_loader = getattr(broker, "pending_entry_symbols", None)
@@ -452,8 +452,8 @@ class TradingEngine:
         )
         snapshot_loader = getattr(broker, "account_snapshot", None)
         account_loader = snapshot_loader if callable(snapshot_loader) else broker.account
-        account, levels, realized_today, pending_entry_symbols = await asyncio.gather(
-            account_loader(), broker.protective_levels(), daily_income, pending_entries
+        account, levels, realized_24h, pending_entry_symbols = await asyncio.gather(
+            account_loader(), broker.protective_levels(), income_24h, pending_entries
         )
         raw_positions = {
             str(item["symbol"]): item
@@ -487,7 +487,7 @@ class TradingEngine:
                 take_profit=guard.take_profit,
             )
         account_unrealized = account.get("totalUnrealizedProfit")
-        unrealized_today = (
+        unrealized_pnl = (
             Decimal(str(account_unrealized))
             if account_unrealized is not None
             else sum((position.unrealized_pnl for position in positions.values()), Decimal("0"))
@@ -495,7 +495,7 @@ class TradingEngine:
         return PortfolioState(
             equity=account.get("totalMarginBalance", account.get("totalWalletBalance", "0")),
             available_balance=account.get("availableBalance", "0"),
-            daily_pnl=Decimal(str(realized_today)) + unrealized_today,
+            pnl_24h=Decimal(str(realized_24h)) + unrealized_pnl,
             open_positions=len(positions),
             margin_used=account.get("totalInitialMargin", "0"),
             positions=positions,

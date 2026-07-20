@@ -611,11 +611,11 @@ def create_app(
             testnet_levels_memo["expires_at"] = time.monotonic() + 1.0
             return levels
 
-    async def testnet_daily_income() -> Decimal:
+    async def testnet_income_24h() -> Decimal:
         broker = engine.testnet_broker
         if broker is None:
             raise RuntimeError("testnet broker is not configured")
-        loader = getattr(broker, "daily_income", None)
+        loader = getattr(broker, "income_24h", None)
         return await loader() if callable(loader) else Decimal("0")
 
     @asynccontextmanager
@@ -1846,8 +1846,8 @@ def create_app(
     @app.get("/api/account/portfolio")
     async def get_account_portfolio() -> dict[str, Any]:
         try:
-            account, realized_today = await asyncio.gather(
-                testnet_account(), testnet_daily_income()
+            account, realized_24h = await asyncio.gather(
+                testnet_account(), testnet_income_24h()
             )
         except Exception as exc:
             raise HTTPException(
@@ -1870,8 +1870,8 @@ def create_app(
                     )
                 ),
                 "available_balance": str(account.get("availableBalance", "0")),
-                "daily_pnl": str(
-                    Decimal(str(realized_today))
+                "pnl_24h": str(
+                    Decimal(str(realized_24h))
                     + Decimal(str(account.get("totalUnrealizedProfit", "0")))
                 ),
                 "unrealized_pnl": str(account.get("totalUnrealizedProfit", "0")),

@@ -144,9 +144,13 @@ class AggressiveRiskPolicy:
         if age < -2 or age > self.max_snapshot_age_seconds:
             return self._reject("market snapshot is stale")
 
-        start_equity = portfolio.equity - portfolio.daily_pnl
-        if start_equity > 0 and portfolio.daily_pnl <= -(start_equity * self.daily_loss_fraction):
-            return self._reject("daily loss circuit breaker is active")
+        window_start_equity = portfolio.equity - portfolio.pnl_24h
+        if (
+            window_start_equity > 0
+            and portfolio.pnl_24h
+            <= -(window_start_equity * self.daily_loss_fraction)
+        ):
+            return self._reject("24-hour loss circuit breaker is active")
         if intent.leverage > self.max_leverage:
             return self._reject("requested leverage exceeds the hard limit")
         if intent.risk_fraction > self.max_risk_fraction:

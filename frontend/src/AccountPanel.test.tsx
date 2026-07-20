@@ -23,6 +23,34 @@ const position: AccountPosition = {
 };
 
 describe("AccountPanel manual close", () => {
+  it("labels the account result as a rolling 24-hour metric", () => {
+    render(
+      <AccountPanel
+        portfolio={{
+          source: "binance-testnet",
+          initial_equity: null,
+          cash: "1000",
+          equity: "990",
+          available_balance: "900",
+          pnl_24h: "-10",
+          unrealized_pnl: "-2",
+          open_positions: 0,
+          margin_used: "0",
+        }}
+        positions={[]}
+        fills={[]}
+        testnetStatus={null}
+        engineRunning={false}
+        busy={null}
+        onClosePosition={vi.fn(async () => true)}
+      />,
+    );
+
+    const metric = screen.getByText("过去24h盈亏").closest("div");
+    expect(metric?.textContent).toContain("-10.00");
+    expect(metric?.getAttribute("data-tooltip")).toContain("当前时刻往前 24 小时");
+  });
+
   it("shows position return on margin and USDT fill notional with realized return", () => {
     render(
       <AccountPanel

@@ -1027,7 +1027,7 @@ def test_pending_entry_symbols_reads_live_non_reduce_only_orders() -> None:
     assert asyncio.run(scenario()) == ("ETHUSDT", "SOLUSDT")
 
 
-def test_daily_income_sums_trading_components_and_excludes_transfers() -> None:
+def test_income_24h_sums_trading_components_and_excludes_transfers() -> None:
     queries: list[dict[str, list[str]]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1047,12 +1047,12 @@ def test_daily_income_sums_trading_components_and_excludes_transfers() -> None:
             transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
         )
         broker = BinanceTestnetBroker(_credentials(), client=client)
-        result = await broker.daily_income(now=datetime(2026, 7, 17, 12, tzinfo=UTC))
+        result = await broker.income_24h(now=datetime(2026, 7, 17, 12, tzinfo=UTC))
         await client.aclose()
         return result
 
     assert asyncio.run(scenario()) == Decimal("-31")
-    assert queries[0]["startTime"] == ["1784246400000"]
+    assert queries[0]["startTime"] == ["1784203200000"]
     assert queries[0]["endTime"] == ["1784289600000"]
     assert queries[0]["page"] == ["1"]
 
