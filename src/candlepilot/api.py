@@ -1572,9 +1572,12 @@ def create_app(
         return _status(engine, scheduler)
 
     async def begin_live_run(
-        request: EngineStartRequest, *, single_cycle: bool = False
-    ) -> dict[str, object]:
-        """Apply the shared startup gate for continuous and single-cycle runs."""
+        request: EngineStartRequest,
+        *,
+        require_probe: bool = True,
+        single_cycle: bool = False,
+    ) -> dict[str, object] | None:
+        """Apply shared startup checks, with a probe gate only for scheduling."""
 
         if engine.running:
             raise HTTPException(status_code=409, detail="engine is already running")
@@ -1586,19 +1589,25 @@ def create_app(
         external, timeout_seconds = resolve_live_timeout(request)
         probe = engine.startup_probe
         expected_timeout = timeout_seconds if external else None
-        if (
-            probe is None
-            or not probe.get("ready")
-            or probe.get("consumed")
-            or probe.get("timeout_seconds") != expected_timeout
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "a successful startup probe for the current parameters is required "
-                    "before starting the engine"
-                ),
-            )
+        if require_probe:
+            if (
+                probe is None
+                or not probe.get("ready")
+                or probe.get("consumed")
+                or probe.get("timeout_seconds") != expected_timeout
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "a successful startup probe for the current parameters is required "
+                        "before starting the engine"
+                    ),
+                )
+        else:
+            try:
+                engine.configure_decision_timeout(expected_timeout)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
         run_config: dict[str, object] = {
             "candidates_per_cycle": scheduler.candidates_per_cycle
         }
@@ -1606,16 +1615,24 @@ def create_app(
             run_config["single_cycle"] = True
         try:
             await engine.start(run_config=run_config)
-            probe["ready"] = False
-            probe["consumed"] = True
+            if require_probe:
+                assert probe is not None
+                probe["ready"] = False
+                probe["consumed"] = True
+            else:
+                engine.invalidate_startup_probe("single analysis started")
         except ValueError as exc:
-            probe["ready"] = False
-            probe["error"] = str(exc)
+            if require_probe:
+                assert probe is not None
+                probe["ready"] = False
+                probe["error"] = str(exc)
             engine.restore_provider_timeouts()
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
-            probe["ready"] = False
-            probe["error"] = str(exc)
+            if require_probe:
+                assert probe is not None
+                probe["ready"] = False
+                probe["error"] = str(exc)
             engine.restore_provider_timeouts()
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return probe
@@ -1644,7 +1661,7 @@ def create_app(
             )
         request = request or EngineStartRequest()
         async with engine_start_lock:
-            await begin_live_run(request, single_cycle=True)
+            await begin_live_run(request, require_probe=False, single_cycle=True)
         failure: BaseException | None = None
         try:
             await scheduler.run_once(engine.active_cadences[0])

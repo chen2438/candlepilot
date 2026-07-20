@@ -453,7 +453,7 @@ export function LiveRunActionButtons({
       onClick={onProbe}
     >{busy === "probe" ? "真实批量试跑…" : "试跑"}</button>
     <button
-      disabled={busy !== null || running || emergencyLocked || !probeReady}
+      disabled={busy !== null || running || emergencyLocked}
       onClick={onRunOnce}
     >{busy === "run-once" ? "运行一次中…" : "运行一次"}</button>
     <button
@@ -1246,7 +1246,7 @@ export default function App() {
                 >{busy === "run-limits" ? "…" : "应用"}</button>
               </div>
             </div>
-            <div className="cadence-select" title="覆盖整次外部模型调用的绝对截止时间；启动前会用当前真实数据批量试跑 1 次">
+            <div className="cadence-select" title="覆盖整次外部模型调用的绝对截止时间；持续启动前需试跑，运行一次无需试跑">
               <span>正式决策硬超时</span>
               <div className="limit-row live-timeout-row">
                 <label>
@@ -1263,8 +1263,8 @@ export default function App() {
                   <small>秒</small>
                 </label>
                 <small>{selectedExternalProvider
-                  ? "试跑会对全部标的真实批量调用 1 次，并展示耗时、意图、Token 与成本"
-                  : "本地规则无外部调用超时；会批量试跑 1 次并展示具体结果"}</small>
+                  ? "持续启动前需试跑；运行一次直接分析并交易，无需试跑"
+                  : "本地规则无外部调用超时；运行一次无需试跑"}</small>
               </div>
               {busy === "probe" && !status.startup_probe && <div className="live-probe-summary">
                 正在读取真实行情与测试网账户…
@@ -1288,9 +1288,16 @@ export default function App() {
                   timeout_seconds: selectedExternalProvider ? timeout : null,
                 });
               }}
-              onRunOnce={() => void act("run-once", "/api/engine/run-once", {
-                timeout_seconds: selectedExternalProvider ? requestedDecisionTimeout : null,
-              })}
+              onRunOnce={() => {
+                const timeout = Number(displayedDecisionTimeout);
+                if (selectedExternalProvider && (!Number.isFinite(timeout) || timeout <= 0)) {
+                  setError("请输入有效的正式决策硬超时秒数");
+                  return;
+                }
+                void act("run-once", "/api/engine/run-once", {
+                  timeout_seconds: selectedExternalProvider ? timeout : null,
+                });
+              }}
               onStart={() => void act("start", "/api/engine/start", {
                 timeout_seconds: selectedExternalProvider ? requestedDecisionTimeout : null,
               })}

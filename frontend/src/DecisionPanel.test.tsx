@@ -197,7 +197,7 @@ describe("DecisionPanel", () => {
     expect(screen.getByText("查看 2 条意图")).toBeTruthy();
   });
 
-  it("keeps startup locked until a separate successful probe", async () => {
+  it("allows one-shot trading without a probe but keeps continuous startup locked", async () => {
     const user = userEvent.setup();
     const onProbe = vi.fn();
     const onRunOnce = vi.fn();
@@ -218,7 +218,9 @@ describe("DecisionPanel", () => {
     const start = screen.getByRole("button", { name: "启动" });
     const runOnce = screen.getByRole("button", { name: "运行一次" });
     expect((start as HTMLButtonElement).disabled).toBe(true);
-    expect((runOnce as HTMLButtonElement).disabled).toBe(true);
+    expect((runOnce as HTMLButtonElement).disabled).toBe(false);
+    await user.click(runOnce);
+    expect(onRunOnce).toHaveBeenCalledOnce();
     await user.click(probe);
     expect(onProbe).toHaveBeenCalledOnce();
     expect(onStart).not.toHaveBeenCalled();
@@ -226,8 +228,6 @@ describe("DecisionPanel", () => {
     view.rerender(<LiveRunActionButtons {...props} probeReady />);
     expect((start as HTMLButtonElement).disabled).toBe(false);
     expect((runOnce as HTMLButtonElement).disabled).toBe(false);
-    await user.click(runOnce);
-    expect(onRunOnce).toHaveBeenCalledOnce();
     await user.click(start);
     expect(onStart).toHaveBeenCalledOnce();
 

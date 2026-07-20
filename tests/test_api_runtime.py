@@ -351,14 +351,10 @@ def test_run_once_executes_one_trading_batch_then_stops(tmp_path: Path) -> None:
 
     with TestClient(app) as client:
         client.post("/api/providers/select", json={"providers": ["api-fixture"]})
-        assert client.post("/api/engine/run-once").status_code == 409
-        probe = client.post("/api/engine/probe")
-        assert probe.status_code == 200, probe.text
-
         completed = client.post("/api/engine/run-once")
         assert completed.status_code == 200, completed.text
         assert completed.json()["running"] is False
-        assert completed.json()["startup_probe"]["consumed"] is True
+        assert completed.json()["startup_probe"] is None
         assert len(broker.orders) == 1
 
         decisions = client.get("/api/decision-events").json()
@@ -366,7 +362,7 @@ def test_run_once_executes_one_trading_batch_then_stops(tmp_path: Path) -> None:
         assert decisions[0]["outcome"] == "executed"
         assert decisions[0]["live_run"]["config"]["single_cycle"] is True
         assert decisions[0]["live_run"]["stop_reason"] == "single analysis completed"
-        assert client.post("/api/engine/run-once").status_code == 409
+        assert client.post("/api/engine/start").status_code == 409
 
     asyncio.run(database.close())
 
