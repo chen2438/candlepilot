@@ -168,12 +168,14 @@ if [[ "$MANAGED_PYTHON" == true ]]; then
     HOME="/home/$APP_USER" \
     UV_CACHE_DIR="$APP_DIR/.cache/uv" \
     UV_PYTHON_INSTALL_DIR="$APP_DIR/.python" \
-    "$UV_ROOT/bin/uv" python install --no-bin "$MANAGED_PYTHON_VERSION"
+    "$UV_ROOT/bin/uv" --directory "$APP_DIR" --no-config \
+      python install --no-bin "$MANAGED_PYTHON_VERSION"
   runuser -u "$APP_USER" -- env \
     HOME="/home/$APP_USER" \
     UV_CACHE_DIR="$APP_DIR/.cache/uv" \
     UV_PYTHON_INSTALL_DIR="$APP_DIR/.python" \
-    "$UV_ROOT/bin/uv" venv --seed --managed-python \
+    "$UV_ROOT/bin/uv" --directory "$APP_DIR" --no-config \
+      venv --seed --managed-python \
       --python "$MANAGED_PYTHON_VERSION" "$APP_DIR/.venv"
 fi
 if [[ "$MANAGED_PYTHON" == false ]]; then

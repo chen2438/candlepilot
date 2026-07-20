@@ -2,7 +2,7 @@
 
 > 本文件是 CandlePilot 的**唯一权威功能文档**，记录系统当前的全部能力、接口与边界。
 > `STATUS.md` 与 `PLAN.md` 已弃用，后续变更只同步更新本文件。
-> 最后更新：2026-07-20（增加 Debian 12 VPS 安装支持）
+> 最后更新：2026-07-20（隔离 Debian 12 安装器的 uv 配置发现）
 
 ---
 
@@ -1033,7 +1033,9 @@ Python 依赖锁定于 `requirements.lock`，前端锁定于 `frontend/pnpm-lock
 要求，因此脚本下载并校验固定版本的 `uv`，由其在应用目录内安装隔离的 CPython 3.12.13，既不
 替换 `/usr/bin/python3`，也不依赖或修改 VPS 上已有的 Conda 环境。三种系统安装相同的锁定项目
 依赖。`CANDLEPILOT_UV_VERSION` 与 `CANDLEPILOT_MANAGED_PYTHON_VERSION` 可覆盖固定版本，但通常
-不应修改。脚本必须由 root 执行，会创建独立 `candlepilot` 用户，把仓库安装到
+不应修改。Debian 12 的 `uv` 调用固定以应用目录为工作目录并禁用外部配置发现，root 家目录或
+系统中的 `uv.toml` 不会介入应用用户的安装。脚本必须由 root 执行，会创建独立 `candlepilot`
+用户，把仓库安装到
 `/opt/candlepilot`，安装 Node.js 24、pnpm 与 Codex CLI，构建前端，并创建 systemd 服务。后端仍
 绑定 `127.0.0.1:8000`；Nginx 在用户指定的公网端口
 提供 HTTPS、转发 REST 与 WebSocket。脚本生成包含 VPS IP SAN 的自签名证书，完成后输出 SHA-256
