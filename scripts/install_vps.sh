@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
-# CandlePilot one-shot installer for Ubuntu 24.04, Debian 12, or Debian 13.
+# CandlePilot one-shot installer and updater for Ubuntu 24.04, Debian 12, or Debian 13.
 # The backend remains loopback-only. Nginx exposes an authenticated HTTPS
 # console using a self-signed certificate whose SAN is the VPS IP address.
 
@@ -13,6 +13,8 @@ PUBLIC_PORT="${CANDLEPILOT_PUBLIC_PORT:-8443}"
 NODE_VERSION="${CANDLEPILOT_NODE_VERSION:-24.18.0}"
 UV_VERSION="${CANDLEPILOT_UV_VERSION:-0.11.15}"
 MANAGED_PYTHON_VERSION="${CANDLEPILOT_MANAGED_PYTHON_VERSION:-3.12.13}"
+UPDATE_CONFIRMATION="${CANDLEPILOT_UPDATE_CONFIRM:-}"
+UPDATE_BACKUP_ROOT="${CANDLEPILOT_UPDATE_BACKUP_ROOT:-/var/backups/candlepilot}"
 
 fail() {
   echo "CandlePilot installer: $*" >&2
@@ -34,6 +36,171 @@ prompt_value() {
   fi
   [[ -n "$current" ]] || fail "$variable_name cannot be empty"
   printf -v "$variable_name" '%s' "$current"
+}
+
+update_existing_installation() {
+  [[ -d "$APP_DIR/.git" ]] || fail "$APP_DIR is not a Git checkout; refusing to update it"
+  [[ -f "$APP_DIR/.env" && -x "$APP_DIR/.venv/bin/python" ]] \
+    || fail "$APP_DIR is incomplete; run uninstall_vps.sh before reinstalling"
+  [[ -f "$APP_DIR/frontend/package.json" ]] \
+    || fail "$APP_DIR does not look like a CandlePilot installation"
+  id "$APP_USER" >/dev/null 2>&1 || fail "application user '$APP_USER' does not exist"
+  [[ -f /etc/systemd/system/candlepilot.service ]] \
+    || fail "CandlePilot systemd service is missing; refusing a partial update"
+  grep -Fqx "User=$APP_USER" /etc/systemd/system/candlepilot.service \
+    || fail "CandlePilot service user does not match '$APP_USER'"
+  grep -Fqx "WorkingDirectory=$APP_DIR" /etc/systemd/system/candlepilot.service \
+    || fail "CandlePilot service directory does not match '$APP_DIR'"
+  [[ "$UPDATE_BACKUP_ROOT" == /* ]] \
+    || fail "CANDLEPILOT_UPDATE_BACKUP_ROOT must be an absolute path"
+  [[ "$UPDATE_BACKUP_ROOT" =~ ^/[A-Za-z0-9._/-]+$ ]] \
+    || fail "CANDLEPILOT_UPDATE_BACKUP_ROOT contains unsupported characters"
+  command -v git >/dev/null 2>&1 || fail "git is required to update CandlePilot"
+  command -v pnpm >/dev/null 2>&1 || fail "pnpm is required to update CandlePilot"
+  command -v sqlite3 >/dev/null 2>&1 || fail "sqlite3 is required to update CandlePilot"
+
+  local current_branch installed_remote tracked_changes old_sha new_sha running_count
+  current_branch="$(runuser -u "$APP_USER" -- git -C "$APP_DIR" branch --show-current)"
+  [[ "$current_branch" == "$BRANCH" ]] \
+    || fail "installed branch is '$current_branch', expected '$BRANCH'"
+  installed_remote="$(runuser -u "$APP_USER" -- git -C "$APP_DIR" remote get-url origin)"
+  [[ "$installed_remote" == "$REPO_URL" ]] \
+    || fail "installed origin does not match CANDLEPILOT_REPO_URL"
+  tracked_changes="$(
+    runuser -u "$APP_USER" -- git -C "$APP_DIR" status --short --untracked-files=no
+  )"
+  [[ -z "$tracked_changes" ]] \
+    || fail "tracked files contain local changes; commit or revert them before updating"
+
+  echo "Checking for CandlePilot updates on origin/$BRANCH..."
+  runuser -u "$APP_USER" -- git -C "$APP_DIR" fetch --prune origin "$BRANCH"
+  old_sha="$(runuser -u "$APP_USER" -- git -C "$APP_DIR" rev-parse HEAD)"
+  new_sha="$(runuser -u "$APP_USER" -- git -C "$APP_DIR" rev-parse FETCH_HEAD)"
+  runuser -u "$APP_USER" -- git -C "$APP_DIR" merge-base --is-ancestor "$old_sha" "$new_sha" \
+    || fail "origin/$BRANCH is not a fast-forward update; refusing to rewrite history"
+  if [[ "$old_sha" == "$new_sha" ]]; then
+    echo "CandlePilot is already up to date at ${old_sha:0:12}."
+    return
+  fi
+
+  if [[ -f "$APP_DIR/candlepilot.db" ]]; then
+    running_count="$(
+      sqlite3 "$APP_DIR/candlepilot.db" \
+        "SELECT count(*) FROM live_runs WHERE status = 'running';" 2>/dev/null
+    )" || fail "could not verify whether the trading engine is stopped"
+    [[ "$running_count" == "0" ]] \
+      || fail "a live run is still active; use the web console to stop it before updating"
+  fi
+
+  if [[ "$UPDATE_CONFIRMATION" != "UPDATE" ]]; then
+    local answer
+    read -r -p \
+      "Update CandlePilot ${old_sha:0:12} -> ${new_sha:0:12}? Confirm the engine is stopped [y/N]: " \
+      answer </dev/tty
+    case "$answer" in
+      y|Y|yes|YES) ;;
+      *) fail "update cancelled; no files were changed" ;;
+    esac
+  fi
+
+  local backup_stamp backup_dir service_was_active update_started
+  backup_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  backup_dir="$UPDATE_BACKUP_ROOT/$backup_stamp-$old_sha"
+  install -d -m 0700 "$UPDATE_BACKUP_ROOT" "$backup_dir"
+  install -m 0600 "$APP_DIR/.env" "$backup_dir/.env"
+  if [[ -f "$APP_DIR/candlepilot.db" ]]; then
+    sqlite3 "$APP_DIR/candlepilot.db" ".backup '$backup_dir/candlepilot.db'"
+    chmod 0600 "$backup_dir/candlepilot.db"
+  fi
+  printf '%s\n' "$old_sha" >"$backup_dir/source-commit"
+
+  service_was_active=false
+  if systemctl is-active --quiet candlepilot.service; then
+    service_was_active=true
+  fi
+  update_started=false
+
+  rollback_update() {
+    local exit_code=$? rollback_ok=true
+    (( exit_code != 0 )) || exit_code=1
+    trap - ERR INT TERM
+    set +e
+    if [[ "$update_started" == true ]]; then
+      echo "Update failed; restoring CandlePilot ${old_sha:0:12}..." >&2
+      systemctl stop candlepilot.service 2>/dev/null
+      runuser -u "$APP_USER" -- git -C "$APP_DIR" reset --hard "$old_sha" \
+        || rollback_ok=false
+      if [[ -f "$backup_dir/candlepilot.db" ]]; then
+        cp -a -- "$backup_dir/candlepilot.db" "$APP_DIR/candlepilot.db" \
+          || rollback_ok=false
+        chown "$APP_USER:$APP_USER" "$APP_DIR/candlepilot.db" \
+          || rollback_ok=false
+        chmod 0600 "$APP_DIR/candlepilot.db" || rollback_ok=false
+      fi
+      runuser -u "$APP_USER" -- "$APP_DIR/.venv/bin/pip" install \
+        --disable-pip-version-check -r "$APP_DIR/requirements.lock" \
+        || rollback_ok=false
+      runuser -u "$APP_USER" -- "$APP_DIR/.venv/bin/pip" install \
+        --disable-pip-version-check -e "$APP_DIR" --no-deps \
+        || rollback_ok=false
+      runuser -u "$APP_USER" -- env \
+        HOME="/home/$APP_USER" PATH="/usr/local/bin:/usr/bin:/bin" \
+        pnpm --dir "$APP_DIR/frontend" install --frozen-lockfile \
+        || rollback_ok=false
+      runuser -u "$APP_USER" -- env \
+        HOME="/home/$APP_USER" PATH="/usr/local/bin:/usr/bin:/bin" \
+        pnpm --dir "$APP_DIR/frontend" run build \
+        || rollback_ok=false
+      if [[ "$service_was_active" == true && "$rollback_ok" == true ]]; then
+        systemctl start candlepilot.service || rollback_ok=false
+      fi
+      if [[ "$rollback_ok" == true ]]; then
+        echo "The previous CandlePilot version was restored." >&2
+      else
+        systemctl stop candlepilot.service 2>/dev/null
+        echo "Automatic rollback was incomplete; CandlePilot remains stopped." >&2
+      fi
+    fi
+    echo "Backup retained at $backup_dir" >&2
+    exit "$exit_code"
+  }
+  trap rollback_update ERR INT TERM
+  update_started=true
+  if [[ "$service_was_active" == true ]]; then
+    systemctl stop candlepilot.service
+  fi
+
+  runuser -u "$APP_USER" -- git -C "$APP_DIR" merge --ff-only "$new_sha"
+  runuser -u "$APP_USER" -- "$APP_DIR/.venv/bin/pip" install \
+    --disable-pip-version-check -r "$APP_DIR/requirements.lock"
+  runuser -u "$APP_USER" -- "$APP_DIR/.venv/bin/pip" install \
+    --disable-pip-version-check -e "$APP_DIR" --no-deps
+  runuser -u "$APP_USER" -- env \
+    HOME="/home/$APP_USER" PATH="/usr/local/bin:/usr/bin:/bin" \
+    pnpm --dir "$APP_DIR/frontend" install --frozen-lockfile
+  runuser -u "$APP_USER" -- env \
+    HOME="/home/$APP_USER" PATH="/usr/local/bin:/usr/bin:/bin" \
+    pnpm --dir "$APP_DIR/frontend" run build
+
+  if [[ "$service_was_active" == true ]]; then
+    systemctl start candlepilot.service
+    for _ in $(seq 1 30); do
+      if curl --silent --fail http://127.0.0.1:8000/api/health/ready >/dev/null; then
+        break
+      fi
+      sleep 1
+    done
+    curl --silent --fail http://127.0.0.1:8000/api/health/ready >/dev/null \
+      || { journalctl -u candlepilot --no-pager -n 80; return 1; }
+  fi
+
+  update_started=false
+  trap - ERR INT TERM
+  echo "CandlePilot updated successfully: ${old_sha:0:12} -> ${new_sha:0:12}"
+  echo "Backup: $backup_dir"
+  if [[ "$service_was_active" == false ]]; then
+    echo "The service was inactive before the update and remains inactive."
+  fi
 }
 
 [[ "${EUID}" -eq 0 ]] || fail "run as root (for example: sudo bash scripts/install_vps.sh)"
@@ -65,7 +232,10 @@ case "${ID:-}:${VERSION_ID:-}" in
 esac
 [[ "$PUBLIC_PORT" =~ ^[0-9]+$ ]] && (( PUBLIC_PORT >= 1024 && PUBLIC_PORT <= 65535 )) \
   || fail "CANDLEPILOT_PUBLIC_PORT must be between 1024 and 65535"
-[[ ! -e "$APP_DIR" ]] || fail "$APP_DIR already exists; refusing to overwrite an installation"
+if [[ -e "$APP_DIR" ]]; then
+  update_existing_installation
+  exit 0
+fi
 
 PUBLIC_IP="${CANDLEPILOT_PUBLIC_IP:-}"
 if [[ -z "$PUBLIC_IP" ]]; then
