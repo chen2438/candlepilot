@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -22,6 +23,7 @@ from candlepilot.storage.database import (
     DECISION_OUTCOMES,
     AuditRepository,
     Database,
+    UserStreamEventRow,
 )
 
 
@@ -485,6 +487,66 @@ def test_trade_fills_include_protective_and_manual_exits_without_duplicate_entri
     assert Decimal(performance[0]["realized_pnl"]) == Decimal("-1.17820")
     assert Decimal(performance[0]["unrealized_pnl"]) == 0
     assert Decimal(performance[0]["total_pnl"]) == Decimal("-1.17820")
+
+
+def test_trade_fills_deduplicate_live_and_rest_reconciliation(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'duplicate-fills.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        now = datetime.now(UTC)
+        live_payload = {
+            "o": {
+                "c": "cp-entry-sl",
+                "i": 12345,
+                "s": "SOLUSDT",
+                "S": "SELL",
+                "x": "TRADE",
+                "X": "FILLED",
+                "z": "12.86",
+                "ap": "75.9",
+                "R": True,
+                "rp": "-9.1306",
+            }
+        }
+        live_id = await repository.record_user_event(
+            UserStreamEvent("ORDER_TRADE_UPDATE", now, now, "SOLUSDT", live_payload)
+        )
+        reconciled_payload = {
+            "_source": "rest_trade_reconciliation",
+            "o": {**live_payload["o"], "z": "12.860"},
+        }
+        reconciled_id = await repository.record_user_event(
+            UserStreamEvent(
+                "ORDER_TRADE_UPDATE",
+                now - timedelta(milliseconds=1),
+                now - timedelta(milliseconds=1),
+                "SOLUSDT",
+                reconciled_payload,
+            )
+        )
+        # Simulate a database created before semantic persistence dedup existed.
+        async with database.sessions.begin() as session:
+            session.add(
+                UserStreamEventRow(
+                    event_type="ORDER_TRADE_UPDATE",
+                    symbol="SOLUSDT",
+                    event_time=now - timedelta(milliseconds=1),
+                    transaction_time=now - timedelta(milliseconds=1),
+                    payload_json=json.dumps(reconciled_payload, separators=(",", ":")),
+                )
+            )
+        fills = await repository.recent_trade_fills()
+        events = await repository.recent_user_events()
+        await database.close()
+        return live_id, reconciled_id, fills, events
+
+    live_id, reconciled_id, fills, events = asyncio.run(scenario())
+    assert reconciled_id == live_id
+    assert len(events) == 2
+    assert len(fills) == 1
+    assert fills[0]["source"] == "exchange_user_stream"
+    assert fills[0]["client_order_id"] == "cp-entry-sl"
 
 
 def test_live_run_performance_revalues_partial_manual_close_after_stop(

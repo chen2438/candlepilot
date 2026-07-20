@@ -845,7 +845,10 @@ class AuditRepository:
                 func.json_extract(UserStreamEventRow.payload_json, "$.o.x") == "TRADE",
             )
             .order_by(UserStreamEventRow.event_time.desc(), UserStreamEventRow.id.desc())
-            .limit(limit)
+            # A historical database may contain both the live user-stream event
+            # and its REST reconciliation copy. Fetch enough rows to discard
+            # those semantic duplicates without shrinking the requested page.
+            .limit(limit * 4)
         )
         execution_query = (
             select(ExecutionRow)
@@ -856,6 +859,25 @@ class AuditRepository:
         async with self.sessions() as session:
             event_rows = (await session.scalars(event_query)).all()
             execution_rows = (await session.scalars(execution_query)).all()
+            unique_event_rows: dict[tuple[str, ...], UserStreamEventRow] = {}
+            unkeyed_event_rows: list[UserStreamEventRow] = []
+            for row in event_rows:
+                payload = json.loads(row.payload_json)
+                identity = self._terminal_fill_identity(payload)
+                if identity is None:
+                    unkeyed_event_rows.append(row)
+                    continue
+                existing = unique_event_rows.get(identity)
+                if existing is None:
+                    unique_event_rows[identity] = row
+                    continue
+                existing_payload = json.loads(existing.payload_json)
+                if (
+                    existing_payload.get("_source") == "rest_trade_reconciliation"
+                    and payload.get("_source") != "rest_trade_reconciliation"
+                ):
+                    unique_event_rows[identity] = row
+            event_rows = [*unique_event_rows.values(), *unkeyed_event_rows]
             event_client_ids = {
                 str(json.loads(row.payload_json).get("o", {}).get("c", ""))
                 for row in event_rows
@@ -951,6 +973,32 @@ class AuditRepository:
         await self._enrich_trade_fill_financials(fills)
         fills.sort(key=lambda item: item["created_at"], reverse=True)
         return fills[:limit]
+
+    @staticmethod
+    def _terminal_fill_identity(payload: dict[str, Any]) -> tuple[str, ...] | None:
+        """Identify one final exchange fill across live and REST ingestion paths."""
+
+        order = payload.get("o", {})
+        if order.get("x") != "TRADE" or order.get("X") != "FILLED":
+            return None
+        order_id = order.get("i")
+        client_order_id = str(order.get("c", ""))
+        if order_id is None and not client_order_id:
+            return None
+        try:
+            cumulative_quantity = str(Decimal(str(order.get("z", "0"))).normalize())
+        except ArithmeticError:  # pragma: no cover - malformed exchange payload fallback
+            cumulative_quantity = str(order.get("z", ""))
+        stable_order_id = (
+            f"exchange:{order_id}" if order_id is not None else f"client:{client_order_id}"
+        )
+        return (
+            str(order.get("s", "")),
+            stable_order_id,
+            "TRADE",
+            "FILLED",
+            cumulative_quantity,
+        )
 
     async def _enrich_trade_fill_financials(self, fills: list[dict[str, Any]]) -> None:
         """Attach USDT notional and auditable realized return-on-margin values."""
@@ -1209,14 +1257,58 @@ class AuditRepository:
         return set(rows)
 
     async def record_user_event(self, event: UserStreamEvent) -> int:
-        row = UserStreamEventRow(
-            event_type=event.event_type,
-            symbol=event.symbol,
-            event_time=event.event_time,
-            transaction_time=event.transaction_time,
-            payload_json=json.dumps(event.payload, separators=(",", ":")),
-        )
         async with self.sessions.begin() as session:
+            existing: UserStreamEventRow | None = None
+            identity = self._terminal_fill_identity(event.payload)
+            if identity is not None:
+                order = event.payload.get("o", {})
+                order_id = order.get("i")
+                lookup = select(UserStreamEventRow).where(
+                    UserStreamEventRow.event_type == event.event_type,
+                    UserStreamEventRow.symbol == event.symbol,
+                )
+                if order_id is not None:
+                    lookup = lookup.where(
+                        func.json_extract(UserStreamEventRow.payload_json, "$.o.i") == order_id
+                    )
+                else:
+                    lookup = lookup.where(
+                        func.json_extract(UserStreamEventRow.payload_json, "$.o.c")
+                        == str(order.get("c", ""))
+                    )
+                candidates = (
+                    await session.scalars(lookup.order_by(UserStreamEventRow.id.desc()))
+                ).all()
+                existing = next(
+                    (
+                        candidate
+                        for candidate in candidates
+                        if self._terminal_fill_identity(json.loads(candidate.payload_json))
+                        == identity
+                    ),
+                    None,
+                )
+
+            payload_json = json.dumps(event.payload, separators=(",", ":"))
+            if existing is None:
+                row = UserStreamEventRow(
+                    event_type=event.event_type,
+                    symbol=event.symbol,
+                    event_time=event.event_time,
+                    transaction_time=event.transaction_time,
+                    payload_json=payload_json,
+                )
+                session.add(row)
+            else:
+                row = existing
+                existing_payload = json.loads(row.payload_json)
+                if (
+                    existing_payload.get("_source") == "rest_trade_reconciliation"
+                    and event.payload.get("_source") != "rest_trade_reconciliation"
+                ):
+                    row.event_time = event.event_time
+                    row.transaction_time = event.transaction_time
+                    row.payload_json = payload_json
             session.add(row)
             if event.event_type == "ORDER_TRADE_UPDATE":
                 order = event.payload.get("o", {})
