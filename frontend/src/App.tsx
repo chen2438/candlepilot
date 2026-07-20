@@ -663,6 +663,11 @@ export default function App() {
   const [universeExpanded, setUniverseExpanded] = useState(false);
   const [limitDraft, setLimitDraft] = useState<{ minutes: string; budget: string } | null>(null);
   const [decisionTimeoutDraft, setDecisionTimeoutDraft] = useState<string | null>(null);
+  const [overviewPanelExpanded, setOverviewPanelExpanded] = useState({
+    providers: true,
+    risk: true,
+    universe: true,
+  });
 
   const applyProviderConfig = useCallback(async (
     name: string,
@@ -1333,7 +1338,17 @@ export default function App() {
 
         <section className="grid overview-grid">
           <div className="overview-column">
-            <CollapsiblePanel className="provider-panel" code="01" title="模型接入" meta="手动路由">
+            <CollapsiblePanel
+              className="provider-panel"
+              code="01"
+              title="模型接入"
+              meta="手动路由"
+              expanded={overviewPanelExpanded.providers}
+              onExpandedChange={(expanded) => setOverviewPanelExpanded((current) => ({
+                ...current,
+                providers: expanded,
+              }))}
+            >
             <datalist id="runtime-pricing-providers">
               {[...new Set(providers.flatMap((provider) => provider.pricing_options))]
                 .map((option) => <option key={option} value={option} />)}
@@ -1501,7 +1516,17 @@ export default function App() {
           </div>
 
           <div className="overview-column">
-            <CollapsiblePanel className="risk-panel" code="02" title="硬风控边界" meta="不可由模型修改">
+            <CollapsiblePanel
+              className="risk-panel"
+              code="02"
+              title="硬风控边界"
+              meta="不可由模型修改"
+              expanded={overviewPanelExpanded.risk}
+              onExpandedChange={(expanded) => setOverviewPanelExpanded((current) => ({
+                ...current,
+                risk: expanded,
+              }))}
+            >
             <div className="risk-grid">
               <RiskItem label="候选标的" value={`${status.candidate_count} / 20`} detail="动态候选池" />
               <RiskItem label="最大杠杆" value="10×" detail="模型不可突破" />
@@ -1524,6 +1549,11 @@ export default function App() {
               meta={venueExcludedSymbols.length
                 ? `测试网可交易 · 已过滤 ${venueExcludedSymbols.length}`
                 : "测试网可交易"}
+              expanded={overviewPanelExpanded.universe}
+              onExpandedChange={(expanded) => setOverviewPanelExpanded((current) => ({
+                ...current,
+                universe: expanded,
+              }))}
             >
             <div className="universe-actions">
               <button className="compact" disabled={busy !== null} onClick={refreshUniverse}>{busy === "universe" ? "扫描中…" : "刷新全市场"}</button>
@@ -3005,15 +3035,18 @@ export function CollapsiblePanel({
   title,
   meta,
   className = "",
+  expanded,
+  onExpandedChange,
   children,
 }: {
   code: string;
   title: string;
   meta: string;
   className?: string;
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
   children: ReactNode;
 }) {
-  const [expanded, setExpanded] = useState(true);
   const contentId = useId();
   return <article className={`panel collapsible-panel ${className}`}>
     <button
@@ -3021,7 +3054,7 @@ export function CollapsiblePanel({
       className="collapsible-panel-toggle"
       aria-expanded={expanded}
       aria-controls={contentId}
-      onClick={() => setExpanded((current) => !current)}
+      onClick={() => onExpandedChange(!expanded)}
     >
       <PanelTitle code={code} title={title} meta={meta} />
       <span className="collapsible-panel-icon" aria-hidden="true">{expanded ? "−" : "+"}</span>

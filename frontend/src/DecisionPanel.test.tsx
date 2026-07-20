@@ -1,5 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -71,9 +72,23 @@ const decision: DecisionEvent = {
 describe("DecisionPanel", () => {
   it("collapses and expands overview modules independently", async () => {
     const user = userEvent.setup();
-    render(<CollapsiblePanel code="01" title="模型接入" meta="手动路由">
-      <div>模型配置内容</div>
-    </CollapsiblePanel>);
+    function Harness() {
+      const [tab, setTab] = useState<"overview" | "account">("overview");
+      const [expanded, setExpanded] = useState(true);
+      return <>
+        <button onClick={() => setTab(tab === "overview" ? "account" : "overview")}>切换页面</button>
+        {tab === "overview" && <CollapsiblePanel
+          code="01"
+          title="模型接入"
+          meta="手动路由"
+          expanded={expanded}
+          onExpandedChange={setExpanded}
+        >
+          <div>模型配置内容</div>
+        </CollapsiblePanel>}
+      </>;
+    }
+    render(<Harness />);
 
     const toggle = screen.getByRole("button", { name: /01.*模型接入.*手动路由/ });
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
@@ -83,8 +98,16 @@ describe("DecisionPanel", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByText("模型配置内容")).toBeNull();
 
-    await user.click(toggle);
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    await user.click(screen.getByRole("button", { name: "切换页面" }));
+    expect(screen.queryByRole("button", { name: /01.*模型接入.*手动路由/ })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "切换页面" }));
+
+    const restoredToggle = screen.getByRole("button", { name: /01.*模型接入.*手动路由/ });
+    expect(restoredToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("模型配置内容")).toBeNull();
+
+    await user.click(restoredToggle);
+    expect(restoredToggle.getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByText("模型配置内容")).toBeTruthy();
   });
 
