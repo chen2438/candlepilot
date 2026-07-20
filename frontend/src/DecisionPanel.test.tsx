@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DecisionPanel,
   DecisionTiming,
+  CollapsiblePanel,
   decisionQueryUrl,
   EmergencyLockBanner,
   intentRewardRiskRatio,
@@ -68,6 +69,25 @@ const decision: DecisionEvent = {
 };
 
 describe("DecisionPanel", () => {
+  it("collapses and expands overview modules independently", async () => {
+    const user = userEvent.setup();
+    render(<CollapsiblePanel code="01" title="模型接入" meta="手动路由">
+      <div>模型配置内容</div>
+    </CollapsiblePanel>);
+
+    const toggle = screen.getByRole("button", { name: /01.*模型接入.*手动路由/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("模型配置内容")).toBeTruthy();
+
+    await user.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("模型配置内容")).toBeNull();
+
+    await user.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("模型配置内容")).toBeTruthy();
+  });
+
   it("pages decision history by ten complete runs", () => {
     expect(decisionQueryUrl("all")).toBe("/api/decision-events?run_limit=10");
     expect(decisionQueryUrl("rejected", 21)).toBe(

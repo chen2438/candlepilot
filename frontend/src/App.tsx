@@ -1,4 +1,4 @@
-import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type {
   AccountPortfolio,
   AccountPosition,
@@ -1316,8 +1316,7 @@ export default function App() {
 
         <section className="grid overview-grid">
           <div className="overview-column">
-            <article className="panel provider-panel">
-            <PanelTitle code="01" title="模型接入" meta="手动路由" />
+            <CollapsiblePanel className="provider-panel" code="01" title="模型接入" meta="手动路由">
             <datalist id="runtime-pricing-providers">
               {[...new Set(providers.flatMap((provider) => provider.pricing_options))]
                 .map((option) => <option key={option} value={option} />)}
@@ -1481,12 +1480,11 @@ export default function App() {
             <div className="provider-foot">
               <span>实际承载</span><strong>{activeProvider ? providerLabel(activeProvider.provider) : status.running ? "等待可用 Provider" : "引擎未运行"}</strong>
             </div>
-            </article>
+            </CollapsiblePanel>
           </div>
 
           <div className="overview-column">
-            <article className="panel risk-panel">
-            <PanelTitle code="02" title="硬风控边界" meta="不可由模型修改" />
+            <CollapsiblePanel className="risk-panel" code="02" title="硬风控边界" meta="不可由模型修改">
             <div className="risk-grid">
               <RiskItem label="候选标的" value={`${status.candidate_count} / 20`} detail="动态候选池" />
               <RiskItem label="最大杠杆" value="10×" detail="模型不可突破" />
@@ -1500,17 +1498,19 @@ export default function App() {
             </div>
             <div className="risk-line"><span style={{ width: "80%" }} /></div>
             <p>模型提示词不包含盈亏比要求；所有开仓必须包含交易所侧止损和止盈，并通过组合风险、原始盈亏比、精度、陈旧行情和强平缓冲检查。</p>
-            </article>
+            </CollapsiblePanel>
 
-            <article className="panel universe-panel">
-            <PanelTitle
+            <CollapsiblePanel
+              className="universe-panel"
               code="03"
               title="动态候选池"
               meta={venueExcludedSymbols.length
                 ? `测试网可交易 · 已过滤 ${venueExcludedSymbols.length}`
                 : "测试网可交易"}
-            />
-            <button className="compact" disabled={busy !== null} onClick={refreshUniverse}>{busy === "universe" ? "扫描中…" : "刷新全市场"}</button>
+            >
+            <div className="universe-actions">
+              <button className="compact" disabled={busy !== null} onClick={refreshUniverse}>{busy === "universe" ? "扫描中…" : "刷新全市场"}</button>
+            </div>
             {venueExcludedSymbols.length > 0 && <p className="universe-filter-note" title={venueExcludedSymbols.join(", ")}>
               已在模型调用前排除测试网未开放的生产行情标的：{venueExcludedSymbols.slice(0, 5).map((symbol) => symbol.replace("USDT", "")).join("、")}
               {venueExcludedSymbols.length > 5 ? ` 等 ${venueExcludedSymbols.length} 个` : ""}
@@ -1544,7 +1544,7 @@ export default function App() {
                   : `展开全部 ${candidates.length} 个（还有 ${candidates.length - UNIVERSE_COLLAPSED_ROWS} 个）`}
               </button>
             )}
-            </article>
+            </CollapsiblePanel>
           </div>
 
           <DecisionPanel
@@ -2981,6 +2981,36 @@ function localTimeZoneLabel(date = new Date()): string {
 
 function PanelTitle({ code, title, meta }: { code: string; title: string; meta: string }) {
   return <div className="panel-title"><span>{code}</span><h2>{title}</h2><small>{meta}</small></div>;
+}
+
+export function CollapsiblePanel({
+  code,
+  title,
+  meta,
+  className = "",
+  children,
+}: {
+  code: string;
+  title: string;
+  meta: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const contentId = useId();
+  return <article className={`panel collapsible-panel ${className}`}>
+    <button
+      type="button"
+      className="collapsible-panel-toggle"
+      aria-expanded={expanded}
+      aria-controls={contentId}
+      onClick={() => setExpanded((current) => !current)}
+    >
+      <PanelTitle code={code} title={title} meta={meta} />
+      <span className="collapsible-panel-icon" aria-hidden="true">{expanded ? "−" : "+"}</span>
+    </button>
+    {expanded && <div className="collapsible-panel-content" id={contentId}>{children}</div>}
+  </article>;
 }
 
 function RiskItem({ label, value, detail }: { label: string; value: string; detail: string }) {
