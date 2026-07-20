@@ -2,7 +2,7 @@
 
 > 本文件是 CandlePilot 的**唯一权威功能文档**，记录系统当前的全部能力、接口与边界。
 > `STATUS.md` 与 `PLAN.md` 已弃用，后续变更只同步更新本文件。
-> 最后更新：2026-07-20（为 VPS 安装器增加后端端口冲突处理）
+> 最后更新：2026-07-20（补充 VPS 的 Codex CLI 设备码登录流程）
 
 ---
 
@@ -1079,6 +1079,13 @@ sudo -iu candlepilot codex login --device-auth
 sudo -iu candlepilot codex login status
 sudo systemctl restart candlepilot
 ```
+
+VPS 是无图形界面的远程设备，`--device-auth` 会在 SSH 终端显示登录网址和一次性
+设备码。用户在自己电脑的浏览器中打开该网址，登录要供 CandlePilot 使用的 ChatGPT
+账号并输入设备码，然后回到 SSH 终端等待命令完成。必须通过 `sudo -iu candlepilot`
+登录，不得以 root 身份直接运行 `codex login`；否则凭据会保存到 root 的 home，
+`candlepilot` systemd 服务无法读取。登录成功后用 `codex login status` 核对认证状态，
+并重启服务使 Provider 状态立即刷新。
 
 访问地址为 `https://<VPS-IP>:8443`（端口可覆盖）。只开放 Nginx 公网端口，不得开放实际选择的
 loopback 后端端口。

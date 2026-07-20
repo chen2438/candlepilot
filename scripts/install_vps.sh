@@ -532,4 +532,7 @@ echo "Username: $ADMIN_USERNAME"
 echo "The certificate is self-signed; verify this SHA-256 fingerprint before accepting it:"
 openssl x509 -in /etc/candlepilot/tls/server.crt -noout -fingerprint -sha256
 echo "Service logs: journalctl -u candlepilot -f"
-echo "Optional Codex login: sudo -iu $APP_USER codex login --device-auth"
+echo "Optional Codex ChatGPT login (run as the application user):"
+echo "  sudo -iu $APP_USER codex login --device-auth"
+echo "  sudo -iu $APP_USER codex login status"
+echo "  sudo systemctl restart candlepilot"
