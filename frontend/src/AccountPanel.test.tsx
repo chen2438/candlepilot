@@ -2,7 +2,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AccountPanel } from "./App";
+import { AccountPanel, fillDirectionLabel } from "./App";
 import type { AccountPosition } from "./types";
 
 afterEach(cleanup);
@@ -23,6 +23,14 @@ const position: AccountPosition = {
 };
 
 describe("AccountPanel manual close", () => {
+  it("labels fills by position effect instead of exchange buy or sell side", () => {
+    expect(fillDirectionLabel({ side: "BUY", reduce_only: false })).toBe("开多");
+    expect(fillDirectionLabel({ side: "SELL", reduce_only: false })).toBe("开空");
+    expect(fillDirectionLabel({ side: "SELL", reduce_only: true })).toBe("平多");
+    expect(fillDirectionLabel({ side: "BUY", reduce_only: true })).toBe("平空");
+    expect(fillDirectionLabel({ side: null, reduce_only: false })).toBe("—");
+  });
+
   it("labels the account result as a rolling 24-hour metric", () => {
     render(
       <AccountPanel
@@ -86,6 +94,7 @@ describe("AccountPanel manual close", () => {
 
     expect(screen.getByText("+5.00%")).toBeTruthy();
     expect(screen.getByText("200.00 USDT")).toBeTruthy();
+    expect(screen.getByText("平多")).toBeTruthy();
     expect(screen.getByText("其他平仓")).toBeTruthy();
     expect(screen.getByText("-10.00%")).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "原始盈亏比" })).toBeTruthy();

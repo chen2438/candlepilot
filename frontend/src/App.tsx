@@ -3560,7 +3560,7 @@ export function AccountPanel({
                 <td><small>{new Date(fill.created_at).toLocaleString("zh-CN", { hour12: false })}</small></td>
                 <td>{fill.symbol.replace("USDT", "")}</td>
                 <td className={fill.side === "BUY" ? "fill-buy" : fill.side === "SELL" ? "fill-sell" : ""}>
-                  {fill.side === "BUY" ? "买入" : fill.side === "SELL" ? "卖出" : "—"}
+                  {fillDirectionLabel(fill)}
                 </td>
                 <td><span className={`fill-purpose ${displayedFillPurpose(fill)}`}>{fillPurposeLabel(displayedFillPurpose(fill))}</span></td>
                 <td>{fill.notional_usdt === null ? "—" : `${money(fill.notional_usdt)} USDT`}</td>
@@ -3599,6 +3599,14 @@ function fillPurposeLabel(purpose: TradeFillRecord["purpose"]): string {
 
 function displayedFillPurpose(fill: TradeFillRecord): TradeFillRecord["purpose"] {
   return fill.reduce_only && fill.purpose === "entry" ? "other_close" : fill.purpose;
+}
+
+export function fillDirectionLabel(
+  fill: Pick<TradeFillRecord, "side" | "reduce_only">,
+): "开多" | "开空" | "平多" | "平空" | "—" {
+  if (fill.side === null) return "—";
+  if (fill.reduce_only) return fill.side === "SELL" ? "平多" : "平空";
+  return fill.side === "BUY" ? "开多" : "开空";
 }
 
 function shortOrderId(clientOrderId: string | null): string {
