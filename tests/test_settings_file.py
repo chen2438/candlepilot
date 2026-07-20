@@ -132,6 +132,10 @@ def test_describe_settings_masks_secrets_and_exposes_plain_values(tmp_path: Path
     route = fields["CANDLEPILOT_PROVIDER_CHAIN"]
     assert "claude-code" in route["placeholder"]
     assert "codex, claude," not in route["placeholder"]
+    assert route["description"] == (
+        "按顺序用逗号分隔：本地规则填 local，Codex 填 codex，"
+        "Claude Code 填 claude-code，自定义端点填 custom:<id>。"
+    )
 
 
 @pytest.mark.parametrize("key", sorted(ENV_FIELDS))

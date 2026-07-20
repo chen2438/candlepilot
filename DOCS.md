@@ -804,7 +804,9 @@ Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功
   列出失效字段与 Provider。需要改 ID 时，先从主备路由移除旧 ID，再修改 ID，最后按需加入新 ID。
   CLI 启动、`doctor` 和 `acceptance` 使用同一检查；若用户手工把
   `.env` 改成引用失效状态，进程会明确失败，不会忽略条目、改选其他 Provider 或让界面显示一套
-  而实际运行另一套配置。
+  而实际运行另一套配置。设置页在主备顺序输入框下直接列出面向 `.env` 的完整填写方式：本地规则
+  使用 `local`、Codex 使用 `codex`、Claude Code 使用 `claude-code`，Custom API 使用
+  `custom:<id>`；各项按故障切换优先级用逗号分隔。
 - **Custom API 端点用表单编辑，不写 JSON**：`GET/POST /api/custom-providers` 提供逐字段的增删改
   （ID、Base URL、API Key、模型、协议、推理强度、是否需要 Key），前端负责序列化成
   `CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON`。列表 GET 只返回 `api_key_configured` 与掩码，显式
