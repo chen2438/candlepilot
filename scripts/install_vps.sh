@@ -10,6 +10,7 @@ APP_DIR="${CANDLEPILOT_APP_DIR:-/opt/candlepilot}"
 REPO_URL="${CANDLEPILOT_REPO_URL:-https://github.com/chen2438/candlepilot.git}"
 BRANCH="${CANDLEPILOT_BRANCH:-main}"
 PUBLIC_PORT="${CANDLEPILOT_PUBLIC_PORT:-8443}"
+BACKEND_PORT="${CANDLEPILOT_BACKEND_PORT:-}"
 NODE_VERSION="${CANDLEPILOT_NODE_VERSION:-24.18.0}"
 UV_VERSION="${CANDLEPILOT_UV_VERSION:-0.11.15}"
 MANAGED_PYTHON_VERSION="${CANDLEPILOT_MANAGED_PYTHON_VERSION:-3.12.13}"
@@ -38,6 +39,19 @@ prompt_value() {
   printf -v "$variable_name" '%s' "$current"
 }
 
+backend_port_is_available() {
+  python3 - "$1" <<'PY'
+import socket
+import sys
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+    try:
+        listener.bind(("127.0.0.1", int(sys.argv[1])))
+    except OSError:
+        raise SystemExit(1)
+PY
+}
+
 update_existing_installation() {
   [[ -d "$APP_DIR/.git" ]] || fail "$APP_DIR is not a Git checkout; refusing to update it"
   [[ -f "$APP_DIR/.env" && -x "$APP_DIR/.venv/bin/python" ]] \
@@ -59,7 +73,14 @@ update_existing_installation() {
   command -v pnpm >/dev/null 2>&1 || fail "pnpm is required to update CandlePilot"
   command -v sqlite3 >/dev/null 2>&1 || fail "sqlite3 is required to update CandlePilot"
 
-  local current_branch installed_remote tracked_changes old_sha new_sha running_count
+  local current_branch installed_remote installed_backend_port
+  local tracked_changes old_sha new_sha running_count
+  installed_backend_port="$(
+    sed -n 's/^CANDLEPILOT_PORT=//p' "$APP_DIR/.env" | tail -n 1
+  )"
+  [[ "$installed_backend_port" =~ ^[0-9]+$ ]] \
+    && (( installed_backend_port >= 1024 && installed_backend_port <= 65535 )) \
+    || fail "installed CANDLEPILOT_PORT is missing or invalid"
   current_branch="$(runuser -u "$APP_USER" -- git -C "$APP_DIR" branch --show-current)"
   [[ "$current_branch" == "$BRANCH" ]] \
     || fail "installed branch is '$current_branch', expected '$BRANCH'"
@@ -185,12 +206,14 @@ update_existing_installation() {
   if [[ "$service_was_active" == true ]]; then
     systemctl start candlepilot.service
     for _ in $(seq 1 30); do
-      if curl --silent --fail http://127.0.0.1:8000/api/health/ready >/dev/null; then
+      if curl --silent --fail \
+        "http://127.0.0.1:$installed_backend_port/api/health/ready" >/dev/null; then
         break
       fi
       sleep 1
     done
-    curl --silent --fail http://127.0.0.1:8000/api/health/ready >/dev/null \
+    curl --silent --fail \
+      "http://127.0.0.1:$installed_backend_port/api/health/ready" >/dev/null \
       || { journalctl -u candlepilot --no-pager -n 80; return 1; }
   fi
 
@@ -235,6 +258,25 @@ esac
 if [[ -e "$APP_DIR" ]]; then
   update_existing_installation
   exit 0
+fi
+
+if [[ -n "$BACKEND_PORT" ]]; then
+  [[ "$BACKEND_PORT" =~ ^[0-9]+$ ]] \
+    && (( BACKEND_PORT >= 1024 && BACKEND_PORT <= 65535 )) \
+    || fail "CANDLEPILOT_BACKEND_PORT must be between 1024 and 65535"
+  backend_port_is_available "$BACKEND_PORT" \
+    || fail "CANDLEPILOT_BACKEND_PORT $BACKEND_PORT is already in use"
+else
+  for candidate_port in 8000 $(seq 18000 18099); do
+    if backend_port_is_available "$candidate_port"; then
+      BACKEND_PORT="$candidate_port"
+      break
+    fi
+  done
+  [[ -n "$BACKEND_PORT" ]] || fail "could not find a free loopback backend port"
+  if [[ "$BACKEND_PORT" != "8000" ]]; then
+    echo "Backend port 8000 is in use; selected loopback port $BACKEND_PORT."
+  fi
 fi
 
 PUBLIC_IP="${CANDLEPILOT_PUBLIC_IP:-}"
@@ -366,7 +408,7 @@ install -o "$APP_USER" -g "$APP_USER" -m 0700 -d "$APP_DIR/data"
 install -o "$APP_USER" -g "$APP_USER" -m 0600 /dev/null "$APP_DIR/.env"
 printf '%s\n' \
   'CANDLEPILOT_HOST=127.0.0.1' \
-  'CANDLEPILOT_PORT=8000' \
+  "CANDLEPILOT_PORT=$BACKEND_PORT" \
   'CANDLEPILOT_DATABASE_URL=sqlite+aiosqlite:///./candlepilot.db' \
   'CANDLEPILOT_DATA_DIR=./data' \
   'CANDLEPILOT_LLM_TIMEOUT=200' \
@@ -438,7 +480,7 @@ server {
     add_header Content-Security-Policy "default-src 'self'; connect-src 'self' wss:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'" always;
 
     location / {
-        proxy_pass http://127.0.0.1:8000;
+        proxy_pass http://127.0.0.1:$BACKEND_PORT;
         proxy_http_version 1.1;
         proxy_set_header Host \$host:\$server_port;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -459,12 +501,12 @@ nginx -t
 systemctl daemon-reload
 systemctl enable --now candlepilot
 for _ in $(seq 1 30); do
-  if curl --silent --fail http://127.0.0.1:8000/api/health/ready >/dev/null; then
+  if curl --silent --fail "http://127.0.0.1:$BACKEND_PORT/api/health/ready" >/dev/null; then
     break
   fi
   sleep 1
 done
-curl --silent --fail http://127.0.0.1:8000/api/health/ready >/dev/null \
+curl --silent --fail "http://127.0.0.1:$BACKEND_PORT/api/health/ready" >/dev/null \
   || { journalctl -u candlepilot --no-pager -n 80; fail "backend did not become ready"; }
 systemctl enable nginx
 systemctl reload-or-restart nginx
@@ -485,6 +527,7 @@ echo
 echo "CandlePilot installation completed."
 echo "Platform: $PLATFORM_NAME"
 echo "URL: https://$PUBLIC_IP:$PUBLIC_PORT"
+echo "Backend: http://127.0.0.1:$BACKEND_PORT"
 echo "Username: $ADMIN_USERNAME"
 echo "The certificate is self-signed; verify this SHA-256 fingerprint before accepting it:"
 openssl x509 -in /etc/candlepilot/tls/server.crt -noout -fingerprint -sha256

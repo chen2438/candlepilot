@@ -2,7 +2,7 @@
 
 > 本文件是 CandlePilot 的**唯一权威功能文档**，记录系统当前的全部能力、接口与边界。
 > `STATUS.md` 与 `PLAN.md` 已弃用，后续变更只同步更新本文件。
-> 最后更新：2026-07-20（为 VPS 一键安装脚本增加安全更新模式）
+> 最后更新：2026-07-20（为 VPS 安装器增加后端端口冲突处理）
 
 ---
 
@@ -1036,9 +1036,10 @@ Python 依赖锁定于 `requirements.lock`，前端锁定于 `frontend/pnpm-lock
 不应修改。Debian 12 的 `uv` 调用固定以应用目录为工作目录并禁用外部配置发现，root 家目录或
 系统中的 `uv.toml` 不会介入应用用户的安装。脚本必须由 root 执行，会创建独立 `candlepilot`
 用户，把仓库安装到
-`/opt/candlepilot`，安装 Node.js 24、pnpm 与 Codex CLI，构建前端，并创建 systemd 服务。后端仍
-绑定 `127.0.0.1:8000`；Nginx 在用户指定的公网端口
-提供 HTTPS、转发 REST 与 WebSocket。脚本生成包含 VPS IP SAN 的自签名证书，完成后输出 SHA-256
+`/opt/candlepilot`，安装 Node.js 24、pnpm 与 Codex CLI，构建前端，并创建 systemd 服务。后端仅
+绑定 loopback：优先使用 8000，已占用时从 18000–18099 选择第一个空闲端口；显式设置
+`CANDLEPILOT_BACKEND_PORT` 时要求端口有效且未被占用。Nginx 使用实际选定端口转发 REST 与
+WebSocket，并在用户指定的公网端口提供 HTTPS。脚本生成包含 VPS IP SAN 的自签名证书，完成后输出 SHA-256
 指纹；首次访问只有在核对该指纹后才能接受浏览器警告。安装目录先以应用用户身份创建并保留，
 Git 直接克隆到该空目录，应用用户不需要也不能在 root 所有的 `/opt` 下自行创建目录。其他发行版
 或版本会在修改系统前被拒绝。脚本写入站点配置后会重载已由系统包启动的 Nginx（未运行时则
@@ -1068,7 +1069,7 @@ curl -fsSL https://raw.githubusercontent.com/chen2438/candlepilot/main/scripts/i
 ```
 
 交互过程要求填写公网 IPv4、控制台密码和 Binance Demo Key/Secret；也可预先设置
-`CANDLEPILOT_PUBLIC_IP`、`CANDLEPILOT_PUBLIC_PORT`、`CANDLEPILOT_ADMIN_USERNAME`、
+`CANDLEPILOT_PUBLIC_IP`、`CANDLEPILOT_PUBLIC_PORT`、`CANDLEPILOT_BACKEND_PORT`、`CANDLEPILOT_ADMIN_USERNAME`、
 `CANDLEPILOT_ADMIN_PASSWORD`、`BINANCE_TESTNET_API_KEY`、`BINANCE_TESTNET_API_SECRET`，用于可信的
 自动化安装。脚本拒绝覆盖已有 `/opt/candlepilot`，不会把密码或密钥打印到日志；生成的 `.env`
 权限为 0600。默认路由为 `local`，保证未登录外部模型时服务仍可启动；使用 Codex Auth 前执行：
@@ -1079,7 +1080,8 @@ sudo -iu candlepilot codex login status
 sudo systemctl restart candlepilot
 ```
 
-访问地址为 `https://<VPS-IP>:8443`（端口可覆盖）。只开放 Nginx 公网端口，不得开放 8000。
+访问地址为 `https://<VPS-IP>:8443`（端口可覆盖）。只开放 Nginx 公网端口，不得开放实际选择的
+loopback 后端端口。
 服务日志用 `journalctl -u candlepilot -f` 查看。若 UFW 已经启用，脚本只增加所选 TCP 端口规则，
 不会擅自启用或重置防火墙。重置密码时运行
 `sudo -u candlepilot /opt/candlepilot/.venv/bin/python -m candlepilot.auth` 生成新哈希，替换 `.env`

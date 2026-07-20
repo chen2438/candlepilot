@@ -148,7 +148,9 @@ curl -fsSL https://raw.githubusercontent.com/chen2438/candlepilot/main/scripts/i
 服务，并通过 Nginx 在 `https://VPS-IP:8443` 提供前端。后端继续只监听 127.0.0.1，远程控制台使用
 scrypt 密码哈希、受签名的 HttpOnly 会话 Cookie、登录限速与跨站写入保护；自签名证书的 SHA-256
 指纹会在安装结束时输出，首次访问前必须核对。Debian 12 使用项目目录内隔离的 Python 3.12，
-不会替换系统 Python 3.11。不要向公网开放后端 8000 端口。
+不会替换系统 Python 3.11。后端默认使用 loopback 端口 8000；若该端口已被其他服务占用，安装器
+会从 18000–18099 自动选择空闲端口，也可通过 `CANDLEPILOT_BACKEND_PORT` 指定。无论实际选择
+哪个端口，都不要将后端端口向公网开放。
 
 以后仓库有更新时，先在网页中优雅停止正在运行的引擎，再重新执行同一条安装命令。脚本检测到
 完整的 `/opt/candlepilot` 后会自动进入更新模式：保留 `.env`、数据库、行情数据、TLS 和模型登录
