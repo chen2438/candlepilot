@@ -169,6 +169,37 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
     asyncio.run(database.close())
 
 
+def test_clear_emergency_lock_requires_exchange_safety_check(tmp_path: Path) -> None:
+    class ReconcilingBroker(FakeTestnetBroker):
+        report = ReconciliationReport(("BTCUSDT",), 1, ("BTCUSDT",))
+
+        async def reconcile_account(self):
+            return self.report
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'clear-lock-api.db'}")
+    broker = ReconcilingBroker()
+    market = ApiMarket()
+    engine = TradingEngine(
+        testnet_broker=broker,  # type: ignore[arg-type]
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        assert client.post("/api/engine/emergency-stop").status_code == 200
+        blocked = client.post("/api/engine/clear-emergency-lock")
+        assert blocked.status_code == 409
+        assert "仍有持仓：BTCUSDT；仍有挂单：1" in blocked.json()["detail"]
+        assert client.get("/api/status").json()["emergency_locked"] is True
+
+        broker.report = ReconciliationReport((), 0, ())
+        cleared = client.post("/api/engine/clear-emergency-lock")
+        assert cleared.status_code == 200
+        assert cleared.json()["emergency_locked"] is False
+    asyncio.run(database.close())
+
+
 def test_live_probe_runs_one_real_batch_and_reports_its_details(
     tmp_path: Path,
 ) -> None:

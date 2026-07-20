@@ -395,7 +395,23 @@ class TradingEngine:
 
     async def clear_emergency_lock(self) -> None:
         if self.running:
-            raise RuntimeError("cannot clear emergency lock while running")
+            raise RuntimeError("无法解除紧急锁：引擎仍在运行")
+        try:
+            report = await self.testnet_broker.reconcile_account()
+        except Exception as exc:
+            raise AccountReconciliationError(
+                "无法解除紧急锁：测试网账户安全检查失败"
+            ) from exc
+        self.testnet_reconciliation = report
+        blockers: list[str] = []
+        if report.position_symbols:
+            blockers.append(f"仍有持仓：{', '.join(report.position_symbols)}")
+        if report.open_order_count:
+            blockers.append(f"仍有挂单：{report.open_order_count}")
+        if blockers:
+            raise AccountReconciliationError(
+                f"无法解除紧急锁：{'；'.join(blockers)}"
+            )
         self.emergency_locked = False
         self.emergency_locked_until = None
         await self.audit.delete_runtime_state("emergency_locked_until")

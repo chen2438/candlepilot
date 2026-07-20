@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DecisionPanel,
   DecisionTiming,
+  EmergencyLockBanner,
   intentRewardRiskRatio,
   LiveCycleStatus,
   LiveRunActionButtons,
@@ -210,6 +211,32 @@ describe("DecisionPanel", () => {
     expect((start as HTMLButtonElement).disabled).toBe(false);
     await user.click(start);
     expect(onStart).toHaveBeenCalledOnce();
+  });
+
+  it("offers a safety-checked emergency lock release", async () => {
+    const user = userEvent.setup();
+    const onClear = vi.fn();
+    const view = render(
+      <EmergencyLockBanner
+        lockedUntil="2026-07-21T00:00:00Z"
+        busy={false}
+        onClear={onClear}
+      />,
+    );
+
+    expect(screen.getByText(/解除前会检查测试网账户无持仓且无挂单/)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "检查并解除锁定" }));
+    expect(onClear).toHaveBeenCalledOnce();
+
+    view.rerender(
+      <EmergencyLockBanner
+        lockedUntil={null}
+        busy
+        onClear={onClear}
+      />,
+    );
+    expect((screen.getByRole("button", { name: "安全检查中…" }) as HTMLButtonElement).disabled)
+      .toBe(true);
   });
 
   it("does not offer the transient approved-only outcome as a filter", () => {

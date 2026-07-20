@@ -1387,6 +1387,56 @@ def test_emergency_lock_persists_and_expires_at_next_utc_day(tmp_path: Path) -> 
     assert stored is None
 
 
+def test_emergency_lock_clear_requires_a_flat_account_without_orders(tmp_path: Path) -> None:
+    import pytest
+
+    from candlepilot.broker.binance_testnet import (
+        AccountReconciliationError,
+        ReconciliationReport,
+    )
+
+    class ReconcilingBroker(FakeTestnetBroker):
+        report = ReconciliationReport(("BTCUSDT",), 2, ("BTCUSDT",), ("ETHUSDT",))
+
+        async def reconcile_account(self):
+            return self.report
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'clear-lock.db'}")
+        await database.initialize()
+        audit = AuditRepository(database.sessions)
+        broker = ReconcilingBroker()
+        engine = TradingEngine(
+            testnet_broker=broker,  # type: ignore[arg-type]
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=audit,
+            market=FakeMarket(),  # type: ignore[arg-type]
+        )
+        await engine.emergency_stop()
+        with pytest.raises(
+            AccountReconciliationError,
+            match="仍有持仓：BTCUSDT；仍有挂单：2",
+        ):
+            await engine.clear_emergency_lock()
+        blocked = (
+            engine.emergency_locked,
+            await audit.get_runtime_state("emergency_locked_until"),
+        )
+        broker.report = ReconciliationReport((), 0, ())
+        await engine.clear_emergency_lock()
+        cleared = (
+            engine.emergency_locked,
+            await audit.get_runtime_state("emergency_locked_until"),
+        )
+        await database.close()
+        return blocked, cleared
+
+    blocked, cleared = asyncio.run(scenario())
+    assert blocked[0] is True
+    assert blocked[1] is not None
+    assert cleared == (False, None)
+
+
 def test_testnet_portfolio_carries_entry_price_and_live_bracket(tmp_path: Path) -> None:
     """The decision model cannot judge an invalidation it cannot see.
 

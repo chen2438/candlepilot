@@ -427,6 +427,29 @@ export function LiveRunActionButtons({
   </>;
 }
 
+export function EmergencyLockBanner({
+  lockedUntil,
+  busy,
+  onClear,
+}: {
+  lockedUntil: string | null;
+  busy: boolean;
+  onClear: () => void;
+}) {
+  return <div className="lock-banner">
+    <span>
+      紧急锁定已生效
+      {lockedUntil
+        ? `，自动解锁时间：${new Date(lockedUntil).toLocaleString("zh-CN", { hour12: false })}`
+        : ""}
+      。解除前会检查测试网账户无持仓且无挂单。
+    </span>
+    <button disabled={busy} onClick={onClear}>
+      {busy ? "安全检查中…" : "检查并解除锁定"}
+    </button>
+  </div>;
+}
+
 export function LiveCycleStatus({
   cycle,
 }: {
@@ -1070,7 +1093,14 @@ export default function App() {
         {error && <div className="error-banner"><b>操作失败</b><span>{error}</span><button onClick={() => setError(null)}>×</button></div>}
         {status.auto_stop_reason && !status.running && <div className="lock-banner">引擎已自动停止：{status.auto_stop_reason}。持仓保持不变（测试网仍由交易所侧止盈止损保护）；确认后可重新启动。</div>}
         {status.running && status.rescue_count > 0 && <div className="lock-banner">本次运行已紧急回补 {status.rescue_count} / {status.rescue_limit} 次；达到上限后将自动停止，当前持仓继续由交易所侧止盈止损保护。</div>}
-        {status.emergency_locked && <div className="lock-banner">紧急锁定已生效{status.emergency_locked_until ? `，自动解锁时间：${new Date(status.emergency_locked_until).toLocaleString("zh-CN", { hour12: false })}` : ""}。检查账户状态后也可手动解除。</div>}
+        {status.emergency_locked && <EmergencyLockBanner
+          lockedUntil={status.emergency_locked_until}
+          busy={busy === "clear-emergency-lock"}
+          onClear={() => void act(
+            "clear-emergency-lock",
+            "/api/engine/clear-emergency-lock",
+          )}
+        />}
 
         {tab === "overview" && (<>
         <section className="hero panel">
