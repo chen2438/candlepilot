@@ -130,7 +130,6 @@ if ! id "$APP_USER" >/dev/null 2>&1; then
   useradd --create-home --shell /bin/bash --user-group "$APP_USER"
 fi
 install -d -o "$APP_USER" -g "$APP_USER" "$APP_DIR"
-rmdir "$APP_DIR"
 runuser -u "$APP_USER" -- git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$APP_DIR"
 runuser -u "$APP_USER" -- "$PYTHON_BIN" -m venv "$APP_DIR/.venv"
 runuser -u "$APP_USER" -- "$APP_DIR/.venv/bin/pip" install --disable-pip-version-check -r "$APP_DIR/requirements.lock"
