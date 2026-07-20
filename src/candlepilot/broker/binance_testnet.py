@@ -94,6 +94,20 @@ class ManualCloseError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class EmergencyExecution:
+    symbol: str
+    report: ExecutionReport
+
+
+class EmergencyFlattenError(RuntimeError):
+    def __init__(
+        self, message: str, *, executions: tuple[EmergencyExecution, ...]
+    ) -> None:
+        super().__init__(message)
+        self.executions = executions
+
+
+@dataclass(frozen=True, slots=True)
 class BinanceTestnetCredentials:
     api_key: SecretStr
     api_secret: SecretStr
@@ -1143,7 +1157,7 @@ class BinanceTestnetBroker:
             if exc.code != -2011:  # Already completed or cancelled before this event was handled.
                 raise
 
-    async def emergency_flatten(self) -> None:
+    async def emergency_flatten(self) -> tuple[EmergencyExecution, ...]:
         await self.sync_time()
         account, open_orders, open_algo_orders = await asyncio.gather(
             self.account(),
@@ -1162,6 +1176,7 @@ class BinanceTestnetBroker:
         }
 
         failures: list[str] = []
+        executions: list[EmergencyExecution] = []
         for symbol in sorted(order_symbols | positions.keys()):
             try:
                 await self.cancel_all(symbol)
@@ -1173,19 +1188,22 @@ class BinanceTestnetBroker:
         # is surfaced after every position has had its close attempted.
         for symbol, quantity in positions.items():
             try:
-                await self._signed_request(
-                    "POST",
-                    "/fapi/v1/order",
-                    {
-                        "symbol": symbol,
-                        "side": "SELL" if quantity > 0 else "BUY",
-                        "type": "MARKET",
-                        "quantity": abs(quantity),
-                        "reduceOnly": True,
-                        "newClientOrderId": f"cp-kill-{int(time.time() * 1000)}",
-                    },
+                order = OrderPlan(
+                    client_order_id=f"cp-kill-{uuid4().hex[:20]}",
+                    symbol=symbol,
+                    side="SELL" if quantity > 0 else "BUY",
+                    quantity=abs(quantity),
+                    order_type=OrderType.MARKET,
+                    reduce_only=True,
+                )
+                executions.append(
+                    EmergencyExecution(symbol=symbol, report=await self._place_order(order))
                 )
             except Exception as exc:
                 failures.append(f"flatten {symbol}: {type(exc).__name__}")
         if failures:
-            raise RuntimeError("emergency account cleanup incomplete: " + "; ".join(failures))
+            raise EmergencyFlattenError(
+                "emergency account cleanup incomplete: " + "; ".join(failures),
+                executions=tuple(executions),
+            )
+        return tuple(executions)

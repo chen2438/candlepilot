@@ -12,6 +12,7 @@ from candlepilot.broker.binance_testnet import (
     BinanceApiError,
     BinanceTestnetBroker,
     BinanceTestnetCredentials,
+    EmergencyFlattenError,
     ManualCloseError,
     OrderStatusUnknown,
 )
@@ -1261,6 +1262,17 @@ def test_emergency_flatten_cancels_orphan_orders_before_closing_positions() -> N
             return httpx.Response(200, json=[{"symbol": "ETHUSDT"}])
         if request.url.path == "/fapi/v1/openAlgoOrders" and request.method == "GET":
             return httpx.Response(200, json=[{"symbol": "SOLUSDT"}])
+        if request.method == "POST" and request.url.path == "/fapi/v1/order":
+            query = parse_qs(request.url.query.decode())
+            return httpx.Response(
+                200,
+                json={
+                    "clientOrderId": query["newClientOrderId"][0],
+                    "status": "FILLED",
+                    "executedQty": "1",
+                    "avgPrice": "100",
+                },
+            )
         return httpx.Response(200, json={"status": "FILLED"})
 
     async def scenario():
@@ -1268,10 +1280,11 @@ def test_emergency_flatten_cancels_orphan_orders_before_closing_positions() -> N
             transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
         )
         broker = BinanceTestnetBroker(_credentials(), client=client)
-        await broker.emergency_flatten()
+        executions = await broker.emergency_flatten()
         await client.aclose()
+        return executions
 
-    asyncio.run(scenario())
+    executions = asyncio.run(scenario())
     cancellations = {
         parse_qs(request.url.query.decode())["symbol"][0]
         for request in requests
@@ -1284,9 +1297,59 @@ def test_emergency_flatten_cancels_orphan_orders_before_closing_positions() -> N
         if request.method == "POST" and request.url.path == "/fapi/v1/order"
     )
     assert parse_qs(flatten.url.query.decode())["symbol"] == ["BTCUSDT"]
+    assert len(executions) == 1
+    assert executions[0].symbol == "BTCUSDT"
+    assert executions[0].report.status == "FILLED"
+    assert executions[0].report.filled_quantity == Decimal("1")
+    assert executions[0].report.average_price == Decimal("100")
     assert max(
         index for index, request in enumerate(requests) if request.method == "DELETE"
     ) < requests.index(flatten)
+
+
+def test_emergency_flatten_error_keeps_successful_execution_reports() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fapi/v1/time":
+            return httpx.Response(200, json={"serverTime": 1784040000000})
+        if request.url.path == "/fapi/v3/account":
+            return httpx.Response(
+                200,
+                json={"positions": [{"symbol": "BTCUSDT", "positionAmt": "1"}]},
+            )
+        if request.url.path == "/fapi/v1/openOrders" and request.method == "GET":
+            return httpx.Response(200, json=[{"symbol": "ETHUSDT"}])
+        if request.url.path == "/fapi/v1/openAlgoOrders" and request.method == "GET":
+            return httpx.Response(200, json=[])
+        if request.method == "DELETE" and "ETHUSDT" in str(request.url):
+            return httpx.Response(500, json={"code": -1, "msg": "cancel failed"})
+        if request.method == "POST" and request.url.path == "/fapi/v1/order":
+            query = parse_qs(request.url.query.decode())
+            return httpx.Response(
+                200,
+                json={
+                    "clientOrderId": query["newClientOrderId"][0],
+                    "status": "FILLED",
+                    "executedQty": "1",
+                    "avgPrice": "100",
+                },
+            )
+        return httpx.Response(200, json={})
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        with pytest.raises(EmergencyFlattenError) as caught:
+            await broker.emergency_flatten()
+        await client.aclose()
+        return caught.value
+
+    failure = asyncio.run(scenario())
+    assert "cancel ETHUSDT" in str(failure)
+    assert len(failure.executions) == 1
+    assert failure.executions[0].symbol == "BTCUSDT"
+    assert failure.executions[0].report.status == "FILLED"
 
 
 def test_manual_market_close_is_reduce_only_and_cleans_only_own_bracket() -> None:

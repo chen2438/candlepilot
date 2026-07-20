@@ -1578,6 +1578,91 @@ def test_emergency_lock_persists_and_expires_at_next_utc_day(tmp_path: Path) -> 
     assert stored is None
 
 
+def test_emergency_stop_audits_flatten_executions(tmp_path: Path) -> None:
+    from candlepilot.broker.binance_testnet import EmergencyExecution
+
+    class ReportingBroker(FakeTestnetBroker):
+        async def emergency_flatten(self):
+            self.flattened = True
+            return (
+                EmergencyExecution(
+                    symbol="BTCUSDT",
+                    report=ExecutionReport(
+                        client_order_id="cp-kill-audit",
+                        status="FILLED",
+                        filled_quantity=Decimal("1"),
+                        average_price=Decimal("100"),
+                    ),
+                ),
+            )
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'emergency-audit.db'}")
+        await database.initialize()
+        audit = AuditRepository(database.sessions)
+        engine = TradingEngine(
+            testnet_broker=ReportingBroker(),  # type: ignore[arg-type]
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=audit,
+            market=FakeMarket(),  # type: ignore[arg-type]
+        )
+        await engine.emergency_stop()
+        executions = await audit.recent_executions()
+        fills = await audit.recent_trade_fills()
+        await database.close()
+        return executions, fills
+
+    executions, fills = asyncio.run(scenario())
+    assert executions[0]["symbol"] == "BTCUSDT"
+    assert executions[0]["client_order_id"] == "cp-kill-audit"
+    assert fills[0]["purpose"] == "other_close"
+    assert fills[0]["reduce_only"] is True
+
+
+def test_emergency_stop_audits_successes_before_raising_cleanup_error(
+    tmp_path: Path,
+) -> None:
+    import pytest
+
+    from candlepilot.broker.binance_testnet import (
+        EmergencyExecution,
+        EmergencyFlattenError,
+    )
+
+    execution = EmergencyExecution(
+        symbol="BTCUSDT",
+        report=ExecutionReport(
+            client_order_id="cp-kill-partial",
+            status="FILLED",
+            filled_quantity=Decimal("1"),
+            average_price=Decimal("100"),
+        ),
+    )
+
+    class PartiallyFailingBroker(FakeTestnetBroker):
+        async def emergency_flatten(self):
+            raise EmergencyFlattenError("one symbol failed", executions=(execution,))
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'emergency-partial.db'}")
+        await database.initialize()
+        audit = AuditRepository(database.sessions)
+        engine = TradingEngine(
+            testnet_broker=PartiallyFailingBroker(),  # type: ignore[arg-type]
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=audit,
+            market=FakeMarket(),  # type: ignore[arg-type]
+        )
+        with pytest.raises(EmergencyFlattenError, match="one symbol failed"):
+            await engine.emergency_stop()
+        rows = await audit.recent_executions()
+        await database.close()
+        return rows
+
+    rows = asyncio.run(scenario())
+    assert rows[0]["client_order_id"] == "cp-kill-partial"
+
+
 def test_emergency_lock_clear_requires_a_flat_account_without_orders(tmp_path: Path) -> None:
     import pytest
 

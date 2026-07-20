@@ -10,6 +10,7 @@ from candlepilot.broker.binance_testnet import (
     AccountReconciliationError,
     BinanceApiError,
     BinanceTestnetBroker,
+    EmergencyFlattenError,
     OrderStatusUnknown,
     ProtectiveLevels,
     ProtectiveStopError,
@@ -406,7 +407,14 @@ class TradingEngine:
         await self.audit.set_runtime_state(
             "emergency_locked_until", self.emergency_locked_until.isoformat()
         )
-        await self.testnet_broker.emergency_flatten()
+        try:
+            executions = await self.testnet_broker.emergency_flatten()
+        except EmergencyFlattenError as exc:
+            for execution in exc.executions:
+                await self.audit.record_execution(execution.symbol, execution.report)
+            raise
+        for execution in executions or ():
+            await self.audit.record_execution(execution.symbol, execution.report)
 
     async def clear_emergency_lock(self) -> None:
         if self.running:

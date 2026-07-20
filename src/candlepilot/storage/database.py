@@ -1122,6 +1122,8 @@ class AuditRepository:
                 return purpose, client_order_id[: -len(suffix)]
         if client_order_id.startswith("cp-manual-"):
             return "manual_close", None
+        if client_order_id.startswith("cp-kill-"):
+            return "other_close", None
         if intent_action == "CLOSE":
             return "model_close", None
         if intent_action == "REDUCE":
