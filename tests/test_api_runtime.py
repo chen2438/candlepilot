@@ -20,8 +20,10 @@ from candlepilot.config import Settings
 from candlepilot.domain.models import (
     TradeIntent,
 )
+from candlepilot.market.binance import ContractInfo
 from candlepilot.providers.base import ProviderResult
 from candlepilot.providers.registry import ProviderRegistry
+from candlepilot.risk.engine import SymbolRules
 from candlepilot.settings_file import read_env_file
 from candlepilot.storage.database import (
     CURRENT_SCHEMA_VERSION,
@@ -294,6 +296,78 @@ def test_live_probe_runs_one_real_batch_and_reports_its_details(
         assert client.post(
             "/api/engine/start", json={"timeout_seconds": 7}
         ).status_code == 409
+    asyncio.run(database.close())
+
+
+def test_run_once_executes_one_trading_batch_then_stops(tmp_path: Path) -> None:
+    class TradingProvider(ApiProvider):
+        async def generate_trade_intent(self, snapshot, portfolio):
+            intent = TradeIntent(
+                symbol=snapshot.symbol,
+                cadence=snapshot.cadence,
+                action="OPEN_LONG",
+                confidence=0.8,
+                leverage=2,
+                risk_fraction="0.001",
+                order_type="MARKET",
+                stop_loss="95",
+                take_profit="110",
+                rationale="single-cycle fixture",
+            )
+            return ProviderResult(
+                intent,
+                self.name,
+                None,
+                timedelta(0),
+                intent.model_dump_json(),
+                {},
+            )
+
+    class TradingMarket(ApiMarket):
+        async def exchange_info(self):
+            return {
+                "BTCUSDT": ContractInfo(
+                    "BTCUSDT",
+                    datetime(2020, 1, 1, tzinfo=UTC),
+                    SymbolRules(
+                        Decimal("0.001"),
+                        Decimal("0.001"),
+                        Decimal("5"),
+                        Decimal("0.01"),
+                    ),
+                )
+            }
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'run-once.db'}")
+    market = TradingMarket()
+    broker = FakeTestnetBroker()
+    engine = TradingEngine(
+        testnet_broker=broker,  # type: ignore[arg-type]
+        providers=ProviderRegistry([TradingProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        client.post("/api/providers/select", json={"providers": ["api-fixture"]})
+        assert client.post("/api/engine/run-once").status_code == 409
+        probe = client.post("/api/engine/probe")
+        assert probe.status_code == 200, probe.text
+
+        completed = client.post("/api/engine/run-once")
+        assert completed.status_code == 200, completed.text
+        assert completed.json()["running"] is False
+        assert completed.json()["startup_probe"]["consumed"] is True
+        assert len(broker.orders) == 1
+
+        decisions = client.get("/api/decision-events").json()
+        assert len(decisions) == 1
+        assert decisions[0]["outcome"] == "executed"
+        assert decisions[0]["live_run"]["config"]["single_cycle"] is True
+        assert decisions[0]["live_run"]["stop_reason"] == "single analysis completed"
+        assert client.post("/api/engine/run-once").status_code == 409
+
     asyncio.run(database.close())
 
 

@@ -52,6 +52,7 @@ class TradingScheduler:
         self.run_cost_loader = run_cost_loader
         self.testnet_feed = testnet_feed
         self._tasks: list[asyncio.Task[None]] = []
+        self._one_shot_task: asyncio.Task[list[DecisionOutcome]] | None = None
         self._symbol_locks: dict[str, asyncio.Lock] = {}
         self._stop = asyncio.Event()
         self._auto_stop_task: asyncio.Task[None] | None = None
@@ -74,6 +75,10 @@ class TradingScheduler:
     @property
     def last_error(self) -> str | None:
         return "; ".join(self.cadence_errors.values()) or None
+
+    @property
+    def stop_requested(self) -> bool:
+        return self._stop.is_set()
 
     def select_candidates_per_cycle(self, value: int) -> None:
         if self.engine.running:
@@ -100,6 +105,10 @@ class TradingScheduler:
 
     async def stop(self) -> None:
         self._stop.set()
+        one_shot = self._one_shot_task
+        if one_shot is not None and one_shot is not asyncio.current_task():
+            one_shot.cancel()
+            await asyncio.gather(one_shot, return_exceptions=True)
         if self.testnet_feed is not None:
             await self.testnet_feed.stop()
         for task in self._tasks:
@@ -107,6 +116,30 @@ class TradingScheduler:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+
+    async def run_once(self, cadence: str) -> list[DecisionOutcome]:
+        """Run one immediate trading cycle without starting cadence timers."""
+
+        if self._tasks or self._one_shot_task is not None:
+            raise RuntimeError("scheduler is already running")
+        seconds = CADENCE_SECONDS.get(cadence)
+        if seconds is None:
+            raise ValueError("unsupported cadence")
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("single-cycle task is unavailable")
+        self._one_shot_task = task
+        self._stop.clear()
+        if self.testnet_feed is not None:
+            self.testnet_feed.start()
+        try:
+            async with asyncio.timeout(max(1.0, seconds - 0.5)):
+                return await self.run_cycle(cadence)
+        finally:
+            if self.testnet_feed is not None:
+                await self.testnet_feed.stop()
+            if self._one_shot_task is task:
+                self._one_shot_task = None
 
     async def _run_cadence(self, cadence: str) -> None:
         seconds = CADENCE_SECONDS[cadence]

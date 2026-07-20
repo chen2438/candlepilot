@@ -200,12 +200,14 @@ describe("DecisionPanel", () => {
   it("keeps startup locked until a separate successful probe", async () => {
     const user = userEvent.setup();
     const onProbe = vi.fn();
+    const onRunOnce = vi.fn();
     const onStart = vi.fn();
     const props = {
       busy: null,
       running: false,
       emergencyLocked: false,
       onProbe,
+      onRunOnce,
       onStart,
       onStop: vi.fn(),
       onEmergencyStop: vi.fn(),
@@ -214,15 +216,23 @@ describe("DecisionPanel", () => {
 
     const probe = screen.getByRole("button", { name: "试跑" });
     const start = screen.getByRole("button", { name: "启动" });
+    const runOnce = screen.getByRole("button", { name: "运行一次" });
     expect((start as HTMLButtonElement).disabled).toBe(true);
+    expect((runOnce as HTMLButtonElement).disabled).toBe(true);
     await user.click(probe);
     expect(onProbe).toHaveBeenCalledOnce();
     expect(onStart).not.toHaveBeenCalled();
 
     view.rerender(<LiveRunActionButtons {...props} probeReady />);
     expect((start as HTMLButtonElement).disabled).toBe(false);
+    expect((runOnce as HTMLButtonElement).disabled).toBe(false);
+    await user.click(runOnce);
+    expect(onRunOnce).toHaveBeenCalledOnce();
     await user.click(start);
     expect(onStart).toHaveBeenCalledOnce();
+
+    view.rerender(<LiveRunActionButtons {...props} busy="run-once" probeReady />);
+    expect((screen.getByRole("button", { name: "紧急熔断" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("offers a safety-checked emergency lock release", async () => {

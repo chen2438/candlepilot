@@ -432,6 +432,7 @@ export function LiveRunActionButtons({
   emergencyLocked,
   probeReady,
   onProbe,
+  onRunOnce,
   onStart,
   onStop,
   onEmergencyStop,
@@ -441,6 +442,7 @@ export function LiveRunActionButtons({
   emergencyLocked: boolean;
   probeReady: boolean;
   onProbe: () => void;
+  onRunOnce: () => void;
   onStart: () => void;
   onStop: () => void;
   onEmergencyStop: () => void;
@@ -451,12 +453,20 @@ export function LiveRunActionButtons({
       onClick={onProbe}
     >{busy === "probe" ? "真实批量试跑…" : "试跑"}</button>
     <button
+      disabled={busy !== null || running || emergencyLocked || !probeReady}
+      onClick={onRunOnce}
+    >{busy === "run-once" ? "运行一次中…" : "运行一次"}</button>
+    <button
       className="primary"
       disabled={busy !== null || running || emergencyLocked || !probeReady}
       onClick={onStart}
     >{busy === "start" ? "启动中…" : "启动"}</button>
     <button disabled={busy !== null || !running} onClick={onStop}>优雅停止</button>
-    <button className="danger" disabled={busy !== null} onClick={onEmergencyStop}>紧急熔断</button>
+    <button
+      className="danger"
+      disabled={busy !== null && busy !== "run-once"}
+      onClick={onEmergencyStop}
+    >紧急熔断</button>
   </>;
 }
 
@@ -1021,12 +1031,15 @@ export default function App() {
       if (path.startsWith("/api/engine/")) {
         await Promise.all([refreshRunSession(), refreshLiveRunPerformance()]);
       }
+      if (path === "/api/engine/run-once") {
+        await Promise.all([refreshDecisions(), refreshAccount()]);
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setBusy(null);
     }
-  }, [refreshLiveRunPerformance, refreshRunSession]);
+  }, [refreshAccount, refreshDecisions, refreshLiveRunPerformance, refreshRunSession]);
 
   const refreshUniverse = useCallback(async () => {
     setBusy("universe");
@@ -1275,6 +1288,9 @@ export default function App() {
                   timeout_seconds: selectedExternalProvider ? timeout : null,
                 });
               }}
+              onRunOnce={() => void act("run-once", "/api/engine/run-once", {
+                timeout_seconds: selectedExternalProvider ? requestedDecisionTimeout : null,
+              })}
               onStart={() => void act("start", "/api/engine/start", {
                 timeout_seconds: selectedExternalProvider ? requestedDecisionTimeout : null,
               })}

@@ -91,13 +91,13 @@ def test_no_panel_is_lifted_out_of_the_grid() -> None:
             )
 
 
-def test_the_hero_uses_two_columns_and_keeps_four_actions_on_one_row() -> None:
-    """Moved risk metrics must leave room for status and four distinct actions."""
+def test_the_hero_uses_two_columns_and_keeps_five_actions_on_one_row() -> None:
+    """Moved risk metrics must leave room for status and five distinct actions."""
 
     hero = _bodies(".hero")
     assert _declares(hero, "grid-template-columns:minmax(250px,.7fr)minmax(520px,1.7fr)")
     assert _declares(_bodies(".controls"), "display:grid")
-    assert _declares(_bodies(".controls"), "grid-template-columns:repeat(4,1fr)")
+    assert _declares(_bodies(".controls"), "grid-template-columns:repeat(5,1fr)")
     assert _declares(_bodies(".controls>.cadence-select"), "grid-column:1/-1")
 
 

@@ -1571,6 +1571,55 @@ def create_app(
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _status(engine, scheduler)
 
+    async def begin_live_run(
+        request: EngineStartRequest, *, single_cycle: bool = False
+    ) -> dict[str, object]:
+        """Apply the shared startup gate for continuous and single-cycle runs."""
+
+        if engine.running:
+            raise HTTPException(status_code=409, detail="engine is already running")
+        if not engine.provider_chain:
+            raise HTTPException(
+                status_code=409,
+                detail="at least one ready decision provider must be selected",
+            )
+        external, timeout_seconds = resolve_live_timeout(request)
+        probe = engine.startup_probe
+        expected_timeout = timeout_seconds if external else None
+        if (
+            probe is None
+            or not probe.get("ready")
+            or probe.get("consumed")
+            or probe.get("timeout_seconds") != expected_timeout
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "a successful startup probe for the current parameters is required "
+                    "before starting the engine"
+                ),
+            )
+        run_config: dict[str, object] = {
+            "candidates_per_cycle": scheduler.candidates_per_cycle
+        }
+        if single_cycle:
+            run_config["single_cycle"] = True
+        try:
+            await engine.start(run_config=run_config)
+            probe["ready"] = False
+            probe["consumed"] = True
+        except ValueError as exc:
+            probe["ready"] = False
+            probe["error"] = str(exc)
+            engine.restore_provider_timeouts()
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            probe["ready"] = False
+            probe["error"] = str(exc)
+            engine.restore_provider_timeouts()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return probe
+
     @app.post("/api/engine/start")
     async def start_engine(request: EngineStartRequest | None = None) -> dict[str, Any]:
         if background_model_work():
@@ -1580,46 +1629,46 @@ def create_app(
             )
         request = request or EngineStartRequest()
         async with engine_start_lock:
-            if engine.running:
-                raise HTTPException(status_code=409, detail="engine is already running")
-            if not engine.provider_chain:
-                raise HTTPException(
-                    status_code=409,
-                    detail="at least one ready decision provider must be selected",
+            await begin_live_run(request)
+            scheduler.start()
+        return _status(engine, scheduler)
+
+    @app.post("/api/engine/run-once")
+    async def run_engine_once(request: EngineStartRequest | None = None) -> dict[str, Any]:
+        """Analyze and trade one immediate batch, then stop without scheduling another."""
+
+        if background_model_work():
+            raise HTTPException(
+                status_code=409,
+                detail="cannot start the engine while a probe or backtest runs",
+            )
+        request = request or EngineStartRequest()
+        async with engine_start_lock:
+            await begin_live_run(request, single_cycle=True)
+        failure: BaseException | None = None
+        try:
+            await scheduler.run_once(engine.active_cadences[0])
+        except BaseException as exc:
+            failure = exc
+        finally:
+            emergency_is_cancelling = (
+                isinstance(failure, asyncio.CancelledError)
+                and scheduler.stop_requested
+            )
+            if engine.running and not emergency_is_cancelling:
+                await engine.stop(
+                    reason=(
+                        "single analysis completed"
+                        if failure is None
+                        else f"single analysis failed: {type(failure).__name__}: {failure}"
+                    )
                 )
-            external, timeout_seconds = resolve_live_timeout(request)
-            probe = engine.startup_probe
-            expected_timeout = timeout_seconds if external else None
-            if (
-                probe is None
-                or not probe.get("ready")
-                or probe.get("consumed")
-                or probe.get("timeout_seconds") != expected_timeout
-            ):
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "a successful startup probe for the current parameters is required "
-                        "before starting the engine"
-                    ),
-                )
-            try:
-                await engine.start(
-                    run_config={"candidates_per_cycle": scheduler.candidates_per_cycle}
-                )
-                scheduler.start()
-                probe["ready"] = False
-                probe["consumed"] = True
-            except ValueError as exc:
-                probe["ready"] = False
-                probe["error"] = str(exc)
-                engine.restore_provider_timeouts()
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
-            except Exception as exc:
-                probe["ready"] = False
-                probe["error"] = str(exc)
-                engine.restore_provider_timeouts()
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if failure is not None:
+            if isinstance(failure, asyncio.CancelledError):
+                if emergency_is_cancelling:
+                    return _status(engine, scheduler)
+                raise failure
+            raise HTTPException(status_code=409, detail=str(failure)) from failure
         return _status(engine, scheduler)
 
     @app.post("/api/engine/stop")

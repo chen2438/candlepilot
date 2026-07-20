@@ -103,6 +103,18 @@ class FakePaperFeed:
         self.stopped = True
 
 
+class FakeTestnetFeed:
+    def __init__(self):
+        self.started = False
+        self.stopped = False
+
+    def start(self):
+        self.started = True
+
+    async def stop(self):
+        self.stopped = True
+
+
 def test_scheduler_runs_ranked_candidate_cycle(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'scheduler.db'}")
@@ -124,6 +136,73 @@ def test_scheduler_runs_ranked_candidate_cycle(tmp_path: Path) -> None:
     outcomes = asyncio.run(scenario())
     assert len(outcomes) == 1
     assert outcomes[0].intent.action.value == "HOLD"
+
+
+def test_scheduler_run_once_uses_account_feed_without_starting_timers(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'run-once.db'}")
+        await database.initialize()
+        market = SchedulerMarket()
+        engine = TradingEngine(
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+            providers=ProviderRegistry([HoldProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider_chain(["hold"])
+        await engine.start()
+        feed = FakeTestnetFeed()
+        scheduler = TradingScheduler(
+            engine,
+            market,  # type: ignore[arg-type]
+            testnet_feed=feed,  # type: ignore[arg-type]
+        )
+        outcomes = await scheduler.run_once("15m")
+        names = [task.get_name() for task in scheduler._tasks]
+        await database.close()
+        return outcomes, feed.started, feed.stopped, names
+
+    outcomes, started, stopped, names = asyncio.run(scenario())
+    assert len(outcomes) == 1
+    assert started is True
+    assert stopped is True
+    assert names == []
+
+
+def test_scheduler_stop_cancels_an_inflight_single_cycle(tmp_path: Path) -> None:
+    async def scenario():
+        started = asyncio.Event()
+
+        class GatedProvider(HoldProvider):
+            async def generate_trade_intents(self, snapshots, portfolio):
+                started.set()
+                await asyncio.Event().wait()
+                return []
+
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'cancel-once.db'}")
+        await database.initialize()
+        market = SchedulerMarket()
+        engine = TradingEngine(
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+            providers=ProviderRegistry([GatedProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider_chain(["hold"])
+        await engine.start()
+        scheduler = TradingScheduler(engine, market)  # type: ignore[arg-type]
+        task = asyncio.create_task(scheduler.run_once("15m"))
+        await started.wait()
+        await scheduler.stop()
+        cancelled = task.cancelled()
+        await database.close()
+        return cancelled, engine.running
+
+    cancelled, engine_running = asyncio.run(scenario())
+    assert cancelled is True
+    # The caller chooses graceful versus emergency engine shutdown after the
+    # in-flight inference has been cancelled.
+    assert engine_running is True
 
 
 def test_scheduler_submits_one_batch_for_all_cycle_symbols(tmp_path: Path) -> None:
