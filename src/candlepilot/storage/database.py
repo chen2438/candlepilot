@@ -1603,16 +1603,29 @@ class AuditRepository:
             )
 
     async def backtest_decisions(
-        self, run_id: int, *, provider: str | None = None, limit: int = 500
-    ) -> list[dict[str, Any]]:
-        """One model's decisions for a run, oldest first."""
+        self,
+        run_id: int,
+        *,
+        provider: str | None = None,
+        after_id: int = 0,
+        limit: int = 100,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """One model's decisions for a run, oldest first, plus the total count."""
 
-        query = select(BacktestDecisionRow).where(BacktestDecisionRow.run_id == run_id)
+        conditions = [BacktestDecisionRow.run_id == run_id]
         if provider is not None:
-            query = query.where(BacktestDecisionRow.provider == provider)
-        query = query.order_by(BacktestDecisionRow.id).limit(limit)
+            conditions.append(BacktestDecisionRow.provider == provider)
+        query = (
+            select(BacktestDecisionRow)
+            .where(*conditions, BacktestDecisionRow.id > after_id)
+            .order_by(BacktestDecisionRow.id)
+            .limit(limit + 1)
+        )
         async with self.sessions() as session:
             rows = (await session.scalars(query)).all()
+            total = await session.scalar(
+                select(func.count()).select_from(BacktestDecisionRow).where(*conditions)
+            )
         return [
             {
                 "id": row.id,
@@ -1629,7 +1642,7 @@ class AuditRepository:
                 "attempt_started_at": json.loads(row.attempts_json or "[]"),
             }
             for row in rows
-        ]
+        ], int(total or 0)
 
     async def update_backtest_progress(
         self,

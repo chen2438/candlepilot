@@ -2865,8 +2865,11 @@ def create_app(
 
     @app.get("/api/backtests/{run_id}/decisions")
     async def get_backtest_decisions(
-        run_id: int, provider: str | None = None, limit: int = 500
-    ) -> list[dict[str, Any]]:
+        run_id: int,
+        provider: str | None = None,
+        after_id: int = 0,
+        limit: int = 100,
+    ) -> dict[str, Any]:
         """Every decision one model made, in order.
 
         The run's totals cannot say why a model made no trades; these can.
@@ -2874,10 +2877,25 @@ def create_app(
 
         if await engine.audit.backtest_run(run_id) is None:
             raise HTTPException(status_code=404, detail="backtest not found")
+        if after_id < 0:
+            raise HTTPException(status_code=422, detail="after_id must not be negative")
+        if not 1 <= limit <= 500:
+            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+        rows, total = await engine.audit.backtest_decisions(
+            run_id,
+            provider=provider,
+            after_id=after_id,
+            limit=limit,
+        )
+        has_more = len(rows) > limit
+        items = rows[:limit]
         return _json_value(
-            await engine.audit.backtest_decisions(
-                run_id, provider=provider, limit=max(1, min(limit, 2000))
-            )
+            {
+                "items": items,
+                "total": total,
+                "has_more": has_more,
+                "next_after_id": items[-1]["id"] if has_more and items else None,
+            }
         )
 
     @app.post("/api/backtests/{run_id}/cancel")

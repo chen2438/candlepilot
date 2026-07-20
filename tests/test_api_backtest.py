@@ -360,7 +360,7 @@ def test_running_backtest_exposes_each_completed_decision_immediately(tmp_path: 
         assert created.status_code == 202
         run_id = created.json()["id"]
         for _ in range(100):
-            decisions = client.get(f"/api/backtests/{run_id}/decisions").json()
+            decisions = client.get(f"/api/backtests/{run_id}/decisions").json()["items"]
             run = client.get(f"/api/backtests/{run_id}").json()
             if decisions:
                 break
@@ -939,11 +939,34 @@ def test_every_backtest_decision_is_readable_afterwards(tmp_path: Path) -> None:
         payload = {"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)}
         assert _start_backtest(client, payload).status_code == 202
         run = _await_run(client)
-        decisions = client.get("/api/backtests/1/decisions").json()
+        page = client.get("/api/backtests/1/decisions").json()
+        decisions = page["items"]
+        first_page = client.get("/api/backtests/1/decisions?limit=5").json()
+        second_page = client.get(
+            "/api/backtests/1/decisions",
+            params={"limit": 5, "after_id": first_page["next_after_id"]},
+        ).json()
+        third_page = client.get(
+            "/api/backtests/1/decisions",
+            params={"limit": 5, "after_id": second_page["next_after_id"]},
+        ).json()
+        assert client.get("/api/backtests/1/decisions?limit=501").status_code == 422
+        assert client.get("/api/backtests/1/decisions?after_id=-1").status_code == 422
 
     # One per decision the run counted -- including the tail, which the final
     # batch has to flush.
     assert len(decisions) == run["models"][0]["decisions_total"] == 12
+    assert page["total"] == 12
+    assert page["has_more"] is False
+    assert page["next_after_id"] is None
+    paged = first_page["items"] + second_page["items"] + third_page["items"]
+    assert [item["id"] for item in paged] == [item["id"] for item in decisions]
+    assert [first_page["has_more"], second_page["has_more"], third_page["has_more"]] == [
+        True,
+        True,
+        False,
+    ]
+    assert third_page["next_after_id"] is None
     first = decisions[0]
     assert first["symbol"] == "BTCUSDT"
     assert first["cadence"] == "5m"
@@ -971,8 +994,9 @@ def test_decisions_are_filtered_to_one_model(tmp_path: Path) -> None:
         other = client.get("/api/backtests/1/decisions?provider=nobody").json()
         missing = client.get("/api/backtests/999/decisions")
 
-    assert len(mine) == 12
-    assert other == []
+    assert len(mine["items"]) == 12
+    assert mine["total"] == 12
+    assert other == {"items": [], "total": 0, "has_more": False, "next_after_id": None}
     assert missing.status_code == 404
     asyncio.run(database.close())
 
@@ -986,7 +1010,7 @@ def test_clearing_backtests_takes_the_decisions_with_them(tmp_path: Path) -> Non
         payload = {"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)}
         _start_backtest(client, payload)
         _await_run(client)
-        assert len(client.get("/api/backtests/1/decisions").json()) == 12
+        assert len(client.get("/api/backtests/1/decisions").json()["items"]) == 12
 
         cleared = client.post("/api/history/clear", json={"categories": ["backtests"]})
         assert cleared.status_code == 200

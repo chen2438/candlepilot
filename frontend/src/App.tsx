@@ -5,6 +5,7 @@ import type {
   ManualCloseResult,
   LiveRunPerformance,
   BacktestDecision,
+  BacktestDecisionPage,
   BacktestEstimate,
   BacktestResult,
   BacktestRun,
@@ -2421,11 +2422,15 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
   const [autoEstimatePending, setAutoEstimatePending] = useState(false);
   const [timeout, setTimeoutSeconds] = useState("");
   const [openDecisions, setOpenDecisions] = useState<string | null>(null);
-  const [decisions, setDecisions] = useState<BacktestDecision[] | null>(null);
+  const [decisionPage, setDecisionPage] = useState<BacktestDecisionPage | null>(null);
+  const [decisionsLoadingMore, setDecisionsLoadingMore] = useState(false);
   const [detailResult, setDetailResult] = useState<BacktestResult | null>(null);
+  const decisionRequestKey = useRef<string | null>(null);
+  const decisionPageRef = useRef<BacktestDecisionPage | null>(null);
   const restoredEstimateKey = useRef<string | null>(null);
   const localEstimateKey = useRef<string | null>(null);
   const localTimeZone = useMemo(() => localTimeZoneLabel(), []);
+  useEffect(() => { decisionPageRef.current = decisionPage; }, [decisionPage]);
   const configuredTimeouts = useMemo(() => [
     ...new Set(
       form.providers.map((name) => {
@@ -2630,29 +2635,62 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
   const toggleDecisions = async (runId: number, provider: string) => {
     const key = `${runId}-${provider}`;
     if (openDecisions === key) {
+      decisionRequestKey.current = null;
       setOpenDecisions(null);
+      setDecisionPage(null);
       setDetailResult(null);
       return;
     }
     // Clear first: showing the previous model's decisions under a new header
     // while the fetch lands is worse than showing nothing.
+    decisionRequestKey.current = key;
     setOpenDecisions(key);
-    setDecisions(null);
+    setDecisionPage(null);
     setDetailResult(null);
     try {
       const [loadedDecisions, detailedRun] = await Promise.all([
-        api<BacktestDecision[]>(
+        api<BacktestDecisionPage>(
           `/api/backtests/${runId}/decisions?provider=${encodeURIComponent(provider)}`,
         ),
         api<BacktestRun>(`/api/backtests/${runId}`),
       ]);
-      setDecisions(loadedDecisions);
+      if (decisionRequestKey.current !== key) return;
+      setDecisionPage(loadedDecisions);
       setDetailResult(
         detailedRun.models.find((model) => model.provider === provider)?.result ?? null,
       );
     } catch (reason) {
-      setDecisions([]);
+      if (decisionRequestKey.current !== key) return;
+      setDecisionPage({ items: [], total: 0, has_more: false, next_after_id: null });
       setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
+  const loadMoreBacktestDecisions = async () => {
+    if (!openDecisions || !decisionPage?.has_more || decisionPage.next_after_id === null) return;
+    const active = runs.find((run) =>
+      run.models.some((model) => `${run.id}-${model.provider}` === openDecisions),
+    );
+    const provider = active?.models.find(
+      (model) => `${active.id}-${model.provider}` === openDecisions,
+    )?.provider;
+    if (!active || !provider) return;
+    const key = openDecisions;
+    setDecisionsLoadingMore(true);
+    try {
+      const loaded = await api<BacktestDecisionPage>(
+        `/api/backtests/${active.id}/decisions?provider=${encodeURIComponent(provider)}&after_id=${decisionPage.next_after_id}`,
+      );
+      if (decisionRequestKey.current !== key) return;
+      setDecisionPage((current) => {
+        const merged = mergeBacktestDecisionPages(current, loaded);
+        decisionPageRef.current = merged;
+        return merged;
+      });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setDecisionsLoadingMore(false);
     }
   };
 
@@ -2667,26 +2705,32 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
     const provider = active.models.find(
       (model) => `${active.id}-${model.provider}` === openDecisions,
     )?.provider;
-    if (!provider) return;
+    if (!provider || !decisionPageRef.current || active.status !== "running") return;
+    const key = openDecisions;
     const refresh = async () => {
       try {
+        const afterId = decisionPageRef.current?.items.at(-1)?.id ?? 0;
         const [loadedDecisions, detailedRun] = await Promise.all([
-          api<BacktestDecision[]>(
-            `/api/backtests/${active.id}/decisions?provider=${encodeURIComponent(provider)}`,
+          api<BacktestDecisionPage>(
+            `/api/backtests/${active.id}/decisions?provider=${encodeURIComponent(provider)}&after_id=${afterId}`,
           ),
           api<BacktestRun>(`/api/backtests/${active.id}`),
         ]);
-        setDecisions(loadedDecisions);
+        if (decisionRequestKey.current !== key) return;
+        setDecisionPage((current) => {
+          const merged = mergeBacktestDecisionPages(current, loadedDecisions);
+          decisionPageRef.current = merged;
+          return merged;
+        });
         setDetailResult(
           detailedRun.models.find((model) => model.provider === provider)?.result ?? null,
         );
       } catch { /* progress polling will surface terminal run errors */ }
     };
     void refresh();
-    if (active.status !== "running") return;
     const timer = window.setInterval(() => void refresh(), 3000);
     return () => window.clearInterval(timer);
-  }, [openDecisions, runs]);
+  }, [decisionPage !== null, openDecisions, runs]);
 
   const cancel = async (id: number) => {
     try {
@@ -3005,42 +3049,12 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                   <tr key={`${run.id}-decisions`} className="run-decisions">
                     <td colSpan={12}>
                       <BacktestResultDetail result={detailResult} />
-                      {decisions === null
-                        ? <span className="empty">读取中…</span>
-                        : !decisions.length
-                          ? <span className="empty">这个模型还没有决策记录。</span>
-                          : <table className="decision-log">
-                            <thead><tr><th>历史时刻</th><th data-tooltip={`模型请求实际从本机发出的墙钟时间；按 ${localTimeZone} 显示。`}>实际调用</th><th>标的</th><th>结果</th><th>动作</th><th>置信</th><th>说明</th></tr></thead>
-                            <tbody>
-                              {decisions.map((item) => (
-                                <tr key={item.id}>
-                                  <td>{formatLocalDateTime(new Date(item.decided_at))}</td>
-                                  <td className="decision-call-times">
-                                    {item.attempt_started_at.length
-                                      ? <>
-                                        <span>首次 · {formatLocalDateTimeSeconds(new Date(item.attempt_started_at[0]))}</span>
-                                        {item.attempt_started_at.slice(1).map((startedAt, retry) => (
-                                          <small key={`${startedAt}-${retry}`}>重试 {retry + 1} · {formatLocalDateTimeSeconds(new Date(startedAt))}</small>
-                                        ))}
-                                        {item.attempt_started_at.length > 1
-                                          && <em>共重试 {item.attempt_started_at.length - 1} 次</em>}
-                                      </>
-                                      : <span>未调用模型</span>}
-                                  </td>
-                                  <td>{item.symbol} · {item.cadence}</td>
-                                  <td><span className={`decision-outcome ${DECISION_OUTCOME_CLASS[item.outcome]}`}>
-                                    {BACKTEST_OUTCOME[item.outcome]}</span></td>
-                                  <td>{item.action ?? "—"}
-                                    {item.fill && <small>{item.fill.side} @ {item.fill.price} × {item.fill.quantity}</small>}</td>
-                                  <td>{item.confidence !== null ? `${Math.round(item.confidence * 100)}%` : "—"}</td>
-                                  <td className="decision-why">
-                                    {item.detail && <small className="negative">{item.detail}</small>}
-                                    {item.rationale}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>}
+                      <BacktestDecisionLog
+                        page={decisionPage}
+                        localTimeZone={localTimeZone}
+                        loadingMore={decisionsLoadingMore}
+                        onLoadMore={loadMoreBacktestDecisions}
+                      />
                     </td>
                   </tr>,
                 ]
@@ -3052,6 +3066,80 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
       </div>
     </article>
   );
+}
+
+function mergeBacktestDecisionPages(
+  current: BacktestDecisionPage | null,
+  incoming: BacktestDecisionPage,
+): BacktestDecisionPage {
+  if (!current) return incoming;
+  const known = new Set(current.items.map((item) => item.id));
+  const items = [
+    ...current.items,
+    ...incoming.items.filter((item) => !known.has(item.id)),
+  ];
+  const hasMore = items.length < incoming.total;
+  return {
+    ...incoming,
+    items,
+    has_more: hasMore,
+    next_after_id: hasMore ? items.at(-1)?.id ?? null : null,
+  };
+}
+
+export function BacktestDecisionLog({
+  page,
+  localTimeZone,
+  loadingMore,
+  onLoadMore,
+}: {
+  page: BacktestDecisionPage | null;
+  localTimeZone: string;
+  loadingMore: boolean;
+  onLoadMore: () => void;
+}) {
+  if (page === null) return <span className="empty">读取中…</span>;
+  if (!page.items.length) return <span className="empty">这个模型还没有决策记录。</span>;
+  return <>
+    <table className="decision-log">
+      <thead><tr><th>历史时刻</th><th data-tooltip={`模型请求实际从本机发出的墙钟时间；按 ${localTimeZone} 显示。`}>实际调用</th><th>标的</th><th>结果</th><th>动作</th><th>置信</th><th>说明</th></tr></thead>
+      <tbody>
+        {page.items.map((item) => (
+          <tr key={item.id}>
+            <td>{formatLocalDateTime(new Date(item.decided_at))}</td>
+            <td className="decision-call-times">
+              {item.attempt_started_at.length
+                ? <>
+                  <span>首次 · {formatLocalDateTimeSeconds(new Date(item.attempt_started_at[0]))}</span>
+                  {item.attempt_started_at.slice(1).map((startedAt, retry) => (
+                    <small key={`${startedAt}-${retry}`}>重试 {retry + 1} · {formatLocalDateTimeSeconds(new Date(startedAt))}</small>
+                  ))}
+                  {item.attempt_started_at.length > 1
+                    && <em>共重试 {item.attempt_started_at.length - 1} 次</em>}
+                </>
+                : <span>未调用模型</span>}
+            </td>
+            <td>{item.symbol} · {item.cadence}</td>
+            <td><span className={`decision-outcome ${DECISION_OUTCOME_CLASS[item.outcome]}`}>
+              {BACKTEST_OUTCOME[item.outcome]}</span></td>
+            <td>{item.action ?? "—"}
+              {item.fill && <small>{item.fill.side} @ {item.fill.price} × {item.fill.quantity}</small>}</td>
+            <td>{item.confidence !== null ? `${Math.round(item.confidence * 100)}%` : "—"}</td>
+            <td className="decision-why">
+              {item.detail && <small className="negative">{item.detail}</small>}
+              {item.rationale}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+    <div className="decision-more">
+      <span className="decision-more-note">已加载 {page.items.length} / {page.total} 条决策</span>
+      {page.has_more && <button className="text-button" disabled={loadingMore} onClick={onLoadMore}>
+        {loadingMore ? "加载中…" : "加载更多"}
+      </button>}
+    </div>
+  </>;
 }
 
 // Zero trades has four different causes; these are the words that tell them

@@ -621,3 +621,10 @@ export interface BacktestDecision {
     take_profit: string | null;
   };
 }
+
+export interface BacktestDecisionPage {
+  items: BacktestDecision[];
+  total: number;
+  has_more: boolean;
+  next_after_id: number | null;
+}

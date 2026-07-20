@@ -1,7 +1,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { CadenceSelector, LoginScreen } from "./App";
+import { BacktestDecisionLog, CadenceSelector, LoginScreen } from "./App";
+import type { BacktestDecisionPage } from "./types";
 
 afterEach(cleanup);
 
@@ -76,5 +77,43 @@ describe("LoginScreen", () => {
 
     expect((await screen.findByRole("alert")).textContent).toContain("invalid username or password");
     request.mockRestore();
+  });
+});
+
+describe("BacktestDecisionLog", () => {
+  it("shows pagination progress and requests the next page", () => {
+    const onLoadMore = vi.fn();
+    const page: BacktestDecisionPage = {
+      items: [{
+        id: 1,
+        provider: "local-rule",
+        decided_at: "2026-07-20T12:00:00Z",
+        symbol: "BTCUSDT",
+        cadence: "5m",
+        outcome: "hold",
+        action: "HOLD",
+        confidence: 0.5,
+        rationale: "没有入场信号",
+        detail: null,
+        attempt_started_at: [],
+        fill: null,
+      }],
+      total: 101,
+      has_more: true,
+      next_after_id: 1,
+    };
+
+    render(
+      <BacktestDecisionLog
+        page={page}
+        localTimeZone="Europe/London"
+        loadingMore={false}
+        onLoadMore={onLoadMore}
+      />,
+    );
+
+    expect(screen.getByText("已加载 1 / 101 条决策")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "加载更多" }));
+    expect(onLoadMore).toHaveBeenCalledOnce();
   });
 });
