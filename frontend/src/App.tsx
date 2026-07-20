@@ -1850,7 +1850,7 @@ function RestartPanel({
           </button>
         ) : (
           <>
-            <span className="history-warn">确认重启？引擎必须已停止；重启期间页面会短暂断开。</span>
+            <span className="history-warn">确认重启？引擎、回测、探测、采集器和调度任务必须已停止；重启期间页面会短暂断开。</span>
             <button className="compact" disabled={busy !== null} onClick={restart}>
               {busy === "restart" ? "重启中…" : "确认重启"}
             </button>
@@ -1862,7 +1862,7 @@ function RestartPanel({
         {note && <span className="settings-saved">{note}</span>}
       </div>
       <small className="settings-hint">
-        用当前 .env 重新启动后端进程，让上面保存的设置生效。引擎运行中会被拒绝；
+        用当前 .env 重新启动后端进程，让上面保存的设置生效。引擎、回测、探测、采集或调度任务运行中会被拒绝；
         由 .env 注入的旧值会被清掉，但你在 shell 里 export 的变量仍然优先。
       </small>
     </div>

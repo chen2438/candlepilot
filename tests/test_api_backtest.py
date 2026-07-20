@@ -455,6 +455,9 @@ def test_cancel_during_history_load_records_cancelled_terminal_state(tmp_path: P
         assert created.status_code == 202, created.text
         run_id = created.json()["id"]
         assert history_started.wait(timeout=1)
+        refused_restart = client.post("/api/restart")
+        assert refused_restart.status_code == 409
+        assert "provider probe or backtest" in refused_restart.json()["detail"]
         assert client.post(f"/api/backtests/{run_id}/cancel").status_code == 200
         run = _await_run(client, run_id)
 

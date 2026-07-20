@@ -545,6 +545,7 @@ def create_app(
     trade_fill_reconciliation_lock = asyncio.Lock()
     trade_fill_retry_after: dict[str, float] = {}
     trade_fill_failure_count: dict[str, int] = {}
+    restart_pending = False
     testnet_account_memo: dict[str, Any] = {"account": None, "expires_at": 0.0}
     testnet_levels_lock = asyncio.Lock()
     testnet_levels_memo: dict[str, Any] = {"levels": None, "expires_at": 0.0}
@@ -731,6 +732,12 @@ def create_app(
     @app.middleware("http")
     async def authenticate_request(request: Request, call_next: Any) -> Any:
         path = request.url.path
+        if restart_pending and request.method not in {"GET", "HEAD", "OPTIONS"}:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "backend restart is already in progress"},
+                headers={"Cache-Control": "no-store"},
+            )
         if not auth.enabled or not path.startswith("/api/") or path in public_api_paths:
             return await call_next(request)
         identity = auth.validate_session(request.cookies.get(SESSION_COOKIE))
@@ -1369,15 +1376,37 @@ def create_app(
 
     @app.post("/api/restart")
     async def restart_backend() -> dict[str, Any]:
+        nonlocal restart_pending
+        active: list[str] = []
         if engine.running:
+            active.append("the formal decision engine")
+        elif scheduler.running:
+            active.append("the trading scheduler")
+        if background_model_work():
+            active.append("a provider probe or backtest")
+        if collector.running:
+            active.append("the market collector")
+        if active:
             raise HTTPException(
                 status_code=409,
-                detail="stop the engine before restarting the backend",
+                detail="stop active work before restarting the backend: " + ", ".join(active),
             )
+        if restart_pending:
+            raise HTTPException(status_code=409, detail="backend restart is already in progress")
+        restart_pending = True
 
         async def _reexec() -> None:
             # Reply first: exec replaces this process, so nothing can be sent after.
             await asyncio.sleep(0.25)
+            await scheduler.stop()
+            await engine.stop()
+            await collector.stop()
+            if owns_market:
+                await market.close()
+            if testnet_broker is not None:
+                await testnet_broker.close()
+            if testnet_feed is not None:
+                await testnet_feed.close()
             await database.close()
             argv, environment = restart_command()
             logging.getLogger("candlepilot").info(

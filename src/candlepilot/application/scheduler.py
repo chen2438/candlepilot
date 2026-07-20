@@ -80,6 +80,14 @@ class TradingScheduler:
     def stop_requested(self) -> bool:
         return self._stop.is_set()
 
+    @property
+    def running(self) -> bool:
+        return bool(
+            self._tasks
+            or (self._one_shot_task is not None and not self._one_shot_task.done())
+            or (self._auto_stop_task is not None and not self._auto_stop_task.done())
+        )
+
     def select_candidates_per_cycle(self, value: int) -> None:
         if self.engine.running:
             raise RuntimeError("cannot change candidates_per_cycle while running")
