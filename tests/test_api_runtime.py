@@ -144,6 +144,9 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         assert status["user_stream"]["enabled"] is False
         assert status["route_failure_count"] == 0
         assert status["route_failure_limit"] == 3
+        assert status["scheduler"]["trailing_stop"]["mode"] == "shadow"
+        assert client.get("/api/trailing-stops/history").json() == {"events": []}
+        assert client.get("/api/trailing-stops/history?limit=0").status_code == 422
         assert client.get("/api/testnet/events").json() == []
         assert client.get("/api/decision-events").json() == []
         assert client.get("/api/decision-events?limit=0").status_code == 422
@@ -1371,6 +1374,11 @@ def test_settings_endpoint_reads_masked_and_writes_env(tmp_path: Path, monkeypat
         assert payload["path"] == str(env_path)
         fields = {f["key"]: f for s in payload["sections"] for f in s["fields"]}
         assert fields["CANDLEPILOT_PORT"]["value"] == "8000"
+        assert fields["CANDLEPILOT_TRAILING_STOP_MODE"]["options"] == [
+            "off",
+            "shadow",
+            "live",
+        ]
         # The secret is never returned in full, only a masked tail.
         assert fields["BINANCE_TESTNET_API_KEY"]["value"] is None
         assert fields["BINANCE_TESTNET_API_KEY"]["configured"] is True
@@ -1402,6 +1410,7 @@ def test_settings_endpoint_reads_masked_and_writes_env(tmp_path: Path, monkeypat
             {"CANDLEPILOT_CADENCES": "7m"},
             {"CANDLEPILOT_CADENCES": "5m,15m"},
             {"CANDLEPILOT_CANDIDATES_PER_CYCLE": "99"},
+            {"CANDLEPILOT_TRAILING_STOP_MODE": "automatic"},
             {"CANDLEPILOT_HOST": "0.0.0.0"},
             {"CANDLEPILOT_MODE": "bogus"},
             {"CANDLEPILOT_PORT": "not-a-port"},

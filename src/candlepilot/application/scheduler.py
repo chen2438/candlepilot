@@ -10,6 +10,7 @@ from candlepilot.application.testnet_feed import TestnetUserFeed
 from candlepilot.domain.models import MarketSnapshot, PortfolioState
 from candlepilot.market.binance import BinancePublicClient
 from candlepilot.risk.engine import SymbolRules
+from candlepilot.risk.trailing import TrailingStopCriticalError, TrailingStopManager
 
 
 CADENCE_SECONDS = {"5m": 300, "15m": 900, "30m": 1_800, "1h": 3_600, "4h": 14_400}
@@ -39,6 +40,7 @@ class TradingScheduler:
         guard_interval_seconds: float = 5,
         run_cost_loader: Callable[[], Awaitable[float | None]] | None = None,
         testnet_feed: TestnetUserFeed | None = None,
+        trailing_stop_mode: str = "off",
     ) -> None:
         if universe_refresh_seconds <= 0:
             raise ValueError("universe_refresh_seconds must be positive")
@@ -51,6 +53,11 @@ class TradingScheduler:
         self.guard_interval_seconds = guard_interval_seconds
         self.run_cost_loader = run_cost_loader
         self.testnet_feed = testnet_feed
+        self.trailing_stops = TrailingStopManager(
+            engine.testnet_broker,
+            engine.audit,
+            mode=trailing_stop_mode,  # type: ignore[arg-type]
+        )
         self._tasks: list[asyncio.Task[None]] = []
         self._one_shot_task: asyncio.Task[list[DecisionOutcome]] | None = None
         self._symbol_locks: dict[str, asyncio.Lock] = {}
@@ -204,13 +211,22 @@ class TradingScheduler:
                         )
                         return
                     pending_errors = await self._process_pending_entries()
+                    trailing_errors = await self._process_trailing_stops()
                     reason = self.engine.evaluate_stop_reason(
                         run_cost_usd=await self._run_cost()
                     )
-                    self.guard_last_error = "; ".join(pending_errors) or None
+                    self.guard_last_error = "; ".join(
+                        (*pending_errors, *trailing_errors)
+                    ) or None
                     if reason is not None:
                         self.request_auto_stop(reason)
                         return
+                except TrailingStopCriticalError as exc:
+                    self.guard_last_error = str(exc)
+                    self.request_emergency_stop(
+                        f"trailing stop replacement lost protection: {exc}"
+                    )
+                    return
                 except Exception as exc:
                     self.guard_last_error = str(exc)
             try:
@@ -232,6 +248,41 @@ class TradingScheduler:
             try:
                 async with lock:
                     await self.engine.process_pending_entry(symbol)
+            except Exception as exc:
+                errors.append(f"{symbol}: {type(exc).__name__}: {exc}")
+        return errors
+
+    async def _process_trailing_stops(self) -> list[str]:
+        if self.trailing_stops.mode == "off":
+            return []
+        loader = getattr(self.engine.testnet_broker, "trailing_positions", None)
+        if not callable(loader):
+            return ["broker does not expose trailing-stop position state"]
+        positions = await loader()
+        open_symbols = set(positions)
+        if not positions:
+            return await self.trailing_stops.maintain(
+                {}, {}, open_symbols=open_symbols
+            )
+        errors: list[str] = []
+        for symbol, position in sorted(positions.items()):
+            if not self.engine.running or self.engine.auto_stop_reason is not None:
+                break
+            lock = self._symbol_locks.setdefault(symbol, asyncio.Lock())
+            if lock.locked():
+                continue
+            try:
+                async with lock:
+                    rules = await self.engine._rules_for_symbol(symbol)
+                    errors.extend(
+                        await self.trailing_stops.maintain(
+                            {symbol: position},
+                            {symbol: rules},
+                            open_symbols=open_symbols,
+                        )
+                    )
+            except TrailingStopCriticalError:
+                raise
             except Exception as exc:
                 errors.append(f"{symbol}: {type(exc).__name__}: {exc}")
         return errors

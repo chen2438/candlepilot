@@ -15,6 +15,7 @@ from candlepilot.broker.binance_testnet import (
     EmergencyFlattenError,
     ManualCloseError,
     OrderStatusUnknown,
+    TrailingStopReplacementError,
 )
 from candlepilot.broker.user_stream import UserStreamEvent
 from candlepilot.domain.models import OrderPlan, OrderType
@@ -793,6 +794,105 @@ def test_add_removes_existing_candlepilot_bracket_before_creating_replacement() 
         request.url.path in {"/fapi/v1/marginType", "/fapi/v1/leverage"}
         for request in requests
     )
+
+
+def test_trailing_stop_replaces_only_the_stop_and_keeps_take_profit() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/fapi/v1/time":
+            return httpx.Response(200, json={"serverTime": 1784040000000})
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "symbol": "BTCUSDT",
+                        "orderType": "STOP_MARKET",
+                        "closePosition": True,
+                        "clientAlgoId": "cp-entry-sl",
+                        "triggerPrice": "98",
+                    },
+                    {
+                        "symbol": "BTCUSDT",
+                        "orderType": "TAKE_PROFIT_MARKET",
+                        "closePosition": True,
+                        "clientAlgoId": "cp-entry-tp",
+                        "triggerPrice": "106",
+                    },
+                ],
+            )
+        return httpx.Response(200, json={"status": "NEW"})
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        result = await broker.replace_stop_loss(
+            "BTCUSDT", "LONG", Decimal("102")
+        )
+        await client.aclose()
+        return result
+
+    result = asyncio.run(scenario())
+    assert result.previous_stop == Decimal("98")
+    assert result.current_stop == Decimal("102")
+    changed = [
+        (request.method, request.url.path, parse_qs(request.url.query.decode()))
+        for request in requests
+        if request.url.path != "/fapi/v1/time"
+    ]
+    assert [item[:2] for item in changed] == [
+        ("GET", "/fapi/v1/openAlgoOrders"),
+        ("DELETE", "/fapi/v1/algoOrder"),
+        ("POST", "/fapi/v1/algoOrder"),
+    ]
+    assert changed[-1][2]["clientAlgoId"] == ["cp-entry-sl"]
+    assert changed[-1][2]["triggerPrice"] == ["102"]
+    assert all("cp-entry-tp" not in str(item) for item in changed[1:])
+
+
+def test_trailing_stop_restores_old_trigger_when_replacement_fails() -> None:
+    posted: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fapi/v1/time":
+            return httpx.Response(200, json={"serverTime": 1784040000000})
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "symbol": "BTCUSDT",
+                        "orderType": "STOP_MARKET",
+                        "closePosition": True,
+                        "clientAlgoId": "cp-entry-sl",
+                        "triggerPrice": "98",
+                    }
+                ],
+            )
+        if request.method == "POST":
+            trigger = parse_qs(request.url.query.decode())["triggerPrice"][0]
+            posted.append(trigger)
+            if trigger == "102":
+                return httpx.Response(400, json={"code": -4000, "msg": "rejected"})
+        return httpx.Response(200, json={"status": "NEW"})
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        with pytest.raises(TrailingStopReplacementError) as caught:
+            await broker.replace_stop_loss("BTCUSDT", "LONG", Decimal("102"))
+        await client.aclose()
+        return caught.value
+
+    error = asyncio.run(scenario())
+    assert error.requires_emergency_lock is False
+    assert posted == ["102", "98"]
 
 
 def test_add_rejects_before_entry_when_previous_bracket_cannot_be_restored() -> None:

@@ -65,6 +65,12 @@ class AccountReconciliationError(RuntimeError):
     pass
 
 
+class TrailingStopReplacementError(RuntimeError):
+    def __init__(self, message: str, *, requires_emergency_lock: bool) -> None:
+        super().__init__(message)
+        self.requires_emergency_lock = requires_emergency_lock
+
+
 class OrderStatusUnknown(RuntimeError):
     def __init__(self, client_order_id: str) -> None:
         super().__init__(f"order status remains unknown: {client_order_id}")
@@ -124,6 +130,24 @@ class ProtectiveAlgoOrder:
     client_order_id: str
     order_type: Literal["STOP_MARKET", "TAKE_PROFIT_MARKET"]
     trigger_price: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class TrailingPosition:
+    symbol: str
+    side: Literal["LONG", "SHORT"]
+    quantity: Decimal
+    entry_price: Decimal
+    mark_price: Decimal
+    stop_loss: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class StopLossReplacement:
+    symbol: str
+    previous_stop: Decimal
+    current_stop: Decimal
+    client_order_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -532,6 +556,34 @@ class BinanceTestnetBroker:
             for symbol in stops.keys() | targets.keys()
         }
 
+    async def trailing_positions(self) -> dict[str, TrailingPosition]:
+        """Read the venue fields needed by deterministic trailing-stop upkeep."""
+
+        account, levels = await asyncio.gather(
+            self.account_snapshot(), self.protective_levels()
+        )
+        positions: dict[str, TrailingPosition] = {}
+        for item in account.get("positions", []):
+            amount = Decimal(str(item.get("positionAmt", "0")))
+            if amount == 0:
+                continue
+            symbol = str(item["symbol"])
+            entry_price = Decimal(str(item.get("entryPrice", "0")))
+            mark_price = Decimal(str(item.get("markPrice", "0")))
+            if entry_price <= 0 or mark_price <= 0:
+                raise AccountReconciliationError(
+                    f"position risk response is missing prices for {symbol}"
+                )
+            positions[symbol] = TrailingPosition(
+                symbol=symbol,
+                side="LONG" if amount > 0 else "SHORT",
+                quantity=abs(amount),
+                entry_price=entry_price,
+                mark_price=mark_price,
+                stop_loss=levels.get(symbol, ProtectiveLevels()).stop_loss,
+            )
+        return positions
+
     async def configure_symbol(self, symbol: str, leverage: int) -> None:
         if not 1 <= leverage <= 10:
             raise ValueError("testnet leverage must be between 1 and 10")
@@ -660,7 +712,11 @@ class BinanceTestnetBroker:
             # direction with -4130. Preserve the old bracket through the entry,
             # then remove it before placing the replacement pair.
             for stale_order in stale_protection:
-                await self._cancel_algo_order(stale_order.client_order_id)
+                if not await self._cancel_algo_order(stale_order.client_order_id):
+                    raise AccountReconciliationError(
+                        f"protective order {stale_order.client_order_id} changed "
+                        "before bracket replacement"
+                    )
                 cancelled_stale.append(stale_order)
             fresh_protection.append(
                 await self._place_protective(
@@ -761,7 +817,92 @@ class BinanceTestnetBroker:
             )
         return tuple(protective_orders)
 
-    async def _cancel_algo_order(self, client_order_id: str) -> None:
+    async def replace_stop_loss(
+        self,
+        symbol: str,
+        side: Literal["LONG", "SHORT"],
+        trigger_price: Decimal,
+    ) -> StopLossReplacement:
+        """Tighten one CandlePilot stop while leaving its take-profit untouched.
+
+        Binance does not expose an amend endpoint for USD-M Algo orders and
+        rejects a second same-side ``closePosition`` stop.  The old stop must
+        therefore be cancelled first.  If creating the tighter stop fails, the
+        old trigger is restored; inability to restore it is an account-level
+        safety failure for the scheduler to flatten.
+        """
+
+        if trigger_price <= 0:
+            raise ValueError("trailing stop trigger must be positive")
+        await self.sync_time()
+        stops = tuple(
+            item
+            for item in await self._candlepilot_protective_orders(symbol)
+            if item.order_type == "STOP_MARKET"
+        )
+        if len(stops) != 1:
+            raise AccountReconciliationError(
+                f"expected exactly one CandlePilot stop for {symbol}, found {len(stops)}"
+            )
+        previous = stops[0]
+        if previous.trigger_price is None:
+            raise AccountReconciliationError(
+                f"protective order {previous.client_order_id} has no valid trigger price"
+            )
+        tighter = (
+            trigger_price > previous.trigger_price
+            if side == "LONG"
+            else trigger_price < previous.trigger_price
+        )
+        if not tighter:
+            return StopLossReplacement(
+                symbol=symbol,
+                previous_stop=previous.trigger_price,
+                current_stop=previous.trigger_price,
+                client_order_id=previous.client_order_id,
+            )
+        cancelled = await self._cancel_algo_order(previous.client_order_id)
+        if not cancelled:
+            raise TrailingStopReplacementError(
+                f"stop {previous.client_order_id} changed before it could be replaced",
+                requires_emergency_lock=False,
+            )
+        exit_side = "SELL" if side == "LONG" else "BUY"
+        try:
+            await self._place_close_position_protective(
+                symbol,
+                exit_side,
+                "STOP_MARKET",
+                trigger_price,
+                previous.client_order_id,
+            )
+        except Exception as exc:
+            try:
+                await self._place_close_position_protective(
+                    symbol,
+                    exit_side,
+                    "STOP_MARKET",
+                    previous.trigger_price,
+                    previous.client_order_id,
+                )
+            except Exception as restore_exc:
+                raise TrailingStopReplacementError(
+                    f"failed to install and restore the stop for {symbol}: "
+                    f"{type(restore_exc).__name__}",
+                    requires_emergency_lock=True,
+                ) from exc
+            raise TrailingStopReplacementError(
+                f"failed to install the tighter stop for {symbol}; previous stop restored",
+                requires_emergency_lock=False,
+            ) from exc
+        return StopLossReplacement(
+            symbol=symbol,
+            previous_stop=previous.trigger_price,
+            current_stop=trigger_price,
+            client_order_id=previous.client_order_id,
+        )
+
+    async def _cancel_algo_order(self, client_order_id: str) -> bool:
         try:
             await self._signed_request(
                 "DELETE",
@@ -771,6 +912,31 @@ class BinanceTestnetBroker:
         except BinanceApiError as exc:
             if exc.code != -2011:
                 raise
+            return False
+        return True
+
+    async def _place_close_position_protective(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        trigger_price: Decimal,
+        client_order_id: str,
+    ) -> None:
+        await self._signed_request(
+            "POST",
+            "/fapi/v1/algoOrder",
+            {
+                "algoType": "CONDITIONAL",
+                "symbol": symbol,
+                "side": side,
+                "type": order_type,
+                "triggerPrice": trigger_price,
+                "closePosition": True,
+                "workingType": "MARK_PRICE",
+                "clientAlgoId": client_order_id,
+            },
+        )
 
     async def _place_protective(
         self,
@@ -790,19 +956,12 @@ class BinanceTestnetBroker:
         """
 
         client_order_id = client_order_id or f"{order.client_order_id}-{suffix}"
-        await self._signed_request(
-            "POST",
-            "/fapi/v1/algoOrder",
-            {
-                "algoType": "CONDITIONAL",
-                "symbol": order.symbol,
-                "side": side,
-                "type": order_type,
-                "triggerPrice": trigger_price,
-                "closePosition": True,
-                "workingType": "MARK_PRICE",
-                "clientAlgoId": client_order_id,
-            },
+        await self._place_close_position_protective(
+            order.symbol,
+            side,
+            order_type,
+            trigger_price,
+            client_order_id,
         )
         return client_order_id
 

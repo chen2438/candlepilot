@@ -198,6 +198,26 @@ class AggressiveRiskPolicy:
             return self._reject("long stop loss must be below entry")
         if requested_side == "SHORT" and stop <= entry:
             return self._reject("short stop loss must be above entry")
+        preserved_tighter_stop = False
+        if intent.action == TradeAction.ADD:
+            assert existing is not None
+            if existing.stop_loss is None:
+                return self._reject("cannot add while the existing position has no stop loss")
+            tighter_stop = (
+                max(stop, existing.stop_loss)
+                if requested_side == "LONG"
+                else min(stop, existing.stop_loss)
+            )
+            preserved_tighter_stop = tighter_stop != stop
+            stop = tighter_stop
+            if requested_side == "LONG" and stop >= entry:
+                return self._reject(
+                    "cannot add below an existing tightened long stop"
+                )
+            if requested_side == "SHORT" and stop <= entry:
+                return self._reject(
+                    "cannot add above an existing tightened short stop"
+                )
         if requested_side == "LONG" and snapshot.mark_price <= stop:
             return self._reject("latest market price has crossed the long stop loss")
         if requested_side == "SHORT" and snapshot.mark_price >= stop:
@@ -370,6 +390,8 @@ class AggressiveRiskPolicy:
             accepted_reasons.append("limit entry is immediately marketable after refresh")
         if pending_entry:
             accepted_reasons.append("resting limit intent queued locally until trigger")
+        if preserved_tighter_stop:
+            accepted_reasons.append("existing tighter stop preserved for the merged position")
         return RiskEvaluation(
             decision=RiskDecision(
                 accepted=True,

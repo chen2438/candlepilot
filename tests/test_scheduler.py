@@ -5,6 +5,10 @@ from pathlib import Path
 
 from candlepilot.application.engine import TradingEngine
 from candlepilot.application.scheduler import TradingScheduler
+from candlepilot.broker.binance_testnet import (
+    TrailingPosition,
+    TrailingStopReplacementError,
+)
 from candlepilot.domain.models import MarketSnapshot, ProviderHealth, TradeIntent
 from candlepilot.market.binance import ContractInfo
 from candlepilot.market.scanner import MarketCandidateInput
@@ -533,6 +537,68 @@ def test_guard_stops_the_run_when_a_limit_is_reached(tmp_path: Path) -> None:
     assert running is False
     assert reason is not None and "duration limit" in reason
     assert tasks == []  # the scheduler tore its own tasks down
+
+
+def test_guard_emergency_flattens_when_a_trailing_stop_cannot_be_restored(
+    tmp_path: Path,
+) -> None:
+    class CriticalBroker(FakeTestnetBroker):
+        async def trailing_positions(self):
+            return {
+                "BTCUSDT": TrailingPosition(
+                    symbol="BTCUSDT",
+                    side="LONG",
+                    quantity=Decimal("1"),
+                    entry_price=Decimal("100"),
+                    mark_price=Decimal("104"),
+                    stop_loss=Decimal("98"),
+                )
+            }
+
+        async def replace_stop_loss(self, *_):
+            raise TrailingStopReplacementError(
+                "old stop could not be restored", requires_emergency_lock=True
+            )
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'trailing-critical.db'}")
+        await database.initialize()
+        market = SchedulerMarket()
+        broker = CriticalBroker()
+        engine = TradingEngine(
+            testnet_broker=broker,  # type: ignore[arg-type]
+            providers=ProviderRegistry([HoldProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider_chain(["hold"])
+        await engine.start()
+        engine.venue_contract_rules = {
+            "BTCUSDT": SymbolRules(
+                Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")
+            )
+        }
+        scheduler = TradingScheduler(
+            engine,
+            market,  # type: ignore[arg-type]
+            guard_interval_seconds=0.01,
+            trailing_stop_mode="live",
+        )
+        scheduler.start()
+        for _ in range(200):
+            if not engine.running:
+                break
+            await asyncio.sleep(0.01)
+        if scheduler._auto_stop_task is not None:
+            await scheduler._auto_stop_task
+        result = broker.flattened, engine.emergency_locked, engine.auto_stop_reason
+        await database.close()
+        return result
+
+    flattened, locked, reason = asyncio.run(scenario())
+    assert flattened is True
+    assert locked is True
+    assert reason is not None and "trailing stop replacement lost protection" in reason
 
 
 def test_three_rescues_auto_stop_one_live_run_and_report_the_reason(tmp_path: Path) -> None:

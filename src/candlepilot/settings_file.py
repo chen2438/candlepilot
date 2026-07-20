@@ -68,6 +68,13 @@ ENV_SECTIONS: tuple[EnvSection, ...] = (
                      description="留空=不限。"),
             EnvField("CANDLEPILOT_MAX_RUN_COST_USD", "运行预算（USD 等效）", "number",
                      description="留空=不限。"),
+            EnvField(
+                "CANDLEPILOT_TRAILING_STOP_MODE",
+                "移动止损模式",
+                "enum",
+                ("off", "shadow", "live"),
+                description="2R 激活、回撤 1R；shadow 只记录，live 才会修改交易所止损。",
+            ),
         ),
     ),
     EnvSection(

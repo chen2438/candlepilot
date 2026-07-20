@@ -322,6 +322,7 @@ const HISTORY_CATEGORIES: Array<{ key: string; label: string; hint: string }> = 
   { key: "executions", label: "订单与成交", hint: "" },
   { key: "user_events", label: "测试网事件", hint: "用户数据流" },
   { key: "alerts", label: "告警历史", hint: "" },
+  { key: "trailing_stops", label: "移动止损记录", hint: "影子候选与实盘改单" },
   { key: "backtests", label: "回测记录", hint: "运行、逐模型结果与每条决策" },
   // Last, and worded plainly: the others are records of things that happened,
   // this one is data that can never be obtained again.

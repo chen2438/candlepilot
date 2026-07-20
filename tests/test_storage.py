@@ -1202,6 +1202,29 @@ def test_clear_history_is_selective_and_preserves_runtime_state(tmp_path: Path) 
     assert preserved == "keep-me"  # runtime_state (paper account) never cleared
 
 
+def test_trailing_stop_events_are_queryable_and_clearable(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'trailing-events.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        await repository.record_trailing_stop_event(
+            "BTCUSDT",
+            "shadow",
+            "shadow",
+            {"candidate_stop": "102", "original_stop": "98"},
+        )
+        before = await repository.recent_trailing_stop_events()
+        counts = await repository.clear_history({"trailing_stops"})
+        after = await repository.recent_trailing_stop_events()
+        await database.close()
+        return before, counts, after
+
+    before, counts, after = asyncio.run(scenario())
+    assert before[0]["event"]["candidate_stop"] == "102"
+    assert counts == {"trailing_stops": 1}
+    assert after == []
+
+
 def test_database_migrations_are_versioned_and_idempotent(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'migrations.db'}")

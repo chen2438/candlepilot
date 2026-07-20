@@ -331,6 +331,38 @@ def test_add_uses_only_remaining_single_symbol_margin_capacity() -> None:
     )
 
 
+def test_add_preserves_an_existing_tighter_stop() -> None:
+    portfolio = _portfolio(
+        open_positions=1,
+        positions=_position("LONG", "5", stop_loss="99", take_profit="104"),
+    )
+    result = AggressiveRiskPolicy(max_symbol_margin_fraction=Decimal("1")).evaluate(
+        _intent(TradeAction.ADD).model_copy(
+            update={"stop_loss": Decimal("98"), "take_profit": Decimal("106")}
+        ),
+        _snapshot(),
+        portfolio,
+        RULES,
+    )
+
+    assert result.decision.accepted
+    assert result.order is not None and result.order.stop_price == Decimal("99")
+    assert "existing tighter stop preserved" in result.decision.reason
+
+
+def test_add_cannot_enter_below_a_profitable_trailing_stop() -> None:
+    portfolio = _portfolio(
+        open_positions=1,
+        positions=_position("LONG", "5", stop_loss="101", take_profit="106"),
+    )
+    result = AggressiveRiskPolicy().evaluate(
+        _intent(TradeAction.ADD), _snapshot(), portfolio, RULES
+    )
+
+    assert not result.decision.accepted
+    assert "existing tightened long stop" in result.decision.reason
+
+
 def test_rejects_take_profit_on_wrong_side_of_entry() -> None:
     long_bad = _intent().model_copy(update={"take_profit": Decimal("99")})  # below entry
     long_result = AggressiveRiskPolicy().evaluate(long_bad, _snapshot(), _portfolio(), RULES)
@@ -581,7 +613,10 @@ def test_add_uses_existing_position_direction() -> None:
     result = AggressiveRiskPolicy().evaluate(
         _intent(TradeAction.ADD),
         _snapshot(),
-        _portfolio(open_positions=1, positions=_position("LONG")),
+        _portfolio(
+            open_positions=1,
+            positions=_position("LONG", stop_loss="98", take_profit="104"),
+        ),
         RULES,
     )
     assert result.decision.accepted

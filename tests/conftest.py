@@ -67,6 +67,9 @@ class FakeTestnetBroker:
     async def pending_entry_symbols(self):
         return ()
 
+    async def trailing_positions(self):
+        return {}
+
     async def configure_symbol(self, symbol, leverage):
         return None
 

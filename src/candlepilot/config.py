@@ -29,6 +29,7 @@ DEFAULT_PROVIDER_ALIASES = {
     "claude-code": "claude-code-auth",
 }
 CUSTOM_LLM_WIRE_APIS = {"chat-completions", "responses"}
+TRAILING_STOP_MODES = {"off", "shadow", "live"}
 CUSTOM_PROVIDER_PREFIX = "openai-compatible:"
 CUSTOM_PROVIDER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
 MAX_CUSTOM_LLM_PROVIDERS = 8
@@ -228,6 +229,15 @@ def _parse_boolean(raw: str | None, *, name: str, default: bool) -> bool:
     raise ValueError(f"{name} must be true or false")
 
 
+def _parse_trailing_stop_mode(raw: str | None) -> str:
+    value = (raw or "shadow").strip().lower()
+    if value not in TRAILING_STOP_MODES:
+        raise ValueError(
+            "CANDLEPILOT_TRAILING_STOP_MODE must be off, shadow, or live"
+        )
+    return value
+
+
 def _validate_custom_llm_headers(parsed: object) -> dict[str, SecretStr]:
     if not isinstance(parsed, dict) or len(parsed) > 16:
         raise ValueError("custom LLM extra headers must be a JSON object with at most 16 entries")
@@ -420,6 +430,7 @@ class Settings:
     max_snapshot_age_seconds: int = 75
     cadences: tuple[str, ...] = (DEFAULT_DECISION_CADENCE,)
     candidates_per_cycle: int = 5
+    trailing_stop_mode: str = "shadow"
     max_run_seconds: int | None = None
     max_run_cost_usd: float | None = None
     provider_chain: tuple[str, ...] = ()
@@ -471,6 +482,9 @@ class Settings:
             cadences=_parse_cadences(get("CANDLEPILOT_CADENCES")),
             candidates_per_cycle=_parse_candidates_per_cycle(
                 get("CANDLEPILOT_CANDIDATES_PER_CYCLE")
+            ),
+            trailing_stop_mode=_parse_trailing_stop_mode(
+                get("CANDLEPILOT_TRAILING_STOP_MODE")
             ),
             max_run_seconds=_parse_positive_number(
                 get("CANDLEPILOT_MAX_RUN_SECONDS"),

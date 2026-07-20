@@ -408,6 +408,9 @@ def _status(engine: TradingEngine, scheduler: TradingScheduler | None = None) ->
             if scheduler is not None
             else None,
             "guard_last_error": scheduler.guard_last_error if scheduler is not None else None,
+            "trailing_stop": scheduler.trailing_stops.status
+            if scheduler is not None
+            else None,
         },
         "user_stream": {
             "enabled": testnet_feed is not None,
@@ -517,6 +520,7 @@ def create_app(
         candidates_per_cycle=settings.candidates_per_cycle,
         run_cost_loader=current_run_cost_usd,
         testnet_feed=testnet_feed,
+        trailing_stop_mode=settings.trailing_stop_mode,
     )
     history_cache = HistoricalMarketCache(settings.data_dir / "market")
     operational_metrics = OperationalMetrics()
@@ -1168,6 +1172,12 @@ def create_app(
             raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
         return {"events": await engine.audit.recent_alert_events(limit)}
 
+    @app.get("/api/trailing-stops/history")
+    async def get_trailing_stop_history(limit: int = 100) -> dict[str, Any]:
+        if not 1 <= limit <= 500:
+            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+        return {"events": await engine.audit.recent_trailing_stop_events(limit)}
+
     @app.post("/api/history/clear")
     async def clear_history(request: HistoryClearRequest) -> dict[str, Any]:
         db_categories = set(AuditRepository.HISTORY_TABLES)
@@ -1742,7 +1752,8 @@ def create_app(
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
         run_config: dict[str, object] = {
-            "candidates_per_cycle": scheduler.candidates_per_cycle
+            "candidates_per_cycle": scheduler.candidates_per_cycle,
+            "trailing_stop_mode": scheduler.trailing_stops.mode,
         }
         if single_cycle:
             run_config["single_cycle"] = True

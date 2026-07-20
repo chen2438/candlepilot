@@ -69,6 +69,17 @@ def test_cadences_reject_multiple_values(monkeypatch) -> None:
     assert Settings.from_env().cadences == ("15m",)
 
 
+def test_trailing_stop_mode_defaults_to_shadow_and_rejects_unknown_values(
+    monkeypatch,
+) -> None:
+    assert Settings.from_env().trailing_stop_mode == "shadow"
+    monkeypatch.setenv("CANDLEPILOT_TRAILING_STOP_MODE", "LIVE")
+    assert Settings.from_env().trailing_stop_mode == "live"
+    monkeypatch.setenv("CANDLEPILOT_TRAILING_STOP_MODE", "automatic")
+    with pytest.raises(ValueError, match="must be off, shadow, or live"):
+        Settings.from_env()
+
+
 def test_custom_llm_providers_parse_from_json(monkeypatch) -> None:
     import json
 
