@@ -561,12 +561,15 @@ def trade_intent_output_schema() -> dict[str, Any]:
 
 
 def trade_intent_batch_output_schema() -> dict[str, Any]:
+    intent_schema = trade_intent_output_schema()
+    definitions = intent_schema.pop("$defs", {})
     return {
+        "$defs": definitions,
         "type": "object",
         "properties": {
             "intents": {
                 "type": "array",
-                "items": trade_intent_output_schema(),
+                "items": intent_schema,
                 "minItems": 1,
             }
         },

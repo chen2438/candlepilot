@@ -22,6 +22,7 @@ from candlepilot.providers.cli import (
     parse_claude_usage,
     parse_codex_events,
     sanitized_subprocess_env,
+    trade_intent_batch_output_schema,
     trade_intent_output_schema,
 )
 from candlepilot.providers import cli as cli_module
@@ -171,6 +172,29 @@ def test_codex_output_schema_requires_every_property() -> None:
     assert schema["additionalProperties"] is False
     assert '"default"' not in json.dumps(schema)
     assert '"pattern"' not in json.dumps(schema)
+
+
+def test_codex_batch_output_schema_resolves_definitions_from_document_root() -> None:
+    schema = trade_intent_batch_output_schema()
+    item_schema = schema["properties"]["intents"]["items"]
+
+    assert "$defs" not in item_schema
+    assert set(schema["$defs"]) == {"OrderType", "TradeAction"}
+
+    def references(node: object) -> list[str]:
+        if isinstance(node, dict):
+            return [
+                value
+                for key, value in node.items()
+                if key == "$ref" and isinstance(value, str)
+            ] + [reference for value in node.values() for reference in references(value)]
+        if isinstance(node, list):
+            return [reference for value in node for reference in references(value)]
+        return []
+
+    refs = references(schema)
+    assert refs
+    assert all(ref.removeprefix("#/$defs/") in schema["$defs"] for ref in refs)
 
 
 def test_codex_detection_prefers_current_app_binary(monkeypatch, tmp_path: Path) -> None:
