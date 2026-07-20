@@ -278,6 +278,7 @@ class SimulatedExchange:
             existing.entry_price * existing.quantity + fill * order.quantity
         ) / total
         existing.quantity = total
+        existing.leverage = leverage
         existing.fees += fee
         if order.stop_price is not None:
             existing.stop_loss = order.stop_price

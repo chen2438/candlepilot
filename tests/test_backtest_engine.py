@@ -263,6 +263,22 @@ def test_position_state_carries_the_context_the_model_needs() -> None:
     assert position.leverage == 3
 
 
+def test_add_updates_position_leverage_and_margin() -> None:
+    exchange = SimulatedExchange(
+        BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0"))
+    )
+    exchange.execute(_order(), _candle(0), leverage=2)
+    exchange.execute(_order(), _candle(1), leverage=4)
+
+    portfolio = exchange.portfolio_state({"BTCUSDT": Decimal("100")})
+    position = portfolio.positions["BTCUSDT"]
+
+    assert position.quantity == Decimal("2")
+    assert position.leverage == 4
+    assert position.initial_margin == Decimal("50")
+    assert portfolio.margin_used == Decimal("50")
+
+
 def test_pnl_24h_uses_a_rolling_window_instead_of_resetting_at_midnight() -> None:
     exchange = SimulatedExchange()
     exchange.portfolio_state({}, as_of=START)
