@@ -2,7 +2,7 @@
 
 > 本文件是 CandlePilot 的**唯一权威功能文档**，记录系统当前的全部能力、接口与边界。
 > `STATUS.md` 与 `PLAN.md` 已弃用，后续变更只同步更新本文件。
-> 最后更新：2026-07-20（远程控制台鉴权与 Ubuntu VPS 一键部署）
+> 最后更新：2026-07-20（Ubuntu 24.04 / Debian 13 VPS 一键部署）
 
 ---
 
@@ -1024,13 +1024,14 @@ push/PR 的所有新增提交重复执行同一校验，即使本地 hook 被绕
 `pnpm/action-setup@v6`，不再依赖 GitHub 已弃用的 Action Node.js 20 运行时。
 Python 依赖锁定于 `requirements.lock`，前端锁定于 `frontend/pnpm-lock.yaml`。
 
-### 8.1 Ubuntu VPS 一键安装
+### 8.1 Linux VPS 一键安装
 
-仓库提供 `scripts/install_vps.sh`，仅支持全新 Ubuntu 24.04 VPS。脚本必须由 root 执行，会创建
-独立 `candlepilot` 用户，把仓库安装到 `/opt/candlepilot`，安装锁定的 Python 依赖、Node.js 24、
-pnpm 与 Codex CLI，构建前端，并创建 systemd 服务。后端仍绑定 `127.0.0.1:8000`；Nginx 在用户
-指定的公网端口提供 HTTPS、转发 REST 与 WebSocket。脚本生成包含 VPS IP SAN 的自签名证书，完成
-后输出 SHA-256 指纹；首次访问只有在核对该指纹后才能接受浏览器警告。
+仓库提供 `scripts/install_vps.sh`，支持全新 Ubuntu 24.04 或 Debian 13 VPS。Ubuntu 使用系统
+Python 3.12，Debian 使用系统 Python 3.13；两者安装相同的锁定项目依赖。脚本必须由 root 执行，
+会创建独立 `candlepilot` 用户，把仓库安装到 `/opt/candlepilot`，安装 Node.js 24、pnpm 与 Codex
+CLI，构建前端，并创建 systemd 服务。后端仍绑定 `127.0.0.1:8000`；Nginx 在用户指定的公网端口
+提供 HTTPS、转发 REST 与 WebSocket。脚本生成包含 VPS IP SAN 的自签名证书，完成后输出 SHA-256
+指纹；首次访问只有在核对该指纹后才能接受浏览器警告。其他发行版或版本会在修改系统前被拒绝。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/chen2438/candlepilot/main/scripts/install_vps.sh \

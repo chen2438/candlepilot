@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# CandlePilot one-shot installer for a fresh Ubuntu 24.04 VPS.
+# CandlePilot one-shot installer for a fresh Ubuntu 24.04 or Debian 13 VPS.
 # The backend remains loopback-only. Nginx exposes an authenticated HTTPS
 # console using a self-signed certificate whose SAN is the VPS IP address.
 
@@ -38,8 +38,21 @@ prompt_value() {
 [[ -r /etc/os-release ]] || fail "cannot identify the operating system"
 # shellcheck disable=SC1091
 source /etc/os-release
-[[ "${ID:-}" == "ubuntu" && "${VERSION_ID:-}" == "24.04" ]] \
-  || fail "this installer currently supports Ubuntu 24.04 only"
+case "${ID:-}:${VERSION_ID:-}" in
+  ubuntu:24.04)
+    PLATFORM_NAME="Ubuntu 24.04"
+    PYTHON_BIN="python3.12"
+    PYTHON_PACKAGES=(python3.12 python3.12-venv)
+    ;;
+  debian:13)
+    PLATFORM_NAME="Debian 13"
+    PYTHON_BIN="python3"
+    PYTHON_PACKAGES=(python3 python3-venv)
+    ;;
+  *)
+    fail "this installer supports Ubuntu 24.04 and Debian 13 only"
+    ;;
+esac
 [[ "$PUBLIC_PORT" =~ ^[0-9]+$ ]] && (( PUBLIC_PORT >= 1024 && PUBLIC_PORT <= 65535 )) \
   || fail "CANDLEPILOT_PUBLIC_PORT must be between 1024 and 65535"
 [[ ! -e "$APP_DIR" ]] || fail "$APP_DIR already exists; refusing to overwrite an installation"
@@ -88,7 +101,7 @@ prompt_value BINANCE_SECRET "Binance Demo API secret: " true
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
-  ca-certificates curl git nginx openssl python3.12 python3.12-venv sqlite3 xz-utils
+  ca-certificates curl git nginx openssl sqlite3 xz-utils "${PYTHON_PACKAGES[@]}"
 
 case "$(uname -m)" in
   x86_64) NODE_ARCH="x64" ;;
@@ -119,7 +132,7 @@ fi
 install -d -o "$APP_USER" -g "$APP_USER" "$APP_DIR"
 rmdir "$APP_DIR"
 runuser -u "$APP_USER" -- git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$APP_DIR"
-runuser -u "$APP_USER" -- python3.12 -m venv "$APP_DIR/.venv"
+runuser -u "$APP_USER" -- "$PYTHON_BIN" -m venv "$APP_DIR/.venv"
 runuser -u "$APP_USER" -- "$APP_DIR/.venv/bin/pip" install --disable-pip-version-check -r "$APP_DIR/requirements.lock"
 runuser -u "$APP_USER" -- "$APP_DIR/.venv/bin/pip" install --disable-pip-version-check -e "$APP_DIR" --no-deps
 runuser -u "$APP_USER" -- env HOME="/home/$APP_USER" PATH="/usr/local/bin:/usr/bin:/bin" \
@@ -243,6 +256,7 @@ fi
 
 echo
 echo "CandlePilot installation completed."
+echo "Platform: $PLATFORM_NAME"
 echo "URL: https://$PUBLIC_IP:$PUBLIC_PORT"
 echo "Username: $ADMIN_USERNAME"
 echo "The certificate is self-signed; verify this SHA-256 fingerprint before accepting it:"
