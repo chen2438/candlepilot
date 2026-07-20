@@ -472,13 +472,27 @@ export function StartupProbeCompletedSummary({
   ready: boolean;
 }) {
   return <div className="live-probe-summary">
-    <div>最近试跑：{probe.analysis_symbol_count} 标的批量分析 {probe.slowest_seconds}s
+    <div>最近试跑：{startupProbeSymbolSummary(probe)} · 批量分析 {probe.slowest_seconds}s
       · 负载 {((probe.aggregate_utilization ?? 0) * 100).toFixed(1)}%</div>
     <StartupProbeProviderResults probe={probe} />
     {!ready && <small>{probe.consumed
       ? "该试跑已用于一次运行，请重新试跑"
       : "参数已变化，请重新试跑"}</small>}
   </div>;
+}
+
+export function startupProbeSymbolSummary(
+  probe: NonNullable<EngineStatus["startup_probe"]>,
+): string {
+  const candidateCount = probe.candidate_symbol_count;
+  const extraPositionCount = probe.extra_position_symbol_count;
+  if (candidateCount === undefined || extraPositionCount === undefined) {
+    return `${probe.analysis_symbol_count} 个分析标的`;
+  }
+  const prefix = extraPositionCount > 0
+    ? `${candidateCount} 个候选 + ${extraPositionCount} 个额外持仓 = `
+    : `${candidateCount} 个候选 = `;
+  return `${prefix}${probe.analysis_symbol_count} 个分析标的`;
 }
 
 export function StartupProbeRunningSummary({
@@ -490,7 +504,7 @@ export function StartupProbeRunningSummary({
     <div>
       正式批量试跑：已完成 {probe.completed_providers}/{probe.provider_count} 个 Provider
       · <span title={probe.probe_symbols.join("、")}>
-        {probe.analysis_symbol_count} 个标的 · {probe.probe_cadence}
+        {startupProbeSymbolSummary(probe)} · {probe.probe_cadence}
       </span>
     </div>
     <div className="live-probe-track" aria-label={`已完成 ${probe.completed_providers}/${probe.provider_count} 个 Provider`}>
@@ -1081,9 +1095,9 @@ export default function App() {
                 ))}
               </div>
             </div>
-            <div className="cadence-select" title={status.running ? "运行时锁定" : "拖动滑条或直接输入每个周期分析候选池前 N 个标的"}>
+            <div className="cadence-select" title={status.running ? "运行时锁定" : "设置动态候选池前 N 名；已有持仓会去重后额外加入分析"}>
               <span className="range-head">
-                每周期标的数
+                每周期候选标的数
                 <input
                   type="number"
                   className="range-input"

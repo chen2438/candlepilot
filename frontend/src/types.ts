@@ -70,6 +70,8 @@ export interface EngineStatus {
     provider_count: number;
     completed_providers: number;
     probe_symbols: string[];
+    candidate_symbol_count?: number;
+    extra_position_symbol_count?: number;
     probe_cadence: string;
     provider_results: Record<string, StartupProbeProviderResult>;
     slowest_seconds?: number;

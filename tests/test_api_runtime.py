@@ -224,6 +224,8 @@ def test_live_probe_runs_one_real_batch_and_reports_its_details(
         assert status["startup_probe"]["provider_count"] == 1
         assert status["startup_probe"]["running"] is False
         assert status["startup_probe"]["completed_providers"] == 1
+        assert status["startup_probe"]["candidate_symbol_count"] == 1
+        assert status["startup_probe"]["extra_position_symbol_count"] == 0
         assert status["startup_probe"]["analysis_symbol_count"] == 1
         assert status["startup_probe"]["ready"] is True
         details = status["startup_probe"]["provider_results"]["api-fixture"]
@@ -278,7 +280,9 @@ def test_live_startup_probe_publishes_provider_progress(tmp_path: Path) -> None:
             return await super().generate_trade_intent(snapshot, portfolio)
 
     engine = TradingEngine(
-        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        testnet_broker=StatefulTestnetBroker(
+            {"ETHUSDT": ("LONG", Decimal("1"), Decimal("100"))}
+        ),  # type: ignore[arg-type]
         providers=ProviderRegistry([GatedProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
@@ -296,15 +300,17 @@ def test_live_startup_probe_publishes_provider_progress(tmp_path: Path) -> None:
             assert progress["provider_count"] == 1
             assert progress["completed_providers"] == 0
             assert progress["provider_results"]["api-fixture"] == {"status": "pending"}
-            assert progress["probe_symbols"] == ["BTCUSDT"]
-            assert progress["analysis_symbol_count"] == 1
+            assert progress["probe_symbols"] == ["BTCUSDT", "ETHUSDT"]
+            assert progress["candidate_symbol_count"] == 1
+            assert progress["extra_position_symbol_count"] == 1
+            assert progress["analysis_symbol_count"] == 2
             assert progress["probe_cadence"] == "15m"
         finally:
             release_provider_call.set()
         response = future.result(timeout=2)
         assert response.status_code == 200, response.text
         assert response.json()["startup_probe"]["completed_providers"] == 1
-        assert GatedProvider.calls == 1
+        assert GatedProvider.calls == 2
         assert response.json()["running"] is False
         assert client.post("/api/engine/start").json()["running"] is True
         client.post("/api/engine/stop")

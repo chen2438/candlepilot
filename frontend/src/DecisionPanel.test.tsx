@@ -125,12 +125,14 @@ describe("DecisionPanel", () => {
       provider_count: 1,
       completed_providers: 0,
       probe_symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+      candidate_symbol_count: 2,
+      extra_position_symbol_count: 1,
       probe_cadence: "5m",
       provider_results: { "claude-code-auth": { status: "pending" } },
       analysis_symbol_count: 3,
       started_at: "2026-07-20T00:00:00Z",
     }} />);
-    expect(screen.getByText(/3 个标的 · 5m/)).toBeTruthy();
+    expect(screen.getByText(/2 个候选 \+ 1 个额外持仓 = 3 个分析标的 · 5m/)).toBeTruthy();
     expect(screen.queryByText("BTCUSDT 5m")).toBeNull();
     expect(screen.getByTitle("BTCUSDT、ETHUSDT、SOLUSDT")).toBeTruthy();
     expect(screen.getByText("等待结果")).toBeTruthy();
@@ -147,6 +149,8 @@ describe("DecisionPanel", () => {
         provider_count: 1,
         completed_providers: 1,
         probe_symbols: ["BTCUSDT", "ETHUSDT"],
+        candidate_symbol_count: 2,
+        extra_position_symbol_count: 0,
         probe_cadence: "15m",
         provider_results: {
           "openai-compatible:deepseek": {
@@ -172,7 +176,7 @@ describe("DecisionPanel", () => {
         started_at: "2026-07-19T22:00:00Z",
       }}
     />);
-    expect(screen.getByText(/2 标的批量分析 42s/)).toBeTruthy();
+    expect(screen.getByText(/2 个候选 = 2 个分析标的 · 批量分析 42s/)).toBeTruthy();
     expect(screen.queryByText(/× 2 标的/)).toBeNull();
     expect(screen.getByText(/42s · HOLD × 1 · OPEN_LONG × 1/)).toBeTruthy();
     expect(screen.getByText(/Token 12,800/)).toBeTruthy();

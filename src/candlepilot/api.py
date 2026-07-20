@@ -1328,8 +1328,13 @@ def create_app(
         candidate_symbols = [
             item.symbol for item in engine.candidates[: scheduler.candidates_per_cycle]
         ]
+        candidate_symbols = list(dict.fromkeys(candidate_symbols))
         portfolio = await engine.current_portfolio()
-        analysis_symbols = list(dict.fromkeys([*candidate_symbols, *portfolio.positions]))
+        candidate_symbol_set = set(candidate_symbols)
+        extra_position_symbols = [
+            symbol for symbol in portfolio.positions if symbol not in candidate_symbol_set
+        ]
+        analysis_symbols = [*candidate_symbols, *extra_position_symbols]
         if not analysis_symbols:
             raise RuntimeError("the live run has no symbols to analyze")
         progress: dict[str, Any] = {
@@ -1340,6 +1345,8 @@ def create_app(
             "provider_count": len(engine.provider_chain),
             "completed_providers": 0,
             "probe_symbols": analysis_symbols,
+            "candidate_symbol_count": len(candidate_symbols),
+            "extra_position_symbol_count": len(extra_position_symbols),
             "analysis_symbol_count": len(analysis_symbols),
             "probe_cadence": cadence,
             "provider_results": {
@@ -1485,6 +1492,8 @@ def create_app(
             "provider_count": len(engine.provider_chain),
             "completed_providers": len(engine.provider_chain),
             "probe_symbols": analysis_symbols,
+            "candidate_symbol_count": len(candidate_symbols),
+            "extra_position_symbol_count": len(extra_position_symbols),
             "probe_cadence": cadence,
             "provider_results": provider_results,
             "slowest_seconds": round(slowest_seconds, 3),
