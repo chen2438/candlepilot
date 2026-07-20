@@ -1589,19 +1589,6 @@ class AuditRepository:
                 session.add(BacktestModelRunRow(run_id=run.id, provider=provider))
             return run.id
 
-    async def record_backtest_decisions(
-        self, run_id: int, provider: str, rows: list[dict[str, Any]]
-    ) -> None:
-        """Append completed model decisions so running details stay current."""
-
-        if not rows:
-            return
-        async with self.sessions.begin() as session:
-            await session.execute(
-                insert(BacktestDecisionRow),
-                [{"run_id": run_id, "provider": provider, **row} for row in rows],
-            )
-
     async def backtest_decisions(
         self,
         run_id: int,
@@ -1656,6 +1643,7 @@ class AuditRepository:
         progress: dict[str, Any] | None = None,
         result: dict[str, Any] | None = None,
         error: str | None = None,
+        decision: dict[str, Any] | None = None,
     ) -> None:
         async with self.sessions.begin() as session:
             row = await session.scalar(
@@ -1666,6 +1654,11 @@ class AuditRepository:
             )
             if row is None:
                 return
+            if decision is not None:
+                await session.execute(
+                    insert(BacktestDecisionRow),
+                    [{"run_id": run_id, "provider": provider, **decision}],
+                )
             row.decisions_done = decisions_done
             row.decisions_total = decisions_total
             row.calls_failed = calls_failed

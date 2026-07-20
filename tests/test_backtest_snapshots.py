@@ -93,6 +93,28 @@ def test_snapshot_never_reads_a_bar_that_had_not_closed() -> None:
     assert snapshot.mark_price < everything[-1].close
 
 
+def test_snapshot_build_does_not_rescan_complete_history() -> None:
+    class ScanGuard(list[Candle]):
+        iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            return super().__iter__()
+
+    guarded = {
+        interval: ScanGuard(_series(interval, 260))
+        for interval in DECISION_FEATURE_INTERVALS
+    }
+    guarded["1d"] = ScanGuard(_series("1d", 40))
+    builder = HistoricalSnapshotBuilder(guarded)
+    for candles in guarded.values():
+        candles.iterations = 0
+
+    builder.build("BTCUSDT", "5m", _cutoff("5m", 5))
+
+    assert all(candles.iterations == 0 for candles in guarded.values())
+
+
 def test_snapshot_quotes_no_spread_it_cannot_know() -> None:
     """History has no book, so an invented spread would flatter every fill."""
 

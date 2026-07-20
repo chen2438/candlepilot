@@ -2566,19 +2566,14 @@ def create_app(
             return
 
         async def flush(run: ModelRun, decision: BacktestDecision | None) -> None:
+            decision_row = None
             if decision is not None:
-                row = decision.as_row()
-                fill = row.pop("fill")
-                attempts = row.pop("attempt_started_at")
-                row["fill_json"] = json.dumps(fill) if fill else None
-                row["attempts_json"] = json.dumps(
+                decision_row = decision.as_row()
+                fill = decision_row.pop("fill")
+                attempts = decision_row.pop("attempt_started_at")
+                decision_row["fill_json"] = json.dumps(fill) if fill else None
+                decision_row["attempts_json"] = json.dumps(
                     [started.isoformat() for started in attempts]
-                )
-                # A model call takes seconds; this local write takes
-                # milliseconds. Persist the complete row now so an expanded
-                # running backtest can show it on the next three-second poll.
-                await engine.audit.record_backtest_decisions(
-                    run_id, run.provider, [row]
                 )
             live_result = None
             if run.live_result is not None:
@@ -2597,6 +2592,7 @@ def create_app(
                 },
                 result=_json_value(asdict(run.result)) if run.result is not None else None,
                 error=run.error,
+                decision=decision_row,
             )
         try:
             catalog = await pricing_catalog()

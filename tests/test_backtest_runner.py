@@ -216,6 +216,24 @@ def test_marks_use_only_five_minute_bars_closed_by_the_decision() -> None:
     assert mark != future
 
 
+def test_mark_and_next_fill_lookup_do_not_scan_from_history_start() -> None:
+    class ScanGuard(list[Candle]):
+        iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            return super().__iter__()
+
+    runner = _runner(_spec())
+    guarded = ScanGuard(runner._series["BTCUSDT"]["5m"])
+    runner._series["BTCUSDT"]["5m"] = guarded
+    when = WINDOW_START + timedelta(minutes=5)
+
+    assert runner._marks(when)["BTCUSDT"]
+    assert runner._next_candle("BTCUSDT", "5m", when) is not None
+    assert guarded.iterations == 0
+
+
 def test_entry_bar_protection_is_settled_before_the_next_decision() -> None:
     spec = _spec(end=WINDOW_START + timedelta(minutes=15))
     runner = _runner(spec)

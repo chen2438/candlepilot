@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import time
+from bisect import bisect_left, bisect_right
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -291,24 +292,34 @@ class BacktestRunner:
             else provider_retry_delays
         )
         self._retry_sleep = retry_sleep
+        self._timestamps = {
+            symbol: {
+                cadence: [candle.timestamp for candle in candles]
+                for cadence, candles in spans.items()
+            }
+            for symbol, spans in series.items()
+        }
+        five_minute_span = timedelta(milliseconds=INTERVAL_MILLISECONDS["5m"])
+        self._five_minute_closed_at = {
+            symbol: [candle.timestamp + five_minute_span for candle in spans["5m"]]
+            for symbol, spans in series.items()
+        }
         self._builders = {
             symbol: HistoricalSnapshotBuilder(candles, (captures or {}).get(symbol))
             for symbol, candles in series.items()
         }
 
     def _next_candle(self, symbol: str, cadence: str, after: datetime) -> Candle | None:
-        for candle in self._series[symbol][cadence]:
-            if candle.timestamp >= after:
-                return candle
-        return None
+        index = bisect_left(self._timestamps[symbol][cadence], after)
+        candles = self._series[symbol][cadence]
+        return candles[index] if index < len(candles) else None
 
     def _marks(self, at: datetime) -> dict[str, Decimal]:
         marks: dict[str, Decimal] = {}
         for symbol, candles in self._series.items():
-            span = timedelta(milliseconds=INTERVAL_MILLISECONDS["5m"])
-            usable = [item for item in candles["5m"] if item.timestamp + span <= at]
-            if usable:
-                marks[symbol] = usable[-1].close
+            index = bisect_right(self._five_minute_closed_at[symbol], at) - 1
+            if index >= 0:
+                marks[symbol] = candles["5m"][index].close
         return marks
 
     def _settle_until(
@@ -316,21 +327,19 @@ class BacktestRunner:
         exchange: SimulatedExchange,
         symbol: str,
         through: datetime,
-        settled_through: dict[str, datetime],
+        settled_next: dict[str, int],
     ) -> None:
         """Settle each completed 5m bar exactly once before decisions at ``through``."""
 
-        span = timedelta(milliseconds=INTERVAL_MILLISECONDS["5m"])
-        previous = settled_through.get(symbol)
-        for candle in self._series[symbol]["5m"]:
-            if candle.timestamp < self._spec.start:
-                continue
-            if previous is not None and candle.timestamp <= previous:
-                continue
-            if candle.timestamp + span > through:
-                break
+        candles = self._series[symbol]["5m"]
+        start = settled_next.get(
+            symbol,
+            bisect_left(self._timestamps[symbol]["5m"], self._spec.start),
+        )
+        end = bisect_right(self._five_minute_closed_at[symbol], through)
+        for candle in candles[start:end]:
             exchange.settle_candle(symbol, candle)
-            settled_through[symbol] = candle.timestamp
+        settled_next[symbol] = max(start, end)
 
     async def run(
         self,
@@ -362,7 +371,7 @@ class BacktestRunner:
             for when in decision_times(self._spec, cadence)
             for symbol in self._spec.symbols
         )
-        settled_through: dict[str, datetime] = {}
+        settled_next: dict[str, int] = {}
         settled_decision_key: tuple[datetime, str] | None = None
         last_success_exchange = copy.deepcopy(exchange)
         previous_call_succeeded = False
@@ -414,7 +423,7 @@ class BacktestRunner:
             # produce decisions for the same symbol at the same instant.
             decision_key = (when, symbol)
             if decision_key != settled_decision_key:
-                self._settle_until(exchange, symbol, when, settled_through)
+                self._settle_until(exchange, symbol, when, settled_next)
                 settled_decision_key = decision_key
 
             entry = BacktestDecision(decided_at=when, symbol=symbol, cadence=cadence)
@@ -530,7 +539,7 @@ class BacktestRunner:
             effective_end = progress.last_successful_at or self._spec.start
         if not progress.provider_failed:
             for symbol in self._spec.symbols:
-                self._settle_until(exchange, symbol, effective_end, settled_through)
+                self._settle_until(exchange, symbol, effective_end, settled_next)
         cancelled_pending_orders = exchange.close_all(
             self._marks(effective_end), effective_end
         )

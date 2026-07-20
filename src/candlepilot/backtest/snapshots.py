@@ -9,6 +9,7 @@ supply.
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -138,34 +139,55 @@ class HistoricalSnapshotBuilder:
         if DAILY_STRUCTURE_INTERVAL not in series:
             raise ValueError("historical snapshots need 1d candles for the daily levels")
         self._series = series
+        self._timestamps = {
+            interval: [candle.timestamp for candle in candles]
+            for interval, candles in series.items()
+        }
+        self._closed_at = {
+            interval: [
+                candle.timestamp
+                + timedelta(milliseconds=INTERVAL_MILLISECONDS[interval])
+                for candle in candles
+            ]
+            for interval, candles in series.items()
+        }
+        quote_prefix = [Decimal("0")]
+        for candle in series["30m"]:
+            quote_prefix.append(quote_prefix[-1] + candle.volume * candle.close)
+        self._quote_volume_prefix = quote_prefix
         self._captures = captures or {}
         self._pipeline = FeaturePipeline()
 
-    def _closed_before(self, interval: str, cutoff: datetime) -> list[Candle]:
-        span = timedelta(milliseconds=INTERVAL_MILLISECONDS[interval])
-        return [candle for candle in self._series[interval] if candle.timestamp + span <= cutoff]
+    def _closed_count(self, interval: str, cutoff: datetime) -> int:
+        return bisect_right(self._closed_at[interval], cutoff)
 
     def build(self, symbol: str, cadence: str, decided_at: datetime) -> MarketSnapshot:
         features: dict[str, float] = {}
         rows_by_interval: dict[str, list[list[Any]]] = {}
         for interval in DECISION_FEATURE_INTERVALS:
-            closed = self._closed_before(interval, decided_at)
-            if len(closed) < 20:
+            closed_count = self._closed_count(interval, decided_at)
+            if closed_count < 20:
                 raise ValueError(
-                    f"{symbol} has only {len(closed)} closed {interval} candles before "
+                    f"{symbol} has only {closed_count} closed {interval} candles before "
                     f"{decided_at.isoformat()}; the window needs more history"
                 )
-            rows_by_interval[interval] = _rows(closed[-_INTRADAY_WARMUP_BARS:])
+            start = max(0, closed_count - _INTRADAY_WARMUP_BARS)
+            rows_by_interval[interval] = _rows(
+                self._series[interval][start:closed_count]
+            )
         features.update(self._pipeline.multitimeframe(rows_by_interval))
 
         mark = Decimal(rows_by_interval[cadence][-1][4])
-        daily = self._closed_before(DAILY_STRUCTURE_INTERVAL, decided_at)
-        if len(daily) < DAILY_STRUCTURE_PERIOD:
+        daily_count = self._closed_count(DAILY_STRUCTURE_INTERVAL, decided_at)
+        if daily_count < DAILY_STRUCTURE_PERIOD:
             raise ValueError(
-                f"{symbol} has only {len(daily)} closed daily candles before "
+                f"{symbol} has only {daily_count} closed daily candles before "
                 f"{decided_at.isoformat()}; the daily levels need "
                 f"{DAILY_STRUCTURE_PERIOD}"
             )
+        daily = self._series[DAILY_STRUCTURE_INTERVAL][
+            daily_count - DAILY_STRUCTURE_PERIOD : daily_count
+        ]
         features.update(self._pipeline.daily_structure(_rows(daily), mark_price=mark))
 
         recorded = self._captures.get(decided_at)
@@ -202,18 +224,16 @@ class HistoricalSnapshotBuilder:
 
     def _quote_volume_24h(self, cutoff: datetime) -> Decimal:
         window = cutoff - timedelta(hours=24)
-        return sum(
-            (
-                candle.volume * candle.close
-                for candle in self._series["30m"]
-                if window <= candle.timestamp < cutoff
-            ),
-            Decimal("0"),
-        )
+        timestamps = self._timestamps["30m"]
+        start = bisect_left(timestamps, window)
+        end = bisect_left(timestamps, cutoff)
+        return self._quote_volume_prefix[end] - self._quote_volume_prefix[start]
 
     def _funding_rate(self, cadence: str, cutoff: datetime) -> Decimal:
-        closed = self._closed_before(cadence, cutoff)
-        return closed[-1].funding_rate if closed else Decimal("0")
+        closed_count = self._closed_count(cadence, cutoff)
+        if not closed_count:
+            return Decimal("0")
+        return self._series[cadence][closed_count - 1].funding_rate
 
 
 def utc(milliseconds: int) -> datetime:
