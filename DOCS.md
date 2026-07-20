@@ -1021,7 +1021,9 @@ pnpm --dir frontend run build
 push/PR 的所有新增提交重复执行同一校验，即使本地 hook 被绕过也会失败；其余 CI 检查同样
 运行上述 Ruff、Pytest、前端 Vitest 和构建。CI 使用 Node.js 24，并采用以 Node.js 24 为
 执行运行时的 `actions/checkout@v7`、`actions/setup-node@v7`、`actions/setup-python@v6` 与
-`pnpm/action-setup@v6`，不再依赖 GitHub 已弃用的 Action Node.js 20 运行时。
+`pnpm/action-setup@v6`，不再依赖 GitHub 已弃用的 Action Node.js 20 运行时。后端 CI 使用
+Pytest 逐测试详细输出，便于定位托管 Runner 上的停滞点；整个后端任务最长运行 10 分钟，超过
+上限会明确超时结束，避免无进度任务长期占用 Runner。
 Python 依赖锁定于 `requirements.lock`，前端锁定于 `frontend/pnpm-lock.yaml`。
 
 ### 8.1 Linux VPS 一键安装
