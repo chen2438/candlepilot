@@ -370,6 +370,76 @@ def test_testnet_opening_requires_take_profit() -> None:
     asyncio.run(scenario())
 
 
+def test_new_opening_limit_waits_for_fill_before_canceling() -> None:
+    requests: list[httpx.Request] = []
+    order_queries = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal order_queries
+        requests.append(request)
+        if request.url.path == "/fapi/v1/time":
+            return httpx.Response(200, json={"serverTime": 1784040000000})
+        if request.url.path == "/fapi/v1/symbolConfig":
+            return httpx.Response(
+                200,
+                json=[{"symbol": "BTCUSDT", "marginType": "ISOLATED", "leverage": 3}],
+            )
+        if request.url.path == "/fapi/v1/algoOrder":
+            return httpx.Response(200, json={"status": "NEW"})
+        if request.url.path == "/fapi/v1/order" and request.method == "POST":
+            return httpx.Response(
+                200,
+                json={
+                    "clientOrderId": "cp-limit-fill-race",
+                    "status": "NEW",
+                    "executedQty": "0",
+                    "avgPrice": "0",
+                },
+            )
+        if request.url.path == "/fapi/v1/order" and request.method == "GET":
+            order_queries += 1
+            if order_queries == 1:
+                return httpx.Response(
+                    200,
+                    json={"status": "NEW", "executedQty": "0", "avgPrice": "0"},
+                )
+            return httpx.Response(
+                200,
+                json={"status": "FILLED", "executedQty": "1", "avgPrice": "100"},
+            )
+        return httpx.Response(500, json={"code": -1000, "msg": "unexpected request"})
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(
+            _credentials(), client=client, recovery_attempts=3, recovery_delay=0
+        )
+        report = await broker.execute_with_stop(
+            OrderPlan(
+                client_order_id="cp-limit-fill-race",
+                symbol="BTCUSDT",
+                side="BUY",
+                quantity=Decimal("1"),
+                order_type=OrderType.LIMIT,
+                price=Decimal("101"),
+                stop_price=Decimal("98"),
+                take_profit_price=Decimal("104"),
+            ),
+            leverage=3,
+        )
+        await client.aclose()
+        return report
+
+    report = asyncio.run(scenario())
+    assert report.status == "FILLED"
+    assert report.filled_quantity == Decimal("1")
+    assert order_queries == 2
+    assert not any(request.method == "DELETE" for request in requests)
+    assert sum(request.url.path == "/fapi/v1/algoOrder" for request in requests) == 2
+
+
 def test_unfilled_opening_limit_is_canceled_without_creating_fake_protection() -> None:
     requests: list[httpx.Request] = []
 

@@ -71,6 +71,15 @@ class OrderStatusUnknown(RuntimeError):
         self.client_order_id = client_order_id
 
 
+ORDER_TERMINAL_STATUSES = {
+    "FILLED",
+    "CANCELED",
+    "REJECTED",
+    "EXPIRED",
+    "EXPIRED_IN_MATCH",
+}
+
+
 class ManualCloseError(RuntimeError):
     def __init__(
         self,
@@ -570,9 +579,21 @@ class BinanceTestnetBroker:
             )
         await self.configure_symbol(order.symbol, leverage)
         entry = await self._place_order(order)
+        limit_remainder_terminal = (
+            order.order_type == OrderType.LIMIT
+            and entry.status in ORDER_TERMINAL_STATUSES
+        )
+        if order.order_type == OrderType.LIMIT and entry.status in {
+            "NEW",
+            "PARTIALLY_FILLED",
+        }:
+            entry = await self._wait_for_opening_limit_fill(order, entry)
+            limit_remainder_terminal = entry.status in ORDER_TERMINAL_STATUSES
         if entry.status not in {"NEW", "PARTIALLY_FILLED", "FILLED"}:
-            return entry
-        if entry.status in {"NEW", "PARTIALLY_FILLED"}:
+            if not (limit_remainder_terminal and entry.filled_quantity > 0):
+                return entry
+            entry = entry.model_copy(update={"status": "PARTIALLY_FILLED"})
+        if entry.status in {"NEW", "PARTIALLY_FILLED"} and not limit_remainder_terminal:
             try:
                 cancellation = await self._signed_request(
                     "DELETE",
@@ -817,14 +838,54 @@ class BinanceTestnetBroker:
                     raise
         raise OrderStatusUnknown(order.client_order_id)
 
+    async def _wait_for_opening_limit_fill(
+        self,
+        order: OrderPlan,
+        entry: ExecutionReport,
+    ) -> ExecutionReport:
+        """Briefly confirm a fresh limit entry before canceling its remainder."""
+
+        latest = entry
+        for attempt in range(self.recovery_attempts):
+            if attempt and self.recovery_delay:
+                await asyncio.sleep(self.recovery_delay * (2 ** (attempt - 1)))
+            try:
+                payload = await self._signed_request(
+                    "GET",
+                    "/fapi/v1/order",
+                    {
+                        "symbol": order.symbol,
+                        "origClientOrderId": order.client_order_id,
+                    },
+                )
+            except Exception:
+                continue
+            filled_quantity = max(
+                latest.filled_quantity,
+                Decimal(str(payload.get("executedQty", "0"))),
+            )
+            average_price = Decimal(str(payload.get("avgPrice", "0")))
+            status = str(payload.get("status", latest.status))
+            if filled_quantity >= order.quantity:
+                status = "FILLED"
+            elif filled_quantity > 0 and status not in ORDER_TERMINAL_STATUSES:
+                status = "PARTIALLY_FILLED"
+            latest = latest.model_copy(
+                update={
+                    "status": status,
+                    "filled_quantity": filled_quantity,
+                    "average_price": average_price
+                    if average_price > 0
+                    else latest.average_price,
+                    "message": "Binance order status confirmation",
+                    "timestamp": datetime.now(UTC),
+                }
+            )
+            if latest.status in ORDER_TERMINAL_STATUSES:
+                return latest
+        return latest
+
     async def _recover_terminal_order(self, order: OrderPlan) -> dict[str, Any]:
-        terminal_statuses = {
-            "FILLED",
-            "CANCELED",
-            "REJECTED",
-            "EXPIRED",
-            "EXPIRED_IN_MATCH",
-        }
         last_error: Exception | None = None
         for attempt in range(self.recovery_attempts):
             if attempt and self.recovery_delay:
@@ -841,7 +902,7 @@ class BinanceTestnetBroker:
             except Exception as exc:
                 last_error = exc
                 continue
-            if payload.get("status") in terminal_statuses:
+            if payload.get("status") in ORDER_TERMINAL_STATUSES:
                 return payload
         raise OrderStatusUnknown(order.client_order_id) from last_error
 
