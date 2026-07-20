@@ -1696,11 +1696,21 @@ class AuditRepository:
         if outcome is not None:
             conditions.append(self._outcome_filter(outcome))
         query = (
-            select(InferenceRow, RiskRow, ExecutionAttemptRow, LiveRunRow)
+            select(
+                InferenceRow,
+                RiskRow,
+                ExecutionAttemptRow,
+                ExecutionRow,
+                LiveRunRow,
+            )
             .outerjoin(RiskRow, RiskRow.inference_id == InferenceRow.id)
             .outerjoin(
                 ExecutionAttemptRow,
                 ExecutionAttemptRow.inference_id == InferenceRow.id,
+            )
+            .outerjoin(
+                ExecutionRow,
+                ExecutionRow.client_order_id == ExecutionAttemptRow.client_order_id,
             )
             .outerjoin(LiveRunRow, LiveRunRow.id == InferenceRow.live_run_id)
             .where(*conditions)
@@ -1754,7 +1764,7 @@ class AuditRepository:
                     )
                 ).all()
         events = []
-        for inference, risk, attempt, live_run in rows:
+        for inference, risk, attempt, execution, live_run in rows:
             usage = json.loads(inference.usage_json)
             intent = TradeIntent.model_validate_json(inference.intent_json)
             outcome = self._decision_outcome(intent, risk, attempt)
@@ -1790,7 +1800,7 @@ class AuditRepository:
                     }
                     if risk is not None
                     else None,
-                    "execution": self._execution_attempt_dict(attempt),
+                    "execution": self._execution_attempt_dict(attempt, execution),
                     "created_at": self._utc(inference.created_at),
                 }
             )
@@ -1833,11 +1843,19 @@ class AuditRepository:
         return inference.duration_ms + audit_ms
 
     def _execution_attempt_dict(
-        self, attempt: ExecutionAttemptRow | None
+        self,
+        attempt: ExecutionAttemptRow | None,
+        execution: ExecutionRow | None,
     ) -> dict[str, Any] | None:
         if attempt is None:
             return None
         payload = json.loads(attempt.attempt_json)
+        if execution is not None:
+            # The execution row is continuously reconciled by the Binance user
+            # stream, while the attempt preserves the immediate REST result.
+            # Use the reconciled report so delayed fill quantity/price reaches
+            # decision details without rewriting immutable attempt history.
+            payload["entry_report"] = json.loads(execution.report_json)
         return {
             "id": attempt.id,
             **payload,
@@ -1891,6 +1909,7 @@ class AuditRepository:
                         RiskRow,
                         InferenceDetailRow,
                         ExecutionAttemptRow,
+                        ExecutionRow,
                         LiveRunRow,
                     )
                     .outerjoin(RiskRow, RiskRow.inference_id == InferenceRow.id)
@@ -1902,13 +1921,18 @@ class AuditRepository:
                         ExecutionAttemptRow,
                         ExecutionAttemptRow.inference_id == InferenceRow.id,
                     )
+                    .outerjoin(
+                        ExecutionRow,
+                        ExecutionRow.client_order_id
+                        == ExecutionAttemptRow.client_order_id,
+                    )
                     .outerjoin(LiveRunRow, LiveRunRow.id == InferenceRow.live_run_id)
                     .where(InferenceRow.id == inference_id)
                 )
             ).one_or_none()
         if row is None:
             return None
-        inference, risk, detail, attempt, live_run = row
+        inference, risk, detail, attempt, execution, live_run = row
         usage = json.loads(inference.usage_json)
         intent = TradeIntent.model_validate_json(inference.intent_json)
         audit_status = "unavailable"
@@ -1942,7 +1966,7 @@ class AuditRepository:
             }
             if risk is not None
             else None,
-            "execution": self._execution_attempt_dict(attempt),
+            "execution": self._execution_attempt_dict(attempt, execution),
             "input": json.loads(detail.input_json)
             if detail is not None and detail.input_json is not None
             else None,

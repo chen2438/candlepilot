@@ -3020,6 +3020,30 @@ function executionLoss(value: string | null | undefined): string {
     : `$${Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`;
 }
 
+function executionSizing(decision: DecisionEvent): {
+  margin: number;
+  notional: number;
+} | null {
+  if (decision.outcome !== "executed" || decision.execution?.entry_report == null) return null;
+  const quantity = Number(decision.execution.entry_report.filled_quantity);
+  const price = Number(decision.execution.entry_report.average_price);
+  const leverage = Number(decision.intent.leverage);
+  if (![quantity, price, leverage].every(Number.isFinite) || quantity <= 0 || price <= 0 || leverage <= 0) {
+    return null;
+  }
+  const notional = quantity * price;
+  return { notional, margin: notional / leverage };
+}
+
+function ExecutionSizing({ decision }: { decision: DecisionEvent }) {
+  const sizing = executionSizing(decision);
+  if (sizing === null) return null;
+  return <>
+    <span data-tooltip="按实际入场成交数量 × 实际成交均价计算。">成交额<strong>{money(String(sizing.notional))} USDT</strong></span>
+    <span data-tooltip="按实际成交额 ÷ 本次杠杆计算的初始保证金估算值；不包含手续费。">保证金<strong>{money(String(sizing.margin))} USDT</strong></span>
+  </>;
+}
+
 function positionProtectionMetrics(position: AccountPosition): {
   takeProfitPercent: number | null;
   stopLossPercent: number | null;
@@ -3281,7 +3305,7 @@ export function DecisionPanel({
                   <span>止盈<strong>{intentPrice(decision.intent.take_profit)}</strong></span>
                   <span data-tooltip="仅按 AI 返回的入场价、止损和止盈计算，不含交易所 tick 对齐或最新行情。">AI 原始盈亏比<strong>{intentRewardRiskLabel(decision.intent)}</strong></span>
                   <span data-tooltip="硬风控按下单前刷新行情得到的实际入场基准，以及对齐交易所精度后的止损和止盈计算；这是最低 1.3:1 边界真正校验的数值。">下单前盈亏比<strong>{preTradeRewardRiskLabel(decision)}</strong></span>
-                  <span>风控数量<strong>{decision.risk?.decision.max_quantity ?? "—"}</strong></span>
+                  <span data-tooltip="后端硬风控根据止损风险、保证金上限和交易所数量规则计算的最终允许下单数量。">最终下单数量<strong>{decision.risk?.decision.max_quantity ?? "—"}</strong></span>
                   {decision.risk?.decision.pending_expires_at ? <span data-tooltip="本地待触发意图不会预先提交到交易所；截止前每次检查都会重新获取行情与账户并完整复跑硬风控。过期后该时间仍保留用于审计。">意图有效至<strong>{pendingExpiryLabel(decision)}</strong></span> : null}
                 </div>
                 <div className={`decision-reason ${decision.risk?.decision.pending_entry ? "pending" : decision.outcome}`}>
@@ -3302,6 +3326,7 @@ export function DecisionPanel({
                       <span>入场成交<strong>{decision.execution.entry_report
                         ? `${decision.execution.entry_report.filled_quantity} @ ${executionPrice(decision.execution.entry_report.average_price)}`
                         : "—"}</strong></span>
+                      <ExecutionSizing decision={decision} />
                       <span>紧急回补<strong>{decision.execution.rescue_report
                         ? `${decision.execution.rescue_report.filled_quantity} @ ${executionPrice(decision.execution.rescue_report.average_price)}`
                         : "—"}</strong></span>

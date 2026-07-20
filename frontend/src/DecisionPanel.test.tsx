@@ -292,6 +292,64 @@ describe("DecisionPanel", () => {
     expect(screen.getByText("1.71 : 1")).toBeTruthy();
     expect(screen.getByText("下单前盈亏比")).toBeTruthy();
     expect(screen.getByText("1.2800 : 1")).toBeTruthy();
+    expect(screen.getByText("最终下单数量")).toBeTruthy();
+    expect(screen.queryByText("风控数量")).toBeNull();
+    expect(screen.queryByText("成交额")).toBeNull();
+    expect(screen.queryByText("保证金")).toBeNull();
+  });
+
+  it("shows fill notional and estimated initial margin after a successful order", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false,
+      text: async () => "detail unavailable",
+    })));
+    const user = userEvent.setup();
+    const executed: DecisionEvent = {
+      ...decision,
+      outcome: "executed",
+      risk: {
+        ...decision.risk!,
+        accepted: true,
+        reason: "accepted within hard risk limits",
+        decision: { ...decision.risk!.decision, max_quantity: "2" },
+      },
+      execution: {
+        id: 9,
+        inference_id: 1,
+        client_order_id: "cp-fixture",
+        status: "SUCCEEDED",
+        stage: "COMPLETE",
+        message: "order accepted and required execution checks completed",
+        exchange_error_code: null,
+        estimated_loss_usdt: null,
+        entry_report: {
+          client_order_id: "cp-fixture",
+          status: "FILLED",
+          filled_quantity: "2",
+          average_price: "150",
+          message: "filled",
+        },
+        rescue_report: null,
+        created_at: "2026-07-20T10:00:00Z",
+      },
+    };
+
+    render(
+      <DecisionPanel
+        decisions={[executed]}
+        liveRunPerformance={[]}
+        filter="all"
+        onFilter={vi.fn()}
+        onLoadOlder={vi.fn(async () => undefined)}
+        exhausted
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /OPEN_LONG/ }));
+
+    expect(screen.getByText("成交额")).toBeTruthy();
+    expect(screen.getByText("300.00 USDT")).toBeTruthy();
+    expect(screen.getByText("保证金")).toBeTruthy();
+    expect(screen.getByText("30.00 USDT")).toBeTruthy();
   });
 
   it("shows a local pending limit and its hard expiry", async () => {
