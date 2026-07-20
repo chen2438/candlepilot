@@ -129,6 +129,7 @@ class ProviderConfig(ApiModel):
     model: str | None = None
     reasoning_effort: str | None = None
     pricing: str | None = None
+    auth_source: str | None = None
 
 
 class ProviderTestRequest(ApiModel):
@@ -811,6 +812,9 @@ def create_app(
                     "reasoning_effort": provider.reasoning_effort,
                     "timeout_seconds": provider.timeout,
                     "reasoning_effort_options": list(provider.reasoning_effort_options),
+                    "auth_source_options": list(
+                        getattr(provider, "auth_source_options", ())
+                    ),
                     "pricing": provider_pricing_ids.get(item.provider) if custom else None,
                     "pricing_options": _pricing_options(catalog) if custom else [],
                     "model_options": _model_options(
@@ -828,12 +832,12 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         if engine.running:
             raise HTTPException(
-                status_code=409, detail="cannot change model settings while the engine runs"
+                status_code=409, detail="cannot change provider settings while the engine runs"
             )
         if background_model_work():
             raise HTTPException(
                 status_code=409,
-                detail="cannot change model settings while a probe or backtest runs",
+                detail="cannot change provider settings while a probe or backtest runs",
             )
         if not provider.capabilities.configurable_model:
             raise HTTPException(
@@ -844,6 +848,8 @@ def create_app(
         effort = (config.reasoning_effort or "").strip() or None
         pricing_supplied = "pricing" in config.model_fields_set
         pricing = (config.pricing or "").strip() or None
+        auth_source_supplied = "auth_source" in config.model_fields_set
+        auth_source = (config.auth_source or "").strip() or None
         if pricing_supplied and not config.name.startswith(CUSTOM_PROVIDER_PREFIX):
             raise HTTPException(
                 status_code=422,
@@ -854,6 +860,19 @@ def create_app(
                 status_code=422,
                 detail=f"unsupported reasoning effort for {config.name}: {effort}",
             )
+        if auth_source_supplied:
+            setter = getattr(provider, "set_auth_source", None)
+            if config.name != "codex-auth" or not callable(setter):
+                raise HTTPException(
+                    status_code=422,
+                    detail="auth source can only be changed for Codex Auth",
+                )
+            if auth_source is None:
+                raise HTTPException(status_code=422, detail="Codex auth source is required")
+            try:
+                setter(auth_source)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
         provider.model = model
         provider.reasoning_effort = effort
         if pricing_supplied:
@@ -861,7 +880,7 @@ def create_app(
                 provider_pricing_ids.pop(config.name, None)
             else:
                 provider_pricing_ids[config.name] = pricing
-        engine.invalidate_startup_probe("provider model settings changed")
+        engine.invalidate_startup_probe("provider settings changed")
         return await get_providers()
 
     @app.post("/api/providers/test")

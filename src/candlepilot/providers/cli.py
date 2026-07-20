@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import shutil
@@ -33,6 +34,10 @@ from candlepilot.provenance import (
 CODEX_APP_BINARIES = (
     Path("/Applications/ChatGPT.app/Contents/Resources/codex"),
 )
+CODEX_AUTH_PATH = Path.home() / ".codex" / "auth.json"
+CODEX_AUTH_SOURCE_APP = "chatgpt-app"
+CODEX_AUTH_SOURCE_CLI = "codex-cli"
+CODEX_AUTH_SOURCES = (CODEX_AUTH_SOURCE_APP, CODEX_AUTH_SOURCE_CLI)
 USER_CLI_DIRECTORY = Path.home() / ".local" / "bin"
 MAX_OUTPUT_BYTES = 1_000_000
 RATIONALE_TARGET_LENGTH = 800
@@ -119,19 +124,56 @@ def sanitized_subprocess_env(source: dict[str, str] | None = None) -> dict[str, 
     return clean
 
 
-def find_codex_executable() -> Path | None:
+def find_codex_app_executable() -> Path | None:
     for app_binary in CODEX_APP_BINARIES:
         if app_binary.is_file() and os.access(app_binary, os.X_OK):
             return app_binary
+    return None
+
+
+def find_codex_cli_executable() -> Path | None:
     candidate = shutil.which("codex")
     if candidate:
-        return Path(candidate).resolve()
+        resolved = Path(candidate).resolve()
+        app_paths = {path.resolve() for path in CODEX_APP_BINARIES if path.exists()}
+        if resolved not in app_paths:
+            return resolved
     user_binary = USER_CLI_DIRECTORY / "codex"
     return (
         user_binary.resolve()
         if user_binary.is_file() and os.access(user_binary, os.X_OK)
         else None
     )
+
+
+def find_codex_executable(source: str | None = None) -> Path | None:
+    if source == CODEX_AUTH_SOURCE_APP:
+        return find_codex_app_executable()
+    if source == CODEX_AUTH_SOURCE_CLI:
+        return find_codex_cli_executable()
+    if source is not None:
+        raise ValueError(f"unknown Codex auth source: {source}")
+    return find_codex_app_executable() or find_codex_cli_executable()
+
+
+def find_codex_account_email(auth_path: Path | None = None) -> str | None:
+    """Read only the email claim from Codex's local ID token.
+
+    The raw token and all other authentication fields remain local. Missing,
+    malformed, or non-email claims are treated as unavailable identity data.
+    """
+
+    path = auth_path or CODEX_AUTH_PATH
+    try:
+        auth = json.loads(path.read_text(encoding="utf-8"))
+        token = auth["tokens"]["id_token"]
+        encoded_payload = token.split(".")[1]
+        padding = "=" * (-len(encoded_payload) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(encoded_payload + padding))
+    except (OSError, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    email = payload.get("email")
+    return email if isinstance(email, str) and "@" in email else None
 
 
 def find_claude_executable() -> Path | None:
@@ -598,8 +640,19 @@ class CodexAuthProvider(DecisionProvider):
         config_path: Path | None = None,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        auth_source: str | None = None,
     ) -> None:
-        self.executable = executable or find_codex_executable()
+        if auth_source is not None and auth_source not in CODEX_AUTH_SOURCES:
+            raise ValueError(f"unknown Codex auth source: {auth_source}")
+        if auth_source is None:
+            app_executable = find_codex_app_executable()
+            auth_source = (
+                CODEX_AUTH_SOURCE_APP
+                if executable is None and app_executable is not None
+                else CODEX_AUTH_SOURCE_CLI
+            )
+        self.auth_source = auth_source
+        self.executable = executable or find_codex_executable(auth_source)
         self.timeout = timeout
         self.config_path = config_path
         self.model = model
@@ -607,6 +660,22 @@ class CodexAuthProvider(DecisionProvider):
         self._semaphore = asyncio.Semaphore(1)
         self._active_task: asyncio.Task[Any] | None = None
         self._provider_version: str | None = None
+
+    @property
+    def auth_source_options(self) -> tuple[str, ...]:
+        return tuple(
+            source for source in CODEX_AUTH_SOURCES if find_codex_executable(source) is not None
+        )
+
+    def set_auth_source(self, source: str) -> None:
+        if source not in CODEX_AUTH_SOURCES:
+            raise ValueError(f"unknown Codex auth source: {source}")
+        executable = find_codex_executable(source)
+        if executable is None:
+            raise ValueError(f"Codex auth source is unavailable: {source}")
+        self.auth_source = source
+        self.executable = executable
+        self._provider_version = None
 
     @property
     def capabilities(self) -> ProviderCapabilities:
@@ -626,6 +695,7 @@ class CodexAuthProvider(DecisionProvider):
                 provider=self.name,
                 available=False,
                 authenticated=False,
+                auth_source=self.auth_source,
                 detail="ChatGPT/Codex App binary and codex CLI were not found",
             )
         try:
@@ -643,6 +713,8 @@ class CodexAuthProvider(DecisionProvider):
                 authenticated=True,
                 executable=str(self.executable),
                 version=version.strip(),
+                auth_source=self.auth_source,
+                account_email=find_codex_account_email(),
                 detail=auth.strip(),
             )
         except ProviderError as exc:
@@ -651,6 +723,7 @@ class CodexAuthProvider(DecisionProvider):
                 available=True,
                 authenticated=False,
                 executable=str(self.executable),
+                auth_source=self.auth_source,
                 detail=str(exc),
             )
 

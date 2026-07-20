@@ -44,6 +44,8 @@ class ProviderHealth(StrictModel):
     authenticated: bool
     executable: str | None = None
     version: str | None = None
+    auth_source: str | None = None
+    account_email: str | None = None
     detail: str = ""
     checked_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

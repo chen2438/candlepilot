@@ -313,6 +313,47 @@ function providerLabel(name: string): string {
   return name;
 }
 
+export function codexAuthSourceLabel(source: string | null | undefined): string {
+  if (source === "chatgpt-app") return "ChatGPT App";
+  if (source === "codex-cli") return "Codex CLI";
+  return "未检测";
+}
+
+export function codexProviderIdentity(provider: Pick<
+  ProviderHealth,
+  "auth_source" | "account_email" | "version" | "detail"
+>): string {
+  return [
+    codexAuthSourceLabel(provider.auth_source),
+    provider.account_email,
+    provider.version ?? provider.detail,
+  ].filter(Boolean).join(" · ");
+}
+
+export function CodexAuthSourceSelect({
+  disabled,
+  onChange,
+  options,
+  value,
+}: {
+  disabled: boolean;
+  onChange: (source: string) => void;
+  options: string[];
+  value: string;
+}) {
+  return <select
+    aria-label="Codex 接入来源"
+    value={value}
+    disabled={disabled}
+    onChange={(event) => onChange(event.target.value)}
+  >
+    {options.length === 0 && <option value="">未检测到可用来源</option>}
+    {options.map((source) => (
+      <option key={source} value={source}>{codexAuthSourceLabel(source)}</option>
+    ))}
+  </select>;
+}
+
 function modelConfigSummary(model: string | null, effort: string | null): string {
   return `${model ?? "Provider 默认模型"} · ${effort ? `推理 ${effort}` : "默认推理强度"}`;
 }
@@ -525,6 +566,7 @@ export default function App() {
     effort: string;
     custom: boolean;
     pricing: string;
+    authSource: string;
   }>>({});
   const [historySelected, setHistorySelected] = useState<Record<string, boolean>>({});
   const [historyConfirm, setHistoryConfirm] = useState(false);
@@ -537,7 +579,7 @@ export default function App() {
 
   const applyProviderConfig = useCallback(async (
     name: string,
-    draft: { model: string; effort: string; pricing?: string },
+    draft: { model: string; effort: string; pricing?: string; authSource?: string },
   ) => {
     setBusy("provider-config");
     setError(null);
@@ -549,6 +591,7 @@ export default function App() {
           model: draft.model,
           reasoning_effort: draft.effort || null,
           ...(draft.pricing === undefined ? {} : { pricing: draft.pricing || null }),
+          ...(draft.authSource === undefined ? {} : { auth_source: draft.authSource }),
         }),
       });
       setProviders(next);
@@ -558,7 +601,7 @@ export default function App() {
           ? {
             ...current.startup_probe,
             ready: false,
-            invalidated_reason: "provider model settings changed",
+            invalidated_reason: "provider settings changed",
           }
           : null,
       }));
@@ -571,7 +614,7 @@ export default function App() {
 
   const testProvider = useCallback(async (
     name: string,
-    draft?: { model: string; effort: string; pricing?: string },
+    draft?: { model: string; effort: string; pricing?: string; authSource?: string },
   ) => {
     setBusy(`test-${name}`);
     setError(null);
@@ -585,6 +628,7 @@ export default function App() {
             model: draft.model,
             reasoning_effort: draft.effort || null,
             ...(draft.pricing === undefined ? {} : { pricing: draft.pricing || null }),
+            ...(draft.authSource === undefined ? {} : { auth_source: draft.authSource }),
           }),
         });
         setProviders(next);
@@ -594,7 +638,7 @@ export default function App() {
             ? {
               ...current.startup_probe,
               ready: false,
-              invalidated_reason: "provider model settings changed",
+              invalidated_reason: "provider settings changed",
             }
             : null,
         }));
@@ -1189,13 +1233,20 @@ export default function App() {
                 const model = configDraft[provider.provider]?.model ?? provider.model ?? "";
                 const effort = configDraft[provider.provider]?.effort ?? provider.reasoning_effort ?? "";
                 const customProvider = customProviderId(provider.provider) !== null;
+                const codexProvider = provider.provider === "codex-auth";
                 const configurable = provider.capabilities.configurable_model;
                 const pricing = configDraft[provider.provider]?.pricing ?? provider.pricing ?? "";
+                const authSource = configDraft[provider.provider]?.authSource
+                  ?? provider.auth_source
+                  ?? "";
                 const custom = configDraft[provider.provider]?.custom ?? (model !== "" && !options.includes(model));
-                const draft = { model, effort, custom, pricing };
+                const draft = { model, effort, custom, pricing, authSource };
+                const authSourceDirty = codexProvider
+                  && authSource !== (provider.auth_source ?? "");
                 const dirty = configurable && (model !== (provider.model ?? "")
                   || effort !== (provider.reasoning_effort ?? "")
-                  || (customProvider && pricing !== (provider.pricing ?? "")));
+                  || (customProvider && pricing !== (provider.pricing ?? ""))
+                  || authSourceDirty);
                 const update = (next: Partial<typeof draft>) =>
                   setConfigDraft((current) => ({ ...current, [provider.provider]: { ...draft, ...next } }));
                 return <div
@@ -1213,7 +1264,9 @@ export default function App() {
                     </span>
                     <span className="provider-text">
                       <strong>{providerLabel(provider.provider)}</strong>
-                      <small>{provider.version ?? provider.detail}</small>
+                      <small>{codexProvider
+                        ? codexProviderIdentity(provider)
+                        : provider.version ?? provider.detail}</small>
                     </span>
                     <span className={`status-pill ${provider.authenticated ? "ok" : "off"}`}>
                       {routeIndex >= 0 ? `#${routeIndex + 1} · ` : ""}{provider.authenticated ? "READY" : provider.available ? "LOGIN" : "MISSING"}
@@ -1231,7 +1284,7 @@ export default function App() {
                     {testResult[provider.provider] && <span className={`config-test-result ${testResult[provider.provider].ok ? "ok" : "err"}`}>
                       {testResult[provider.provider].text}
                     </span>}
-                  </div> : <div className={`provider-card-config ${customProvider ? "has-pricing" : ""}`}>
+                  </div> : <div className={`provider-card-config ${customProvider ? "has-pricing" : codexProvider ? "has-auth-source" : ""}`}>
                     <label>
                       <span>模型</span>
                       <div className="config-model-cell">
@@ -1260,6 +1313,15 @@ export default function App() {
                         {provider.reasoning_effort_options.map((option) => <option key={option} value={option}>{option}</option>)}
                       </select>
                     </label>
+                    {codexProvider && <label>
+                      <span>接入来源</span>
+                      <CodexAuthSourceSelect
+                        value={authSource}
+                        disabled={status.running}
+                        options={provider.auth_source_options ?? []}
+                        onChange={(source) => update({ authSource: source })}
+                      />
+                    </label>}
                     {customProvider && <label data-tooltip="models.dev 的厂商 ID，决定按谁的价折算等效成本。留空则成本未知，运行预算不会按该端点触发；永久配置请在设置页保存。">
                       <span>计费厂商</span>
                       <input
@@ -1276,6 +1338,7 @@ export default function App() {
                           model,
                           effort,
                           ...(customProvider ? { pricing } : {}),
+                          ...(authSourceDirty ? { authSource } : {}),
                         })}>应用</button>
                       <button className="text-button" disabled={status.running || busy !== null}
                         title={dirty
@@ -1289,6 +1352,7 @@ export default function App() {
                             model,
                             effort,
                             ...(customProvider ? { pricing } : {}),
+                            ...(authSourceDirty ? { authSource } : {}),
                           } : undefined,
                         )}>
                         {busy === `test-${provider.provider}`

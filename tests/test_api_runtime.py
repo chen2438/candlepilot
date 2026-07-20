@@ -1011,6 +1011,69 @@ def test_provider_config_sets_model_and_reasoning_effort(tmp_path: Path) -> None
     asyncio.run(database.close())
 
 
+def test_codex_provider_config_selects_auth_source_and_reports_email(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from candlepilot.providers import cli as cli_module
+    from candlepilot.providers.cli import CodexAuthProvider
+
+    def write_cli(path: Path, version: str) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "#!/bin/sh\n"
+            f'if [ "$1" = "--version" ]; then echo "{version}"; '
+            'else echo "Logged in using ChatGPT"; fi\n',
+            encoding="utf-8",
+        )
+        path.chmod(0o755)
+        return path
+
+    app_binary = write_cli(tmp_path / "app" / "codex", "codex-cli app")
+    cli_binary = write_cli(tmp_path / "bin" / "codex", "codex-cli standalone")
+    monkeypatch.setattr(cli_module, "CODEX_APP_BINARIES", (app_binary,))
+    monkeypatch.setattr(cli_module, "USER_CLI_DIRECTORY", tmp_path / "user-bin")
+    monkeypatch.setattr(
+        cli_module, "find_codex_account_email", lambda: "trader@example.com"
+    )
+    monkeypatch.setenv("PATH", str(cli_binary.parent))
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'codex-source-api.db'}")
+    market = ApiMarket()
+    provider = CodexAuthProvider(executable=app_binary, auth_source="chatgpt-app")
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([provider]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        listed = client.get("/api/providers").json()[0]
+        assert listed["auth_source"] == "chatgpt-app"
+        assert listed["auth_source_options"] == ["chatgpt-app", "codex-cli"]
+        assert listed["account_email"] == "trader@example.com"
+        assert listed["executable"] == str(app_binary)
+
+        updated = client.post(
+            "/api/providers/config",
+            json={"name": "codex-auth", "auth_source": "codex-cli"},
+        )
+        assert updated.status_code == 200, updated.text
+        configured = updated.json()[0]
+        assert configured["auth_source"] == "codex-cli"
+        assert configured["account_email"] == "trader@example.com"
+        assert configured["executable"] == str(cli_binary.resolve())
+
+        invalid = client.post(
+            "/api/providers/config",
+            json={"name": "codex-auth", "auth_source": "automatic"},
+        )
+        assert invalid.status_code == 422
+
+    asyncio.run(database.close())
+
+
 def test_custom_provider_config_switches_runtime_pricing_catalog(tmp_path: Path) -> None:
     from candlepilot.config import CustomLlmProvider
     from candlepilot.providers.pricing import parse_models_dev

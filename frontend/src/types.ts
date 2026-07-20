@@ -144,6 +144,9 @@ export interface ProviderHealth {
   authenticated: boolean;
   executable: string | null;
   version: string | null;
+  auth_source?: string | null;
+  auth_source_options?: string[];
+  account_email?: string | null;
   detail: string;
   model: string | null;
   reasoning_effort: string | null;

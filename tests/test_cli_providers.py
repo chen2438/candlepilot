@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import time
 from datetime import UTC, datetime
@@ -12,6 +13,9 @@ from candlepilot.providers.cli import (
     ClaudeCodeAuthProvider,
     CodexAuthProvider,
     ProviderInvocationError,
+    find_codex_account_email,
+    find_codex_app_executable,
+    find_codex_cli_executable,
     find_codex_executable,
     find_claude_executable,
     find_codex_model,
@@ -27,6 +31,15 @@ def _write_fake_cli(path: Path, body: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("#!/bin/sh\n" + body, encoding="utf-8")
     path.chmod(0o755)
+    return path
+
+
+def _write_codex_auth(path: Path, email: str) -> Path:
+    payload = base64.urlsafe_b64encode(json.dumps({"email": email}).encode()).decode().rstrip("=")
+    path.write_text(
+        json.dumps({"tokens": {"id_token": f"header.{payload}.signature"}}),
+        encoding="utf-8",
+    )
     return path
 
 
@@ -166,6 +179,10 @@ def test_codex_detection_prefers_current_app_binary(monkeypatch, tmp_path: Path)
     monkeypatch.setattr(cli_module, "CODEX_APP_BINARIES", (app_binary,))
     monkeypatch.setenv("PATH", str(path_binary.parent))
     assert find_codex_executable() == app_binary
+    assert find_codex_app_executable() == app_binary
+    assert find_codex_cli_executable() == path_binary.resolve()
+    assert find_codex_executable("chatgpt-app") == app_binary
+    assert find_codex_executable("codex-cli") == path_binary.resolve()
 
 
 def test_codex_detection_falls_back_to_path(monkeypatch, tmp_path: Path) -> None:
@@ -175,6 +192,36 @@ def test_codex_detection_falls_back_to_path(monkeypatch, tmp_path: Path) -> None
     monkeypatch.setenv("PATH", str(tmp_path))
     detected = find_codex_executable()
     assert detected == executable.resolve()
+
+
+def test_codex_account_email_reads_only_valid_id_token_claim(tmp_path: Path) -> None:
+    auth = _write_codex_auth(tmp_path / "auth.json", "trader@example.com")
+    assert find_codex_account_email(auth) == "trader@example.com"
+
+    auth.write_text(json.dumps({"tokens": {"id_token": "invalid"}}), encoding="utf-8")
+    assert find_codex_account_email(auth) is None
+
+
+def test_codex_provider_switches_between_available_auth_sources(
+    monkeypatch, tmp_path: Path
+) -> None:
+    app_binary = _write_fake_cli(tmp_path / "app" / "codex", "exit 0\n")
+    cli_binary = _write_fake_cli(tmp_path / "bin" / "codex", "exit 0\n")
+    monkeypatch.setattr(cli_module, "CODEX_APP_BINARIES", (app_binary,))
+    monkeypatch.setenv("PATH", str(cli_binary.parent))
+    monkeypatch.setattr(cli_module, "USER_CLI_DIRECTORY", tmp_path / "user-bin")
+
+    provider = CodexAuthProvider()
+    assert provider.auth_source == "chatgpt-app"
+    assert provider.executable == app_binary
+    assert provider.auth_source_options == ("chatgpt-app", "codex-cli")
+
+    provider.set_auth_source("codex-cli")
+    assert provider.auth_source == "codex-cli"
+    assert provider.executable == cli_binary.resolve()
+
+    with pytest.raises(ValueError, match="unknown Codex auth source"):
+        provider.set_auth_source("automatic")
 
 
 def test_provider_detection_falls_back_to_user_cli_directory(
