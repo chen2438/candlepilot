@@ -94,6 +94,20 @@ class TradeIntent(StrictModel):
 
     @model_validator(mode="after")
     def validate_order_semantics(self) -> TradeIntent:
+        if self.action == TradeAction.HOLD:
+            if (
+                self.leverage != 1
+                or self.risk_fraction != 0
+                or self.order_type != OrderType.MARKET
+                or self.entry_price is not None
+                or self.stop_loss is not None
+                or self.take_profit is not None
+            ):
+                raise ValueError(
+                    "HOLD must use leverage=1, risk_fraction=0, order_type=MARKET, "
+                    "and null entry_price, stop_loss, and take_profit"
+                )
+            return self
         opening = self.action in {
             TradeAction.OPEN_LONG,
             TradeAction.OPEN_SHORT,
@@ -103,8 +117,6 @@ class TradeIntent(StrictModel):
             raise ValueError("opening and add intents require stop_loss")
         if self.order_type == OrderType.LIMIT and self.entry_price is None:
             raise ValueError("limit intents require entry_price")
-        if self.action == TradeAction.HOLD and self.risk_fraction != 0:
-            raise ValueError("HOLD must have zero risk_fraction")
         return self
 
     @classmethod

@@ -57,6 +57,25 @@ def test_hold_factory_bounds_oversized_error_reason() -> None:
     assert len(intent.rationale) == RATIONALE_MAX_LENGTH
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("leverage", 2),
+        ("risk_fraction", "0.001"),
+        ("order_type", "LIMIT"),
+        ("entry_price", "100"),
+        ("stop_loss", "99"),
+        ("take_profit", "101"),
+    ],
+)
+def test_hold_rejects_fields_that_imply_an_order(field: str, value: object) -> None:
+    payload = TradeIntent.hold("ETHUSDT", "5m", "no setup").model_dump()
+    payload[field] = value
+
+    with pytest.raises(ValidationError, match="HOLD must use leverage=1"):
+        TradeIntent.model_validate(payload)
+
+
 def test_market_snapshot_rejects_crossed_quote() -> None:
     with pytest.raises(ValidationError, match="ask cannot be below bid"):
         MarketSnapshot(

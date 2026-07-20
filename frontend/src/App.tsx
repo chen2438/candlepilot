@@ -2751,7 +2751,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
 
   return (
     <article className="panel backtest-panel">
-      <PanelTitle code="09" title="回测" meta="历史模式 · 多模型对比" />
+      <PanelTitle code="05" title="回测" meta="历史模式 · 多模型对比" />
 
       <CollectorPanel status={collector} onChange={() => void refreshCollector()} />
 

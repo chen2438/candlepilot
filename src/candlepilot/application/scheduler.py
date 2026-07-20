@@ -64,10 +64,10 @@ class TradingScheduler:
 
     @property
     def current_cycle(self) -> dict[str, object] | None:
-        """Return one active cycle for the compact status API.
+        """Return one active cycle for backward-compatible status consumers.
 
         Cadence tasks are independent, so internal tracking remains keyed by
-        cadence even though the current frontend only has room for one row.
+        cadence and the current frontend reads ``current_cycles`` instead.
         """
 
         return next(iter(self.current_cycles.values()), None)
