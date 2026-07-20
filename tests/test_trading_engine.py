@@ -623,8 +623,6 @@ def test_engine_audits_market_refresh_failure_without_execution(tmp_path: Path) 
 
 
 def test_engine_cadence_selection_validates_and_locks_when_running(tmp_path: Path) -> None:
-    from candlepilot.application.engine import SUPPORTED_CADENCES
-
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'cadence-engine.db'}")
         await database.initialize()
@@ -635,11 +633,15 @@ def test_engine_cadence_selection_validates_and_locks_when_running(tmp_path: Pat
             market=FakeMarket(),  # type: ignore[arg-type]
         )
         default = engine.active_cadences
-        engine.select_cadences(["30m", "15m"])  # unordered input
-        normalized = engine.active_cadences
+        engine.select_cadences(["30m"])
+        selected = engine.active_cadences
 
         errors = {}
-        for label, cadences in (("invalid", ["1m"]), ("empty", [])):
+        for label, cadences in (
+            ("invalid", ["1m"]),
+            ("empty", []),
+            ("multiple", ["15m", "30m"]),
+        ):
             try:
                 engine.select_cadences(cadences)
             except ValueError:
@@ -653,12 +655,12 @@ def test_engine_cadence_selection_validates_and_locks_when_running(tmp_path: Pat
         except RuntimeError:
             errors["locked"] = True
         await database.close()
-        return default, normalized, errors
+        return default, selected, errors
 
-    default, normalized, errors = asyncio.run(scenario())
-    assert default == SUPPORTED_CADENCES
-    assert normalized == ("15m", "30m")  # normalized to canonical order
-    assert errors == {"invalid": True, "empty": True, "locked": True}
+    default, selected, errors = asyncio.run(scenario())
+    assert default == ("15m",)
+    assert selected == ("30m",)
+    assert errors == {"invalid": True, "empty": True, "multiple": True, "locked": True}
 
 
 def test_evaluate_stop_reason_covers_duration_budget_and_route_failures() -> None:

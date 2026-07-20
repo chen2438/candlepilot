@@ -180,7 +180,7 @@ class HistoryClearRequest(ApiModel):
 
 
 class CadenceSelection(ApiModel):
-    cadences: list[str] = Field(min_length=1, max_length=8)
+    cadences: list[str] = Field(min_length=1, max_length=1)
 
 
 class CandidatesPerCycleSelection(ApiModel):
@@ -1483,9 +1483,9 @@ def create_app(
             )
             raise ValueError(
                 "live startup probe rejected this capacity: the real batch "
-                f"for one {symbol_count}-symbol batch was {slowest_seconds:.2f}s; selected cadences are "
-                f"{cadence_detail} and aggregate provider utilization is "
-                f"{utilization * 100:.1f}%. Reduce analysis symbols or select longer/fewer cadences."
+                f"for one {symbol_count}-symbol batch was {slowest_seconds:.2f}s; selected cadence is "
+                f"{cadence_detail} and provider utilization is "
+                f"{utilization * 100:.1f}%. Reduce analysis symbols or select a longer cadence."
             )
         return {
             "running": False,

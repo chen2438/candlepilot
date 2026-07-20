@@ -151,6 +151,35 @@ function BacktestResultDetail({ result }: { result: BacktestResult | null }) {
 
 const DECISION_CADENCES = ["5m", "15m", "30m", "1h", "4h"];
 
+export function CadenceSelector({
+  active,
+  supported,
+  disabled,
+  onSelect,
+}: {
+  active: string;
+  supported: string[];
+  disabled: boolean;
+  onSelect: (cadence: string) => void;
+}) {
+  return (
+    <div className="cadence-select" title={disabled ? "运行时锁定" : "选择唯一的分析周期；每次仍会读取完整多周期特征"}>
+      <span>分析周期</span>
+      <div className="cadence-chips">
+        {supported.map((cadence) => (
+          <button
+            key={cadence}
+            className={`cadence-chip ${active === cadence ? "on" : ""}`}
+            disabled={disabled}
+            aria-pressed={active === cadence}
+            onClick={() => onSelect(cadence)}
+          >{cadence}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 const emptyStatus: EngineStatus = {
   running: false,
   emergency_locked: false,
@@ -159,7 +188,7 @@ const emptyStatus: EngineStatus = {
   active_provider: null,
   live_run_id: null,
   provider_routes: [],
-  active_cadences: DECISION_CADENCES,
+  active_cadences: ["15m"],
   run_limits: { max_run_seconds: null, max_run_cost_usd: null },
   decision_timeout_seconds: null,
   startup_probe: null,
@@ -739,20 +768,18 @@ export default function App() {
     void changeProviderChain(next);
   }, [status.provider_chain, changeProviderChain]);
 
-  const toggleCadence = useCallback(async (cadence: string, active: string[], supported: string[]) => {
-    const next = active.includes(cadence) ? active.filter((c) => c !== cadence) : [...active, cadence];
-    if (!next.length) return; // keep at least one cadence
-    const ordered = supported.filter((c) => next.includes(c));
+  const selectCadence = useCallback(async (cadence: string) => {
+    if (status.active_cadences[0] === cadence) return;
     setBusy("cadences");
     setError(null);
     try {
-      setStatus(await api<EngineStatus>("/api/cadences", { method: "POST", body: JSON.stringify({ cadences: ordered }) }));
+      setStatus(await api<EngineStatus>("/api/cadences", { method: "POST", body: JSON.stringify({ cadences: [cadence] }) }));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setBusy(null);
     }
-  }, []);
+  }, [status.active_cadences]);
 
   const changeCandidatesPerCycle = useCallback(async (value: number, max: number) => {
     const clamped = Math.max(1, Math.min(max, Math.round(value)));
@@ -1121,19 +1148,12 @@ export default function App() {
             </p>
           </div>
           <div className="controls">
-            <div className="cadence-select" title={status.running ? "运行时锁定" : "选择要分析的决策周期"}>
-              <span>分析周期</span>
-              <div className="cadence-chips">
-                {status.supported_cadences.map((cadence) => (
-                  <button
-                    key={cadence}
-                    className={`cadence-chip ${status.active_cadences.includes(cadence) ? "on" : ""}`}
-                    disabled={busy !== null || status.running}
-                    onClick={() => toggleCadence(cadence, status.active_cadences, status.supported_cadences)}
-                  >{cadence}</button>
-                ))}
-              </div>
-            </div>
+            <CadenceSelector
+              active={status.active_cadences[0] ?? "15m"}
+              supported={status.supported_cadences}
+              disabled={busy !== null || status.running}
+              onSelect={(cadence) => void selectCadence(cadence)}
+            />
             <div className="cadence-select" title={status.running ? "运行时锁定" : "设置动态候选池前 N 名；已有持仓会去重后额外加入分析"}>
               <span className="range-head">
                 每周期候选标的数

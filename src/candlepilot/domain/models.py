@@ -18,6 +18,9 @@ RATIONALE_MAX_LENGTH = 1_000
 Cadence = Literal["5m", "15m", "30m", "1h", "4h"]
 #: The same set as a tuple, in the canonical order cadences are reported in.
 SUPPORTED_CADENCES: tuple[str, ...] = get_args(Cadence)
+#: Live analysis deliberately runs on one clock. Every snapshot still contains
+#: the complete 5m/15m/30m/1h/4h feature ladder.
+DEFAULT_DECISION_CADENCE = "15m"
 
 
 class StrictModel(BaseModel):

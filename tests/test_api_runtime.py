@@ -1238,13 +1238,13 @@ def test_settings_endpoint_reads_masked_and_writes_env(tmp_path: Path, monkeypat
 
         saved = client.post(
             "/api/settings",
-            json={"values": {"CANDLEPILOT_PORT": "9100", "CANDLEPILOT_CADENCES": "5m,15m"}},
+            json={"values": {"CANDLEPILOT_PORT": "9100", "CANDLEPILOT_CADENCES": "5m"}},
         )
         assert saved.status_code == 200, saved.text
         text = env_path.read_text(encoding="utf-8")
         assert "# keep me" in text  # comments survive
         assert "CANDLEPILOT_PORT=9100" in text
-        assert "CANDLEPILOT_CADENCES=5m,15m" in text
+        assert "CANDLEPILOT_CADENCES=5m" in text
         assert "BINANCE_TESTNET_API_KEY=super-secret" in text  # untouched key kept
 
         # An empty value clears the setting: every parser treats "KEY=" as unset,
@@ -1253,15 +1253,14 @@ def test_settings_endpoint_reads_masked_and_writes_env(tmp_path: Path, monkeypat
         assert "CANDLEPILOT_CADENCES=\n" in env_path.read_text(encoding="utf-8")
         fields = {f["key"]: f for s in cleared.json()["sections"] for f in s["fields"]}
         assert fields["CANDLEPILOT_CADENCES"]["configured"] is False
-        assert Settings.from_mapping(read_env_file(env_path)).cadences == (
-            "5m", "15m", "30m", "1h", "4h"
-        )
+        assert Settings.from_mapping(read_env_file(env_path)).cadences == ("15m",)
 
         # Invalid values are rejected before the file is touched.
         before = env_path.read_text(encoding="utf-8")
         # These parse fine but would brick startup at engine/scheduler construction.
         for values in (
             {"CANDLEPILOT_CADENCES": "7m"},
+            {"CANDLEPILOT_CADENCES": "5m,15m"},
             {"CANDLEPILOT_CANDIDATES_PER_CYCLE": "99"},
             {"CANDLEPILOT_HOST": "0.0.0.0"},
             {"CANDLEPILOT_MODE": "bogus"},
@@ -1704,15 +1703,16 @@ def test_cadence_selection_endpoint(tmp_path: Path) -> None:
     app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
     with TestClient(app) as client:
         status = client.get("/api/status").json()
-        assert status["active_cadences"] == ["5m", "15m", "30m", "1h", "4h"]
+        assert status["active_cadences"] == ["15m"]
         assert status["supported_cadences"] == ["5m", "15m", "30m", "1h", "4h"]
 
-        updated = client.post("/api/cadences", json={"cadences": ["4h", "1h"]})
+        updated = client.post("/api/cadences", json={"cadences": ["1h"]})
         assert updated.status_code == 200, updated.text
-        assert updated.json()["active_cadences"] == ["1h", "4h"]  # canonical order
+        assert updated.json()["active_cadences"] == ["1h"]
 
         assert client.post("/api/cadences", json={"cadences": ["1m"]}).status_code == 422
         assert client.post("/api/cadences", json={"cadences": []}).status_code == 422
+        assert client.post("/api/cadences", json={"cadences": ["5m", "15m"]}).status_code == 422
 
         # Locked while the engine runs.
         client.post("/api/providers/select", json={"providers": ["api-fixture"]})

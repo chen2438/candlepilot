@@ -16,6 +16,7 @@ from candlepilot.broker.binance_testnet import (
     ReconciliationReport,
 )
 from candlepilot.domain.models import (
+    DEFAULT_DECISION_CADENCE,
     SUPPORTED_CADENCES,
     ExecutionAttempt,
     ExecutionReport,
@@ -95,7 +96,7 @@ class TradingEngine:
         )
         self._retry_sleep = retry_sleep
         self.active_cadences: tuple[str, ...] = self._normalize_cadences(
-            cadences if cadences is not None else SUPPORTED_CADENCES
+            cadences if cadences is not None else (DEFAULT_DECISION_CADENCE,)
         )
         self.running = False
         self.emergency_locked = False
@@ -185,7 +186,9 @@ class TradingEngine:
             raise ValueError(f"unsupported cadences: {', '.join(sorted(invalid))}")
         chosen = tuple(cadence for cadence in SUPPORTED_CADENCES if cadence in requested)
         if not chosen:
-            raise ValueError("at least one cadence must be selected")
+            raise ValueError("exactly one analysis cadence must be selected")
+        if len(chosen) != 1:
+            raise ValueError("exactly one analysis cadence must be selected")
         return chosen
 
     def select_cadences(self, cadences: tuple[str, ...] | list[str]) -> None:

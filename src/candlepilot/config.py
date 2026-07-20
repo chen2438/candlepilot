@@ -10,7 +10,7 @@ from pathlib import Path
 
 from pydantic import SecretStr
 
-from candlepilot.domain.models import SUPPORTED_CADENCES
+from candlepilot.domain.models import DEFAULT_DECISION_CADENCE, SUPPORTED_CADENCES
 
 
 
@@ -81,7 +81,7 @@ def load_dotenv(path: Path | None = None) -> None:
 
 
 def _parse_cadences(raw: str | None) -> tuple[str, ...]:
-    """Parse ``CANDLEPILOT_CADENCES`` into a canonical, validated subset.
+    """Parse the one live decision cadence from ``CANDLEPILOT_CADENCES``.
 
     This used to hand any string through and let the engine reject it at
     construction, three layers later. The value is a typo away from wrong and
@@ -89,16 +89,18 @@ def _parse_cadences(raw: str | None) -> tuple[str, ...]:
     """
 
     if not raw or not raw.strip():
-        return SUPPORTED_CADENCES
+        return (DEFAULT_DECISION_CADENCE,)
     requested = {item.strip() for item in raw.split(",") if item.strip()}
     if not requested:
-        return SUPPORTED_CADENCES
+        return (DEFAULT_DECISION_CADENCE,)
     unsupported = requested - set(SUPPORTED_CADENCES)
     if unsupported:
         raise ValueError(
             f"unsupported cadences: {', '.join(sorted(unsupported))}; "
             f"choose from {', '.join(SUPPORTED_CADENCES)}"
         )
+    if len(requested) != 1:
+        raise ValueError("exactly one analysis cadence must be selected")
     return tuple(cadence for cadence in SUPPORTED_CADENCES if cadence in requested)
 
 
@@ -383,7 +385,7 @@ class Settings:
     minimum_reward_risk_ratio: Decimal = Decimal("1.3")
     inference_timeout_seconds: float = 45.0
     max_snapshot_age_seconds: int = 75
-    cadences: tuple[str, ...] = SUPPORTED_CADENCES
+    cadences: tuple[str, ...] = (DEFAULT_DECISION_CADENCE,)
     candidates_per_cycle: int = 5
     max_run_seconds: int | None = None
     max_run_cost_usd: float | None = None

@@ -50,8 +50,12 @@ ENV_SECTIONS: tuple[EnvSection, ...] = (
     EnvSection(
         "决策与运行",
         (
-            EnvField("CANDLEPILOT_CADENCES", "分析周期", placeholder="5m,15m,30m,1h,4h",
-                     description="逗号分隔，5m/15m/30m/1h/4h 的子集。"),
+            EnvField(
+                "CANDLEPILOT_CADENCES",
+                "分析周期",
+                placeholder="15m",
+                description="只能填写一个：5m、15m、30m、1h 或 4h。",
+            ),
             EnvField(
                 "CANDLEPILOT_CANDIDATES_PER_CYCLE",
                 "每周期候选标的数",

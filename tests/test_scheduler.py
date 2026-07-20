@@ -194,7 +194,7 @@ def test_scheduler_only_runs_selected_cadences(tmp_path: Path) -> None:
             market=market,  # type: ignore[arg-type]
         )
         engine.select_provider_chain(["hold"])
-        engine.select_cadences(["4h", "1h"])  # order-insensitive input
+        engine.select_cadences(["1h"])
         await engine.start()
         scheduler = TradingScheduler(engine, market)  # type: ignore[arg-type]
         scheduler.start()
@@ -206,7 +206,6 @@ def test_scheduler_only_runs_selected_cadences(tmp_path: Path) -> None:
     names = asyncio.run(scenario())
     assert names == [
         "candlepilot-1h",
-        "candlepilot-4h",
         "candlepilot-guard",
         "candlepilot-universe",
     ]

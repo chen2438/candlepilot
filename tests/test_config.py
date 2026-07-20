@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from candlepilot.config import DEFAULT_DATABASE_URL, Settings, load_dotenv
-from candlepilot.domain.models import SUPPORTED_CADENCES
 
 
 def test_settings_use_concrete_database_default(monkeypatch) -> None:
@@ -40,9 +39,9 @@ def test_load_dotenv_missing_file_is_noop(tmp_path: Path) -> None:
 
 def test_cadences_default_and_env_override(monkeypatch) -> None:
     monkeypatch.delenv("CANDLEPILOT_CADENCES", raising=False)
-    assert Settings.from_env().cadences == ("5m", "15m", "30m", "1h", "4h")
-    monkeypatch.setenv("CANDLEPILOT_CADENCES", "15m, 30m")
-    assert Settings.from_env().cadences == ("15m", "30m")
+    assert Settings.from_env().cadences == ("15m",)
+    monkeypatch.setenv("CANDLEPILOT_CADENCES", "30m")
+    assert Settings.from_env().cadences == ("30m",)
 
 
 def test_the_parser_rejects_a_cadence_the_engine_would_refuse(monkeypatch) -> None:
@@ -59,14 +58,13 @@ def test_the_parser_rejects_a_cadence_the_engine_would_refuse(monkeypatch) -> No
             Settings.from_env()
 
 
-def test_cadences_come_back_in_canonical_order(monkeypatch) -> None:
-    """Order is the engine's, not the order they happen to be typed in."""
-
-    monkeypatch.setenv("CANDLEPILOT_CADENCES", "4h,30m,5m")
-    assert Settings.from_env().cadences == ("5m", "30m", "4h")
-    # Blank and whitespace-only both mean "unset", not "no cadences".
+def test_cadences_reject_multiple_values(monkeypatch) -> None:
+    monkeypatch.setenv("CANDLEPILOT_CADENCES", "4h,30m")
+    with pytest.raises(ValueError, match="exactly one analysis cadence"):
+        Settings.from_env()
+    # Blank and whitespace-only both mean the 15m default.
     monkeypatch.setenv("CANDLEPILOT_CADENCES", "   ")
-    assert Settings.from_env().cadences == SUPPORTED_CADENCES
+    assert Settings.from_env().cadences == ("15m",)
 
 
 def test_custom_llm_providers_parse_from_json(monkeypatch) -> None:
