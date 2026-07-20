@@ -2,7 +2,7 @@
 
 > 本文件是 CandlePilot 的**唯一权威功能文档**，记录系统当前的全部能力、接口与边界。
 > `STATUS.md` 与 `PLAN.md` 已弃用，后续变更只同步更新本文件。
-> 最后更新：2026-07-20（修正 VPS 安装目录权限）
+> 最后更新：2026-07-20（增加 VPS 安全卸载脚本）
 
 ---
 
@@ -1061,6 +1061,19 @@ sudo systemctl restart candlepilot
 不会擅自启用或重置防火墙。重置密码时运行
 `sudo -u candlepilot /opt/candlepilot/.venv/bin/python -m candlepilot.auth` 生成新哈希，替换 `.env`
 中的 `CANDLEPILOT_AUTH_PASSWORD_HASH` 后重启服务；密码哈希参与会话签名，因此旧会话自动失效。
+
+卸载前可先预览将被删除的资源：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/chen2438/candlepilot/main/scripts/uninstall_vps.sh \
+  | sudo bash -s -- --dry-run
+```
+
+去掉 `--dry-run` 后，脚本会单独询问是否删除 `candlepilot` Linux 用户及其 home（其中可能包含
+Codex 登录状态），并要求输入 `REMOVE` 才执行。卸载会停止并移除 CandlePilot systemd 服务、
+Nginx 站点、TLS 配置和应用目录；不会卸载共享的 Nginx、Python、Node.js、pnpm、Codex CLI 或
+Git，也不会删除可能与其他服务共用的防火墙规则。无人值守卸载可设置
+`CANDLEPILOT_UNINSTALL_CONFIRM=REMOVE` 与 `CANDLEPILOT_REMOVE_APP_USER=true|false`。
 
 API 回归测试按职责拆分：`tests/test_api_runtime.py` 覆盖正式运行、账户、Provider、配置与
 通用控制接口，`tests/test_api_backtest.py` 覆盖回测、试跑、采集与回测历史接口；两者只复用
