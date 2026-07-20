@@ -129,6 +129,10 @@ def test_describe_settings_masks_secrets_and_exposes_plain_values(tmp_path: Path
     unset = fields["CANDLEPILOT_CLAUDE_MODEL"]
     assert unset["configured"] is False
 
+    route = fields["CANDLEPILOT_PROVIDER_CHAIN"]
+    assert "claude-code" in route["placeholder"]
+    assert "codex, claude," not in route["placeholder"]
+
 
 @pytest.mark.parametrize("key", sorted(ENV_FIELDS))
 def test_every_described_field_is_a_real_env_key(key: str) -> None:

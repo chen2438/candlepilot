@@ -485,6 +485,6 @@ def validate_provider_references(
     if problems:
         raise ValueError(
             "; ".join(problems)
-            + ". Update the Provider route and default before renaming or deleting "
+            + ". Update the complete Provider route before renaming or deleting "
             "a referenced Custom API id."
         )
