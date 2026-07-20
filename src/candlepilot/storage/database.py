@@ -574,6 +574,21 @@ class AuditRepository:
             )
         return int(result.rowcount or 0)
 
+    async def fail_open_backtest_runs(self, *, ended_at: datetime | None = None) -> int:
+        """Close backtests whose owning process disappeared before recording a result."""
+
+        async with self.sessions.begin() as session:
+            result = await session.execute(
+                update(BacktestRunRow)
+                .where(BacktestRunRow.status == "running")
+                .values(
+                    status="failed",
+                    error="process restarted before the backtest closed cleanly",
+                    ended_at=ended_at or datetime.now(UTC),
+                )
+            )
+        return int(result.rowcount or 0)
+
     @staticmethod
     def _validate_live_run_status(status: str) -> None:
         if status not in {"stopped", "auto_stopped", "emergency_stopped", "interrupted"}:

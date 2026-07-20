@@ -644,6 +644,7 @@ def create_app(
             # With exclusive ownership established, a live run left open can only
             # mean the previous owner did not execute its graceful shutdown path.
             await engine.audit.interrupt_open_live_runs()
+            await engine.audit.fail_open_backtest_runs()
             await engine.cancel_pending_entries(
                 "pending limit intent cancelled because the process restarted"
             )
@@ -2534,6 +2535,12 @@ def create_app(
     ) -> None:
         try:
             series, rules = await _load_series(spec)
+        except asyncio.CancelledError:
+            try:
+                await engine.audit.finish_backtest_run(run_id, status="cancelled")
+            finally:
+                backtest_tasks.pop(run_id, None)
+            raise
         except Exception as exc:  # noqa: BLE001 - surface the reason on the run
             await engine.audit.finish_backtest_run(
                 run_id, status="failed", error=f"history load failed: {exc}"[:500]

@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -9,6 +10,7 @@ from fastapi.testclient import TestClient
 from candlepilot.api import create_app
 from candlepilot.application.engine import TradingEngine
 from candlepilot.backtest.probe import PROBE_CEILING_SECONDS, PROBE_DECISIONS
+from candlepilot.config import Settings
 from conftest import FakeTestnetBroker
 from candlepilot.providers.base import ProviderResult
 from candlepilot.providers.local import LocalRuleProvider
@@ -63,7 +65,12 @@ def _backtest_app(tmp_path: Path, name: str):
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
     )
-    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    app = create_app(
+        settings=Settings(data_dir=tmp_path / "data"),
+        database=database,
+        market=market,
+        engine=engine,
+    )  # type: ignore[arg-type]
     return database, engine, app
 
 
@@ -414,6 +421,73 @@ def test_app_shutdown_cancels_background_work_before_closing_resources(
     assert app.state.collector.running is False
     assert engine.running is False
     assert run is not None and run["status"] == "cancelled"
+
+
+def test_cancel_during_history_load_records_cancelled_terminal_state(tmp_path: Path) -> None:
+    history_started = threading.Event()
+
+    class SlowHistoryMarket(BacktestMarket):
+        async def historical_klines(self, *args, **kwargs):
+            history_started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("cancelled history request resumed")
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'cancel-history.db'}")
+    market = SlowHistoryMarket()
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([LocalRuleProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(
+        settings=Settings(data_dir=tmp_path / "slow-history-data"),
+        database=database,
+        market=market,
+        engine=engine,
+    )  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/backtests",
+            json={"symbols": ["BTCUSDT"], "providers": ["local-rule"], **_window()},
+        )
+        assert created.status_code == 202, created.text
+        run_id = created.json()["id"]
+        assert history_started.wait(timeout=1)
+        assert client.post(f"/api/backtests/{run_id}/cancel").status_code == 200
+        run = _await_run(client, run_id)
+
+    assert run["status"] == "cancelled"
+    assert run["ended_at"] is not None
+    asyncio.run(database.close())
+
+
+def test_startup_fails_a_backtest_left_running_by_previous_process(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'stale-backtest.db'}")
+    market = BacktestMarket()
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([LocalRuleProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+
+    async def seed() -> int:
+        await database.initialize()
+        return await engine.audit.create_backtest_run(
+            {"symbols": ["BTCUSDT"], **_window()}, ["local-rule"]
+        )
+
+    run_id = asyncio.run(seed())
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        run = client.get(f"/api/backtests/{run_id}").json()
+
+    assert run["status"] == "failed"
+    assert run["ended_at"] is not None
+    assert run["error"] == "process restarted before the backtest closed cleanly"
+    asyncio.run(database.close())
 
 
 def test_backtest_rejects_an_unknown_model_before_starting(tmp_path: Path) -> None:
