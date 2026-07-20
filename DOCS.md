@@ -2,7 +2,7 @@
 
 > 本文件是 CandlePilot 的**唯一权威功能文档**，记录系统当前的全部能力、接口与边界。
 > `STATUS.md` 与 `PLAN.md` 已弃用，后续变更只同步更新本文件。
-> 最后更新：2026-07-20（增加 VPS 安全卸载脚本）
+> 最后更新：2026-07-20（增加 Debian 12 VPS 安装支持）
 
 ---
 
@@ -1028,10 +1028,14 @@ Python 依赖锁定于 `requirements.lock`，前端锁定于 `frontend/pnpm-lock
 
 ### 8.1 Linux VPS 一键安装
 
-仓库提供 `scripts/install_vps.sh`，支持全新 Ubuntu 24.04 或 Debian 13 VPS。Ubuntu 使用系统
-Python 3.12，Debian 使用系统 Python 3.13；两者安装相同的锁定项目依赖。脚本必须由 root 执行，
-会创建独立 `candlepilot` 用户，把仓库安装到 `/opt/candlepilot`，安装 Node.js 24、pnpm 与 Codex
-CLI，构建前端，并创建 systemd 服务。后端仍绑定 `127.0.0.1:8000`；Nginx 在用户指定的公网端口
+仓库提供 `scripts/install_vps.sh`，支持 Ubuntu 24.04、Debian 12 或 Debian 13 VPS。Ubuntu 使用
+系统 Python 3.12，Debian 13 使用系统 Python 3.13；Debian 12 的系统 Python 3.11 不满足项目
+要求，因此脚本下载并校验固定版本的 `uv`，由其在应用目录内安装隔离的 CPython 3.12.13，既不
+替换 `/usr/bin/python3`，也不依赖或修改 VPS 上已有的 Conda 环境。三种系统安装相同的锁定项目
+依赖。`CANDLEPILOT_UV_VERSION` 与 `CANDLEPILOT_MANAGED_PYTHON_VERSION` 可覆盖固定版本，但通常
+不应修改。脚本必须由 root 执行，会创建独立 `candlepilot` 用户，把仓库安装到
+`/opt/candlepilot`，安装 Node.js 24、pnpm 与 Codex CLI，构建前端，并创建 systemd 服务。后端仍
+绑定 `127.0.0.1:8000`；Nginx 在用户指定的公网端口
 提供 HTTPS、转发 REST 与 WebSocket。脚本生成包含 VPS IP SAN 的自签名证书，完成后输出 SHA-256
 指纹；首次访问只有在核对该指纹后才能接受浏览器警告。安装目录先以应用用户身份创建并保留，
 Git 直接克隆到该空目录，应用用户不需要也不能在 root 所有的 `/opt` 下自行创建目录。其他发行版
@@ -1071,8 +1075,9 @@ curl -fsSL https://raw.githubusercontent.com/chen2438/candlepilot/main/scripts/u
 
 去掉 `--dry-run` 后，脚本会单独询问是否删除 `candlepilot` Linux 用户及其 home（其中可能包含
 Codex 登录状态），并要求输入 `REMOVE` 才执行。卸载会停止并移除 CandlePilot systemd 服务、
-Nginx 站点、TLS 配置和应用目录；不会卸载共享的 Nginx、Python、Node.js、pnpm、Codex CLI 或
-Git，也不会删除可能与其他服务共用的防火墙规则。无人值守卸载可设置
+Nginx 站点、TLS 配置和应用目录（Debian 12 的隔离 Python 与 `uv` 也在其中）；不会卸载共享的
+Nginx、系统 Python、Node.js、pnpm、Codex CLI 或 Git，也不会删除可能与其他服务共用的防火墙
+规则。无人值守卸载可设置
 `CANDLEPILOT_UNINSTALL_CONFIRM=REMOVE` 与 `CANDLEPILOT_REMOVE_APP_USER=true|false`。
 
 API 回归测试按职责拆分：`tests/test_api_runtime.py` 覆盖正式运行、账户、Provider、配置与

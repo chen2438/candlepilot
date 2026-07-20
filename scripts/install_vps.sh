@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# CandlePilot one-shot installer for a fresh Ubuntu 24.04 or Debian 13 VPS.
+# CandlePilot one-shot installer for Ubuntu 24.04, Debian 12, or Debian 13.
 # The backend remains loopback-only. Nginx exposes an authenticated HTTPS
 # console using a self-signed certificate whose SAN is the VPS IP address.
 
@@ -11,6 +11,8 @@ REPO_URL="${CANDLEPILOT_REPO_URL:-https://github.com/chen2438/candlepilot.git}"
 BRANCH="${CANDLEPILOT_BRANCH:-main}"
 PUBLIC_PORT="${CANDLEPILOT_PUBLIC_PORT:-8443}"
 NODE_VERSION="${CANDLEPILOT_NODE_VERSION:-24.18.0}"
+UV_VERSION="${CANDLEPILOT_UV_VERSION:-0.11.15}"
+MANAGED_PYTHON_VERSION="${CANDLEPILOT_MANAGED_PYTHON_VERSION:-3.12.13}"
 
 fail() {
   echo "CandlePilot installer: $*" >&2
@@ -41,16 +43,24 @@ source /etc/os-release
 case "${ID:-}:${VERSION_ID:-}" in
   ubuntu:24.04)
     PLATFORM_NAME="Ubuntu 24.04"
-    PYTHON_BIN="python3.12"
+    PYTHON_BIN="/usr/bin/python3.12"
     PYTHON_PACKAGES=(python3.12 python3.12-venv)
+    MANAGED_PYTHON=false
+    ;;
+  debian:12)
+    PLATFORM_NAME="Debian 12"
+    PYTHON_BIN=""
+    PYTHON_PACKAGES=(python3)
+    MANAGED_PYTHON=true
     ;;
   debian:13)
     PLATFORM_NAME="Debian 13"
-    PYTHON_BIN="python3"
+    PYTHON_BIN="/usr/bin/python3"
     PYTHON_PACKAGES=(python3 python3-venv)
+    MANAGED_PYTHON=false
     ;;
   *)
-    fail "this installer supports Ubuntu 24.04 and Debian 13 only"
+    fail "this installer supports Ubuntu 24.04, Debian 12, and Debian 13 only"
     ;;
 esac
 [[ "$PUBLIC_PORT" =~ ^[0-9]+$ ]] && (( PUBLIC_PORT >= 1024 && PUBLIC_PORT <= 65535 )) \
@@ -104,8 +114,14 @@ apt-get install -y --no-install-recommends \
   ca-certificates curl git nginx openssl sqlite3 xz-utils "${PYTHON_PACKAGES[@]}"
 
 case "$(uname -m)" in
-  x86_64) NODE_ARCH="x64" ;;
-  aarch64|arm64) NODE_ARCH="arm64" ;;
+  x86_64)
+    NODE_ARCH="x64"
+    UV_TARGET="x86_64-unknown-linux-gnu"
+    ;;
+  aarch64|arm64)
+    NODE_ARCH="arm64"
+    UV_TARGET="aarch64-unknown-linux-gnu"
+    ;;
   *) fail "unsupported CPU architecture: $(uname -m)" ;;
 esac
 NODE_ARCHIVE="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"
@@ -131,7 +147,38 @@ if ! id "$APP_USER" >/dev/null 2>&1; then
 fi
 install -d -o "$APP_USER" -g "$APP_USER" "$APP_DIR"
 runuser -u "$APP_USER" -- git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$APP_DIR"
-runuser -u "$APP_USER" -- "$PYTHON_BIN" -m venv "$APP_DIR/.venv"
+if [[ "$MANAGED_PYTHON" == true ]]; then
+  UV_ARCHIVE="uv-${UV_TARGET}.tar.gz"
+  UV_ROOT="$APP_DIR/.installer"
+  install -d -o "$APP_USER" -g "$APP_USER" "$UV_ROOT/bin"
+  TEMP_DIR="$(mktemp -d)"
+  trap 'rm -rf "$TEMP_DIR"' EXIT
+  curl --fail --show-error --location --proto '=https' --tlsv1.2 \
+    "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${UV_ARCHIVE}" \
+    -o "$TEMP_DIR/$UV_ARCHIVE"
+  curl --fail --show-error --location --proto '=https' --tlsv1.2 \
+    "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${UV_ARCHIVE}.sha256" \
+    -o "$TEMP_DIR/${UV_ARCHIVE}.sha256"
+  (cd "$TEMP_DIR" && sha256sum --check --status "${UV_ARCHIVE}.sha256") \
+    || fail "uv checksum verification failed"
+  tar -xzf "$TEMP_DIR/$UV_ARCHIVE" -C "$TEMP_DIR"
+  install -o "$APP_USER" -g "$APP_USER" -m 0755 \
+    "$TEMP_DIR/uv-${UV_TARGET}/uv" "$UV_ROOT/bin/uv"
+  runuser -u "$APP_USER" -- env \
+    HOME="/home/$APP_USER" \
+    UV_CACHE_DIR="$APP_DIR/.cache/uv" \
+    UV_PYTHON_INSTALL_DIR="$APP_DIR/.python" \
+    "$UV_ROOT/bin/uv" python install --no-bin "$MANAGED_PYTHON_VERSION"
+  runuser -u "$APP_USER" -- env \
+    HOME="/home/$APP_USER" \
+    UV_CACHE_DIR="$APP_DIR/.cache/uv" \
+    UV_PYTHON_INSTALL_DIR="$APP_DIR/.python" \
+    "$UV_ROOT/bin/uv" venv --seed --managed-python \
+      --python "$MANAGED_PYTHON_VERSION" "$APP_DIR/.venv"
+fi
+if [[ "$MANAGED_PYTHON" == false ]]; then
+  runuser -u "$APP_USER" -- "$PYTHON_BIN" -m venv "$APP_DIR/.venv"
+fi
 runuser -u "$APP_USER" -- "$APP_DIR/.venv/bin/pip" install --disable-pip-version-check -r "$APP_DIR/requirements.lock"
 runuser -u "$APP_USER" -- "$APP_DIR/.venv/bin/pip" install --disable-pip-version-check -e "$APP_DIR" --no-deps
 runuser -u "$APP_USER" -- env HOME="/home/$APP_USER" PATH="/usr/local/bin:/usr/bin:/bin" \
