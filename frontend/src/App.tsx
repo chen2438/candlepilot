@@ -2416,6 +2416,12 @@ function formatAverageDecision(milliseconds: number | undefined): string {
   return seconds < 60 ? `${seconds.toFixed(2)}s` : formatDuration(Math.round(seconds));
 }
 
+export function BacktestSymbolList({ symbols }: { symbols: string[] }) {
+  return <span className="run-symbols" role="list" aria-label={`回测标的：${symbols.join("、")}`}>
+    {symbols.map((symbol) => <i key={symbol} role="listitem">{symbol}</i>)}
+  </span>;
+}
+
 export function RunUsage({ session }: { session: RunSessionMetrics }) {
   const active = session.state === "running";
   const title = active ? "本次运行用量" : session.state === "completed" ? "上次运行用量" : "运行用量";
@@ -3152,6 +3158,20 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
       </div>
       <div className="table-wrap backtest-runs">
         <table>
+          <colgroup>
+            <col className="run-col-id" />
+            <col className="run-col-window" />
+            <col className="run-col-model" />
+            <col className="run-col-progress" />
+            <col className="run-col-average" />
+            <col className="run-col-token" />
+            <col className="run-col-cost" />
+            <col className="run-col-return" />
+            <col className="run-col-win" />
+            <col className="run-col-drawdown" />
+            <col className="run-col-trades" />
+            <col className="run-col-action" />
+          </colgroup>
           <thead><tr><th>#</th><th>窗口</th><th>模型</th><th>进度</th>
             <th data-tooltip="该模型已成功返回的决策调用平均耗时；不含历史行情读取、撮合和数据库写入。">平均决策</th>
             <th data-tooltip="已完成模型调用返回的总 Token；运行中随 3 秒轮询更新。">Token</th>
@@ -3170,7 +3190,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                 </td>}
                 {index === 0 && <td rowSpan={run.models.length}>
                   <small className="run-window">
-                    <span>{run.spec.symbols.join(" ")}</span>
+                    <BacktestSymbolList symbols={run.spec.symbols} />
                     <span>{run.spec.cadences.join(" ")}</span>
                     <span><b>开始</b>{formatLocalDateTime(new Date(run.spec.start))}</span>
                     <span><b>结束</b>{formatLocalDateTime(new Date(run.spec.end))}</span>

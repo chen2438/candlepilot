@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   BacktestDecisionLog,
+  BacktestSymbolList,
   CadenceSelector,
   formatDailyLossPercent,
   LoginScreen,
@@ -173,5 +174,17 @@ describe("BacktestDecisionLog", () => {
     expect(screen.getByText("已加载 1 / 101 条决策")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "加载更多" }));
     expect(onLoadMore).toHaveBeenCalledOnce();
+  });
+});
+
+describe("BacktestSymbolList", () => {
+  it("renders long symbol sets as separate wrapping items", () => {
+    const symbols = ["BTCUSDT", "ETHUSDT", "BANKUSDT", "DEXEUSDT", "ESPORTSUSDT"];
+
+    render(<BacktestSymbolList symbols={symbols} />);
+
+    const list = screen.getByRole("list", { name: /回测标的/ });
+    expect(list.classList.contains("run-symbols")).toBe(true);
+    expect(screen.getAllByRole("listitem").map((item) => item.textContent)).toEqual(symbols);
   });
 });
