@@ -1428,6 +1428,22 @@ def test_settings_endpoint_reads_masked_and_writes_env(tmp_path: Path, monkeypat
         assert fields["CANDLEPILOT_CADENCES"]["configured"] is False
         assert Settings.from_mapping(read_env_file(env_path)).cadences == ("15m",)
 
+        # Secret fields are write-only, so a submitted blank means "keep the
+        # current value" rather than silently deleting a masked credential.
+        blank_secret = client.post(
+            "/api/settings",
+            json={"values": {"BINANCE_TESTNET_API_KEY": ""}},
+        )
+        assert blank_secret.status_code == 200, blank_secret.text
+        assert "BINANCE_TESTNET_API_KEY=super-secret" in env_path.read_text(encoding="utf-8")
+        secret_field = next(
+            field
+            for section in blank_secret.json()["sections"]
+            for field in section["fields"]
+            if field["key"] == "BINANCE_TESTNET_API_KEY"
+        )
+        assert secret_field["configured"] is True
+
         # Invalid values are rejected before the file is touched.
         before = env_path.read_text(encoding="utf-8")
         # These parse fine but would brick startup at engine/scheduler construction.

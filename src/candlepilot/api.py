@@ -1633,13 +1633,21 @@ def create_app(
                 raise HTTPException(
                     status_code=422, detail=f"{key} must be a single line"
                 )
+        # Secret inputs are intentionally write-only in the frontend. Treat a
+        # submitted blank as "keep the configured value" so editing and then
+        # clearing the masked field cannot erase credentials accidentally.
+        effective_updates = {
+            key: value
+            for key, value in update.values.items()
+            if value != "" or not ENV_FIELDS[key].secret
+        }
         async with settings_file_lock:
             current = read_env_file(env_path)
             candidate = {
                 **current,
-                **{k: v for k, v in update.values.items() if v != ""},
+                **{k: v for k, v in effective_updates.items() if v != ""},
             }
-            for key, value in update.values.items():
+            for key, value in effective_updates.items():
                 if value == "":
                     candidate.pop(key, None)
             # Validate the whole candidate with the startup parsers before the
@@ -1649,7 +1657,7 @@ def create_app(
                 _validate_startup_settings(candidate_settings)
             except (ValueError, TypeError) as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
-            write_env_file(env_path, update.values)
+            write_env_file(env_path, effective_updates)
             return describe_settings(env_path, read_env_file(env_path))
 
     @app.post("/api/run-limits")
