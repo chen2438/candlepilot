@@ -100,11 +100,10 @@ class BacktestEstimate:
 def estimate(spec: BacktestSpec, *, seconds_per_call: float) -> BacktestEstimate:
     """Count the calls the spec implies before any of them are paid for."""
 
-    span_ms = (spec.end - spec.start).total_seconds() * 1000
     decisions_per_model = spec.replay_decision_count
     if decisions_per_model is None:
         decisions_per_model = sum(
-            int(span_ms // INTERVAL_MILLISECONDS[cadence]) * len(spec.symbols)
+            len(decision_times(spec, cadence)) * len(spec.symbols)
             for cadence in spec.cadences
         )
     calls_per_model = spec.replay_call_count or decisions_per_model
@@ -287,11 +286,14 @@ class ReplayInput:
 
 
 def decision_times(spec: BacktestSpec, cadence: str) -> list[datetime]:
-    """When each decision is due: the close of every bar inside the window."""
+    """Exchange-aligned bar closes strictly after start and no later than end."""
 
-    step = timedelta(milliseconds=INTERVAL_MILLISECONDS[cadence])
+    step_ms = INTERVAL_MILLISECONDS[cadence]
+    start_ms = int(spec.start.timestamp() * 1000)
+    cursor_ms = (start_ms // step_ms + 1) * step_ms
     times: list[datetime] = []
-    cursor = spec.start + step
+    cursor = datetime.fromtimestamp(cursor_ms / 1000, tz=UTC)
+    step = timedelta(milliseconds=step_ms)
     while cursor <= spec.end:
         times.append(cursor)
         cursor += step

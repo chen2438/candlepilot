@@ -173,6 +173,25 @@ def test_decisions_land_on_each_closed_bar_inside_the_window() -> None:
     assert len(times) == 24
 
 
+def test_unaligned_window_uses_exchange_bar_closes_and_matching_estimate() -> None:
+    spec = _spec(
+        start=WINDOW_START + timedelta(minutes=2),
+        end=WINDOW_START + timedelta(minutes=16),
+    )
+
+    times = decision_times(spec, "5m")
+    projected = estimate(spec, seconds_per_call=2)
+
+    assert times == [
+        WINDOW_START + timedelta(minutes=5),
+        WINDOW_START + timedelta(minutes=10),
+        WINDOW_START + timedelta(minutes=15),
+    ]
+    assert projected.decisions_per_model == 3
+    assert projected.calls_per_model == 3
+    assert projected.estimated_seconds == 6
+
+
 def test_four_hour_backtest_decisions_use_the_complete_closed_ladder() -> None:
     spec = _spec(
         cadences=("4h",),
