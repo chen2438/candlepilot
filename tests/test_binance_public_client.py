@@ -244,6 +244,9 @@ def test_market_snapshot_includes_microstructure() -> None:
         "1d_range_high_20",
         "1d_range_low_20",
         "1d_range_position_20",
+        "1d_previous_high",
+        "1d_previous_low",
+        "1d_previous_close",
     }
 
 

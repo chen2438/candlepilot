@@ -110,6 +110,25 @@ def _range(klines: list[Kline], period: int) -> tuple[float, float]:
     )
 
 
+def _last_confirmed_swing(
+    klines: list[Kline], *, high: bool, radius: int = 2
+) -> tuple[float, int] | None:
+    """Return the latest pivot whose bars on both sides are already closed."""
+
+    if len(klines) < radius * 2 + 1:
+        return None
+    for index in range(len(klines) - radius - 1, radius - 1, -1):
+        value = klines[index].high if high else klines[index].low
+        neighbours = [
+            klines[offset].high if high else klines[offset].low
+            for offset in range(index - radius, index + radius + 1)
+            if offset != index
+        ]
+        if (all(value > other for other in neighbours) if high else all(value < other for other in neighbours)):
+            return float(value), len(klines) - 1 - index
+    return None
+
+
 class FeaturePipeline:
     def calculate(self, rows: list[list[Any]]) -> dict[str, float]:
         klines = [Kline.from_binance(row) for row in rows]
@@ -128,7 +147,12 @@ class FeaturePipeline:
         # rejecting, needs the levels themselves.
         near_high, near_low = _range(closed, 20)
         far_high, far_low = _range(closed, 50)
+        prior = closed[:-1] or closed
+        prior_high, prior_low = _range(prior, 20)
+        swing_high = _last_confirmed_swing(closed, high=True)
+        swing_low = _last_confirmed_swing(closed, high=False)
         far_span = far_high - far_low
+        last_bar_span = float(closed[-1].high - closed[-1].low)
         return {
             "range_high_20": near_high,
             "range_low_20": near_low,
@@ -136,6 +160,26 @@ class FeaturePipeline:
             "range_low_50": far_low,
             # 0 at the range low, 1 at the range high.
             "range_position_50": (last - far_low) / far_span if far_span else 0.5,
+            # Unlike range_high_20/range_low_20 these levels exclude the latest
+            # bar, so an actual close through the old boundary is observable.
+            "prior_range_high_20": prior_high,
+            "prior_range_low_20": prior_low,
+            "breakout_above_20": float(last > prior_high),
+            "breakdown_below_20": float(last < prior_low),
+            # A two-bars-each-side pivot cannot repaint. When none exists in the
+            # fetched window, expose the prior range edge with an explicit false
+            # flag rather than inventing a confirmed swing.
+            "last_swing_high": swing_high[0] if swing_high else prior_high,
+            "last_swing_high_confirmed": float(swing_high is not None),
+            "bars_since_swing_high": float(swing_high[1] if swing_high else len(prior)),
+            "last_swing_low": swing_low[0] if swing_low else prior_low,
+            "last_swing_low_confirmed": float(swing_low is not None),
+            "bars_since_swing_low": float(swing_low[1] if swing_low else len(prior)),
+            "last_bar_close_position": (
+                float(closed[-1].close - closed[-1].low) / last_bar_span
+                if last_bar_span
+                else 0.5
+            ),
             # How far price has run from its own mean, in units of its own
             # volatility. This is what "extended" means: chasing a move that has
             # already travelled. Range position is *not* -- a trend puts price at
@@ -193,6 +237,9 @@ class FeaturePipeline:
             f"{prefix}_range_position_{DAILY_STRUCTURE_PERIOD}": (
                 (mark - low) / span if span else 0.5
             ),
+            f"{prefix}_previous_high": float(closed[-1].high),
+            f"{prefix}_previous_low": float(closed[-1].low),
+            f"{prefix}_previous_close": float(closed[-1].close),
         }
 
     def snapshot(

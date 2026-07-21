@@ -313,9 +313,9 @@ def test_codex_provider_parses_schema_output(tmp_path: Path) -> None:
     assert result.usage["input_tokens"] == 1200
     assert result.usage["cached_input_tokens"] == 800
     assert result.usage["total_tokens"] == 1250
-    assert result.prompt_version == "trade-intent-v12"
+    assert result.prompt_version == "trade-intent-v13"
     assert result.data_version is not None
-    assert result.data_version.startswith("market-snapshot-v2:sha256:")
+    assert result.data_version.startswith("market-snapshot-v3:sha256:")
     assert result.input_payload is not None
     assert result.input_payload["market"]["symbol"] == "BTCUSDT"
     assert result.prompt is not None and '"symbol":"BTCUSDT"' in result.prompt
@@ -399,8 +399,8 @@ def test_claude_validation_failure_preserves_complete_audit_context(
     assert error.duration.total_seconds() > 0
     assert error.raw_output == envelope + "\n"
     assert error.usage["input_tokens"] == 25
-    assert error.prompt_version == "trade-intent-v12"
-    assert error.data_version.startswith("market-snapshot-v2:sha256:")
+    assert error.prompt_version == "trade-intent-v13"
+    assert error.data_version.startswith("market-snapshot-v3:sha256:")
     assert error.input_payload["market"]["symbol"] == "BTCUSDT"
     assert '"portfolio"' in error.prompt
 

@@ -40,6 +40,17 @@ def test_feature_pipeline_produces_finite_multiscale_features() -> None:
         "range_high_50",
         "range_low_50",
         "range_position_50",
+        "prior_range_high_20",
+        "prior_range_low_20",
+        "breakout_above_20",
+        "breakdown_below_20",
+        "last_swing_high",
+        "last_swing_high_confirmed",
+        "bars_since_swing_high",
+        "last_swing_low",
+        "last_swing_low_confirmed",
+        "bars_since_swing_low",
+        "last_bar_close_position",
         "ema20_distance_atr",
         "return_1",
         "return_5",
@@ -54,6 +65,8 @@ def test_feature_pipeline_produces_finite_multiscale_features() -> None:
     assert features["ema_20"] > features["ema_50"]
     assert 50 < features["rsi_14"] <= 100
     assert features["atr_fraction"] > 0
+    assert features["last_bar_close_position"] > 0.5
+    assert features["prior_range_high_20"] < features["range_high_20"]
 
 
 def test_snapshot_contains_exchange_and_derived_data() -> None:
@@ -231,7 +244,29 @@ def test_daily_structure_places_the_live_mark_between_the_daily_extremes() -> No
         "1d_range_high_20",
         "1d_range_low_20",
         "1d_range_position_20",
+        "1d_previous_high",
+        "1d_previous_low",
+        "1d_previous_close",
     }
+
+
+def test_structure_features_confirm_pivots_and_breakouts_without_repainting() -> None:
+    rows = _flat_rows()
+    # Create a confirmed local high, then close the latest bar through the
+    # preceding 20-bar boundary. The latest bar itself must not define the
+    # boundary it is being compared with.
+    rows[-8][2] = "103"
+    rows[-8][4] = "102"
+    rows[-1][2] = "104"
+    rows[-1][4] = "104"
+
+    features = FeaturePipeline().calculate(rows)
+
+    assert features["last_swing_high"] == 103
+    assert features["last_swing_high_confirmed"] == 1
+    assert features["bars_since_swing_high"] == 7
+    assert features["prior_range_high_20"] == 103
+    assert features["breakout_above_20"] == 1
 
 
 def test_daily_position_is_not_clamped_when_price_breaks_the_range() -> None:
