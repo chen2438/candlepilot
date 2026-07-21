@@ -46,6 +46,9 @@ install_web_update_helper() {
     printf 'BACKUP_ROOT=%q\n' "$UPDATE_BACKUP_ROOT"
   } >/etc/candlepilot/web-update.conf
   chmod 0600 /etc/candlepilot/web-update.conf
+  cat >/etc/tmpfiles.d/candlepilot-update.conf <<EOF
+d /run/candlepilot-update 0750 $APP_USER $APP_USER -
+EOF
   cat >/etc/systemd/system/candlepilot-update.service <<'EOF'
 [Unit]
 Description=CandlePilot safe web update
@@ -54,18 +57,28 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+ExecStartPre=-/usr/bin/rm -f /run/candlepilot-update/request
 ExecStart=/usr/local/libexec/candlepilot-web-update-worker
 TimeoutStartSec=45min
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 EOF
-  cat >/etc/sudoers.d/candlepilot-web-update <<EOF
-$APP_USER ALL=(root) NOPASSWD: /usr/local/sbin/candlepilot-web-update
+  cat >/etc/systemd/system/candlepilot-update.path <<'EOF'
+[Unit]
+Description=Watch for authenticated CandlePilot web update requests
+
+[Path]
+PathExists=/run/candlepilot-update/request
+Unit=candlepilot-update.service
+
+[Install]
+WantedBy=multi-user.target
 EOF
-  chmod 0440 /etc/sudoers.d/candlepilot-web-update
-  visudo -cf /etc/sudoers.d/candlepilot-web-update >/dev/null
+  rm -f /etc/sudoers.d/candlepilot-web-update
+  systemd-tmpfiles --create /etc/tmpfiles.d/candlepilot-update.conf
   systemctl daemon-reload
+  systemctl enable --now candlepilot-update.path
 }
 
 fail() {
@@ -123,8 +136,6 @@ update_existing_installation() {
   command -v git >/dev/null 2>&1 || fail "git is required to update CandlePilot"
   command -v pnpm >/dev/null 2>&1 || fail "pnpm is required to update CandlePilot"
   command -v sqlite3 >/dev/null 2>&1 || fail "sqlite3 is required to update CandlePilot"
-  command -v sudo >/dev/null 2>&1 || fail "sudo is required to enable web updates"
-  command -v visudo >/dev/null 2>&1 || fail "visudo is required to enable web updates"
 
   local current_branch installed_remote installed_backend_port
   local tracked_changes old_sha new_sha running_count

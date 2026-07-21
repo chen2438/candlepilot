@@ -1742,7 +1742,7 @@ def test_web_update_starts_only_the_fixed_root_helper(
         response = client.post("/api/update")
 
     assert response.status_code == 202
-    assert calls == [("sudo", "-n", str(api_module.WEB_UPDATE_HELPER))]
+    assert calls == [(str(api_module.WEB_UPDATE_HELPER),)]
     asyncio.run(database.close())
 
 

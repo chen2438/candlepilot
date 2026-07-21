@@ -66,10 +66,12 @@ cat <<EOF
 CandlePilot uninstall targets:
   systemd services: /etc/systemd/system/candlepilot.service
                     /etc/systemd/system/candlepilot-update.service
+                    /etc/systemd/system/candlepilot-update.path
   update helper:    /usr/local/sbin/candlepilot-web-update
                     /usr/local/libexec/candlepilot-web-update-worker
                     /usr/local/libexec/candlepilot-install-vps
-  sudo permission:  /etc/sudoers.d/candlepilot-web-update
+  update request:   /etc/tmpfiles.d/candlepilot-update.conf
+                    /run/candlepilot-update
   Nginx site:      /etc/nginx/sites-available/candlepilot
   TLS/config:      /etc/candlepilot
   update state/log: /var/lib/candlepilot, /var/log/candlepilot-update.log
@@ -89,14 +91,16 @@ if [[ "$CONFIRMATION" != "REMOVE" ]]; then
 fi
 [[ "$CONFIRMATION" == "REMOVE" ]] || fail "confirmation did not match; nothing was removed"
 
-for unit in candlepilot-update.service candlepilot.service; do
+for unit in candlepilot-update.path candlepilot-update.service candlepilot.service; do
   if systemctl list-unit-files "$unit" --no-legend 2>/dev/null | grep -q candlepilot; then
     systemctl disable --now "$unit"
   fi
 done
 rm -f -- \
   /etc/systemd/system/candlepilot.service \
-  /etc/systemd/system/candlepilot-update.service
+  /etc/systemd/system/candlepilot-update.service \
+  /etc/systemd/system/candlepilot-update.path \
+  /etc/tmpfiles.d/candlepilot-update.conf
 systemctl daemon-reload
 systemctl reset-failed candlepilot.service candlepilot-update.service 2>/dev/null || true
 
@@ -115,6 +119,7 @@ rm -f -- \
   /usr/local/libexec/candlepilot-install-vps \
   /var/log/candlepilot-update.log
 rm -rf -- /etc/candlepilot /var/lib/candlepilot
+rm -rf -- /run/candlepilot-update
 if [[ -e "$APP_DIR" || -L "$APP_DIR" ]]; then
   rm -rf -- "$APP_DIR"
 fi

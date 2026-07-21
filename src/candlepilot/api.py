@@ -1541,8 +1541,6 @@ def create_app(
 
         try:
             process = await asyncio.create_subprocess_exec(
-                "sudo",
-                "-n",
                 str(WEB_UPDATE_HELPER),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
