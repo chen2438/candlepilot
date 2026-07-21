@@ -3,7 +3,7 @@
 CandlePilot 是一个本地优先、可审计的日内交易系统，由外部 LLM 或本地确定性规则生成决策，当前专注于币安
 USDⓈ-M USDT 永续合约。**币安测试网是唯一交易的账户，没有真钱实盘入口。**
 
-完整功能、接口、设计与风险边界见 [DOCS.md](DOCS.md)。
+权威功能入口与按任务阅读的专题索引见 [DOCS.md](DOCS.md)。
 
 ## 已实现
 
@@ -191,7 +191,7 @@ systemd 监听的更新请求文件，不调用 `sudo`；主服务继续保留 `
 最低建议 1 vCPU / 2 GB RAM / 25 GB SSD；持续运行建议 2 vCPU / 4 GB RAM / 40 GB SSD。
 卸载前可用 `scripts/uninstall_vps.sh --dry-run` 预览；正式卸载会要求确认，并可选择是否删除
 专用用户及其 Codex 登录状态。详细变量、无人值守安装/卸载参数、Codex 设备码登录与密码重置见
-[DOCS.md](DOCS.md#81-linux-vps-一键安装)。
+[运行、验证与 VPS 运维](docs/operations.md#81-linux-vps-一键安装)。
 
 ## 测试网
 
