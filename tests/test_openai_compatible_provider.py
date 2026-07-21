@@ -143,6 +143,7 @@ def test_custom_provider_analyzes_multiple_markets_in_one_request() -> None:
     assert sum(result.usage["input_tokens"] for result in results) == 101
     assert sum(result.usage["output_tokens"] for result in results) == 21
     assert all(result.usage["batch_shared_call"] is True for result in results)
+    assert len({result.usage["physical_call_id"] for result in results}) == 1
 
 
 def test_custom_provider_rejects_reordered_batch_intents() -> None:

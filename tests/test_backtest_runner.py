@@ -153,6 +153,33 @@ def test_formal_replay_estimate_counts_recorded_batches_as_provider_calls() -> N
     assert result.estimated_seconds == 20
 
 
+def test_model_usage_counts_one_physical_batch_call() -> None:
+    run = ModelRun("model-a")
+    run.record_usage(
+        {"physical_call_id": "batch-1", "input_tokens": 60, "total_tokens": 70},
+        0.06,
+        250,
+    )
+    run.record_usage(
+        {"physical_call_id": "batch-1", "input_tokens": 40, "total_tokens": 50},
+        0.04,
+        250,
+    )
+
+    assert run.usage_dict() == {
+        "call_count": 1,
+        "priced_call_count": 1,
+        "input_tokens": 100,
+        "cached_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 120,
+        "equivalent_cost_usd": 0.1,
+        "duration_ms_total": 250,
+        "average_duration_ms": 250,
+    }
+
+
 def test_specs_that_cannot_finish_are_refused() -> None:
     validate(_spec(end=WINDOW_START + timedelta(days=31)))
     with pytest.raises(ValueError, match="cannot exceed 31 days"):

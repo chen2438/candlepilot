@@ -1413,6 +1413,7 @@ class TradingEngine:
             for snapshot in snapshots
         ]
         size = len(results)
+        physical_call_id = str(uuid4())
         for index, result in enumerate(results):
             usage = dict(result.usage)
             for key in (
@@ -1428,7 +1429,12 @@ class TradingEngine:
                     usage[key] = total // size + (1 if index < total % size else 0)
             if usage.get("cost_usd") is not None:
                 usage["cost_usd"] = float(usage["cost_usd"]) / size
-            usage.update(batch_size=size, batch_index=index + 1, batch_shared_call=True)
+            usage.update(
+                batch_size=size,
+                batch_index=index + 1,
+                batch_shared_call=True,
+                physical_call_id=physical_call_id,
+            )
             object.__setattr__(result, "usage", usage)
         return results
 

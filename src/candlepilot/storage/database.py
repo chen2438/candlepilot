@@ -887,37 +887,42 @@ class AuditRepository:
             "output_tokens": 0,
             "total_tokens": 0,
         }
+        calls = self._physical_inference_calls(rows)
         error_count = 0
         duration_total_ms = 0.0
         cost_total = 0.0
         priced_call_count = 0
-        for row in rows:
-            duration_total_ms += row.duration_ms
-            usage = json.loads(row.usage_json)
-            input_tokens = int(usage.get("input_tokens") or 0)
-            output_tokens = int(usage.get("output_tokens") or 0)
-            cached_input_tokens = int(
-                usage.get("cached_input_tokens")
-                or usage.get("cache_read_input_tokens")
-                or 0
-            )
-            totals["input_tokens"] += input_tokens
-            totals["cached_input_tokens"] += cached_input_tokens
-            totals["cache_creation_input_tokens"] += int(
-                usage.get("cache_creation_input_tokens") or 0
-            )
-            totals["output_tokens"] += output_tokens
-            totals["total_tokens"] += int(
-                usage.get("total_tokens") or input_tokens + output_tokens
-            )
-            if "error" in usage:
+        for call in calls:
+            duration_total_ms += max(row.duration_ms for row, _ in call)
+            if any("error" in usage for _, usage in call):
                 error_count += 1
-            cost = self._inference_cost(row, usage, catalog, provider_ids)
-            if cost is not None:
+            call_priced = True
+            for row, usage in call:
+                input_tokens = int(usage.get("input_tokens") or 0)
+                output_tokens = int(usage.get("output_tokens") or 0)
+                cached_input_tokens = int(
+                    usage.get("cached_input_tokens")
+                    or usage.get("cache_read_input_tokens")
+                    or 0
+                )
+                totals["input_tokens"] += input_tokens
+                totals["cached_input_tokens"] += cached_input_tokens
+                totals["cache_creation_input_tokens"] += int(
+                    usage.get("cache_creation_input_tokens") or 0
+                )
+                totals["output_tokens"] += output_tokens
+                totals["total_tokens"] += int(
+                    usage.get("total_tokens") or input_tokens + output_tokens
+                )
+                cost = self._inference_cost(row, usage, catalog, provider_ids)
+                if cost is None:
+                    call_priced = False
+                else:
+                    cost_total += cost
+            if call_priced:
                 priced_call_count += 1
-                cost_total += cost
 
-        call_count = len(rows)
+        call_count = len(calls)
         cost_complete = priced_call_count == call_count
         equivalent_cost_usd = cost_total if cost_complete else None
         return {
@@ -941,6 +946,46 @@ class AuditRepository:
                 else None
             ),
         }
+
+    @staticmethod
+    def _physical_inference_calls(
+        rows: list[InferenceRow],
+    ) -> list[list[tuple[InferenceRow, dict[str, Any]]]]:
+        """Group per-intent audit rows that came from one Provider invocation.
+
+        New rows carry a stable id. The batch-index fallback also repairs metrics
+        for batches written before that id existed, provided their rows remain in
+        the original contiguous insertion order.
+        """
+
+        calls: list[list[tuple[InferenceRow, dict[str, Any]]]] = []
+        explicit: dict[str, list[tuple[InferenceRow, dict[str, Any]]]] = {}
+        legacy_batch: list[tuple[InferenceRow, dict[str, Any]]] | None = None
+        for row in rows:
+            usage = json.loads(row.usage_json)
+            physical_call_id = usage.get("physical_call_id")
+            if physical_call_id is not None:
+                key = str(physical_call_id)
+                call = explicit.get(key)
+                if call is None:
+                    call = []
+                    explicit[key] = call
+                    calls.append(call)
+                call.append((row, usage))
+                legacy_batch = None
+                continue
+            if usage.get("batch_shared_call"):
+                index = int(usage.get("batch_index") or 1)
+                if index == 1 or legacy_batch is None:
+                    legacy_batch = []
+                    calls.append(legacy_batch)
+                legacy_batch.append((row, usage))
+                if index >= int(usage.get("batch_size") or index):
+                    legacy_batch = None
+                continue
+            legacy_batch = None
+            calls.append([(row, usage)])
+        return calls
 
     async def record_risk(
         self, symbol: str, decision: RiskDecision, *, inference_id: int | None = None
@@ -2448,31 +2493,36 @@ class AuditRepository:
 
         metrics = []
         for provider, provider_rows in grouped.items():
-            durations = sorted(row.duration_ms for row in provider_rows)
+            calls = self._physical_inference_calls(provider_rows)
+            durations = sorted(
+                max(row.duration_ms for row, _ in call) for call in calls
+            )
             error_count = 0
             tokens_total = 0
             cost_total = 0.0
             cost_present = False
             provider_id = (provider_ids or PROVIDER_IDS).get(provider)
-            for row in provider_rows:
-                usage = json.loads(row.usage_json)
-                if "error" in usage:
+            for call in calls:
+                if any("error" in usage for _, usage in call):
                     error_count += 1
-                tokens_total += int(usage.get("total_tokens") or 0)
-                cost = usage.get("cost_usd")
-                if cost is None and catalog is not None and provider_id is not None:
-                    cost = catalog.cost_usd(
-                        provider_id,
-                        row.model,
-                        input_tokens=int(usage.get("input_tokens") or 0),
-                        cached_input_tokens=int(usage.get("cached_input_tokens") or 0),
-                        output_tokens=int(usage.get("output_tokens") or 0),
-                    )
-                if cost is not None:
-                    cost_present = True
-                    cost_total += float(cost)
-            model_counts = Counter(row.model or "unknown" for row in provider_rows)
-            call_count = len(provider_rows)
+                for row, usage in call:
+                    tokens_total += int(usage.get("total_tokens") or 0)
+                    cost = usage.get("cost_usd")
+                    if cost is None and catalog is not None and provider_id is not None:
+                        cost = catalog.cost_usd(
+                            provider_id,
+                            row.model,
+                            input_tokens=int(usage.get("input_tokens") or 0),
+                            cached_input_tokens=int(
+                                usage.get("cached_input_tokens") or 0
+                            ),
+                            output_tokens=int(usage.get("output_tokens") or 0),
+                        )
+                    if cost is not None:
+                        cost_present = True
+                        cost_total += float(cost)
+            model_counts = Counter(call[0][0].model or "unknown" for call in calls)
+            call_count = len(calls)
             p95_index = max(0, math.ceil(call_count * 0.95) - 1)
             metrics.append(
                 {

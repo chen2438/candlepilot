@@ -1211,6 +1211,50 @@ def test_provider_metrics_aggregate_latency_errors_and_models(tmp_path: Path) ->
     assert metrics[0]["last_call_at"].tzinfo is UTC
 
 
+def test_batch_audit_rows_count_as_one_physical_provider_call(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'batch-metrics.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        for symbol, index, tokens, cost in (
+            ("BTCUSDT", 1, 60, 0.06),
+            ("ETHUSDT", 2, 40, 0.04),
+        ):
+            await repository.record_inference(
+                ProviderResult(
+                    intent=TradeIntent.hold(symbol, "5m", "test"),
+                    provider="codex-auth",
+                    model="gpt-test",
+                    duration=timedelta(milliseconds=250),
+                    raw_output="{}",
+                    usage={
+                        "physical_call_id": "shared-call",
+                        "batch_shared_call": True,
+                        "batch_size": 2,
+                        "batch_index": index,
+                        "total_tokens": tokens,
+                        "cost_usd": cost,
+                    },
+                )
+            )
+        session = await repository.run_session_metrics(0)
+        provider = (await repository.provider_metrics(24))[0]
+        await database.close()
+        return session, provider
+
+    session, provider = asyncio.run(scenario())
+    assert session["call_count"] == 1
+    assert session["priced_call_count"] == 1
+    assert session["total_tokens"] == 100
+    assert session["equivalent_cost_usd"] == pytest.approx(0.1)
+    assert session["average_duration_ms"] == 250
+    assert provider["call_count"] == 1
+    assert provider["models"] == {"gpt-test": 1}
+    assert provider["tokens_total"] == 100
+    assert provider["cost_usd_total"] == pytest.approx(0.1)
+    assert provider["average_duration_ms"] == 250
+
+
 def test_provider_metrics_aggregate_tokens_and_equivalent_cost(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'metrics.db'}")

@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from pydantic import ValidationError
 
@@ -614,6 +615,7 @@ def _split_batch_results(
     reasoning_effort: str | None,
 ) -> list[ProviderResult]:
     size = len(intents)
+    physical_call_id = str(uuid4())
     split_keys = {
         "input_tokens", "cached_input_tokens", "cache_read_input_tokens",
         "cache_creation_input_tokens", "output_tokens", "total_tokens",
@@ -631,6 +633,7 @@ def _split_batch_results(
             batch_size=size,
             batch_index=index + 1,
             batch_shared_call=True,
+            physical_call_id=physical_call_id,
         )
         results.append(
             ProviderResult(

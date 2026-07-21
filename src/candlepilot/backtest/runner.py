@@ -165,6 +165,7 @@ class ModelRun:
     total_tokens: int = 0
     cost_usd_total: float = 0.0
     duration_ms_total: float = 0.0
+    _physical_calls_seen: set[str] = field(default_factory=set, repr=False)
     result: BacktestResult | None = None
     error: str | None = None
     provider_failed: bool = False
@@ -188,7 +189,16 @@ class ModelRun:
 
         input_tokens = int(usage.get("input_tokens") or 0)
         output_tokens = int(usage.get("output_tokens") or 0)
-        self.usage_calls += 1
+        raw_call_id = usage.get("physical_call_id")
+        physical_call_id = str(raw_call_id) if raw_call_id is not None else None
+        is_new_call = (
+            physical_call_id is None
+            or physical_call_id not in self._physical_calls_seen
+        )
+        if physical_call_id is not None:
+            self._physical_calls_seen.add(physical_call_id)
+        if is_new_call:
+            self.usage_calls += 1
         self.input_tokens += input_tokens
         self.cached_input_tokens += int(
             usage.get("cached_input_tokens")
@@ -202,10 +212,12 @@ class ModelRun:
         self.total_tokens += int(
             usage.get("total_tokens") or input_tokens + output_tokens
         )
-        self.duration_ms_total += max(0.0, duration_ms)
+        if is_new_call:
+            self.duration_ms_total += max(0.0, duration_ms)
         if cost_usd is not None:
-            self.priced_calls += 1
             self.cost_usd_total += cost_usd
+            if is_new_call:
+                self.priced_calls += 1
 
     def usage_dict(self) -> dict[str, int | float | None]:
         return {
