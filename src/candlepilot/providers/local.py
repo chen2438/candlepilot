@@ -17,8 +17,8 @@ from candlepilot.provenance import MARKET_SNAPSHOT_SCHEMA_VERSION, content_finge
 
 
 LOCAL_RULE_PROVIDER = "local-rule"
-LOCAL_RULE_MODEL = "trend-v1"
-LOCAL_RULE_VERSION = "local-trend-v1"
+LOCAL_RULE_MODEL = "trend-v2"
+LOCAL_RULE_VERSION = "local-trend-v2"
 _INTERVAL_WEIGHTS = {
     "5m": 0.10,
     "15m": 0.15,
@@ -156,8 +156,8 @@ class LocalRuleProvider(DecisionProvider):
             _sign(features["5m_return_1"]),
             _sign(features["5m_return_5"]),
         )
-        if direction and momentum == (-direction, -direction):
-            reasons.append("5m momentum readings both oppose")
+        if direction and momentum != (direction, direction):
+            reasons.append("5m return_1 and return_5 must both align")
         volume_ratio = features["5m_quote_volume_ratio"]
         if direction and volume_ratio < _MIN_VOLUME_RATIO:
             reasons.append(f"5m quote-volume ratio {volume_ratio:.2f} is below participation floor")

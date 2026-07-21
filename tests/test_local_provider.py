@@ -81,6 +81,21 @@ def test_local_rule_holds_without_the_shared_feature_ladder() -> None:
     assert "missing required features" in result.intent.rationale
 
 
+def test_local_rule_requires_both_five_minute_momentum_horizons_to_align() -> None:
+    for field in ("5m_return_1", "5m_return_5"):
+        features = _features()
+        features[field] *= -1
+
+        result = asyncio.run(
+            LocalRuleProvider().generate_trade_intent(
+                _snapshot(features), _portfolio()
+            )
+        )
+
+        assert result.intent.action == TradeAction.HOLD
+        assert "return_1 and return_5 must both align" in result.intent.rationale
+
+
 def test_local_rule_closes_only_on_a_confirmed_opposing_signal() -> None:
     portfolio = _portfolio(
         open_positions=1,
@@ -113,3 +128,5 @@ def test_local_rule_declares_no_external_probe_or_retry() -> None:
     assert provider.capabilities.requires_backtest_probe is False
     assert provider.capabilities.retryable is False
     assert provider.capabilities.configurable_model is False
+    assert provider.model == "trend-v2"
+    assert health.version == "local-trend-v2"
