@@ -53,6 +53,7 @@ from candlepilot.backtest.runner import (
     BacktestRunner,
     BacktestSpec,
     ModelRun,
+    ReplayInput,
     compare,
     estimate,
     validate,
@@ -2715,6 +2716,7 @@ def create_app(
                 end=end,
                 config=replace(spec.config, initial_equity=initial_portfolio.equity),
                 replay_decision_count=len(rows),
+                replay_call_count=len({str(row["batch_id"]) for row in rows}),
             )
         unsupported = set(spec.cadences) - set(SUPPORTED_CADENCES)
         if unsupported:
@@ -2753,7 +2755,7 @@ def create_app(
     async def _live_replay_inputs(
         spec: BacktestSpec,
     ) -> tuple[
-        dict[tuple[str, str, datetime], tuple[MarketSnapshot, SymbolRules]],
+        dict[tuple[str, str, datetime], ReplayInput],
         PortfolioState | None,
     ]:
         if spec.replay_live_run_id is None:
@@ -2765,9 +2767,7 @@ def create_app(
                 "formal replay data disappeared before the backtest started"
             )
         initial = PortfolioState.model_validate(live_run["config"]["initial_portfolio"])
-        snapshots: dict[
-            tuple[str, str, datetime], tuple[MarketSnapshot, SymbolRules]
-        ] = {}
+        snapshots: dict[tuple[str, str, datetime], ReplayInput] = {}
         for row in rows:
             snapshot = MarketSnapshot.model_validate(row["market"])
             rules = SymbolRules(
@@ -2776,9 +2776,10 @@ def create_app(
                     for key, value in row["rules"].items()
                 }
             )
-            snapshots[(snapshot.symbol, snapshot.cadence, snapshot.timestamp)] = (
-                snapshot,
-                rules,
+            snapshots[(snapshot.symbol, snapshot.cadence, snapshot.timestamp)] = ReplayInput(
+                batch_id=str(row["batch_id"]),
+                snapshot=snapshot,
+                rules=rules,
             )
         return snapshots, initial
 
@@ -3059,10 +3060,9 @@ def create_app(
         portfolio = initial_portfolio or SimulatedExchange(spec.config).portfolio_state(
             {}
         )
-        replay_probe_snapshots = [
-            item[0]
-            for _, item in sorted(replay_snapshots.items(), key=lambda pair: pair[0][2])
-        ]
+        replay_probe_batches: dict[str, list[MarketSnapshot]] = {}
+        for item in replay_snapshots.values():
+            replay_probe_batches.setdefault(item.batch_id, []).append(item.snapshot)
 
         async def one(name: str) -> None:
             probe = probes[name]
@@ -3074,7 +3074,7 @@ def create_app(
                     symbol=symbol,
                     portfolio=portfolio,
                     into=probe,
-                    snapshots=replay_probe_snapshots or None,
+                    snapshot_batches=list(replay_probe_batches.values()) or None,
                 )
             except asyncio.CancelledError:
                 # probe_provider's finally already marks it done, but only the

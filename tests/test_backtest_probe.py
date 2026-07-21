@@ -98,6 +98,39 @@ def test_the_probe_sends_the_payload_the_run_will_send() -> None:
     assert len(probe_instants(spec)) == PROBE_DECISIONS
 
 
+def test_formal_replay_probe_times_complete_recorded_batches() -> None:
+    class BatchProvider(_Provider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.batch_sizes: list[int] = []
+
+        async def generate_trade_intents(self, snapshots, portfolio):
+            self.batch_sizes.append(len(snapshots))
+            return await super().generate_trade_intents(snapshots, portfolio)
+
+    builder = HistoricalSnapshotBuilder(_series())
+    first = builder.build("BTCUSDT", "5m", START)
+    second = first.model_copy(update={"symbol": "ETHUSDT"})
+    provider = BatchProvider()
+
+    result = asyncio.run(
+        probe_provider(
+            provider,
+            spec=_spec(),
+            builder=builder,
+            symbol="BTCUSDT",
+            portfolio=PortfolioState(
+                equity=Decimal("10000"), available_balance=Decimal("10000")
+            ),
+            snapshot_batches=[(first, second)],
+        )
+    )
+
+    assert provider.batch_sizes == [2] * PROBE_DECISIONS
+    assert len(result.calls) == PROBE_DECISIONS
+    assert not result.failures
+
+
 def test_a_short_slow_cadence_window_still_produces_five_samples() -> None:
     spec = _spec(cadences=("4h",), end=START + timedelta(hours=4))
 

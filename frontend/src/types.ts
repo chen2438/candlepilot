@@ -534,6 +534,7 @@ export interface TestnetAccountStatus {
 
 export interface BacktestEstimate {
   decisions_per_model: number;
+  calls_per_model: number;
   total_calls: number;
   estimated_seconds: number;
   estimated_hours: number;
@@ -634,7 +635,7 @@ export interface BacktestRun {
     replay_live_run_id: number | null;
     timeout_seconds: number | null;
     timeout_source: "explicit" | "provider_config" | "not_applicable";
-    estimate: { decisions_per_model: number; total_calls: number; estimated_hours: number };
+    estimate: { decisions_per_model: number; calls_per_model?: number; total_calls: number; estimated_hours: number };
   };
   created_at: string;
   ended_at: string | null;

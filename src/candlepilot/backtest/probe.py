@@ -148,6 +148,7 @@ async def probe_provider(
     ceiling: float = PROBE_CEILING_SECONDS,
     into: ProviderProbe | None = None,
     snapshots: Sequence[MarketSnapshot] | None = None,
+    snapshot_batches: Sequence[Sequence[MarketSnapshot]] | None = None,
 ) -> ProviderProbe:
     """Time `PROBE_DECISIONS` real calls against `provider`.
 
@@ -162,7 +163,8 @@ async def probe_provider(
     result = into if into is not None else ProviderProbe(provider=provider.name)
     instants = probe_instants(spec)
     replay_inputs = list(snapshots or ())
-    if not replay_inputs and not instants:
+    replay_batches = [list(batch) for batch in (snapshot_batches or ()) if batch]
+    if not replay_batches and not replay_inputs and not instants:
         result.error = "the window holds no decision instants to probe"
         result.done = True
         return result
@@ -171,7 +173,11 @@ async def probe_provider(
     provider.timeout = ceiling
     try:
         for index in range(PROBE_DECISIONS):
-            if replay_inputs:
+            batch: list[MarketSnapshot] | None = None
+            if replay_batches:
+                batch = replay_batches[index % len(replay_batches)]
+                snapshot = batch[0]
+            elif replay_inputs:
                 snapshot = replay_inputs[index % len(replay_inputs)]
             else:
                 when = instants[index]
@@ -183,7 +189,10 @@ async def probe_provider(
             started = time.monotonic()
             result.started_at = started
             try:
-                await provider.generate_trade_intent(snapshot, portfolio)
+                if batch is not None:
+                    await provider.generate_trade_intents(batch, portfolio)
+                else:
+                    await provider.generate_trade_intent(snapshot, portfolio)
             except Exception as exc:  # noqa: BLE001 - a failed probe is a result
                 result.calls.append(
                     ProbeCall(

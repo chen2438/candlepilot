@@ -10,6 +10,7 @@ from candlepilot.backtest.runner import (
     BacktestSpec,
     BacktestRunner,
     ModelRun,
+    ReplayInput,
     compare,
     decision_times,
     estimate,
@@ -138,6 +139,18 @@ def test_estimate_adds_each_cadence_rather_than_multiplying_the_window() -> None
     # Two hours: 24 five-minute bars, 8 fifteens, 4 thirties, 2 hours, no 4h close.
     assert one.decisions_per_model == 24
     assert all_cadences.decisions_per_model == 38
+
+
+def test_formal_replay_estimate_counts_recorded_batches_as_provider_calls() -> None:
+    result = estimate(
+        _spec(replay_decision_count=6, replay_call_count=2),
+        seconds_per_call=10,
+    )
+
+    assert result.decisions_per_model == 6
+    assert result.calls_per_model == 2
+    assert result.total_calls == 2
+    assert result.estimated_seconds == 20
 
 
 def test_specs_that_cannot_finish_are_refused() -> None:
@@ -284,8 +297,12 @@ def test_formal_snapshot_after_boundary_defers_next_open_fill() -> None:
         risk=AggressiveRiskPolicy(require_take_profit=True),
         provider_retry_delays=(0, 0),
         replay_snapshots={
-            ("BTCUSDT", "5m", first_when): (first_snapshot, RULES),
-            ("BTCUSDT", "5m", second_when): (second_snapshot, RULES),
+            ("BTCUSDT", "5m", first_when): ReplayInput(
+                "batch-1", first_snapshot, RULES
+            ),
+            ("BTCUSDT", "5m", second_when): ReplayInput(
+                "batch-2", second_snapshot, RULES
+            ),
         },
     )
     decisions: list[BacktestDecision] = []
@@ -302,6 +319,52 @@ def test_formal_snapshot_after_boundary_defers_next_open_fill() -> None:
     assert decisions[1].outcome == "hold"
     assert result.trades[0].entry_time == second_boundary
     assert result.trades[0].exit_time >= result.trades[0].entry_time
+
+
+def test_formal_replay_restores_recorded_provider_batch_boundaries() -> None:
+    class BatchCapture(_Provider):
+        def __init__(self) -> None:
+            super().__init__("formal")
+            self.batches: list[list[str]] = []
+            self.batch_portfolios: list[PortfolioState] = []
+
+        async def generate_trade_intents(self, snapshots, portfolio):
+            self.batches.append([snapshot.symbol for snapshot in snapshots])
+            self.batch_portfolios.append(portfolio)
+            results = []
+            for snapshot in snapshots:
+                results.append(await super().generate_trade_intent(snapshot, portfolio))
+            return results
+
+    spec = _spec(
+        symbols=("BTCUSDT", "ETHUSDT"),
+        end=WINDOW_START + timedelta(minutes=15),
+    )
+    source = _runner(spec)
+    when = WINDOW_START + timedelta(minutes=5)
+    snapshots = {
+        symbol: source._builders[symbol].build(symbol, "5m", when)
+        for symbol in spec.symbols
+    }
+    runner = BacktestRunner(
+        spec=spec,
+        series=source._series,
+        rules={symbol: RULES for symbol in spec.symbols},
+        risk=AggressiveRiskPolicy(require_take_profit=True),
+        provider_retry_delays=(0, 0),
+        replay_snapshots={
+            (symbol, "5m", when): ReplayInput("shared-batch", snapshot, RULES)
+            for symbol, snapshot in snapshots.items()
+        },
+    )
+    provider = BatchCapture()
+
+    result = asyncio.run(runner.run(provider, ModelRun(provider.name)))
+
+    assert provider.batches == [["BTCUSDT", "ETHUSDT"]]
+    assert len(provider.batch_portfolios) == 1
+    assert provider.batch_portfolios[0].positions == {}
+    assert result.trade_count == 2
 
 
 def test_higher_cadences_cannot_duplicate_funding_settlement() -> None:

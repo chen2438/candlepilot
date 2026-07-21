@@ -3131,8 +3131,11 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
 
       {estimate && (
         <div className={`backtest-estimate ${estimate.within_limit ? "" : "over"}`}>
-          <span>每模型 <strong>{estimate.decisions_per_model}</strong> 次决策</span>
-          <span>共 <strong>{estimate.total_calls}</strong> 次决策计算</span>
+          <span>每模型 <strong>{estimate.decisions_per_model}</strong> 次决策
+            {estimate.calls_per_model !== estimate.decisions_per_model
+              && <small> · {estimate.calls_per_model} 次批量调用</small>}
+          </span>
+          <span>共 <strong>{estimate.total_calls}</strong> 次 Provider 调用</span>
           <span>预计 <strong>{formatEstimatedDuration(estimate.estimated_seconds)}</strong>
             <small>
               按{estimate.latency_source === "local_deterministic" ? "本地计算基线" : "本次试跑平均决策最慢的模型"} {providerLabel(estimate.slowest_provider)}：平均

@@ -69,6 +69,7 @@ class BacktestSpec:
     #: starting account instead of reconstructing them from public history.
     replay_live_run_id: int | None = None
     replay_decision_count: int | None = None
+    replay_call_count: int | None = None
     #: Seconds one decision may take, for this run only.
     #:
     #: The frontend sets it from a probe of the endpoints the run will use, since
@@ -80,6 +81,7 @@ class BacktestSpec:
 @dataclass(frozen=True, slots=True)
 class BacktestEstimate:
     decisions_per_model: int
+    calls_per_model: int
     total_calls: int
     #: Wall-clock for the slowest model, since models run in parallel and each
     #: one serialises its own calls.
@@ -88,6 +90,7 @@ class BacktestEstimate:
     def as_dict(self) -> dict[str, object]:
         return {
             "decisions_per_model": self.decisions_per_model,
+            "calls_per_model": self.calls_per_model,
             "total_calls": self.total_calls,
             "estimated_seconds": round(self.estimated_seconds),
             "estimated_hours": round(self.estimated_seconds / 3600, 2),
@@ -98,16 +101,18 @@ def estimate(spec: BacktestSpec, *, seconds_per_call: float) -> BacktestEstimate
     """Count the calls the spec implies before any of them are paid for."""
 
     span_ms = (spec.end - spec.start).total_seconds() * 1000
-    per_model = spec.replay_decision_count
-    if per_model is None:
-        per_model = sum(
+    decisions_per_model = spec.replay_decision_count
+    if decisions_per_model is None:
+        decisions_per_model = sum(
             int(span_ms // INTERVAL_MILLISECONDS[cadence]) * len(spec.symbols)
             for cadence in spec.cadences
-    )
+        )
+    calls_per_model = spec.replay_call_count or decisions_per_model
     return BacktestEstimate(
-        decisions_per_model=per_model,
-        total_calls=per_model * len(spec.providers),
-        estimated_seconds=per_model * seconds_per_call,
+        decisions_per_model=decisions_per_model,
+        calls_per_model=calls_per_model,
+        total_calls=calls_per_model * len(spec.providers),
+        estimated_seconds=calls_per_model * seconds_per_call,
     )
 
 
@@ -272,6 +277,15 @@ class BacktestDecision:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ReplayInput:
+    """One recorded snapshot plus the physical batch it originally belonged to."""
+
+    batch_id: str
+    snapshot: MarketSnapshot
+    rules: SymbolRules
+
+
 def decision_times(spec: BacktestSpec, cadence: str) -> list[datetime]:
     """When each decision is due: the close of every bar inside the window."""
 
@@ -299,7 +313,7 @@ class BacktestRunner:
         provider_retry_delays: tuple[float, ...] | None = None,
         retry_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         replay_snapshots: dict[
-            tuple[str, str, datetime], tuple[MarketSnapshot, SymbolRules]
+            tuple[str, str, datetime], ReplayInput
         ]
         | None = None,
         initial_portfolio: PortfolioState | None = None,
@@ -401,24 +415,30 @@ class BacktestRunner:
         )
         started_at = time.monotonic()
         curve: list[EquityPoint] = []
-        schedule = (
-            sorted(
-                (when, symbol, cadence)
-                for symbol, cadence, when in self._replay_snapshots
+        if self._replay_snapshots:
+            replay_batches: dict[str, list[tuple[datetime, str, str]]] = {}
+            for (symbol, cadence, when), replay_input in self._replay_snapshots.items():
+                replay_batches.setdefault(replay_input.batch_id, []).append(
+                    (when, symbol, cadence)
+                )
+            schedule = sorted(
+                replay_batches.values(),
+                key=lambda batch: (batch[0][0], batch[0][1], batch[0][2]),
             )
-            if self._replay_snapshots
-            else sorted(
-                (when, symbol, cadence)
-                for cadence in self._spec.cadences
-                for when in decision_times(self._spec, cadence)
-                for symbol in self._spec.symbols
-            )
-        )
+        else:
+            schedule = [
+                [item]
+                for item in sorted(
+                    (when, symbol, cadence)
+                    for cadence in self._spec.cadences
+                    for when in decision_times(self._spec, cadence)
+                    for symbol in self._spec.symbols
+                )
+            ]
         settled_next: dict[str, int] = {}
         settled_through: datetime | None = None
         last_success_exchange = copy.deepcopy(exchange)
-        previous_call_succeeded = False
-        progress.decisions_total = len(schedule)
+        progress.decisions_total = sum(len(batch) for batch in schedule)
         # Publish the total before the first call: until it lands, progress has
         # no denominator and every reader has to show 0%.
         if on_progress is not None:
@@ -458,12 +478,11 @@ class BacktestRunner:
             if on_progress is not None:
                 await on_progress(progress, decision)
 
-        for when, symbol, cadence in schedule:
-            if previous_call_succeeded:
-                # Capture the fully processed result of the preceding successful
-                # call before this decision can settle any later market data.
-                last_success_exchange = copy.deepcopy(exchange)
-                previous_call_succeeded = False
+        for batch in schedule:
+            batch_times = {item[0] for item in batch}
+            if len(batch_times) != 1:
+                raise ValueError("one recorded provider batch spans multiple timestamps")
+            when = next(iter(batch_times))
             # Kline timestamps are opens. Before the first decision at a given
             # instant, settle every symbol through that instant. Otherwise the
             # alphabetically first symbol would see stale stops, funding and
@@ -475,122 +494,171 @@ class BacktestRunner:
                     )
                 settled_through = when
 
-            entry = BacktestDecision(decided_at=when, symbol=symbol, cadence=cadence)
-
-            replay_input = self._replay_snapshots.get((symbol, cadence, when))
-            try:
-                snapshot = (
-                    replay_input[0]
-                    if replay_input is not None
-                    else self._builders[symbol].build(symbol, cadence, when)
+            batch_items: list[
+                tuple[BacktestDecision, MarketSnapshot, ReplayInput | None]
+            ] = []
+            for _, symbol, cadence in batch:
+                entry = BacktestDecision(
+                    decided_at=when, symbol=symbol, cadence=cadence
                 )
-            except ValueError as exc:
-                entry.outcome = "no_snapshot"
-                entry.detail = str(exc)[:200]
-                progress.decisions_done += 1
-                await report(entry)
+                replay_input = self._replay_snapshots.get((symbol, cadence, when))
+                try:
+                    snapshot = (
+                        replay_input.snapshot
+                        if replay_input is not None
+                        else self._builders[symbol].build(symbol, cadence, when)
+                    )
+                except ValueError as exc:
+                    entry.outcome = "no_snapshot"
+                    entry.detail = str(exc)[:200]
+                    progress.decisions_done += 1
+                    await report(entry)
+                    continue
+                batch_items.append((entry, snapshot, replay_input))
+            if not batch_items:
                 continue
 
-            portfolio = exchange.portfolio_state(self._marks(when), as_of=when)
-            result: ProviderResult | None = None
+            provider_portfolio = exchange.portfolio_state(
+                self._marks(when), as_of=when
+            )
+            results: list[ProviderResult] | None = None
             last_error: Exception | None = None
             max_attempts = (
                 DECISION_PROVIDER_MAX_ATTEMPTS if provider.capabilities.retryable else 1
             )
             for attempt in range(max_attempts):
-                entry.attempt_started_at.append(datetime.now(UTC))
+                attempt_started_at = datetime.now(UTC)
+                for entry, _, _ in batch_items:
+                    entry.attempt_started_at.append(attempt_started_at)
                 try:
-                    result = await provider.generate_trade_intent(snapshot, portfolio)
+                    results = await provider.generate_trade_intents(
+                        [snapshot for _, snapshot, _ in batch_items],
+                        provider_portfolio,
+                    )
+                    if len(results) != len(batch_items):
+                        raise RuntimeError(
+                            "provider returned the wrong number of batch intents"
+                        )
+                    expected = [
+                        (snapshot.symbol, snapshot.cadence)
+                        for _, snapshot, _ in batch_items
+                    ]
+                    actual = [
+                        (result.intent.symbol, result.intent.cadence)
+                        for result in results
+                    ]
+                    if actual != expected:
+                        raise RuntimeError(
+                            "provider batch intents do not match input order"
+                        )
                     break
                 except Exception as exc:  # noqa: BLE001 - retry the decision in place
+                    results = None
                     last_error = exc
                     if attempt < max_attempts - 1:
                         await self._retry_sleep(self._provider_retry_delays[attempt])
 
-            if result is None:
+            if results is None:
                 assert last_error is not None
-                entry.outcome = "call_failed"
-                entry.detail = (
+                detail = (
                     f"provider unavailable after {max_attempts} attempts: {last_error}"
                 )[:200]
-                progress.calls_failed += 1
-                progress.decisions_done += 1
-                progress.error = entry.detail
+                progress.calls_failed += len(batch_items)
+                progress.decisions_done += len(batch_items)
+                progress.error = detail
                 progress.provider_failed = True
                 exchange = last_success_exchange
-                await report(entry)
+                for entry, _, _ in batch_items:
+                    entry.outcome = "call_failed"
+                    entry.detail = detail
+                    await report(entry)
                 break
 
-            cost_usd = self._cost_for_result(result) if self._cost_for_result else None
-            progress.record_usage(
-                result.usage, cost_usd, result.duration.total_seconds() * 1000
-            )
+            for (entry, snapshot, replay_input), result in zip(
+                batch_items, results, strict=True
+            ):
+                cost_usd = (
+                    self._cost_for_result(result) if self._cost_for_result else None
+                )
+                progress.record_usage(
+                    result.usage,
+                    cost_usd,
+                    result.duration.total_seconds() * 1000,
+                )
 
-            progress.decisions_done += 1
-            progress.last_successful_at = when
-            previous_call_succeeded = True
-            intent = result.intent
-            entry.action = intent.action.value
-            entry.confidence = intent.confidence
-            entry.rationale = intent.rationale
-            if intent.action == TradeAction.HOLD:
-                entry.outcome = "hold"
+                progress.decisions_done += 1
+                progress.last_successful_at = when
+                intent = result.intent
+                symbol = snapshot.symbol
+                entry.action = intent.action.value
+                entry.confidence = intent.confidence
+                entry.rationale = intent.rationale
+                if intent.action == TradeAction.HOLD:
+                    entry.outcome = "hold"
+                    curve.append(EquityPoint(when, exchange.equity(self._marks(when))))
+                    await report(entry)
+                    continue
+                if exchange.has_pending(symbol):
+                    entry.outcome = "rejected"
+                    entry.detail = "resting limit order already pending"
+                    curve.append(EquityPoint(when, exchange.equity(self._marks(when))))
+                    await report(entry)
+                    continue
+
+                # Provider inference uses the frozen pre-batch portfolio, matching
+                # formal execution. Risk remains sequential and sees fills from
+                # earlier intents in the same batch.
+                risk_portfolio = exchange.portfolio_state(
+                    self._marks(when), as_of=when
+                )
+                evaluation = self._risk.evaluate(
+                    intent,
+                    snapshot,
+                    risk_portfolio,
+                    replay_input.rules
+                    if replay_input is not None
+                    else self._rules[symbol],
+                    now=when,
+                )
+                if evaluation.order is None or not evaluation.decision.accepted:
+                    entry.outcome = "rejected"
+                    entry.detail = evaluation.decision.reason[:200]
+                    curve.append(EquityPoint(when, exchange.equity(self._marks(when))))
+                    await report(entry)
+                    continue
+
+                fill_candle = self._next_candle(symbol, "5m", when)
+                if fill_candle is None or fill_candle.timestamp >= self._spec.end:
+                    # Accepted with no bar left to fill against: the window ended.
+                    entry.outcome = "rejected"
+                    entry.detail = "no candle left in the window to fill against"
+                    await report(entry)
+                    continue
+                execution = exchange.execute(
+                    evaluation.order,
+                    fill_candle,
+                    leverage=intent.leverage,
+                    submitted_at=when,
+                )
+                entry.outcome = (
+                    "traded" if execution.status == "FILLED" else "pending"
+                )
+                entry.fill = {
+                    "status": execution.status,
+                    "price": str(execution.average_price or evaluation.order.price),
+                    "quantity": str(evaluation.order.quantity),
+                    "side": evaluation.order.side,
+                    "leverage": intent.leverage,
+                    "stop_loss": str(evaluation.order.stop_price)
+                    if evaluation.order.stop_price is not None
+                    else None,
+                    "take_profit": str(evaluation.order.take_profit_price)
+                    if evaluation.order.take_profit_price is not None
+                    else None,
+                }
                 curve.append(EquityPoint(when, exchange.equity(self._marks(when))))
                 await report(entry)
-                continue
-            if exchange.has_pending(symbol):
-                entry.outcome = "rejected"
-                entry.detail = "resting limit order already pending"
-                curve.append(EquityPoint(when, exchange.equity(self._marks(when))))
-                await report(entry)
-                continue
-
-            # The live risk policy, not a copy of it: the daily-loss breaker,
-            # the position cap, tick alignment and exchange minimums all have to
-            # bite here or the run scores a system nobody runs.
-            evaluation = self._risk.evaluate(
-                intent,
-                snapshot,
-                portfolio,
-                replay_input[1] if replay_input is not None else self._rules[symbol],
-                now=when,
-            )
-            if evaluation.order is None or not evaluation.decision.accepted:
-                entry.outcome = "rejected"
-                entry.detail = evaluation.decision.reason[:200]
-                curve.append(EquityPoint(when, exchange.equity(self._marks(when))))
-                await report(entry)
-                continue
-
-            fill_candle = self._next_candle(symbol, "5m", when)
-            if fill_candle is None or fill_candle.timestamp >= self._spec.end:
-                # Accepted with no bar left to fill against: the window ended.
-                entry.outcome = "rejected"
-                entry.detail = "no candle left in the window to fill against"
-                await report(entry)
-                continue
-            execution = exchange.execute(
-                evaluation.order,
-                fill_candle,
-                leverage=intent.leverage,
-                submitted_at=when,
-            )
-            entry.outcome = "traded" if execution.status == "FILLED" else "pending"
-            entry.fill = {
-                "status": execution.status,
-                "price": str(execution.average_price or evaluation.order.price),
-                "quantity": str(evaluation.order.quantity),
-                "side": evaluation.order.side,
-                "leverage": intent.leverage,
-                "stop_loss": str(evaluation.order.stop_price)
-                if evaluation.order.stop_price is not None
-                else None,
-                "take_profit": str(evaluation.order.take_profit_price)
-                if evaluation.order.take_profit_price is not None
-                else None,
-            }
-            curve.append(EquityPoint(when, exchange.equity(self._marks(when))))
-            await report(entry)
+            last_success_exchange = copy.deepcopy(exchange)
 
         effective_end = self._spec.end
         if progress.provider_failed:
