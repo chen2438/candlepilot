@@ -813,6 +813,99 @@ def test_live_run_performance_revalues_partial_manual_close_after_stop(
     assert performance["win_rate"] == "1"
 
 
+def test_live_run_performance_attributes_merged_position_by_entry_lot(
+    tmp_path: Path,
+) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'merged-run-pnl.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+
+        async def record_entry(run_id: int, client_order_id: str) -> None:
+            intent = TradeIntent(
+                symbol="BTCUSDT",
+                cadence="5m",
+                action=TradeAction.OPEN_LONG,
+                confidence=0.8,
+                leverage=2,
+                risk_fraction="0.01",
+                stop_loss="90",
+                take_profit="140",
+                rationale="entry",
+            )
+            inference_id = await repository.record_inference(
+                ProviderResult(intent, "local-rule", "trend-v1", timedelta(), "{}", {}),
+                live_run_id=run_id,
+            )
+            await repository.record_execution_attempt(
+                "BTCUSDT",
+                ExecutionAttempt(
+                    inference_id=inference_id,
+                    client_order_id=client_order_id,
+                    status="SUCCEEDED",
+                    stage="COMPLETE",
+                    message="filled",
+                ),
+            )
+
+        first_run = await repository.create_live_run({"run": 1})
+        await record_entry(first_run, "cp-first-entry")
+        await repository.finish_live_run(
+            first_run, status="stopped", stop_reason="fixture"
+        )
+        second_run = await repository.create_live_run({"run": 2})
+        await record_entry(second_run, "cp-second-entry")
+
+        async def fills(_limit):
+            return [
+                {
+                    "client_order_id": "cp-manual-partial",
+                    "symbol": "BTCUSDT",
+                    "side": "SELL",
+                    "reduce_only": True,
+                    "realized_pnl": "20",
+                    "report": {"filled_quantity": "1", "average_price": "130"},
+                },
+                {
+                    "client_order_id": "cp-second-entry",
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "reduce_only": False,
+                    "realized_pnl": "0",
+                    "report": {"filled_quantity": "1", "average_price": "120"},
+                },
+                {
+                    "client_order_id": "cp-first-entry",
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "reduce_only": False,
+                    "realized_pnl": "0",
+                    "report": {"filled_quantity": "1", "average_price": "100"},
+                },
+            ]
+
+        repository.recent_trade_fills = fills  # type: ignore[method-assign]
+        performance = await repository.recent_live_run_performance(
+            current_positions={
+                "BTCUSDT": {"mark_price": "130", "unrealized_pnl": "20"}
+            }
+        )
+        await database.close()
+        return {
+            item["live_run_id"]: item for item in performance
+        }, first_run, second_run
+
+    performance, first_run, second_run = asyncio.run(scenario())
+    first = performance[first_run]
+    second = performance[second_run]
+    assert first["realized_pnl"] == "15.0"
+    assert first["unrealized_pnl"] == "15.0"
+    assert first["total_pnl"] == "30.0"
+    assert second["realized_pnl"] == "5.0"
+    assert second["unrealized_pnl"] == "5.0"
+    assert second["total_pnl"] == "10.0"
+
+
 def test_model_close_fill_uses_linked_intent_instead_of_order_id_shape(
     tmp_path: Path,
 ) -> None:

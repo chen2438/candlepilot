@@ -672,7 +672,6 @@ class AuditRepository:
         closed: Counter[int] = Counter()
         wins: Counter[int] = Counter()
         lots_by_symbol: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
-        lots_by_order: dict[str, dict[str, Any]] = {}
         fills = list(reversed(await self.recent_trade_fills(10_000)))
         for fill in fills:
             client_order_id = str(fill["client_order_id"])
@@ -695,39 +694,82 @@ class AuditRepository:
                     "remaining": quantity,
                 }
                 lots_by_symbol[symbol].append(lot)
-                lots_by_order[client_order_id] = lot
                 continue
 
             if fill["realized_pnl"] is None:
                 continue
-            remaining_exit = quantity
-            allocations: defaultdict[int, Decimal] = defaultdict(Decimal)
-            related_id = fill.get("related_client_order_id")
-            preferred = lots_by_order.get(str(related_id)) if related_id else None
-            candidates = ([preferred] if preferred is not None else []) + [
-                lot
-                for lot in reversed(lots_by_symbol[symbol])
-                if lot is not preferred and lot["remaining"] > 0
+            active_lots = [
+                lot for lot in lots_by_symbol[symbol] if lot["remaining"] > 0
             ]
-            for lot in candidates:
-                if remaining_exit <= 0:
-                    break
-                consumed = min(remaining_exit, lot["remaining"])
-                if consumed <= 0:
-                    continue
-                lot["remaining"] -= consumed
-                remaining_exit -= consumed
-                allocations[lot["run_id"]] += consumed
-            if not allocations:
+            total_open = sum(
+                (lot["remaining"] for lot in active_lots), Decimal("0")
+            )
+            consumed_total = min(quantity, total_open)
+            consumptions: list[tuple[dict[str, Any], Decimal]] = []
+            if consumed_total > 0:
+                for lot in active_lots:
+                    consumed = lot["remaining"] * consumed_total / total_open
+                    consumptions.append((lot, consumed))
+                # Decimal division can round a repeating ratio. Put the tiny
+                # remainder on the last lot so quantities still reconcile.
+                consumed_sum = sum(
+                    (consumed for _, consumed in consumptions), Decimal("0")
+                )
+                last_lot, last_consumed = consumptions[-1]
+                consumptions[-1] = (
+                    last_lot,
+                    last_consumed + consumed_total - consumed_sum,
+                )
+                for lot, consumed in consumptions:
+                    lot["remaining"] -= consumed
+            if not consumptions:
                 context = order_contexts.get(client_order_id)
                 if context is not None:
-                    allocations[context[0]] = quantity
-            allocated_quantity = sum(allocations.values(), Decimal("0"))
-            if allocated_quantity <= 0:
+                    consumptions = [
+                        (
+                            {
+                                "run_id": context[0],
+                                "entry_price": Decimal("0"),
+                                "side": None,
+                            },
+                            quantity,
+                        )
+                    ]
+            if not consumptions:
                 continue
             fill_pnl = Decimal(str(fill["realized_pnl"]))
-            for run_id, allocated in allocations.items():
-                allocated_pnl = fill_pnl * allocated / allocated_quantity
+            exit_price_raw = fill["report"].get("average_price")
+            exit_price = (
+                Decimal(str(exit_price_raw)) if exit_price_raw is not None else None
+            )
+            pnl_allocations: defaultdict[int, Decimal] = defaultdict(Decimal)
+            if exit_price is not None and all(
+                lot["entry_price"] > 0 and lot["side"] in {"BUY", "SELL"}
+                for lot, _ in consumptions
+            ):
+                for lot, consumed in consumptions:
+                    direction = Decimal("1") if lot["side"] == "BUY" else Decimal("-1")
+                    pnl_allocations[lot["run_id"]] += (
+                        exit_price - lot["entry_price"]
+                    ) * consumed * direction
+                # When every unit in the exchange exit belongs to known lots,
+                # retain Binance's authoritative total and assign only its tiny
+                # precision residue deterministically.
+                if consumed_total == quantity:
+                    theoretical_total = sum(pnl_allocations.values(), Decimal("0"))
+                    residual = fill_pnl - theoretical_total
+                    if residual:
+                        residual_run = max(
+                            pnl_allocations,
+                            key=lambda run_id: abs(pnl_allocations[run_id]),
+                        )
+                        pnl_allocations[residual_run] += residual
+            else:
+                # Old/external exits can lack a fill price. Attribute only the
+                # known quantity's share instead of gifting external PnL to a run.
+                for lot, consumed in consumptions:
+                    pnl_allocations[lot["run_id"]] += fill_pnl * consumed / quantity
+            for run_id, allocated_pnl in pnl_allocations.items():
                 realized[run_id] += allocated_pnl
                 closed[run_id] += 1
                 if allocated_pnl > 0:
