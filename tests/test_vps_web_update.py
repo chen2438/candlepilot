@@ -32,6 +32,26 @@ def test_root_worker_never_executes_the_application_users_installer() -> None:
     assert "NoNewPrivileges=true" in installer
 
 
+def test_installer_backs_up_the_database_selected_in_env() -> None:
+    installer_path = ROOT / "scripts/install_vps.sh"
+    installer = installer_path.read_text(encoding="utf-8")
+
+    syntax = subprocess.run(
+        ["bash", "-n", str(installer_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert syntax.returncode == 0, syntax.stderr
+    update_body = installer.split("update_existing_installation() {", 1)[1].split(
+        '[[ "${EUID}" -eq 0 ]]', 1
+    )[0]
+    assert 'values.get(\n    "CANDLEPILOT_DATABASE_URL"' in update_body
+    assert 'sqlite3 "$installed_database_path"' in update_body
+    assert '"$backup_dir/database.sqlite3" "$installed_database_path"' in update_body
+    assert '"$APP_DIR/candlepilot.db"' not in update_body
+
+
 def test_uninstaller_removes_the_privileged_update_surface() -> None:
     uninstaller = (ROOT / "scripts/uninstall_vps.sh").read_text(encoding="utf-8")
 

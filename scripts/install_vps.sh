@@ -137,7 +137,7 @@ update_existing_installation() {
   command -v pnpm >/dev/null 2>&1 || fail "pnpm is required to update CandlePilot"
   command -v sqlite3 >/dev/null 2>&1 || fail "sqlite3 is required to update CandlePilot"
 
-  local current_branch installed_remote installed_backend_port
+  local current_branch installed_remote installed_backend_port installed_database_path
   local tracked_changes old_sha new_sha running_count
   installed_backend_port="$(
     sed -n 's/^CANDLEPILOT_PORT=//p' "$APP_DIR/.env" | tail -n 1
@@ -145,6 +145,45 @@ update_existing_installation() {
   [[ "$installed_backend_port" =~ ^[0-9]+$ ]] \
     && (( installed_backend_port >= 1024 && installed_backend_port <= 65535 )) \
     || fail "installed CANDLEPILOT_PORT is missing or invalid"
+  installed_database_path="$(python3 - "$APP_DIR" "$APP_DIR/.env" <<'PY'
+import sys
+from pathlib import Path
+from urllib.parse import unquote
+
+app_dir = Path(sys.argv[1]).resolve()
+env_path = Path(sys.argv[2])
+values = {}
+for raw in env_path.read_text(encoding="utf-8").splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#"):
+        continue
+    if line.startswith("export "):
+        line = line[len("export "):].lstrip()
+    key, separator, value = line.partition("=")
+    if not separator:
+        continue
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+    values[key.strip()] = value
+
+url = values.get(
+    "CANDLEPILOT_DATABASE_URL",
+    "sqlite+aiosqlite:///./candlepilot.db",
+).strip()
+prefix = "sqlite+aiosqlite:///"
+if not url.startswith(prefix):
+    raise SystemExit("installed database URL is not a supported sqlite+aiosqlite URL")
+target = unquote(url.removeprefix(prefix).split("?", 1)[0])
+if not target:
+    raise SystemExit("installed database URL has no database path")
+if target == ":memory:":
+    print("")
+else:
+    path = Path(target)
+    print((path if path.is_absolute() else app_dir / path).resolve())
+PY
+  )" || fail "could not resolve installed CANDLEPILOT_DATABASE_URL"
   current_branch="$(runuser -u "$APP_USER" -- git -C "$APP_DIR" branch --show-current)"
   [[ "$current_branch" == "$BRANCH" ]] \
     || fail "installed branch is '$current_branch', expected '$BRANCH'"
@@ -169,9 +208,9 @@ update_existing_installation() {
     return
   fi
 
-  if [[ -f "$APP_DIR/candlepilot.db" ]]; then
+  if [[ -n "$installed_database_path" && -f "$installed_database_path" ]]; then
     running_count="$(
-      sqlite3 "$APP_DIR/candlepilot.db" \
+      sqlite3 "$installed_database_path" \
         "SELECT count(*) FROM live_runs WHERE status = 'running';" 2>/dev/null
     )" || fail "could not verify whether the trading engine is stopped"
     [[ "$running_count" == "0" ]] \
@@ -194,9 +233,11 @@ update_existing_installation() {
   backup_dir="$UPDATE_BACKUP_ROOT/$backup_stamp-$old_sha"
   install -d -m 0700 "$UPDATE_BACKUP_ROOT" "$backup_dir"
   install -m 0600 "$APP_DIR/.env" "$backup_dir/.env"
-  if [[ -f "$APP_DIR/candlepilot.db" ]]; then
-    sqlite3 "$APP_DIR/candlepilot.db" ".backup '$backup_dir/candlepilot.db'"
-    chmod 0600 "$backup_dir/candlepilot.db"
+  if [[ -n "$installed_database_path" && -f "$installed_database_path" ]]; then
+    sqlite3 "$installed_database_path" ".backup '$backup_dir/database.sqlite3'"
+    chmod 0600 "$backup_dir/database.sqlite3"
+    printf '%s\n' "$installed_database_path" >"$backup_dir/database-path"
+    chmod 0600 "$backup_dir/database-path"
   fi
   printf '%s\n' "$old_sha" >"$backup_dir/source-commit"
 
@@ -216,12 +257,12 @@ update_existing_installation() {
       systemctl stop candlepilot.service 2>/dev/null
       runuser -u "$APP_USER" -- git -C "$APP_DIR" reset --hard "$old_sha" \
         || rollback_ok=false
-      if [[ -f "$backup_dir/candlepilot.db" ]]; then
-        cp -a -- "$backup_dir/candlepilot.db" "$APP_DIR/candlepilot.db" \
+      if [[ -f "$backup_dir/database.sqlite3" ]]; then
+        cp -a -- "$backup_dir/database.sqlite3" "$installed_database_path" \
           || rollback_ok=false
-        chown "$APP_USER:$APP_USER" "$APP_DIR/candlepilot.db" \
+        chown "$APP_USER:$APP_USER" "$installed_database_path" \
           || rollback_ok=false
-        chmod 0600 "$APP_DIR/candlepilot.db" || rollback_ok=false
+        chmod 0600 "$installed_database_path" || rollback_ok=false
       fi
       runuser -u "$APP_USER" -- "$APP_DIR/.venv/bin/pip" install \
         --disable-pip-version-check -r "$APP_DIR/requirements.lock" \
