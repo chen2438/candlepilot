@@ -1271,29 +1271,92 @@ def test_failed_protective_cleanup_requires_an_emergency_lock() -> None:
 
 
 @pytest.mark.parametrize(
-    ("orders", "unprotected"),
+    ("position_amount", "orders", "unprotected"),
     [
-        ([], ("BTCUSDT",)),
+        ("1", [], ("BTCUSDT",)),
         (
+            "1",
             [
                 {
                     "symbol": "BTCUSDT",
                     "orderType": "STOP_MARKET",
                     "closePosition": True,
+                    "side": "SELL",
+                }
+            ],
+            (),
+        ),
+        (
+            "1",
+            [
+                {
+                    "symbol": "BTCUSDT",
+                    "orderType": "STOP_MARKET",
+                    "closePosition": True,
+                    "side": "BUY",
+                }
+            ],
+            ("BTCUSDT",),
+        ),
+        (
+            "1",
+            [
+                {
+                    "symbol": "BTCUSDT",
+                    "orderType": "STOP_MARKET",
+                    "reduceOnly": True,
+                    "side": "SELL",
+                    "quantity": "0.4",
+                }
+            ],
+            ("BTCUSDT",),
+        ),
+        (
+            "1",
+            [
+                {
+                    "symbol": "BTCUSDT",
+                    "orderType": "STOP_MARKET",
+                    "reduceOnly": True,
+                    "side": "SELL",
+                    "origQty": "0.4",
+                },
+                {
+                    "symbol": "BTCUSDT",
+                    "orderType": "STOP",
+                    "reduceOnly": "true",
+                    "side": "SELL",
+                    "quantity": "0.6",
+                },
+            ],
+            (),
+        ),
+        (
+            "-2",
+            [
+                {
+                    "symbol": "BTCUSDT",
+                    "orderType": "STOP_MARKET",
+                    "closePosition": "true",
+                    "side": "BUY",
                 }
             ],
             (),
         ),
     ],
 )
-def test_reconciles_protective_stops(orders, unprotected) -> None:
+def test_reconciles_protective_stops(position_amount, orders, unprotected) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/fapi/v1/time":
             return httpx.Response(200, json={"serverTime": 1784040000000})
         if request.url.path == "/fapi/v3/account":
             return httpx.Response(
                 200,
-                json={"positions": [{"symbol": "BTCUSDT", "positionAmt": "1"}]},
+                json={
+                    "positions": [
+                        {"symbol": "BTCUSDT", "positionAmt": position_amount}
+                    ]
+                },
             )
         if request.url.path == "/fapi/v1/openOrders":
             return httpx.Response(200, json=[])

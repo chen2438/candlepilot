@@ -494,20 +494,42 @@ class BinanceTestnetBroker:
             self._signed_request("GET", "/fapi/v1/openAlgoOrders", {}),
         )
         positions = {
-            item["symbol"]
+            str(item["symbol"]): Decimal(str(item.get("positionAmt", "0")))
             for item in account.get("positions", [])
             if Decimal(str(item.get("positionAmt", "0"))) != 0
         }
-        protected = {
-            item["symbol"]
-            for item in open_algo_orders
-            if item.get("orderType") in {"STOP", "STOP_MARKET"}
-            and (
-                item.get("closePosition") in {True, "true", "TRUE"}
-                or item.get("reduceOnly") in {True, "true", "TRUE"}
-            )
+        close_position_stops: set[str] = set()
+        reduce_only_stop_quantities: dict[str, Decimal] = {}
+        for item in open_algo_orders:
+            symbol = str(item.get("symbol", ""))
+            position_amount = positions.get(symbol)
+            if (
+                position_amount is None
+                or item.get("orderType") not in {"STOP", "STOP_MARKET"}
+                or str(item.get("side", "")).upper()
+                != ("SELL" if position_amount > 0 else "BUY")
+            ):
+                continue
+            if item.get("closePosition") in {True, "true", "TRUE"}:
+                close_position_stops.add(symbol)
+                continue
+            if item.get("reduceOnly") not in {True, "true", "TRUE"}:
+                continue
+            raw_quantity = item.get("quantity", item.get("origQty"))
+            try:
+                quantity = Decimal(str(raw_quantity))
+            except (ArithmeticError, TypeError, ValueError):
+                continue
+            if quantity > 0:
+                reduce_only_stop_quantities[symbol] = (
+                    reduce_only_stop_quantities.get(symbol, Decimal("0")) + quantity
+                )
+        protected = close_position_stops | {
+            symbol
+            for symbol, quantity in reduce_only_stop_quantities.items()
+            if quantity >= abs(positions[symbol])
         }
-        unprotected = tuple(sorted(positions - protected))
+        unprotected = tuple(sorted(positions.keys() - protected))
         pending_entries = tuple(
             sorted(
                 {
