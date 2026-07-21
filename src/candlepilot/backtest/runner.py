@@ -415,7 +415,7 @@ class BacktestRunner:
             )
         )
         settled_next: dict[str, int] = {}
-        settled_decision_key: tuple[datetime, str] | None = None
+        settled_through: datetime | None = None
         last_success_exchange = copy.deepcopy(exchange)
         previous_call_succeeded = False
         progress.decisions_total = len(schedule)
@@ -464,13 +464,16 @@ class BacktestRunner:
                 # call before this decision can settle any later market data.
                 last_success_exchange = copy.deepcopy(exchange)
                 previous_call_succeeded = False
-            # Kline timestamps are opens. Settle only bars whose close is at or
-            # before this decision, and only once even when several cadences
-            # produce decisions for the same symbol at the same instant.
-            decision_key = (when, symbol)
-            if decision_key != settled_decision_key:
-                self._settle_until(exchange, symbol, when, settled_next)
-                settled_decision_key = decision_key
+            # Kline timestamps are opens. Before the first decision at a given
+            # instant, settle every symbol through that instant. Otherwise the
+            # alphabetically first symbol would see stale stops, funding and
+            # pending fills from the rest of the shared portfolio.
+            if when != settled_through:
+                for settlement_symbol in sorted(self._series):
+                    self._settle_until(
+                        exchange, settlement_symbol, when, settled_next
+                    )
+                settled_through = when
 
             entry = BacktestDecision(decided_at=when, symbol=symbol, cadence=cadence)
 

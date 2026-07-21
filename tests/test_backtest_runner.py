@@ -16,7 +16,13 @@ from candlepilot.backtest.runner import (
     validate,
 )
 from candlepilot.backtest.snapshots import INTERVAL_MILLISECONDS
-from candlepilot.domain.models import ProviderHealth, TradeAction, TradeIntent
+from candlepilot.domain.models import (
+    PortfolioState,
+    PositionState,
+    ProviderHealth,
+    TradeAction,
+    TradeIntent,
+)
 from candlepilot.market.features import DECISION_FEATURE_INTERVALS
 from candlepilot.providers.base import DecisionProvider, ProviderResult
 from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
@@ -345,6 +351,72 @@ def test_higher_cadences_cannot_duplicate_funding_settlement() -> None:
 
     assert base.total_funding > 0
     assert multi.total_funding == base.total_funding
+
+
+def test_all_symbols_settle_before_the_first_decision_at_an_instant() -> None:
+    class PortfolioCapture(_Provider):
+        def __init__(self) -> None:
+            super().__init__("capture", TradeAction.HOLD)
+            self.portfolios: list[PortfolioState] = []
+
+        async def generate_trade_intent(self, snapshot, portfolio):
+            self.portfolios.append(portfolio)
+            return await super().generate_trade_intent(snapshot, portfolio)
+
+    spec = _spec(
+        symbols=("BTCUSDT", "ETHUSDT"),
+        end=WINDOW_START + timedelta(minutes=5),
+    )
+    series = {symbol: _all_series() for symbol in spec.symbols}
+    eth_candles = series["ETHUSDT"]["5m"]
+    candle_index = next(
+        index
+        for index, candle in enumerate(eth_candles)
+        if candle.timestamp == WINDOW_START
+    )
+    eth_candles[candle_index] = Candle(
+        timestamp=WINDOW_START,
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("97"),
+        close=Decimal("99"),
+        volume=Decimal("500"),
+    )
+    initial = PortfolioState(
+        equity=spec.config.initial_equity,
+        available_balance=Decimal("9950"),
+        open_positions=1,
+        margin_used=Decimal("50"),
+        positions={
+            "ETHUSDT": PositionState(
+                side="LONG",
+                quantity=Decimal("1"),
+                entry_price=Decimal("100"),
+                leverage=2,
+                initial_margin=Decimal("50"),
+                stop_loss=Decimal("98"),
+                take_profit=Decimal("120"),
+            )
+        },
+    )
+    runner = BacktestRunner(
+        spec=spec,
+        series=series,
+        rules={symbol: RULES for symbol in spec.symbols},
+        risk=AggressiveRiskPolicy(require_take_profit=True),
+        initial_portfolio=initial,
+        provider_retry_delays=(0, 0),
+    )
+    provider = PortfolioCapture()
+
+    asyncio.run(runner.run(provider, ModelRun(provider.name)))
+
+    assert len(provider.portfolios) == 2
+    assert all("ETHUSDT" not in portfolio.positions for portfolio in provider.portfolios)
+    assert all(
+        portfolio.equity == spec.config.initial_equity - Decimal("2")
+        for portfolio in provider.portfolios
+    )
 
 
 def test_unreached_reduce_only_limit_is_pending_and_blocks_another_order() -> None:
