@@ -6,7 +6,7 @@ import hmac
 import json
 import secrets
 import time
-from collections import defaultdict, deque
+from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
@@ -99,13 +99,34 @@ class AuthManager:
         self._session_secret = session_secret.get_secret_value().encode() if session_secret else b""
         self.session_ttl_seconds = session_ttl_seconds
         self.cookie_secure = cookie_secure
-        self._failed_logins: dict[str, deque[float]] = defaultdict(deque)
+        self._failed_logins: dict[str, deque[float]] = {}
+        self._last_failed_login_cleanup = time.monotonic()
+
+    def _prune_failed_logins(self, current: float) -> None:
+        if (
+            current >= self._last_failed_login_cleanup
+            and current - self._last_failed_login_cleanup < LOGIN_WINDOW_SECONDS
+        ):
+            return
+        cutoff = current - LOGIN_WINDOW_SECONDS
+        for client, attempts in list(self._failed_logins.items()):
+            while attempts and attempts[0] <= cutoff:
+                attempts.popleft()
+            if not attempts:
+                self._failed_logins.pop(client, None)
+        self._last_failed_login_cleanup = current
 
     def blocked_for(self, client: str, *, now: float | None = None) -> int:
         current = time.monotonic() if now is None else now
-        attempts = self._failed_logins[client]
+        self._prune_failed_logins(current)
+        attempts = self._failed_logins.get(client)
+        if attempts is None:
+            return 0
         while attempts and current - attempts[0] >= LOGIN_WINDOW_SECONDS:
             attempts.popleft()
+        if not attempts:
+            self._failed_logins.pop(client, None)
+            return 0
         if len(attempts) < LOGIN_ATTEMPT_LIMIT:
             return 0
         return max(1, int(LOGIN_WINDOW_SECONDS - (current - attempts[0])))
@@ -116,7 +137,7 @@ class AuthManager:
         valid_user = hmac.compare_digest(username, self.username or "")
         valid_password = verify_password(password, self._password_hash)
         if not (valid_user and valid_password):
-            self._failed_logins[client].append(time.monotonic())
+            self._failed_logins.setdefault(client, deque()).append(time.monotonic())
             return False
         self._failed_logins.pop(client, None)
         return True

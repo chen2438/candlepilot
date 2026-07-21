@@ -45,6 +45,8 @@
 **认证**：`GET /api/auth/status`、`POST /api/auth/login`、`POST /api/auth/logout`。启用鉴权时，
 登录与状态接口强制 `Cache-Control: no-store`；登录成功签发有期限的 HttpOnly 会话，退出会立即
 清除浏览器 Cookie。健康检查保持匿名可用，供本机进程看护使用；不返回账户、配置或交易信息。
+会话是无状态签名 Cookie，后端不保存会话表；失败登录按客户端在滚动 5 分钟窗口内限速，窗口过期的
+客户端桶会自动回收，避免长期运行时因历史来源持续占用内存。
 
 **引擎与 Provider**：`GET /api/status`、`GET /api/providers`、
 `POST /api/providers/select`、`POST /api/providers/config`、`POST /api/providers/test`、

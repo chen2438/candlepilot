@@ -22,7 +22,9 @@ def test_password_hash_and_signed_session_expiry() -> None:
     assert auth.validate_session(token, now=4600) is None
 
 
-def test_failed_login_rate_limit_is_per_client() -> None:
+def test_failed_login_rate_limit_is_per_client(monkeypatch) -> None:
+    clock = [1000.0]
+    monkeypatch.setattr("candlepilot.auth.time.monotonic", lambda: clock[0])
     auth = AuthManager(
         enabled=True,
         username="operator",
@@ -35,3 +37,9 @@ def test_failed_login_rate_limit_is_per_client() -> None:
         assert auth.authenticate("operator", "wrong", "attacker") is False
     assert auth.blocked_for("attacker") > 0
     assert auth.blocked_for("different-client") == 0
+    assert "different-client" not in auth._failed_logins
+
+    assert auth.authenticate("operator", "wrong", "second-attacker") is False
+    clock[0] += 301
+    assert auth.blocked_for("new-client") == 0
+    assert auth._failed_logins == {}
