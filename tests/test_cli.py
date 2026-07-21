@@ -18,7 +18,7 @@ def test_serve_refuses_non_local_bind(monkeypatch) -> None:
         main()
 
 
-@pytest.mark.parametrize("command", ["doctor", "acceptance", "serve"])
+@pytest.mark.parametrize("command", ["doctor", "serve"])
 def test_every_command_rejects_stale_provider_references(monkeypatch, command) -> None:
     monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", "custom:removed")
     monkeypatch.setattr(sys, "argv", ["candlepilot", command])

@@ -919,7 +919,7 @@ Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功
   实际存在的 `openai-compatible:<id>`。通用设置表单与 Custom API 表单均校验**修改后的完整
   候选配置**；修改或删除仍被主备路由引用的 Custom API ID 会返回 422，文件保持不变并明确
   列出失效字段与 Provider。需要改 ID 时，先从主备路由移除旧 ID，再修改 ID，最后按需加入新 ID。
-  CLI 启动、`doctor` 和 `acceptance` 使用同一检查；若用户手工把
+  CLI 启动和 `doctor` 使用同一检查；若用户手工把
   `.env` 改成引用失效状态，进程会明确失败，不会忽略条目、改选其他 Provider 或让界面显示一套
   而实际运行另一套配置。设置页在主备顺序输入框下直接列出面向 `.env` 的完整填写方式：本地规则
   使用 `local`、Codex 使用 `codex`、Claude Code 使用 `claude-code`，Custom API 使用
@@ -986,7 +986,7 @@ Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功
 
 ## 5. 配置
 
-`candlepilot` 启动时自动读取当前目录 `.env`（`doctor`/`serve`/`acceptance` 均适用）；
+`candlepilot` 启动时自动读取当前目录 `.env`（`doctor`/`serve` 均适用）；
 已在 shell 中 `export` 的变量优先级更高。
 
 | 变量 | 说明 |
@@ -1020,9 +1020,6 @@ Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功
 
 - `candlepilot doctor` —— 检查 LLM 登录状态与币安只读公共接口，不下单。
 - `candlepilot serve` —— 启动本地 API 与已构建的 Web 前端。
-- `candlepilot acceptance [--required-hours 24] [--lookback-hours 168]` ——
-  按发布不变量审计测试网软运行（连续运行时长、订单号唯一、持仓已对账且带保护、
-  每笔成交可追溯到模型与风控）；证据不足返回非零退出码，绝不虚假放行。
 
 ## 7. HTTP / WebSocket API 参考
 
@@ -1277,8 +1274,6 @@ git commit \
 
 ## 9. 尚未实施 / 路线图
 
-- [ ] **测试网连续运行 24 小时验收**：`candlepilot acceptance` 工具已就绪，
-  但尚未记录真实的 24 小时测试网软运行。
 - [ ] **决策历史作为模型输入**：每次 LLM 调用当前完全无状态——模型看不到自己上一周期对
   同一标的说过什么，因此同标的跨周期容易反复翻转，且无法表达"维持上次判断"。
   **刻意暂缓**：这不是补数据就能解决的，需要先定清楚三件事：喂多少历史、按什么维度筛选
