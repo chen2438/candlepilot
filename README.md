@@ -176,10 +176,14 @@ sudo systemctl restart candlepilot
 不要以 root 身份直接运行 `codex login`；登录凭据必须保存在 `candlepilot` 用户的 home 中，
 systemd 服务才能读取。不使用 Codex Auth 时可跳过此步，默认本地规则 Provider 仍可启动。
 
-以后仓库有更新时，先在网页中优雅停止正在运行的引擎，再重新执行同一条安装命令。脚本检测到
-完整的 `/opt/candlepilot` 后会自动进入更新模式：保留 `.env`、数据库、行情数据、TLS 和模型登录
-状态，只接受 `main` 的快进更新，并在依赖安装、前端构建或健康检查失败时恢复旧版本。更新前会在
-`/var/backups/candlepilot` 保存配置、默认 SQLite 数据库和原提交号。
+安装器会同时部署受限的网页更新助手。以后仓库有更新时，先在网页中停止引擎、回测、试跑与盘口
+采集，再到「设置 → 软件更新」确认即可，无需登录 VPS 终端。更新保留 `.env`、数据库、行情数据、
+TLS 和模型登录状态，只接受 `main` 的快进更新，并在依赖安装、前端构建或健康检查失败时恢复旧版本；
+更新前会在 `/var/backups/candlepilot` 保存配置、默认 SQLite 数据库和原提交号。
+
+从旧版本首次启用网页更新时，仍需最后执行一次上面的 `curl | sudo bash` 安装命令来安装 root 助手；
+即使代码已经是最新版本也会补装。此后更新都可在网页完成。root 权限只授予固定、无参数的更新
+launcher，实际 worker 和安装器副本均由 root 持有，不会以 root 执行应用用户可写目录里的脚本。
 
 最低建议 1 vCPU / 2 GB RAM / 25 GB SSD；持续运行建议 2 vCPU / 4 GB RAM / 40 GB SSD。
 卸载前可用 `scripts/uninstall_vps.sh --dry-run` 预览；正式卸载会要求确认，并可选择是否删除

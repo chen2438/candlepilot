@@ -125,6 +125,68 @@ from candlepilot.storage.database import (
 )
 
 
+WEB_UPDATE_HELPER = Path("/usr/local/sbin/candlepilot-web-update")
+WEB_UPDATE_STATUS_FILE = Path("/var/lib/candlepilot/update-status.json")
+WEB_UPDATE_PHASES = {"idle", "running", "completed", "failed"}
+
+
+def read_web_update_status(
+    *,
+    helper_path: Path | None = None,
+    status_path: Path | None = None,
+    platform: str | None = None,
+) -> dict[str, Any]:
+    """Read the root updater's deliberately small, world-readable status file."""
+
+    helper_path = helper_path or WEB_UPDATE_HELPER
+    status_path = status_path or WEB_UPDATE_STATUS_FILE
+    platform = platform or sys.platform
+    supported = (
+        platform.startswith("linux")
+        and helper_path.is_file()
+        and os.access(helper_path, os.X_OK)
+    )
+    payload: dict[str, Any] = {
+        "supported": supported,
+        "phase": "idle",
+        "message": (
+            "尚未执行网页更新"
+            if supported
+            else "网页更新仅在通过 VPS 安装器部署更新助手后可用"
+        ),
+        "started_at": None,
+        "finished_at": None,
+        "from_commit": None,
+        "current_commit": None,
+        "backup": None,
+    }
+    if not supported or not status_path.is_file():
+        return payload
+    try:
+        stored = json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {**payload, "phase": "failed", "message": "无法读取更新状态"}
+    if not isinstance(stored, dict) or stored.get("phase") not in WEB_UPDATE_PHASES:
+        return {**payload, "phase": "failed", "message": "更新状态格式无效"}
+    for key in (
+        "message",
+        "started_at",
+        "finished_at",
+        "from_commit",
+        "current_commit",
+        "backup",
+    ):
+        value = stored.get(key)
+        if value is not None and not isinstance(value, str):
+            return {**payload, "phase": "failed", "message": "更新状态格式无效"}
+        if isinstance(value, str) and len(value) > 1000:
+            return {**payload, "phase": "failed", "message": "更新状态字段过长"}
+    return {
+        **payload,
+        **{key: stored.get(key) for key in payload if key != "supported"},
+    }
+
+
 class ApiModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -559,6 +621,8 @@ def create_app(
     trade_fill_retry_after: dict[str, float] = {}
     trade_fill_failure_count: dict[str, int] = {}
     restart_pending = False
+    update_pending = False
+    update_baseline_finished_at: str | None = None
     testnet_account_memo: dict[str, Any] = {"account": None, "expires_at": 0.0}
     testnet_levels_lock = asyncio.Lock()
     testnet_levels_memo: dict[str, Any] = {"levels": None, "expires_at": 0.0}
@@ -748,10 +812,14 @@ def create_app(
     @app.middleware("http")
     async def authenticate_request(request: Request, call_next: Any) -> Any:
         path = request.url.path
-        if restart_pending and request.method not in {"GET", "HEAD", "OPTIONS"}:
+        if (restart_pending or update_pending) and request.method not in {
+            "GET",
+            "HEAD",
+            "OPTIONS",
+        }:
             return JSONResponse(
                 status_code=503,
-                content={"detail": "backend restart is already in progress"},
+                content={"detail": "backend maintenance is already in progress"},
                 headers={"Cache-Control": "no-store"},
             )
         if not auth.enabled or not path.startswith("/api/") or path in public_api_paths:
@@ -1428,6 +1496,83 @@ def create_app(
             write_env_file(env_path, {CUSTOM_PROVIDERS_ENV: serialized})
         return await get_custom_providers()
 
+    @app.get("/api/update/status")
+    async def web_update_status() -> dict[str, Any]:
+        nonlocal update_pending
+        status = read_web_update_status()
+        if update_pending and status["phase"] in {"completed", "failed"}:
+            if status["finished_at"] == update_baseline_finished_at:
+                # systemd may not have written "running" yet. Do not expose the
+                # previous terminal result as if this new request had finished.
+                return {
+                    **status,
+                    "phase": "running",
+                    "message": "更新已排队，等待更新服务启动",
+                    "finished_at": None,
+                }
+            update_pending = False
+        return status
+
+    @app.post("/api/update", status_code=202)
+    async def start_web_update() -> dict[str, Any]:
+        nonlocal update_baseline_finished_at, update_pending
+        active: list[str] = []
+        if engine.running:
+            active.append("the formal decision engine")
+        elif scheduler.running:
+            active.append("the trading scheduler")
+        if background_model_work():
+            active.append("a provider probe or backtest")
+        if collector.running:
+            active.append("the market collector")
+        if active:
+            raise HTTPException(
+                status_code=409,
+                detail="stop active work before updating CandlePilot: "
+                + ", ".join(active),
+            )
+        if restart_pending:
+            raise HTTPException(status_code=409, detail="backend restart is in progress")
+        status = read_web_update_status()
+        if not status["supported"]:
+            raise HTTPException(status_code=409, detail=status["message"])
+        if update_pending or status["phase"] == "running":
+            raise HTTPException(status_code=409, detail="an update is already running")
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "sudo",
+                "-n",
+                str(WEB_UPDATE_HELPER),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=10)
+        except TimeoutError as exc:
+            process.kill()
+            await process.wait()
+            raise HTTPException(
+                status_code=409,
+                detail="the update helper did not acknowledge the request in time",
+            ) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"could not start the update helper: {type(exc).__name__}",
+            ) from exc
+        if process.returncode != 0:
+            detail = (stderr or stdout).decode("utf-8", errors="replace").strip()
+            raise HTTPException(
+                status_code=409,
+                detail=(detail or "the update helper refused to start")[-500:],
+            )
+        update_baseline_finished_at = status["finished_at"]
+        update_pending = True
+        return {
+            "started": True,
+            "message": stdout.decode("utf-8", errors="replace").strip(),
+        }
+
     @app.post("/api/restart")
     async def restart_backend() -> dict[str, Any]:
         nonlocal restart_pending
@@ -1450,6 +1595,8 @@ def create_app(
             raise HTTPException(
                 status_code=409, detail="backend restart is already in progress"
             )
+        if update_pending or read_web_update_status()["phase"] == "running":
+            raise HTTPException(status_code=409, detail="a software update is in progress")
         restart_pending = True
 
         async def _reexec() -> None:

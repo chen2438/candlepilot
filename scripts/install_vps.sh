@@ -17,6 +17,57 @@ MANAGED_PYTHON_VERSION="${CANDLEPILOT_MANAGED_PYTHON_VERSION:-3.12.13}"
 UPDATE_CONFIRMATION="${CANDLEPILOT_UPDATE_CONFIRM:-}"
 UPDATE_BACKUP_ROOT="${CANDLEPILOT_UPDATE_BACKUP_ROOT:-/var/backups/candlepilot}"
 
+install_web_update_helper() {
+  local helper_dir="/usr/local/libexec" source_dir
+  source_dir="$(mktemp -d)"
+  runuser -u "$APP_USER" -- git -C "$APP_DIR" show HEAD:scripts/install_vps.sh \
+    >"$source_dir/install_vps.sh"
+  runuser -u "$APP_USER" -- git -C "$APP_DIR" show HEAD:scripts/web_update_launcher.sh \
+    >"$source_dir/web_update_launcher.sh"
+  runuser -u "$APP_USER" -- git -C "$APP_DIR" show HEAD:scripts/web_update_worker.sh \
+    >"$source_dir/web_update_worker.sh"
+  install -d -o root -g root -m 0755 \
+    "$helper_dir" /usr/local/sbin /etc/candlepilot /var/lib/candlepilot
+  install -o root -g root -m 0755 \
+    "$source_dir/web_update_launcher.sh" \
+    /usr/local/sbin/candlepilot-web-update
+  install -o root -g root -m 0755 \
+    "$source_dir/web_update_worker.sh" \
+    "$helper_dir/candlepilot-web-update-worker"
+  install -o root -g root -m 0755 \
+    "$source_dir/install_vps.sh" \
+    "$helper_dir/candlepilot-install-vps"
+  rm -rf -- "$source_dir"
+  {
+    printf 'APP_USER=%q\n' "$APP_USER"
+    printf 'APP_DIR=%q\n' "$APP_DIR"
+    printf 'REPO_URL=%q\n' "$REPO_URL"
+    printf 'BRANCH=%q\n' "$BRANCH"
+    printf 'BACKUP_ROOT=%q\n' "$UPDATE_BACKUP_ROOT"
+  } >/etc/candlepilot/web-update.conf
+  chmod 0600 /etc/candlepilot/web-update.conf
+  cat >/etc/systemd/system/candlepilot-update.service <<'EOF'
+[Unit]
+Description=CandlePilot safe web update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/candlepilot-web-update-worker
+TimeoutStartSec=45min
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+EOF
+  cat >/etc/sudoers.d/candlepilot-web-update <<EOF
+$APP_USER ALL=(root) NOPASSWD: /usr/local/sbin/candlepilot-web-update
+EOF
+  chmod 0440 /etc/sudoers.d/candlepilot-web-update
+  visudo -cf /etc/sudoers.d/candlepilot-web-update >/dev/null
+  systemctl daemon-reload
+}
+
 fail() {
   echo "CandlePilot installer: $*" >&2
   exit 1
@@ -72,6 +123,8 @@ update_existing_installation() {
   command -v git >/dev/null 2>&1 || fail "git is required to update CandlePilot"
   command -v pnpm >/dev/null 2>&1 || fail "pnpm is required to update CandlePilot"
   command -v sqlite3 >/dev/null 2>&1 || fail "sqlite3 is required to update CandlePilot"
+  command -v sudo >/dev/null 2>&1 || fail "sudo is required to enable web updates"
+  command -v visudo >/dev/null 2>&1 || fail "visudo is required to enable web updates"
 
   local current_branch installed_remote installed_backend_port
   local tracked_changes old_sha new_sha running_count
@@ -100,6 +153,7 @@ update_existing_installation() {
   runuser -u "$APP_USER" -- git -C "$APP_DIR" merge-base --is-ancestor "$old_sha" "$new_sha" \
     || fail "origin/$BRANCH is not a fast-forward update; refusing to rewrite history"
   if [[ "$old_sha" == "$new_sha" ]]; then
+    install_web_update_helper
     echo "CandlePilot is already up to date at ${old_sha:0:12}."
     return
   fi
@@ -217,6 +271,10 @@ update_existing_installation() {
       || { journalctl -u candlepilot --no-pager -n 80; return 1; }
   fi
 
+  # Publish privileged updater files only after the new application version has
+  # passed its health check, so a rollback never leaves a newer root helper behind.
+  install_web_update_helper
+
   update_started=false
   trap - ERR INT TERM
   echo "CandlePilot updated successfully: ${old_sha:0:12} -> ${new_sha:0:12}"
@@ -323,7 +381,7 @@ prompt_value BINANCE_SECRET "Binance Demo API secret: " true
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
-  ca-certificates curl git nginx openssl sqlite3 xz-utils "${PYTHON_PACKAGES[@]}"
+  ca-certificates curl git nginx openssl sqlite3 sudo xz-utils "${PYTHON_PACKAGES[@]}"
 
 case "$(uname -m)" in
   x86_64)
@@ -498,7 +556,7 @@ ln -sfn /etc/nginx/sites-available/candlepilot /etc/nginx/sites-enabled/candlepi
 rm -f /etc/nginx/sites-enabled/default
 nginx -t
 
-systemctl daemon-reload
+install_web_update_helper
 systemctl enable --now candlepilot
 for _ in $(seq 1 30); do
   if curl --silent --fail "http://127.0.0.1:$BACKEND_PORT/api/health/ready" >/dev/null; then

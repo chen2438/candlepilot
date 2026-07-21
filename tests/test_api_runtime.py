@@ -12,7 +12,8 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from starlette.websockets import WebSocketDisconnect
 
-from candlepilot.api import create_app
+import candlepilot.api as api_module
+from candlepilot.api import create_app, read_web_update_status
 from candlepilot.auth import hash_password
 from candlepilot.application.engine import TradingEngine
 from candlepilot.application.scheduler import CADENCE_SECONDS
@@ -1656,6 +1657,162 @@ def test_restart_is_refused_while_the_engine_runs(tmp_path: Path) -> None:
         assert refused.status_code == 409
         assert "formal decision engine" in refused.json()["detail"]
         client.post("/api/engine/stop")
+    asyncio.run(database.close())
+
+
+def test_web_update_status_reads_only_the_public_schema(tmp_path: Path) -> None:
+    helper = tmp_path / "web-update"
+    helper.write_text("#!/bin/sh\n", encoding="utf-8")
+    helper.chmod(0o755)
+    status_file = tmp_path / "update-status.json"
+    status_file.write_text(
+        json.dumps(
+            {
+                "phase": "completed",
+                "message": "updated",
+                "started_at": "2026-07-21T10:00:00Z",
+                "finished_at": "2026-07-21T10:01:00Z",
+                "from_commit": "old",
+                "current_commit": "new",
+                "backup": "/var/backups/candlepilot/example",
+                "private_log": "must not cross the API boundary",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status = read_web_update_status(
+        helper_path=helper,
+        status_path=status_file,
+        platform="linux",
+    )
+
+    assert status["supported"] is True
+    assert status["phase"] == "completed"
+    assert status["current_commit"] == "new"
+    assert "private_log" not in status
+
+
+def test_web_update_status_requires_an_executable_helper(tmp_path: Path) -> None:
+    helper = tmp_path / "web-update"
+    helper.write_text("not executable", encoding="utf-8")
+
+    status = read_web_update_status(helper_path=helper, platform="linux")
+
+    assert status["supported"] is False
+
+
+def test_web_update_starts_only_the_fixed_root_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'web-update.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    calls: list[tuple[object, ...]] = []
+
+    class Process:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b"queued", b""
+
+    async def create_process(*args: object, **_: object) -> Process:
+        calls.append(args)
+        return Process()
+
+    monkeypatch.setattr(
+        api_module,
+        "read_web_update_status",
+        lambda: {
+            "supported": True,
+            "phase": "idle",
+            "message": "ready",
+            "finished_at": None,
+        },
+    )
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        response = client.post("/api/update")
+
+    assert response.status_code == 202
+    assert calls == [("sudo", "-n", str(api_module.WEB_UPDATE_HELPER))]
+    asyncio.run(database.close())
+
+
+def test_web_update_does_not_reuse_a_previous_terminal_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'web-update-race.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    previous = {
+        "supported": True,
+        "phase": "completed",
+        "message": "previous update completed",
+        "finished_at": "2026-07-20T10:00:00Z",
+    }
+
+    class Process:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b"queued", b""
+
+    async def create_process(*_: object, **__: object) -> Process:
+        return Process()
+
+    monkeypatch.setattr(api_module, "read_web_update_status", lambda: previous)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        assert client.post("/api/update").status_code == 202
+        queued = client.get("/api/update/status").json()
+
+    assert queued["phase"] == "running"
+    assert queued["message"] == "更新已排队，等待更新服务启动"
+    assert queued["finished_at"] is None
+    asyncio.run(database.close())
+
+
+def test_web_update_is_refused_while_the_engine_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'web-update-running.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(
+        api_module,
+        "read_web_update_status",
+        lambda: {"supported": True, "phase": "idle", "finished_at": None},
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        client.post("/api/providers/select", json={"providers": ["api-fixture"]})
+        _probe_and_start(client)
+        refused = client.post("/api/update")
+        client.post("/api/engine/stop")
+
+    assert refused.status_code == 409
+    assert "formal decision engine" in refused.json()["detail"]
     asyncio.run(database.close())
 
 

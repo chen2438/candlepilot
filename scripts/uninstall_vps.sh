@@ -64,9 +64,15 @@ REMOVE_APP_USER="${REMOVE_APP_USER:-false}"
 
 cat <<EOF
 CandlePilot uninstall targets:
-  systemd service: /etc/systemd/system/candlepilot.service
+  systemd services: /etc/systemd/system/candlepilot.service
+                    /etc/systemd/system/candlepilot-update.service
+  update helper:    /usr/local/sbin/candlepilot-web-update
+                    /usr/local/libexec/candlepilot-web-update-worker
+                    /usr/local/libexec/candlepilot-install-vps
+  sudo permission:  /etc/sudoers.d/candlepilot-web-update
   Nginx site:      /etc/nginx/sites-available/candlepilot
   TLS/config:      /etc/candlepilot
+  update state/log: /var/lib/candlepilot, /var/log/candlepilot-update.log
   application:     $APP_DIR
   Linux user:      $APP_USER ($([[ "$REMOVE_APP_USER" == true ]] && echo remove || echo preserve))
 
@@ -83,12 +89,16 @@ if [[ "$CONFIRMATION" != "REMOVE" ]]; then
 fi
 [[ "$CONFIRMATION" == "REMOVE" ]] || fail "confirmation did not match; nothing was removed"
 
-if systemctl list-unit-files candlepilot.service --no-legend 2>/dev/null | grep -q candlepilot; then
-  systemctl disable --now candlepilot.service
-fi
-rm -f -- /etc/systemd/system/candlepilot.service
+for unit in candlepilot-update.service candlepilot.service; do
+  if systemctl list-unit-files "$unit" --no-legend 2>/dev/null | grep -q candlepilot; then
+    systemctl disable --now "$unit"
+  fi
+done
+rm -f -- \
+  /etc/systemd/system/candlepilot.service \
+  /etc/systemd/system/candlepilot-update.service
 systemctl daemon-reload
-systemctl reset-failed candlepilot.service 2>/dev/null || true
+systemctl reset-failed candlepilot.service candlepilot-update.service 2>/dev/null || true
 
 rm -f -- /etc/nginx/sites-enabled/candlepilot /etc/nginx/sites-available/candlepilot
 if command -v nginx >/dev/null 2>&1; then
@@ -98,7 +108,13 @@ if command -v nginx >/dev/null 2>&1; then
   fi
 fi
 
-rm -rf -- /etc/candlepilot
+rm -f -- \
+  /etc/sudoers.d/candlepilot-web-update \
+  /usr/local/sbin/candlepilot-web-update \
+  /usr/local/libexec/candlepilot-web-update-worker \
+  /usr/local/libexec/candlepilot-install-vps \
+  /var/log/candlepilot-update.log
+rm -rf -- /etc/candlepilot /var/lib/candlepilot
 if [[ -e "$APP_DIR" || -L "$APP_DIR" ]]; then
   rm -rf -- "$APP_DIR"
 fi

@@ -1,7 +1,13 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { BacktestDecisionLog, CadenceSelector, formatDailyLossPercent, LoginScreen } from "./App";
+import {
+  BacktestDecisionLog,
+  CadenceSelector,
+  formatDailyLossPercent,
+  LoginScreen,
+  WebUpdatePanel,
+} from "./App";
 import type { BacktestDecisionPage } from "./types";
 
 afterEach(cleanup);
@@ -81,6 +87,53 @@ describe("LoginScreen", () => {
     fireEvent.click(screen.getByRole("button", { name: "登录" }));
 
     expect((await screen.findByRole("alert")).textContent).toContain("invalid username or password");
+    request.mockRestore();
+  });
+});
+
+describe("WebUpdatePanel", () => {
+  it("requires explicit confirmation before starting a supported VPS update", async () => {
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        supported: true,
+        phase: "idle",
+        message: "ready",
+        started_at: null,
+        finished_at: null,
+        from_commit: null,
+        current_commit: null,
+        backup: null,
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<WebUpdatePanel busy={null} setBusy={vi.fn()} setError={vi.fn()} />);
+
+    const update = await screen.findByRole("button", { name: "一键检查并更新" });
+    await waitFor(() => expect(update.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(update);
+
+    expect(screen.getByText(/服务会短暂离线/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "确认更新" })).toBeTruthy();
+    expect(request).toHaveBeenCalledWith("/api/update/status", expect.anything());
+    request.mockRestore();
+  });
+
+  it("explains why web update is unavailable without the root helper", async () => {
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        supported: false,
+        phase: "idle",
+        message: "网页更新仅在通过 VPS 安装器部署更新助手后可用",
+        started_at: null,
+        finished_at: null,
+        from_commit: null,
+        current_commit: null,
+        backup: null,
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<WebUpdatePanel busy={null} setBusy={vi.fn()} setError={vi.fn()} />);
+
+    expect(await screen.findByText(/部署更新助手后可用/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "一键检查并更新" }).hasAttribute("disabled")).toBe(true);
     request.mockRestore();
   });
 });

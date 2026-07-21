@@ -26,6 +26,7 @@ import type {
   RunSessionMetrics,
   SettingsField,
   SettingsPayload,
+  WebUpdateStatus,
   StructureGateSummary,
   TestnetAccountStatus,
   TrailingStopEvent,
@@ -1838,6 +1839,124 @@ export default function App() {
   return <ConsoleApp auth={auth} onLogout={logout} />;
 }
 
+export function WebUpdatePanel({
+  busy,
+  setBusy,
+  setError,
+}: {
+  busy: string | null;
+  setBusy: (value: string | null) => void;
+  setError: (value: string | null) => void;
+}) {
+  const [status, setStatus] = useState<WebUpdateStatus | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const refreshStatus = useCallback(async () => {
+    const next = await api<WebUpdateStatus>("/api/update/status");
+    setStatus(next);
+    return next;
+  }, []);
+
+  useEffect(() => {
+    refreshStatus().catch(() => undefined);
+  }, [refreshStatus]);
+
+  const update = useCallback(async () => {
+    setBusy("update");
+    setError(null);
+    setNote("正在启动安全更新…");
+    try {
+      await api<{ started: boolean }>("/api/update", { method: "POST" });
+    } catch (reason) {
+      setBusy(null);
+      setConfirming(false);
+      setNote(null);
+      setError(reason instanceof Error ? reason.message : String(reason));
+      return;
+    }
+
+    // The dedicated update service deliberately takes this backend offline.
+    // Keep polling through the expected disconnect and read the root worker's
+    // persisted terminal result after the updated or rolled-back service returns.
+    for (let attempt = 0; attempt < 1500; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      try {
+        const next = await refreshStatus();
+        if (next.phase === "running" || next.phase === "idle") {
+          setNote("更新中：正在备份、安装依赖、构建并执行健康检查…");
+          continue;
+        }
+        if (next.phase === "completed") {
+          setNote(`${next.message}，正在载入新版本…`);
+          window.location.reload();
+          return;
+        }
+        if (next.phase === "failed") {
+          setBusy(null);
+          setConfirming(false);
+          setNote(null);
+          setError(next.message);
+          return;
+        }
+      } catch {
+        setNote("更新中：后端暂时离线，等待服务恢复…");
+      }
+    }
+    setBusy(null);
+    setConfirming(false);
+    setNote(null);
+    setError("更新在 50 分钟内没有返回结果，请检查 candlepilot-update.service 日志。");
+  }, [refreshStatus, setBusy, setError]);
+
+  const commitRange = status?.from_commit && status.current_commit
+    ? `${status.from_commit.slice(0, 12)} → ${status.current_commit.slice(0, 12)}`
+    : null;
+
+  return (
+    <div className="settings-section web-update-section">
+      <h4 className="account-subhead">软件更新</h4>
+      <div className="settings-actions">
+        {!confirming ? (
+          <button
+            className="compact"
+            disabled={busy !== null || status === null || !status.supported}
+            onClick={() => setConfirming(true)}
+          >
+            一键检查并更新
+          </button>
+        ) : (
+          <>
+            <span className="history-warn">
+              确认更新？必须先停止引擎、回测、试跑和盘口采集。服务会短暂离线；更新失败将自动回滚。
+            </span>
+            <button className="compact" disabled={busy !== null} onClick={update}>
+              {busy === "update" ? "更新中…" : "确认更新"}
+            </button>
+            <button className="text-button" disabled={busy !== null} onClick={() => setConfirming(false)}>
+              取消
+            </button>
+          </>
+        )}
+        {note && <span className="settings-saved">{note}</span>}
+      </div>
+      <small className="settings-hint">
+        {status?.supported
+          ? "调用 VPS 安装器的安全原地更新：仅接受 main 快进，保留 .env、数据库、行情、TLS 和模型登录；更新前备份，失败自动回滚。"
+          : status?.message ?? "正在检查 VPS 更新能力…"}
+      </small>
+      {status && status.phase !== "idle" && (
+        <div className={`update-result ${status.phase}`}>
+          <strong>{status.message}</strong>
+          {commitRange && <span>{commitRange}</span>}
+          {status.backup && <span>备份：{status.backup}</span>}
+          {status.finished_at && <span>{formatLocalDateTime(new Date(status.finished_at))}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RestartPanel({
   busy,
   setBusy,
@@ -2175,6 +2294,7 @@ function SettingsPanel({
         保存只写入 <code>{payload.path}</code>，<strong>不会改变正在运行的进程</strong>；重启后生效。
         密钥只写不读：现有值仅显示掩码尾号，留空表示保持不变。shell 里 export 的同名变量在运行时优先级更高。
       </p>
+      <WebUpdatePanel busy={busy} setBusy={setBusy} setError={setError} />
       <RestartPanel busy={busy} setBusy={setBusy} setError={setError} />
       <CustomProvidersPanel busy={busy} setBusy={setBusy} setError={setError} />
       {payload.sections.map((section) => (

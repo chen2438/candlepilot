@@ -36,6 +36,17 @@ export interface SettingsPayload {
   sections: Array<{ title: string; fields: SettingsField[] }>;
 }
 
+export interface WebUpdateStatus {
+  supported: boolean;
+  phase: "idle" | "running" | "completed" | "failed";
+  message: string;
+  started_at: string | null;
+  finished_at: string | null;
+  from_commit: string | null;
+  current_commit: string | null;
+  backup: string | null;
+}
+
 export interface StartupProbeProviderResult {
   status: "pending" | "completed";
   model?: string | null;
