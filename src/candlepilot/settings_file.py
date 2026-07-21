@@ -45,6 +45,13 @@ ENV_SECTIONS: tuple[EnvSection, ...] = (
             EnvField("CANDLEPILOT_PORT", "端口", "int", placeholder="8000"),
             EnvField("CANDLEPILOT_DATABASE_URL", "数据库", placeholder="sqlite+aiosqlite:///./candlepilot.db"),
             EnvField("CANDLEPILOT_DATA_DIR", "数据目录", placeholder="./data"),
+            EnvField(
+                "CANDLEPILOT_AUTH_SESSION_TTL_SECONDS",
+                "登录有效期（秒）",
+                "int",
+                placeholder="604800",
+                description="登录 Cookie 有效期；范围 300–604800，默认 7 天，保存并重启后生效。",
+            ),
         ),
     ),
     EnvSection(

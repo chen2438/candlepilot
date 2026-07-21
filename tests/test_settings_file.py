@@ -138,6 +138,9 @@ def test_describe_settings_masks_secrets_and_exposes_plain_values(tmp_path: Path
     )
     breaker = fields["CANDLEPILOT_DAILY_LOSS_PERCENT"]
     assert breaker["kind"] == "number"
+    session_ttl = fields["CANDLEPILOT_AUTH_SESSION_TTL_SECONDS"]
+    assert session_ttl["kind"] == "int"
+    assert session_ttl["placeholder"] == "604800"
     assert breaker["placeholder"] == "5"
     assert "0.1–50" in breaker["description"]
 

@@ -288,7 +288,6 @@ export function LoginScreen({ onAuthenticated }: { onAuthenticated: (status: Aut
       });
       const body = await response.json().catch(() => ({ detail: response.statusText }));
       if (!response.ok) throw new Error(body.detail ?? `HTTP ${response.status}`);
-      setPassword("");
       onAuthenticated(body as AuthStatus);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -309,9 +308,9 @@ export function LoginScreen({ onAuthenticated }: { onAuthenticated: (status: Aut
           <h1>登录控制台</h1>
           <p>请输入 VPS 安装时设置的管理员凭据。登录状态仅保存在受保护的浏览器 Cookie 中。</p>
         </div>
-        <form className="login-form" onSubmit={submit}>
-          <label><span>用户名</span><input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required /></label>
-          <label><span>密码</span><input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
+        <form className="login-form" name="candlepilot-login" method="post" action="/api/auth/login" autoComplete="on" onSubmit={submit}>
+          <label htmlFor="candlepilot-username"><span>用户名</span><input id="candlepilot-username" name="username" type="text" autoComplete="username" autoCapitalize="none" spellCheck={false} value={username} onChange={(event) => setUsername(event.target.value)} required /></label>
+          <label htmlFor="candlepilot-password"><span>密码</span><input id="candlepilot-password" name="password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
           {error && <div className="login-error" role="alert">{error}</div>}
           <button type="submit" disabled={busy}>{busy ? "验证中…" : "登录"}</button>
         </form>

@@ -295,6 +295,8 @@ def test_authentication_configuration_is_complete_or_rejected() -> None:
     assert settings.auth_cookie_secure is True
     assert settings.auth_session_ttl_seconds == 3600
 
+    assert Settings.from_mapping({}).auth_session_ttl_seconds == 604800
+
     incomplete = {
         "CANDLEPILOT_AUTH_ENABLED": "true",
         "CANDLEPILOT_AUTH_USERNAME": "operator",

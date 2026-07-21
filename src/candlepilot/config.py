@@ -469,7 +469,7 @@ class Settings:
     auth_username: str | None = None
     auth_password_hash: SecretStr | None = None
     auth_session_secret: SecretStr | None = None
-    auth_session_ttl_seconds: int = 12 * 60 * 60
+    auth_session_ttl_seconds: int = 7 * 24 * 60 * 60
     auth_cookie_secure: bool = False
 
     @classmethod
@@ -552,7 +552,7 @@ class Settings:
             auth_session_secret=SecretStr(get("CANDLEPILOT_AUTH_SESSION_SECRET") or "")
             if get("CANDLEPILOT_AUTH_SESSION_SECRET")
             else None,
-            auth_session_ttl_seconds=int(get("CANDLEPILOT_AUTH_SESSION_TTL_SECONDS", "43200")),
+            auth_session_ttl_seconds=int(get("CANDLEPILOT_AUTH_SESSION_TTL_SECONDS", "604800")),
             auth_cookie_secure=_parse_boolean(
                 get("CANDLEPILOT_AUTH_COOKIE_SECURE"),
                 name="CANDLEPILOT_AUTH_COOKIE_SECURE",

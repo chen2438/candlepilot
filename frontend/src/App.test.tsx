@@ -59,8 +59,19 @@ describe("LoginScreen", () => {
     );
     render(<LoginScreen onAuthenticated={onAuthenticated} />);
 
-    fireEvent.change(screen.getByLabelText("用户名"), { target: { value: "operator" } });
-    fireEvent.change(screen.getByLabelText("密码"), { target: { value: "correct horse battery staple" } });
+    const username = screen.getByLabelText("用户名") as HTMLInputElement;
+    const password = screen.getByLabelText("密码") as HTMLInputElement;
+    const form = username.form;
+    expect(username.name).toBe("username");
+    expect(username.autocomplete).toBe("username");
+    expect(password.name).toBe("password");
+    expect(password.autocomplete).toBe("current-password");
+    expect(form?.name).toBe("candlepilot-login");
+    expect(form?.method).toBe("post");
+    expect(form?.getAttribute("action")).toBe("/api/auth/login");
+
+    fireEvent.change(username, { target: { value: "operator" } });
+    fireEvent.change(password, { target: { value: "correct horse battery staple" } });
     fireEvent.click(screen.getByRole("button", { name: "登录" }));
 
     await waitFor(() => expect(onAuthenticated).toHaveBeenCalledWith({
@@ -72,6 +83,7 @@ describe("LoginScreen", () => {
       method: "POST",
       body: JSON.stringify({ username: "operator", password: "correct horse battery staple" }),
     }));
+    expect(password.value).toBe("correct horse battery staple");
     request.mockRestore();
   });
 
