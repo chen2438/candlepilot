@@ -22,6 +22,7 @@ def _features(direction: int = 1) -> dict[str, float]:
             "5m_return_5": direction * 0.004,
             "5m_quote_volume_ratio": 1.2,
             "5m_ema20_distance_atr": direction * 0.5,
+            "5m_ema_20": 99.0 if direction > 0 else 101.0,
         }
     )
     return features
@@ -58,6 +59,11 @@ def test_local_rule_opens_with_deterministic_atr_protection_and_zero_usage() -> 
     assert result.intent.leverage == 3
     assert result.intent.stop_loss == Decimal("97.00")
     assert result.intent.take_profit == Decimal("104.500")
+    assert result.intent.decision_framework == "structure-v1"
+    assert result.intent.setup_type == "TREND_CONTINUATION"
+    assert result.intent.anchor_timeframe == "5m"
+    assert result.intent.invalidation_type == "EMA"
+    assert result.intent.invalidation_level == Decimal("99.0")
     assert result.usage["total_tokens"] == 0
     assert result.usage["cost_usd"] == 0
     assert result.input_payload is not None

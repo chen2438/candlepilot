@@ -43,6 +43,7 @@ class OrderType(StrEnum):
 
 SetupType = Literal[
     "TREND_BREAKOUT",
+    "TREND_CONTINUATION",
     "BREAKOUT_RETEST",
     "TREND_PULLBACK",
     "REVERSAL",

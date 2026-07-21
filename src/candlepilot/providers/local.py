@@ -119,6 +119,7 @@ class LocalRuleProvider(DecisionProvider):
             "5m_return_5",
             "5m_quote_volume_ratio",
             "5m_ema20_distance_atr",
+            "5m_ema_20",
             f"{snapshot.cadence}_atr_14",
         }
         missing = sorted(required - features.keys())
@@ -224,6 +225,15 @@ class LocalRuleProvider(DecisionProvider):
             order_type=OrderType.MARKET,
             stop_loss=stop,
             take_profit=target,
+            decision_framework="structure-v1",
+            setup_type="TREND_CONTINUATION",
+            anchor_timeframe="5m",
+            anchor_price=entry,
+            trigger_type="MARKET_CONFIRMED",
+            trigger_price=entry,
+            invalidation_type="EMA",
+            invalidation_level=Decimal(str(features["5m_ema_20"])),
+            target_type="R_MULTIPLE",
             rationale=(
                 f"local trend strategy: {action.value.lower()} with weighted score {score:+.2f}, "
                 f"5m volume ratio {volume_ratio:.2f}, extension {extension:+.2f} ATR; "
