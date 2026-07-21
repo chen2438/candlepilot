@@ -788,6 +788,10 @@ def test_account_and_risk_query_endpoints(tmp_path: Path) -> None:
         assert client.get("/api/orders").json() == []
         assert client.get("/api/fills").json() == []
         assert client.get("/api/risk-events").json() == []
+        structure_summary = client.get("/api/structure-gate/summary").json()
+        assert structure_summary["sample_size"] == 0
+        assert structure_summary["mode"] == "off"
+        assert client.get("/api/structure-gate/summary?limit=501").status_code == 422
 
         # Seed one filled position on the exchange and its audited fill.
         engine.testnet_broker.positions["BTCUSDT"] = (  # type: ignore[attr-defined]

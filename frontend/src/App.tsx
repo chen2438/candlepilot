@@ -25,6 +25,7 @@ import type {
   RunSessionMetrics,
   SettingsField,
   SettingsPayload,
+  StructureGateSummary,
   TestnetAccountStatus,
   TrailingStopEvent,
 } from "./types";
@@ -377,6 +378,15 @@ const RISK_DEFINITIONS: Record<string, string> = {
   "持仓模式": "每个标的使用逐仓保证金并维持单向净仓，不同时持有双向仓位。",
 };
 
+const STRUCTURE_CHECK_LABELS: Record<string, string> = {
+  metadata: "计划字段",
+  anchor: "结构锚点",
+  extension: "追价距离",
+  alignment: "周期同向",
+  trigger: "入场触发",
+  invalidation: "失效与止损",
+};
+
 const CANDIDATE_DEFINITIONS = {
   score: "候选综合评分：24h 成交额 35% + 价差流动性 30% + 24h 波动 20% + 趋势绝对强度 15%，均在入选成交额池内归一化。",
   volumeRank: "通过上市时间、数据完整性和价差过滤后，按 24h USDT 成交额排序的名次；评分池最多取前 50 名。",
@@ -707,6 +717,7 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
   const [fills, setFills] = useState<TradeFillRecord[]>([]);
   const [providerMetrics, setProviderMetrics] = useState<ProviderMetric[]>([]);
   const [runSession, setRunSession] = useState<RunSessionMetrics>(emptyRunSession);
+  const [structureGateSummary, setStructureGateSummary] = useState<StructureGateSummary | null>(null);
   const [testnetStatus, setTestnetStatus] = useState<TestnetAccountStatus | null>(null);
   const [trailingStopEvents, setTrailingStopEvents] = useState<TrailingStopEvent[]>([]);
   const [trailingStopError, setTrailingStopError] = useState<string | null>(null);
@@ -1055,6 +1066,10 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
     setRunSession(await api<RunSessionMetrics>("/api/metrics/run-session"));
   }, []);
 
+  const refreshStructureGateSummary = useCallback(async () => {
+    setStructureGateSummary(await api<StructureGateSummary>("/api/structure-gate/summary"));
+  }, []);
+
   useEffect(() => {
     refresh().catch((reason: Error) => setError(reason.message));
     refreshAccount().catch((reason: Error) => setError(reason.message));
@@ -1062,11 +1077,13 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
     refreshLiveRunPerformance().catch(() => undefined);
     refreshOperations().catch(() => undefined);
     refreshRunSession().catch(() => undefined);
+    refreshStructureGateSummary().catch(() => undefined);
     const account = window.setInterval(() => {
       refreshAccount().catch(() => undefined);
       refreshTrailingStops().catch(() => undefined);
       refreshLiveRunPerformance().catch(() => undefined);
       refreshOperations().catch(() => undefined);
+      refreshStructureGateSummary().catch(() => undefined);
       api<EngineStatus>("/api/status").then(setStatus).catch(() => undefined);
     }, 5000);
     const decisionFallback = window.setInterval(() => {
@@ -1109,7 +1126,7 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       socket?.close();
     };
-  }, [refresh, refreshAccount, refreshTrailingStops, mergeDecisions, refreshLiveRunPerformance, refreshOperations, refreshRunSession]);
+  }, [refresh, refreshAccount, refreshTrailingStops, mergeDecisions, refreshLiveRunPerformance, refreshOperations, refreshRunSession, refreshStructureGateSummary]);
 
   const act = useCallback(async (name: string, path: string, body?: unknown) => {
     setBusy(name);
@@ -1621,6 +1638,7 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
             </div>
             <div className="risk-line"><span style={{ width: "80%" }} /></div>
             <p>模型提示词不包含盈亏比要求；所有开仓必须包含交易所侧止损和止盈，并通过组合风险、原始盈亏比、精度、陈旧行情和强平缓冲检查。</p>
+            <StructureGateSummaryCard summary={structureGateSummary} />
             </CollapsiblePanel>
 
             <CollapsiblePanel
@@ -3275,6 +3293,36 @@ function RiskItem({ label, value, detail }: { label: string; value: string; deta
   return <div className="risk-item" data-tooltip={RISK_DEFINITIONS[label]}><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;
 }
 
+export function StructureGateSummaryCard({ summary }: { summary: StructureGateSummary | null }) {
+  const modeLabel = summary?.mode === "enforce" ? "强制" : summary?.mode === "off" ? "已关闭" : "SHADOW";
+  if (!summary || summary.sample_size === 0) {
+    return <div className="structure-gate-summary empty">
+      <div><strong>结构门槛 · {modeLabel}</strong><span>等待开仓样本</span></div>
+      <small>{summary?.mode === "enforce"
+        ? "当前会拒绝未通过项；产生经过其他实时硬风控的开仓或加仓后开始统计。"
+        : summary?.mode === "off"
+          ? "当前未执行结构评估。"
+          : "只观察，不改变订单；产生经过其他实时硬风控的开仓或加仓后开始统计。"}</small>
+    </div>;
+  }
+  return <div className="structure-gate-summary">
+    <div>
+      <strong>结构门槛 · {modeLabel}</strong>
+      <span>{summary.passed}/{summary.sample_size} 全项通过 · {(summary.pass_rate! * 100).toFixed(0)}%</span>
+    </div>
+    <ul>
+      {summary.checks.map((check) => <li key={check.key}>
+        <span>{STRUCTURE_CHECK_LABELS[check.key] ?? check.key}</span>
+        <strong>{(check.pass_rate * 100).toFixed(0)}%</strong>
+        <small>{check.passed}/{check.evaluated}</small>
+      </li>)}
+    </ul>
+    <small>统计最近 {summary.scanned} 条风控记录中的 {summary.sample_size} 个结构评估；{summary.mode === "enforce"
+      ? "当前未通过项会被拒绝。"
+      : summary.mode === "off" ? "当前门槛已关闭，显示的是历史结果。" : "当前结果不参与拦截。"}</small>
+  </div>;
+}
+
 function money(value: string): string {
   return Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
@@ -3637,6 +3685,13 @@ export function DecisionPanel({
                   <span data-tooltip="仅按 AI 返回的入场价、止损和止盈计算，不含交易所 tick 对齐或最新行情。">AI 原始盈亏比<strong>{intentRewardRiskLabel(decision.intent)}</strong></span>
                   <span data-tooltip="硬风控按下单前刷新行情得到的实际入场基准，以及对齐交易所精度后的止损和止盈计算；这是最低 1.3:1 边界真正校验的数值。">下单前盈亏比<strong>{preTradeRewardRiskLabel(decision)}</strong></span>
                   <span data-tooltip="后端硬风控根据止损风险、保证金上限和交易所数量规则计算的最终允许下单数量。">最终下单数量<strong>{decision.risk?.decision.max_quantity ?? "—"}</strong></span>
+                  {decision.intent.decision_framework === "structure-v1" ? <>
+                    <span>结构形态<strong>{decision.intent.setup_type ?? "—"}</strong></span>
+                    <span>结构锚点<strong>{decision.intent.anchor_timeframe ?? "—"} · {intentPrice(decision.intent.anchor_price ?? null)}</strong></span>
+                    <span>入场触发<strong>{decision.intent.trigger_type ?? "—"} · {intentPrice(decision.intent.trigger_price ?? null)}</strong></span>
+                    <span>失效依据<strong>{decision.intent.invalidation_type ?? "—"} · {intentPrice(decision.intent.invalidation_level ?? null)}</strong></span>
+                    <span>目标依据<strong>{decision.intent.target_type ?? "—"}</strong></span>
+                  </> : null}
                   {decision.risk?.decision.pending_expires_at ? <span data-tooltip="本地待触发意图不会预先提交到交易所；截止前每次检查都会重新获取行情与账户并完整复跑硬风控。过期后该时间仍保留用于审计。">意图有效至<strong>{pendingExpiryLabel(decision)}</strong></span> : null}
                 </div>
                 {decision.risk?.decision.structure_assessment && (

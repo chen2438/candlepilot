@@ -12,6 +12,8 @@ from candlepilot.domain.models import (
     ExecutionAttempt,
     ExecutionReport,
     RiskDecision,
+    StructureAssessment,
+    StructureCheck,
     TradeAction,
     TradeIntent,
 )
@@ -228,10 +230,11 @@ def test_execution_and_risk_queries_filter_and_order(tmp_path: Path) -> None:
         fills = await repository.recent_executions(status="FILLED")
         risk = await repository.recent_risk_decisions()
         rejections = await repository.recent_risk_decisions(accepted=False)
+        structure_summary = await repository.structure_gate_summary()
         await database.close()
-        return orders, fills, risk, rejections, inference_id
+        return orders, fills, risk, rejections, inference_id, structure_summary
 
-    orders, fills, risk, rejections, inference_id = asyncio.run(scenario())
+    orders, fills, risk, rejections, inference_id, structure_summary = asyncio.run(scenario())
     assert [item["client_order_id"] for item in orders] == ["cp-2", "cp-1"]
     assert [item["status"] for item in fills] == ["FILLED"]
     assert fills[0]["report"]["average_price"] == "100"
@@ -239,6 +242,44 @@ def test_execution_and_risk_queries_filter_and_order(tmp_path: Path) -> None:
     assert len(rejections) == 1
     assert rejections[0]["reason"] == "missing stop"
     assert rejections[0]["inference_id"] == inference_id
+    assert structure_summary["sample_size"] == 0
+    assert structure_summary["pass_rate"] is None
+
+
+def test_structure_gate_summary_aggregates_embedded_shadow_checks(tmp_path: Path) -> None:
+    async def scenario() -> dict[str, object]:
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'structure-summary.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        for passed in (True, False):
+            await repository.record_risk(
+                "BTCUSDT",
+                RiskDecision(
+                    accepted=True,
+                    reason="within limits",
+                    structure_assessment=StructureAssessment(
+                        mode="shadow",
+                        passed=passed,
+                        checks=(
+                            StructureCheck(key="metadata", passed=True, detail="complete"),
+                            StructureCheck(key="extension", passed=passed, detail="checked"),
+                        ),
+                    ),
+                ),
+            )
+        summary = await repository.structure_gate_summary()
+        await database.close()
+        return summary
+
+    summary = asyncio.run(scenario())
+    assert summary["sample_size"] == 2
+    assert summary["passed"] == 1
+    assert summary["failed"] == 1
+    assert summary["pass_rate"] == 0.5
+    assert summary["checks"] == [
+        {"key": "metadata", "evaluated": 2, "passed": 2, "pass_rate": 1.0},
+        {"key": "extension", "evaluated": 2, "passed": 1, "pass_rate": 0.5},
+    ]
 
 
 def test_order_events_advance_the_execution_audit_to_final_status(tmp_path: Path) -> None:

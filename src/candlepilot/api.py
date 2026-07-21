@@ -2348,6 +2348,14 @@ def create_app(
             raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
         return await engine.audit.recent_risk_decisions(limit, accepted=accepted)
 
+    @app.get("/api/structure-gate/summary")
+    async def get_structure_gate_summary(limit: int = 500) -> dict[str, Any]:
+        if not 1 <= limit <= 500:
+            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+        summary = await engine.audit.structure_gate_summary(limit)
+        summary["mode"] = engine.risk.structure_gate_mode
+        return summary
+
     backtest_tasks: dict[int, asyncio.Task[None]] = {}
     # Probes are pre-flight, not history: they describe the endpoint as it is
     # right now, so they live with the process rather than in the database.

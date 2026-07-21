@@ -13,6 +13,7 @@ import {
   LiveCycleStatus,
   LiveRunActionButtons,
   RunUsage,
+  StructureGateSummaryCard,
   StartupProbeCompletedSummary,
   StartupProbeRunningSummary,
 } from "./App";
@@ -615,5 +616,35 @@ describe("DecisionPanel", () => {
   it("requires valid protective prices on opposite sides of entry", () => {
     expect(intentRewardRiskRatio({ ...decision.intent, take_profit: null })).toBeNull();
     expect(intentRewardRiskRatio({ ...decision.intent, stop_loss: "1880" })).toBeNull();
+  });
+});
+
+describe("StructureGateSummaryCard", () => {
+  it("shows that an empty shadow sample does not affect orders", () => {
+    render(<StructureGateSummaryCard summary={null} />);
+
+    expect(screen.getByText("等待开仓样本")).toBeTruthy();
+    expect(screen.getByText(/只观察，不改变订单/)).toBeTruthy();
+  });
+
+  it("renders aggregate and per-check pass rates", () => {
+    render(<StructureGateSummaryCard summary={{
+      mode: "shadow",
+      scanned: 20,
+      sample_size: 4,
+      passed: 2,
+      failed: 2,
+      pass_rate: 0.5,
+      latest_at: "2026-07-21T12:00:00Z",
+      checks: [
+        { key: "metadata", evaluated: 4, passed: 4, pass_rate: 1 },
+        { key: "extension", evaluated: 4, passed: 2, pass_rate: 0.5 },
+      ],
+    }} />);
+
+    expect(screen.getByText("2/4 全项通过 · 50%")).toBeTruthy();
+    expect(screen.getByText("计划字段")).toBeTruthy();
+    expect(screen.getByText("追价距离")).toBeTruthy();
+    expect(screen.getByText(/最近 20 条风控记录中的 4 个结构评估/)).toBeTruthy();
   });
 });

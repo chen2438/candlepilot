@@ -338,6 +338,22 @@ export interface DecisionEvent {
   created_at: string;
 }
 
+export interface StructureGateSummary {
+  mode: "off" | "shadow" | "enforce";
+  scanned: number;
+  sample_size: number;
+  passed: number;
+  failed: number;
+  pass_rate: number | null;
+  latest_at: string | null;
+  checks: Array<{
+    key: string;
+    evaluated: number;
+    passed: number;
+    pass_rate: number;
+  }>;
+}
+
 export interface LiveRunPerformance {
   live_run_id: number;
   total_pnl: string | null;

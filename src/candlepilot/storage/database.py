@@ -1214,6 +1214,48 @@ class AuditRepository:
             for row in rows
         ]
 
+    async def structure_gate_summary(self, limit: int = 500) -> dict[str, Any]:
+        """Aggregate structure-gate checks embedded in recent risk decisions."""
+
+        async with self.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(RiskRow).order_by(RiskRow.id.desc()).limit(limit)
+                )
+            ).all()
+        assessments = []
+        for row in rows:
+            decision = RiskDecision.model_validate_json(row.decision_json)
+            if decision.structure_assessment is not None:
+                assessments.append((row, decision.structure_assessment))
+
+        check_totals: Counter[str] = Counter()
+        check_passes: Counter[str] = Counter()
+        for _, assessment in assessments:
+            for check in assessment.checks:
+                check_totals[check.key] += 1
+                check_passes[check.key] += int(check.passed)
+
+        passed = sum(int(assessment.passed) for _, assessment in assessments)
+        sample_size = len(assessments)
+        return {
+            "scanned": len(rows),
+            "sample_size": sample_size,
+            "passed": passed,
+            "failed": sample_size - passed,
+            "pass_rate": passed / sample_size if sample_size else None,
+            "latest_at": self._utc(assessments[0][0].created_at) if assessments else None,
+            "checks": [
+                {
+                    "key": key,
+                    "evaluated": check_totals[key],
+                    "passed": check_passes[key],
+                    "pass_rate": check_passes[key] / check_totals[key],
+                }
+                for key in check_totals
+            ],
+        }
+
     async def executions_between(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
         async with self.sessions() as session:
             rows = (
