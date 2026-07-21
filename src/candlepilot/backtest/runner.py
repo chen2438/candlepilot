@@ -727,7 +727,18 @@ async def compare(
             done, pending = await asyncio.wait(
                 pending, return_when=asyncio.FIRST_COMPLETED
             )
-            failed = [tasks[task] for task in done if tasks[task].provider_failed]
+            # A comparison is only valid when every model reaches the same end.
+            # Provider exhaustion sets ``provider_failed`` inside the runner,
+            # while simulation, risk, and progress-persistence failures surface
+            # as a general ``error``. Either one must stop the peers immediately.
+            for task in done:
+                try:
+                    task.result()
+                except Exception as exc:  # noqa: BLE001 - preserve task failures
+                    run = tasks[task]
+                    if run.error is None:
+                        run.error = str(exc)[:500]
+            failed = [tasks[task] for task in done if tasks[task].error is not None]
             if not failed:
                 continue
             for task in pending:

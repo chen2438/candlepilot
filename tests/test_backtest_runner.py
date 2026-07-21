@@ -629,6 +629,39 @@ def test_one_provider_failing_stops_the_comparison() -> None:
     assert bad.result.equity_curve[-1].timestamp == spec.start
 
 
+def test_an_unexpected_model_error_stops_the_comparison() -> None:
+    class CrashedRunner:
+        async def run(self, provider, progress, *, on_progress=None):
+            raise RuntimeError("risk calculation crashed")
+
+    class SlowRunner:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        async def run(self, provider, progress, *, on_progress=None):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
+    spec = _spec(providers=("broken", "slow"))
+    slow = SlowRunner()
+
+    runs = asyncio.run(
+        compare(
+            spec=spec,
+            runner_for=lambda name: CrashedRunner() if name == "broken" else slow,  # type: ignore[arg-type,return-value]
+            provider_for=lambda name: _Provider(name),
+        )
+    )
+
+    broken = next(run for run in runs if run.provider == "broken")
+    assert broken.error == "risk calculation crashed"
+    assert not broken.provider_failed
+    assert slow.cancelled
+
+
 def test_progress_is_reported_while_the_run_is_still_running() -> None:
     """The frontend polls a stored copy, so in-memory counters are invisible.
 

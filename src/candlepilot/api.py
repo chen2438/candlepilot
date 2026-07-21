@@ -3003,19 +3003,26 @@ def create_app(
                     provider_for=engine.providers.get,
                     on_progress=flush,
                 )
-            unavailable = [run for run in runs if run.provider_failed]
-            if unavailable:
+            failed_runs = [run for run in runs if run.error is not None]
+            if failed_runs:
                 effective_end = min(
-                    run.last_successful_at or spec.start for run in unavailable
+                    run.last_successful_at or spec.start for run in failed_runs
                 )
-                await engine.audit.finish_backtest_run(
-                    run_id,
-                    status="failed",
-                    error="; ".join(
+                unavailable = [run for run in failed_runs if run.provider_failed]
+                if unavailable:
+                    error = "; ".join(
                         f"{run.provider} became unavailable after "
                         f"{DECISION_PROVIDER_MAX_ATTEMPTS if engine.providers.get(run.provider).capabilities.retryable else 1} attempts"
                         for run in unavailable
-                    )[:500],
+                    )
+                else:
+                    error = "; ".join(
+                        f"{run.provider}: {run.error}" for run in failed_runs
+                    )
+                await engine.audit.finish_backtest_run(
+                    run_id,
+                    status="failed",
+                    error=error[:500],
                     effective_end=effective_end,
                 )
                 return

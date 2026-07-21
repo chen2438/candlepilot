@@ -880,6 +880,27 @@ def test_a_clean_run_is_still_completed(tmp_path: Path) -> None:
     asyncio.run(database.close())
 
 
+def test_an_unexpected_model_error_marks_the_backtest_failed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    database, _engine, app = _backtest_app(tmp_path, "bt-model-error.db")
+
+    async def crash(*args, **kwargs):
+        raise RuntimeError("risk calculation crashed")
+
+    monkeypatch.setattr("candlepilot.api.BacktestRunner.run", crash)
+
+    with TestClient(app) as client:
+        payload = {"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)}
+        assert _start_backtest(client, payload).status_code == 202
+        run = _await_run(client)
+
+    assert run["status"] == "failed"
+    assert run["error"] == "api-fixture: risk calculation crashed"
+    assert run["models"][0]["error"] == "risk calculation crashed"
+    asyncio.run(database.close())
+
+
 def test_the_run_timeout_reaches_the_provider_and_is_handed_back(tmp_path: Path) -> None:
     """The registry's providers are shared with the live engine.
 
