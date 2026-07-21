@@ -603,6 +603,79 @@ def test_a_real_backtest_runs_when_every_instant_was_recorded(tmp_path: Path) ->
     asyncio.run(database.close())
 
 
+def test_real_backtest_only_requires_selected_cadence_decision_instants(
+    tmp_path: Path,
+) -> None:
+    from candlepilot.backtest.runner import BacktestSpec, decision_times
+
+    database, engine, app = _backtest_app(tmp_path, "bt-hourly-book.db")
+    window = _window(1)
+    start = datetime.fromisoformat(window["start"])
+    end = datetime.fromisoformat(window["end"])
+    required = decision_times(
+        BacktestSpec(
+            symbols=("BTCUSDT",),
+            cadences=("1h",),
+            start=start,
+            end=end,
+            providers=("api-fixture",),
+        ),
+        "1h",
+    )
+    assert required == [end]
+    _seed_captures(database, engine, "BTCUSDT", required)
+
+    with TestClient(app) as client:
+        payload = {
+            "symbols": ["BTCUSDT"],
+            "cadences": ["1h"],
+            "providers": ["api-fixture"],
+            "use_recorded_book": True,
+            **window,
+        }
+        created = _start_backtest(client, payload)
+        assert created.status_code == 202, created.text
+        run = _await_run(client, created.json()["id"])
+
+    assert run["status"] == "completed", run.get("error")
+    assert run["models"][0]["decisions_total"] == 1
+    asyncio.run(database.close())
+
+
+def test_stale_capture_outside_selected_decision_instants_is_ignored(
+    tmp_path: Path,
+) -> None:
+    from candlepilot.provenance import MICROSTRUCTURE_SCHEMA_VERSION
+
+    database, engine, app = _backtest_app(tmp_path, "bt-irrelevant-stale-book.db")
+    window = _window(1)
+    start = datetime.fromisoformat(window["start"])
+    end = datetime.fromisoformat(window["end"])
+    _seed_captures(database, engine, "BTCUSDT", [start], version="microstructure-v0")
+    _seed_captures(
+        database,
+        engine,
+        "BTCUSDT",
+        [end],
+        version=MICROSTRUCTURE_SCHEMA_VERSION,
+    )
+
+    with TestClient(app) as client:
+        payload = {
+            "symbols": ["BTCUSDT"],
+            "cadences": ["1h"],
+            "providers": ["api-fixture"],
+            "use_recorded_book": True,
+            **window,
+        }
+        created = _start_backtest(client, payload)
+        assert created.status_code == 202, created.text
+        run = _await_run(client, created.json()["id"])
+
+    assert run["status"] == "completed", run.get("error")
+    asyncio.run(database.close())
+
+
 def test_captures_from_an_older_derivation_are_refused_not_replayed(tmp_path: Path) -> None:
     """The tape summary cannot be recomputed, so a formula change invalidates it."""
 

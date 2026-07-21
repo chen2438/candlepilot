@@ -55,6 +55,7 @@ from candlepilot.backtest.runner import (
     ModelRun,
     ReplayInput,
     compare,
+    decision_times,
     estimate,
     validate,
 )
@@ -94,7 +95,6 @@ from candlepilot.market.cache import HistoricalMarketCache
 from candlepilot.market.collector import (
     MAX_COLLECTED_SYMBOLS,
     BookCollector,
-    aligned_capture_times,
 )
 from candlepilot.market.history import build_backtest_candles
 from candlepilot.observability import AlertNotifier, OperationalMetrics, evaluate_alerts
@@ -3355,13 +3355,25 @@ def create_app(
         that never mentions it.
         """
 
-        required = aligned_capture_times(spec.start, spec.end)
+        required = sorted(
+            {
+                when
+                for cadence in spec.cadences
+                for when in decision_times(spec, cadence)
+            }
+        )
+        required_set = set(required)
         captures: dict[str, dict[datetime, dict[str, Any]]] = {}
         for symbol in spec.symbols:
             rows = await engine.audit.book_captures(symbol, spec.start, spec.end)
+            by_time = {
+                row["captured_at"]: row
+                for row in rows
+                if row["captured_at"] in required_set
+            }
             stale = {
                 row["schema_version"]
-                for row in rows
+                for row in by_time.values()
                 if row["schema_version"] != MICROSTRUCTURE_SCHEMA_VERSION
             }
             if stale:
@@ -3371,7 +3383,6 @@ def create_app(
                     f"but this build derives {MICROSTRUCTURE_SCHEMA_VERSION}; those numbers "
                     "no longer mean the same thing and cannot be replayed",
                 )
-            by_time = {row["captured_at"]: row for row in rows}
             gaps = coverage(required, set(by_time))
             if not gaps.complete:
                 raise HTTPException(
