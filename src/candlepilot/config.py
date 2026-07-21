@@ -10,6 +10,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from pydantic import SecretStr
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 
 from candlepilot.domain.models import DEFAULT_DECISION_CADENCE, SUPPORTED_CADENCES
 from candlepilot.auth import validate_password_hash
@@ -52,6 +54,19 @@ PROTECTED_CUSTOM_HEADER_NAMES = {
     "host",
 }
 HEADER_NAME_PATTERN = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+
+
+def _parse_database_url(raw: str | None) -> str:
+    value = (raw or DEFAULT_DATABASE_URL).strip()
+    try:
+        url = make_url(value)
+    except ArgumentError as exc:
+        raise ValueError("database URL is invalid") from exc
+    if url.drivername != "sqlite+aiosqlite":
+        raise ValueError("database URL must use sqlite+aiosqlite")
+    if not url.database:
+        raise ValueError("database URL must name a SQLite database")
+    return value
 
 
 def load_dotenv(path: Path | None = None) -> None:
@@ -493,7 +508,7 @@ class Settings:
         _reject_legacy_custom_llm_env(env)
         _reject_removed_provider_env(env)
         settings = cls(
-            database_url=get("CANDLEPILOT_DATABASE_URL", DEFAULT_DATABASE_URL),
+            database_url=_parse_database_url(get("CANDLEPILOT_DATABASE_URL")),
             data_dir=Path(get("CANDLEPILOT_DATA_DIR", "data")),
             bind_host=get("CANDLEPILOT_HOST", "127.0.0.1"),
             bind_port=_parse_bind_port(get("CANDLEPILOT_PORT", "8000")),

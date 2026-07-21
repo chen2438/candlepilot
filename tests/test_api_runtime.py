@@ -1445,6 +1445,12 @@ def test_settings_endpoint_reads_masked_and_writes_env(tmp_path: Path, monkeypat
             {"CANDLEPILOT_MAX_RUN_COST_USD": "-1"},
             {"CANDLEPILOT_DAILY_LOSS_PERCENT": "0"},
             {"CANDLEPILOT_DAILY_LOSS_PERCENT": "50.1"},
+            {"CANDLEPILOT_DATABASE_URL": "not a database URL"},
+            {"CANDLEPILOT_DATABASE_URL": "sqlite:///./sync.db"},
+            {
+                "CANDLEPILOT_DATABASE_URL":
+                "postgresql+asyncpg://db.example/candlepilot"
+            },
             {"CANDLEPILOT_PROVIDER_CHAIN": "custom:missing,codex"},
             {"CANDLEPILOT_DEFAULT_PROVIDER": "custom:missing"},
         ):

@@ -11,7 +11,7 @@
 | 变量 | 说明 |
 |---|---|
 | `CANDLEPILOT_HOST` / `CANDLEPILOT_PORT` | 绑定地址（仅 localhost）与端口（默认 8000，范围 1–65535）|
-| `CANDLEPILOT_DATABASE_URL` | SQLite 连接串 |
+| `CANDLEPILOT_DATABASE_URL` | 仅支持 `sqlite+aiosqlite` 异步 SQLite 连接串；前端保存与启动时均先校验驱动和数据库路径 |
 | `CANDLEPILOT_DATA_DIR` | 数据目录（Parquet 行情缓存、models.dev 定价缓存）|
 | `CANDLEPILOT_AUTH_ENABLED` | 是否启用控制台鉴权；localhost 开发默认 `false`，VPS 远程访问必须为 `true` |
 | `CANDLEPILOT_AUTH_USERNAME` | 鉴权用户名，3–64 个安全字符 |
