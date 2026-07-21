@@ -1399,6 +1399,34 @@ def test_provider_metrics_aggregate_tokens_and_equivalent_cost(tmp_path: Path) -
     assert codex["models"] == {"gpt-5.6-sol": 1}
 
 
+def test_provider_metrics_hide_incomplete_cost_totals(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'partial-cost.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        intent = TradeIntent.hold("BTCUSDT", "5m", "test")
+        for usage in ({"total_tokens": 10, "cost_usd": 0.1}, {"total_tokens": 20}):
+            await repository.record_inference(
+                ProviderResult(
+                    intent=intent,
+                    provider="openai-compatible:mixed",
+                    model="mixed-model",
+                    duration=timedelta(milliseconds=100),
+                    raw_output=intent.model_dump_json(),
+                    usage=usage,
+                )
+            )
+        metric = (await repository.provider_metrics(24))[0]
+        await database.close()
+        return metric
+
+    metric = asyncio.run(scenario())
+    assert metric["call_count"] == 2
+    assert metric["priced_call_count"] == 1
+    assert metric["cost_complete"] is False
+    assert metric["cost_usd_total"] is None
+
+
 def test_provider_metrics_price_codex_via_catalog(tmp_path: Path) -> None:
     from candlepilot.providers.pricing import parse_models_dev
 

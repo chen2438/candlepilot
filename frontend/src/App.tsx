@@ -4328,9 +4328,10 @@ function OperationsPanel({
                 </div>
                 <div className="provider-metric-usage">
                   <span data-tooltip="过去 24 小时该 Provider 全部审计调用的总 Token 合计。">Token 用量<strong>{metric.tokens_total.toLocaleString("zh-CN")}</strong></span>
-                  <span data-tooltip="过去 24 小时可定价调用的等效成本合计；无法定价的调用不计入，订阅 Auth 的实际账单可能不同。">
+                  <span data-tooltip={metric.cost_complete ? "过去 24 小时全部调用按公开 API 单价或 Provider 返回成本折算的总成本；订阅 Auth 的实际账单可能不同。" : `仅 ${metric.priced_call_count}/${metric.call_count} 次调用可定价，因此不展示不完整的总成本。`}>
                     等效成本
                     <strong>{metric.cost_usd_total === null ? "—" : `$${metric.cost_usd_total.toFixed(4)}`}</strong>
+                    {!metric.cost_complete && <small>{metric.priced_call_count}/{metric.call_count} 可定价</small>}
                   </span>
                 </div>
                 <small className="metric-models">
@@ -4342,7 +4343,7 @@ function OperationsPanel({
           </div>
           {providerMetrics.length > 0 && (
             <small className="usage-note">
-              等效成本为按 API 标准计价的折算估算（Claude 用 CLI 自带成本，Codex 用 models.dev 逐 token 折算）；订阅计划实际不按次计费。无法定价的模型显示「—」。
+              等效成本为按 API 标准计价的折算估算（Claude 用 CLI 自带成本，Codex 用 models.dev 逐 token 折算）；订阅计划实际不按次计费。窗口内存在无法定价的调用时显示「—」，不把部分小计冒充总成本。
             </small>
           )}
         </section>

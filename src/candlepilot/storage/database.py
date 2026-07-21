@@ -2542,11 +2542,12 @@ class AuditRepository:
             error_count = 0
             tokens_total = 0
             cost_total = 0.0
-            cost_present = False
+            priced_call_count = 0
             provider_id = (provider_ids or PROVIDER_IDS).get(provider)
             for call in calls:
                 if any("error" in usage for _, usage in call):
                     error_count += 1
+                call_priced = True
                 for row, usage in call:
                     tokens_total += int(usage.get("total_tokens") or 0)
                     cost = usage.get("cost_usd")
@@ -2561,10 +2562,14 @@ class AuditRepository:
                             output_tokens=int(usage.get("output_tokens") or 0),
                         )
                     if cost is not None:
-                        cost_present = True
                         cost_total += float(cost)
+                    else:
+                        call_priced = False
+                if call_priced:
+                    priced_call_count += 1
             model_counts = Counter(call[0][0].model or "unknown" for call in calls)
             call_count = len(calls)
+            cost_complete = priced_call_count == call_count
             p95_index = max(0, math.ceil(call_count * 0.95) - 1)
             metrics.append(
                 {
@@ -2576,7 +2581,9 @@ class AuditRepository:
                     "p95_duration_ms": durations[p95_index],
                     "models": dict(sorted(model_counts.items())),
                     "tokens_total": tokens_total,
-                    "cost_usd_total": cost_total if cost_present else None,
+                    "priced_call_count": priced_call_count,
+                    "cost_complete": cost_complete,
+                    "cost_usd_total": cost_total if cost_complete else None,
                     "last_call_at": self._utc(provider_rows[-1].created_at),
                 }
             )
