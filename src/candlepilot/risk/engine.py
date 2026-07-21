@@ -11,6 +11,8 @@ from candlepilot.domain.models import (
     OrderType,
     PortfolioState,
     RiskDecision,
+    StructureAssessment,
+    StructureCheck,
     TradeAction,
     TradeIntent,
 )
@@ -92,6 +94,7 @@ class AggressiveRiskPolicy:
         slippage_fraction: Decimal = Decimal("0.001"),
         max_snapshot_age_seconds: int = 75,
         require_take_profit: bool = False,
+        structure_gate_mode: str = "off",
     ) -> None:
         if max_snapshot_age_seconds <= 0:
             raise ValueError("max_snapshot_age_seconds must be positive")
@@ -105,6 +108,8 @@ class AggressiveRiskPolicy:
             raise ValueError("minimum_reward_risk_ratio must be positive")
         if fee_fraction < 0 or slippage_fraction < 0:
             raise ValueError("fee and slippage fractions cannot be negative")
+        if structure_gate_mode not in {"off", "shadow", "enforce"}:
+            raise ValueError("structure_gate_mode must be off, shadow, or enforce")
         self.max_leverage = max_leverage
         self.max_risk_fraction = max_risk_fraction
         self.max_portfolio_risk_fraction = max_portfolio_risk_fraction
@@ -116,6 +121,7 @@ class AggressiveRiskPolicy:
         self.slippage_fraction = slippage_fraction
         self.max_snapshot_age_seconds = max_snapshot_age_seconds
         self.require_take_profit = require_take_profit
+        self.structure_gate_mode = structure_gate_mode
 
     def evaluate(
         self,
@@ -177,6 +183,24 @@ class AggressiveRiskPolicy:
             return self._reject("opposing position must be closed before opening long")
         if intent.action == TradeAction.OPEN_SHORT and existing_side == "LONG":
             return self._reject("opposing position must be closed before opening short")
+
+        structure_assessment = self._assess_structure(
+            intent, snapshot, requested_side
+        )
+        if structure_assessment is not None and not structure_assessment.passed:
+            if self.structure_gate_mode == "enforce":
+                failed = ", ".join(
+                    check.key
+                    for check in structure_assessment.checks
+                    if not check.passed
+                )
+                return RiskEvaluation(
+                    RiskDecision(
+                        accepted=False,
+                        reason=f"structure entry gate failed: {failed}",
+                        structure_assessment=structure_assessment,
+                    )
+                )
 
         # A market entry fills at the book, so only a limit price reaches the
         # exchange and needs the grid; snapping it toward our side never turns a
@@ -362,6 +386,7 @@ class AggressiveRiskPolicy:
                         ),
                         pre_trade_entry_price=reward_risk_entry,
                         pre_trade_reward_risk_ratio=reward_risk_ratio,
+                        structure_assessment=structure_assessment,
                     )
                 )
 
@@ -402,9 +427,191 @@ class AggressiveRiskPolicy:
                 if take_profit is not None
                 else None,
                 pending_entry=pending_entry,
+                structure_assessment=structure_assessment,
             ),
             order=order,
         )
+
+    def _assess_structure(
+        self,
+        intent: TradeIntent,
+        snapshot: MarketSnapshot,
+        side: str,
+    ) -> StructureAssessment | None:
+        if self.structure_gate_mode == "off":
+            return None
+
+        checks: list[StructureCheck] = []
+
+        def add(key: str, passed: bool, detail: str) -> None:
+            checks.append(StructureCheck(key=key, passed=passed, detail=detail))
+
+        metadata = (
+            intent.decision_framework == "structure-v1"
+            and intent.setup_type is not None
+            and intent.anchor_timeframe is not None
+            and intent.anchor_price is not None
+            and intent.trigger_type is not None
+            and intent.trigger_price is not None
+            and intent.invalidation_type is not None
+            and intent.invalidation_level is not None
+            and intent.target_type is not None
+        )
+        add(
+            "metadata",
+            metadata,
+            "complete structure-v1 plan" if metadata else "missing structured trade-plan fields",
+        )
+        if not metadata:
+            return StructureAssessment(
+                mode=self.structure_gate_mode,  # type: ignore[arg-type]
+                passed=False,
+                checks=tuple(checks),
+            )
+
+        assert intent.anchor_timeframe is not None
+        assert intent.anchor_price is not None
+        assert intent.trigger_type is not None
+        assert intent.trigger_price is not None
+        assert intent.invalidation_type is not None
+        assert intent.invalidation_level is not None
+        prefix = intent.anchor_timeframe
+        features = snapshot.features
+        atr = Decimal(str(features.get(f"{prefix}_atr_14", 0)))
+        direction = Decimal("1") if side == "LONG" else Decimal("-1")
+
+        anchor_distance = abs(intent.anchor_price - snapshot.mark_price)
+        anchor_ok = atr > 0 and anchor_distance <= atr / Decimal("2")
+        add(
+            "anchor",
+            anchor_ok,
+            f"anchor distance {anchor_distance} vs {prefix} ATR {atr}",
+        )
+
+        extension = direction * Decimal(
+            str(features.get(f"{prefix}_ema20_distance_atr", 0))
+        )
+        extension_limit = Decimal("1") if intent.action == TradeAction.ADD else Decimal("2")
+        extension_ok = extension < extension_limit
+        add(
+            "extension",
+            extension_ok,
+            f"directional extension {extension} ATR must be below {extension_limit}",
+        )
+
+        aligned_5m = direction * Decimal(str(features.get("5m_ema_spread", 0))) > 0
+        aligned_confirmation = any(
+            direction * Decimal(str(features.get(f"{period}_ema_spread", 0))) > 0
+            for period in ("15m", "30m")
+        )
+        add(
+            "alignment",
+            aligned_5m and aligned_confirmation,
+            "5m and at least one of 15m/30m must align",
+        )
+
+        trigger_crossed = (
+            snapshot.mark_price >= intent.trigger_price
+            if side == "LONG"
+            else snapshot.mark_price <= intent.trigger_price
+        )
+        trigger_ok = trigger_crossed
+        trigger_detail = "current mark crossed the declared trigger"
+        if intent.order_type == OrderType.LIMIT and intent.entry_price is not None:
+            trigger_ok = atr > 0 and abs(intent.entry_price - intent.trigger_price) <= atr / 4
+            trigger_detail = "pending limit entry is anchored to its declared trigger"
+        elif intent.trigger_type == "BREAKOUT":
+            breakout_key = (
+                f"{prefix}_breakout_above_20"
+                if side == "LONG"
+                else f"{prefix}_breakdown_below_20"
+            )
+            boundary_key = (
+                f"{prefix}_prior_range_high_20"
+                if side == "LONG"
+                else f"{prefix}_prior_range_low_20"
+            )
+            boundary = Decimal(str(features.get(boundary_key, 0)))
+            trigger_ok = (
+                trigger_crossed
+                and features.get(breakout_key) == 1.0
+                and atr > 0
+                and abs(intent.trigger_price - boundary) <= atr / 4
+            )
+            trigger_detail = "breakout flag, old boundary, and trigger must agree"
+        elif intent.trigger_type == "REJECTION":
+            close_position = Decimal(
+                str(features.get(f"{prefix}_last_bar_close_position", Decimal("0.5")))
+            )
+            directional_close = (
+                close_position >= Decimal("0.6")
+                if side == "LONG"
+                else close_position <= Decimal("0.4")
+            )
+            trigger_ok = trigger_crossed and directional_close
+            trigger_detail = "rejection requires a directional close beyond its trigger"
+        add("trigger", trigger_ok, trigger_detail)
+
+        reference = self._structure_reference(
+            features,
+            prefix=prefix,
+            side=side,
+            level_type=intent.invalidation_type,
+            proposed=intent.invalidation_level,
+        )
+        stop = intent.stop_loss
+        level_matches = (
+            reference is not None
+            and atr > 0
+            and abs(intent.invalidation_level - reference) <= atr / 4
+        )
+        stop_beyond = stop is not None and (
+            stop <= intent.invalidation_level
+            if side == "LONG"
+            else stop >= intent.invalidation_level
+        )
+        add(
+            "invalidation",
+            level_matches and stop_beyond,
+            "declared invalidation must match payload structure and the stop must sit beyond it",
+        )
+
+        return StructureAssessment(
+            mode=self.structure_gate_mode,  # type: ignore[arg-type]
+            passed=all(check.passed for check in checks),
+            checks=tuple(checks),
+        )
+
+    @staticmethod
+    def _structure_reference(
+        features: dict[str, float],
+        *,
+        prefix: str,
+        side: str,
+        level_type: str,
+        proposed: Decimal,
+    ) -> Decimal | None:
+        if level_type == "SWING":
+            suffix = "low" if side == "LONG" else "high"
+            if features.get(f"{prefix}_last_swing_{suffix}_confirmed") != 1.0:
+                return None
+            return Decimal(str(features[f"{prefix}_last_swing_{suffix}"]))
+        if level_type == "RANGE":
+            suffix = "low" if side == "LONG" else "high"
+            value = features.get(f"{prefix}_prior_range_{suffix}_20")
+            return Decimal(str(value)) if value is not None else None
+        if level_type == "EMA":
+            value = features.get(f"{prefix}_ema_20")
+            return Decimal(str(value)) if value is not None else None
+        if level_type == "DAILY_LEVEL":
+            suffix = "low" if side == "LONG" else "high"
+            values = [
+                features.get(f"1d_previous_{suffix}"),
+                features.get(f"1d_range_{suffix}_20"),
+            ]
+            candidates = [Decimal(str(value)) for value in values if value is not None]
+            return min(candidates, key=lambda value: abs(value - proposed)) if candidates else None
+        return None
 
     def _effective_entry(
         self,

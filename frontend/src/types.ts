@@ -278,6 +278,15 @@ export interface DecisionEvent {
     stop_loss: string | null;
     take_profit: string | null;
     ttl_seconds?: number;
+    decision_framework?: "structure-v1" | null;
+    setup_type?: string | null;
+    anchor_timeframe?: string | null;
+    anchor_price?: string | null;
+    trigger_type?: string | null;
+    trigger_price?: string | null;
+    invalidation_type?: string | null;
+    invalidation_level?: string | null;
+    target_type?: string | null;
     rationale: string;
   };
   duration_ms: number;
@@ -293,6 +302,11 @@ export interface DecisionEvent {
       pre_trade_reward_risk_ratio?: string | null;
       pending_entry?: boolean;
       pending_expires_at?: string | null;
+      structure_assessment?: null | {
+        mode: "shadow" | "enforce";
+        passed: boolean;
+        checks: Array<{ key: string; passed: boolean; detail: string }>;
+      };
     };
     created_at: string;
   };

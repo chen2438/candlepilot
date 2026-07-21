@@ -41,6 +41,17 @@ class OrderType(StrEnum):
     LIMIT = "LIMIT"
 
 
+SetupType = Literal[
+    "TREND_BREAKOUT",
+    "BREAKOUT_RETEST",
+    "TREND_PULLBACK",
+    "REVERSAL",
+]
+TriggerType = Literal["MARKET_CONFIRMED", "BREAKOUT", "RECLAIM", "REJECTION"]
+StructureLevelType = Literal["SWING", "RANGE", "EMA", "DAILY_LEVEL"]
+TargetType = Literal["SWING", "RANGE", "DAILY_LEVEL", "R_MULTIPLE"]
+
+
 class ProviderHealth(StrictModel):
     provider: str
     available: bool
@@ -85,6 +96,15 @@ class TradeIntent(StrictModel):
     stop_loss: Decimal | None = Field(default=None, gt=0)
     take_profit: Decimal | None = Field(default=None, gt=0)
     ttl_seconds: int = Field(default=60, ge=5, le=900)
+    decision_framework: Literal["structure-v1"] | None = None
+    setup_type: SetupType | None = None
+    anchor_timeframe: Cadence | None = None
+    anchor_price: Decimal | None = Field(default=None, gt=0)
+    trigger_type: TriggerType | None = None
+    trigger_price: Decimal | None = Field(default=None, gt=0)
+    invalidation_type: StructureLevelType | None = None
+    invalidation_level: Decimal | None = Field(default=None, gt=0)
+    target_type: TargetType | None = None
     rationale: str = Field(min_length=1, max_length=RATIONALE_MAX_LENGTH)
 
     @field_validator("risk_fraction", mode="before")
@@ -102,6 +122,15 @@ class TradeIntent(StrictModel):
                 or self.entry_price is not None
                 or self.stop_loss is not None
                 or self.take_profit is not None
+                or self.decision_framework is not None
+                or self.setup_type is not None
+                or self.anchor_timeframe is not None
+                or self.anchor_price is not None
+                or self.trigger_type is not None
+                or self.trigger_price is not None
+                or self.invalidation_type is not None
+                or self.invalidation_level is not None
+                or self.target_type is not None
             ):
                 raise ValueError(
                     "HOLD must use leverage=1, risk_fraction=0, order_type=MARKET, "
@@ -165,6 +194,18 @@ class PortfolioState(StrictModel):
     pending_entry_symbols: tuple[str, ...] = ()
 
 
+class StructureCheck(StrictModel):
+    key: str
+    passed: bool
+    detail: str
+
+
+class StructureAssessment(StrictModel):
+    mode: Literal["shadow", "enforce"]
+    passed: bool
+    checks: tuple[StructureCheck, ...]
+
+
 class RiskDecision(StrictModel):
     accepted: bool
     reason: str
@@ -173,6 +214,7 @@ class RiskDecision(StrictModel):
     pre_trade_reward_risk_ratio: Decimal | None = Field(default=None, ge=0)
     pending_entry: bool = False
     pending_expires_at: datetime | None = None
+    structure_assessment: StructureAssessment | None = None
     evaluated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

@@ -3639,6 +3639,22 @@ export function DecisionPanel({
                   <span data-tooltip="后端硬风控根据止损风险、保证金上限和交易所数量规则计算的最终允许下单数量。">最终下单数量<strong>{decision.risk?.decision.max_quantity ?? "—"}</strong></span>
                   {decision.risk?.decision.pending_expires_at ? <span data-tooltip="本地待触发意图不会预先提交到交易所；截止前每次检查都会重新获取行情与账户并完整复跑硬风控。过期后该时间仍保留用于审计。">意图有效至<strong>{pendingExpiryLabel(decision)}</strong></span> : null}
                 </div>
+                {decision.risk?.decision.structure_assessment && (
+                  <div className={`structure-assessment ${decision.risk.decision.structure_assessment.passed ? "passed" : "failed"}`}>
+                    <div>
+                      <strong>结构入场门槛 · {decision.risk.decision.structure_assessment.mode === "shadow" ? "SHADOW" : "强制"}</strong>
+                      <span>{decision.risk.decision.structure_assessment.passed ? "全部通过" : "存在未通过项"}</span>
+                    </div>
+                    <ul>
+                      {decision.risk.decision.structure_assessment.checks.map((check) => (
+                        <li className={check.passed ? "passed" : "failed"} key={check.key}>
+                          <i>{check.passed ? "✓" : "×"}</i>
+                          <span><strong>{check.key}</strong><small>{check.detail}</small></span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 <div className={`decision-reason ${decision.risk?.decision.pending_entry ? "pending" : decision.outcome}`}>
                   <strong>{decision.risk?.decision.pending_entry ? "本地待触发" : decision.failover ? "故障切换" : decision.risk?.accepted ? "风控放行" : OUTCOME_LABELS[decision.outcome]}</strong>
                   <span>{decision.failover?.error ?? decision.risk?.reason ?? "该记录只有模型推理，未进入实时硬风控流程。"}</span>

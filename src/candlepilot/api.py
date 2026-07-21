@@ -480,6 +480,7 @@ def create_app(
             minimum_reward_risk_ratio=settings.minimum_reward_risk_ratio,
             max_snapshot_age_seconds=settings.max_snapshot_age_seconds,
             require_take_profit=True,
+            structure_gate_mode=settings.structure_gate_mode,
         ),
         testnet_broker=testnet_broker,
         cadences=settings.cadences,

@@ -411,6 +411,47 @@ describe("DecisionPanel", () => {
     expect(screen.getByText("30.00 USDT")).toBeTruthy();
   });
 
+  it("shows shadow structure checks without presenting them as a hard rejection", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false,
+      text: async () => "detail unavailable",
+    })));
+    const user = userEvent.setup();
+    const shadow: DecisionEvent = {
+      ...decision,
+      risk: {
+        ...decision.risk!,
+        decision: {
+          ...decision.risk!.decision,
+          structure_assessment: {
+            mode: "shadow",
+            passed: false,
+            checks: [
+              { key: "alignment", passed: true, detail: "5m and 15m align" },
+              { key: "extension", passed: false, detail: "2.2 ATR must be below 2" },
+            ],
+          },
+        },
+      },
+    };
+
+    render(
+      <DecisionPanel
+        decisions={[shadow]}
+        liveRunPerformance={[]}
+        filter="all"
+        onFilter={vi.fn()}
+        onLoadOlder={vi.fn(async () => undefined)}
+        exhausted
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /OPEN_LONG/ }));
+
+    expect(screen.getByText("结构入场门槛 · SHADOW")).toBeTruthy();
+    expect(screen.getByText("存在未通过项")).toBeTruthy();
+    expect(screen.getByText("2.2 ATR must be below 2")).toBeTruthy();
+  });
+
   it("shows a local pending limit and its hard expiry", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: false,

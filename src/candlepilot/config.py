@@ -30,6 +30,7 @@ DEFAULT_PROVIDER_ALIASES = {
 }
 CUSTOM_LLM_WIRE_APIS = {"chat-completions", "responses"}
 TRAILING_STOP_MODES = {"off", "shadow", "live"}
+STRUCTURE_GATE_MODES = {"off", "shadow", "enforce"}
 CUSTOM_PROVIDER_PREFIX = "openai-compatible:"
 CUSTOM_PROVIDER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
 MAX_CUSTOM_LLM_PROVIDERS = 8
@@ -238,6 +239,15 @@ def _parse_trailing_stop_mode(raw: str | None) -> str:
     return value
 
 
+def _parse_structure_gate_mode(raw: str | None) -> str:
+    value = (raw or "shadow").strip().lower()
+    if value not in STRUCTURE_GATE_MODES:
+        raise ValueError(
+            "CANDLEPILOT_STRUCTURE_GATE_MODE must be off, shadow, or enforce"
+        )
+    return value
+
+
 def _validate_custom_llm_headers(parsed: object) -> dict[str, SecretStr]:
     if not isinstance(parsed, dict) or len(parsed) > 16:
         raise ValueError("custom LLM extra headers must be a JSON object with at most 16 entries")
@@ -431,6 +441,7 @@ class Settings:
     cadences: tuple[str, ...] = (DEFAULT_DECISION_CADENCE,)
     candidates_per_cycle: int = 5
     trailing_stop_mode: str = "shadow"
+    structure_gate_mode: str = "shadow"
     max_run_seconds: int | None = None
     max_run_cost_usd: float | None = None
     provider_chain: tuple[str, ...] = ()
@@ -485,6 +496,9 @@ class Settings:
             ),
             trailing_stop_mode=_parse_trailing_stop_mode(
                 get("CANDLEPILOT_TRAILING_STOP_MODE")
+            ),
+            structure_gate_mode=_parse_structure_gate_mode(
+                get("CANDLEPILOT_STRUCTURE_GATE_MODE")
             ),
             max_run_seconds=_parse_positive_number(
                 get("CANDLEPILOT_MAX_RUN_SECONDS"),

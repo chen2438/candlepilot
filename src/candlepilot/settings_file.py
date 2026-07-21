@@ -75,6 +75,13 @@ ENV_SECTIONS: tuple[EnvSection, ...] = (
                 ("off", "shadow", "live"),
                 description="shadow 并行记录五组参数；live 只执行 2R 激活、回撤 1R。",
             ),
+            EnvField(
+                "CANDLEPILOT_STRUCTURE_GATE_MODE",
+                "结构入场门槛",
+                "enum",
+                ("off", "shadow", "enforce"),
+                description="shadow 只记录新结构规则是否通过；enforce 才会拒绝不合格入场。",
+            ),
         ),
     ),
     EnvSection(

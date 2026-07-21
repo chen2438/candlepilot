@@ -32,6 +32,37 @@ def _snapshot(*, age_seconds: int = 0) -> MarketSnapshot:
     )
 
 
+def _structured_snapshot() -> MarketSnapshot:
+    return _snapshot().model_copy(
+        update={
+            "features": {
+                "5m_atr_14": 2.0,
+                "5m_ema20_distance_atr": 0.5,
+                "5m_ema_spread": 0.01,
+                "15m_ema_spread": 0.02,
+                "30m_ema_spread": -0.01,
+                "5m_prior_range_low_20": 98.0,
+            }
+        }
+    )
+
+
+def _structured_intent() -> TradeIntent:
+    return _intent().model_copy(
+        update={
+            "decision_framework": "structure-v1",
+            "setup_type": "TREND_PULLBACK",
+            "anchor_timeframe": "5m",
+            "anchor_price": Decimal("100"),
+            "trigger_type": "MARKET_CONFIRMED",
+            "trigger_price": Decimal("99.5"),
+            "invalidation_type": "RANGE",
+            "invalidation_level": Decimal("98"),
+            "target_type": "RANGE",
+        }
+    )
+
+
 def _intent(action: TradeAction = TradeAction.OPEN_LONG) -> TradeIntent:
     return TradeIntent(
         symbol="BTCUSDT",
@@ -63,6 +94,48 @@ def _position(side: str, quantity: str = "1", **changes) -> dict[str, PositionSt
         "BTCUSDT": PositionState(
             side=side, quantity=quantity, entry_price="100", **changes
         )
+    }
+
+
+def test_structure_gate_shadow_records_failure_without_blocking_the_order() -> None:
+    result = AggressiveRiskPolicy(
+        max_symbol_margin_fraction=Decimal("1"),
+        structure_gate_mode="shadow",
+    ).evaluate(_intent(), _snapshot(), _portfolio(), RULES)
+
+    assert result.decision.accepted
+    assert result.decision.structure_assessment is not None
+    assert not result.decision.structure_assessment.passed
+    assert result.decision.structure_assessment.checks[0].key == "metadata"
+
+
+def test_structure_gate_enforce_rejects_missing_plan_metadata() -> None:
+    result = AggressiveRiskPolicy(structure_gate_mode="enforce").evaluate(
+        _intent(), _snapshot(), _portfolio(), RULES
+    )
+
+    assert not result.decision.accepted
+    assert result.order is None
+    assert result.decision.reason == "structure entry gate failed: metadata"
+
+
+def test_structure_gate_enforce_accepts_a_grounded_plan() -> None:
+    result = AggressiveRiskPolicy(
+        max_symbol_margin_fraction=Decimal("1"),
+        structure_gate_mode="enforce",
+    ).evaluate(_structured_intent(), _structured_snapshot(), _portfolio(), RULES)
+
+    assert result.decision.accepted
+    assert result.order is not None
+    assert result.decision.structure_assessment is not None
+    assert result.decision.structure_assessment.passed
+    assert {check.key for check in result.decision.structure_assessment.checks} == {
+        "metadata",
+        "anchor",
+        "extension",
+        "alignment",
+        "trigger",
+        "invalidation",
     }
 
 

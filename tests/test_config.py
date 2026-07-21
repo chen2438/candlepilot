@@ -80,6 +80,18 @@ def test_trailing_stop_mode_defaults_to_shadow_and_rejects_unknown_values(
         Settings.from_env()
 
 
+def test_structure_gate_mode_defaults_to_shadow_and_rejects_unknown_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CANDLEPILOT_STRUCTURE_GATE_MODE", raising=False)
+    assert Settings.from_env().structure_gate_mode == "shadow"
+    monkeypatch.setenv("CANDLEPILOT_STRUCTURE_GATE_MODE", "ENFORCE")
+    assert Settings.from_env().structure_gate_mode == "enforce"
+    monkeypatch.setenv("CANDLEPILOT_STRUCTURE_GATE_MODE", "automatic")
+    with pytest.raises(ValueError, match="must be off, shadow, or enforce"):
+        Settings.from_env()
+
+
 def test_custom_llm_providers_parse_from_json(monkeypatch) -> None:
     import json
 
