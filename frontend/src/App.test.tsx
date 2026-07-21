@@ -1,10 +1,15 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { BacktestDecisionLog, CadenceSelector, LoginScreen } from "./App";
+import { BacktestDecisionLog, CadenceSelector, formatDailyLossPercent, LoginScreen } from "./App";
 import type { BacktestDecisionPage } from "./types";
 
 afterEach(cleanup);
+
+it("formats the active daily loss fraction as a percentage", () => {
+  expect(formatDailyLossPercent("0.05")).toBe("5.0%");
+  expect(formatDailyLossPercent("0.075")).toBe("7.5%");
+});
 
 describe("CadenceSelector", () => {
   it("shows one selected cadence and replaces it with the clicked cadence", () => {

@@ -64,6 +64,13 @@ ENV_SECTIONS: tuple[EnvSection, ...] = (
             ),
             EnvField("CANDLEPILOT_LLM_TIMEOUT", "LLM 超时（秒）", "number", placeholder="45"),
             EnvField("CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS", "快照最大年龄（秒）", "int", placeholder="75"),
+            EnvField(
+                "CANDLEPILOT_DAILY_LOSS_PERCENT",
+                "24 小时亏损熔断（%）",
+                "number",
+                placeholder="5",
+                description="滚动 24 小时交易盈亏达到该亏损比例后拒绝开仓/加仓；范围 0.1–50，默认 5。",
+            ),
             EnvField("CANDLEPILOT_MAX_RUN_SECONDS", "运行时长上限（秒）", "int",
                      description="留空=不限。"),
             EnvField("CANDLEPILOT_MAX_RUN_COST_USD", "运行预算（USD 等效）", "number",

@@ -1,5 +1,6 @@
 import json
 import os
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -261,6 +262,19 @@ def test_snapshot_age_default_override_and_validation(monkeypatch) -> None:
     monkeypatch.setenv("CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS", "slow")
     with pytest.raises(ValueError, match="must be an integer"):
         Settings.from_env()
+
+
+def test_daily_loss_percent_defaults_converts_and_rejects_unsafe_values() -> None:
+    assert Settings.from_mapping({}).daily_loss_fraction == Decimal("0.05")
+    assert Settings.from_mapping(
+        {"CANDLEPILOT_DAILY_LOSS_PERCENT": "   "}
+    ).daily_loss_fraction == Decimal("0.05")
+    assert Settings.from_mapping(
+        {"CANDLEPILOT_DAILY_LOSS_PERCENT": "7.5"}
+    ).daily_loss_fraction == Decimal("0.075")
+    for raw in ("0", "0.09", "50.1", "nan", "inf", "not-a-number"):
+        with pytest.raises(ValueError, match="CANDLEPILOT_DAILY_LOSS_PERCENT"):
+            Settings.from_mapping({"CANDLEPILOT_DAILY_LOSS_PERCENT": raw})
 
 
 def test_authentication_configuration_is_complete_or_rejected() -> None:

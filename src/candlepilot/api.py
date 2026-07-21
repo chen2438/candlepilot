@@ -382,6 +382,9 @@ def _status(engine: TradingEngine, scheduler: TradingScheduler | None = None) ->
             "max_run_seconds": engine.max_run_seconds,
             "max_run_cost_usd": engine.max_run_cost_usd,
         },
+        "risk_limits": {
+            "daily_loss_fraction": str(engine.risk.daily_loss_fraction),
+        },
         "decision_timeout_seconds": engine.decision_timeout_seconds,
         "startup_probe": engine.startup_probe,
         "auto_stop_reason": engine.auto_stop_reason,

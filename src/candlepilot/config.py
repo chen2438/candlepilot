@@ -6,7 +6,7 @@ import os
 import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from pydantic import SecretStr
@@ -170,6 +170,19 @@ def _parse_snapshot_age(raw: str | None) -> int:
     if value <= 0:
         raise ValueError("CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS must be positive")
     return value
+
+
+def _parse_daily_loss_percent(raw: str | None) -> Decimal:
+    value = (raw or "").strip() or "5"
+    try:
+        percent = Decimal(value)
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("CANDLEPILOT_DAILY_LOSS_PERCENT must be a number") from exc
+    if not percent.is_finite():
+        raise ValueError("CANDLEPILOT_DAILY_LOSS_PERCENT must be finite")
+    if not Decimal("0.1") <= percent <= Decimal("50"):
+        raise ValueError("CANDLEPILOT_DAILY_LOSS_PERCENT must be between 0.1 and 50")
+    return percent / Decimal("100")
 
 
 def _parse_provider_name(raw: str | None) -> str | None:
@@ -489,6 +502,9 @@ class Settings:
             ),
             max_snapshot_age_seconds=_parse_snapshot_age(
                 get("CANDLEPILOT_MAX_SNAPSHOT_AGE_SECONDS")
+            ),
+            daily_loss_fraction=_parse_daily_loss_percent(
+                get("CANDLEPILOT_DAILY_LOSS_PERCENT")
             ),
             cadences=_parse_cadences(get("CANDLEPILOT_CADENCES")),
             candidates_per_cycle=_parse_candidates_per_cycle(

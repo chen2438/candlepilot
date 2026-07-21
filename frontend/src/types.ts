@@ -61,6 +61,7 @@ export interface EngineStatus {
   active_cadences: string[];
   supported_cadences: string[];
   run_limits: { max_run_seconds: number | null; max_run_cost_usd: number | null };
+  risk_limits: { daily_loss_fraction: string };
   decision_timeout_seconds: number | null;
   startup_probe: {
     running: boolean;

@@ -144,6 +144,7 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         assert status["user_stream"]["enabled"] is False
         assert status["route_failure_count"] == 0
         assert status["route_failure_limit"] == 3
+        assert status["risk_limits"] == {"daily_loss_fraction": "0.05"}
         assert status["scheduler"]["trailing_stop"]["mode"] == "shadow"
         assert [
             item["profile_id"]
@@ -444,6 +445,7 @@ def test_run_once_executes_one_trading_batch_then_stops(tmp_path: Path) -> None:
         assert len(decisions) == 1
         assert decisions[0]["outcome"] == "executed"
         assert decisions[0]["live_run"]["config"]["single_cycle"] is True
+        assert decisions[0]["live_run"]["config"]["daily_loss_fraction"] == "0.05"
         assert decisions[0]["live_run"]["stop_reason"] == "single analysis completed"
         assert client.post("/api/engine/start").status_code == 409
 
@@ -1393,6 +1395,7 @@ def test_settings_endpoint_reads_masked_and_writes_env(tmp_path: Path, monkeypat
             "shadow",
             "live",
         ]
+        assert fields["CANDLEPILOT_DAILY_LOSS_PERCENT"]["placeholder"] == "5"
         # The secret is never returned in full, only a masked tail.
         assert fields["BINANCE_TESTNET_API_KEY"]["value"] is None
         assert fields["BINANCE_TESTNET_API_KEY"]["configured"] is True
@@ -1408,6 +1411,13 @@ def test_settings_endpoint_reads_masked_and_writes_env(tmp_path: Path, monkeypat
         assert "CANDLEPILOT_PORT=9100" in text
         assert "CANDLEPILOT_CADENCES=5m" in text
         assert "BINANCE_TESTNET_API_KEY=super-secret" in text  # untouched key kept
+
+        breaker = client.post(
+            "/api/settings",
+            json={"values": {"CANDLEPILOT_DAILY_LOSS_PERCENT": "7.5"}},
+        )
+        assert breaker.status_code == 200, breaker.text
+        assert Settings.from_mapping(read_env_file(env_path)).daily_loss_fraction == Decimal("0.075")
 
         # An empty value clears the setting: every parser treats "KEY=" as unset,
         # and keeping the key present matches the .env.example convention.
@@ -1432,6 +1442,8 @@ def test_settings_endpoint_reads_masked_and_writes_env(tmp_path: Path, monkeypat
             {"CANDLEPILOT_LLM_TIMEOUT": "nan"},
             {"CANDLEPILOT_MAX_RUN_SECONDS": "forever"},
             {"CANDLEPILOT_MAX_RUN_COST_USD": "-1"},
+            {"CANDLEPILOT_DAILY_LOSS_PERCENT": "0"},
+            {"CANDLEPILOT_DAILY_LOSS_PERCENT": "50.1"},
             {"CANDLEPILOT_PROVIDER_CHAIN": "custom:missing,codex"},
             {"CANDLEPILOT_DEFAULT_PROVIDER": "custom:missing"},
         ):

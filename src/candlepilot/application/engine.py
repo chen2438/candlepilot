@@ -345,6 +345,7 @@ class TradingEngine:
             "max_run_seconds": self.max_run_seconds,
             "max_run_cost_usd": self.max_run_cost_usd,
             "rescue_limit": MAX_RESCUES_PER_RUN,
+            "daily_loss_fraction": str(self.risk.daily_loss_fraction),
         }
         if run_config is not None:
             config.update(run_config)

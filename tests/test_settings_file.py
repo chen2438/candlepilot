@@ -136,6 +136,10 @@ def test_describe_settings_masks_secrets_and_exposes_plain_values(tmp_path: Path
         "按顺序用逗号分隔：本地规则填 local，Codex 填 codex，"
         "Claude Code 填 claude-code，自定义端点填 custom:<id>。"
     )
+    breaker = fields["CANDLEPILOT_DAILY_LOSS_PERCENT"]
+    assert breaker["kind"] == "number"
+    assert breaker["placeholder"] == "5"
+    assert "0.1–50" in breaker["description"]
 
 
 @pytest.mark.parametrize("key", sorted(ENV_FIELDS))

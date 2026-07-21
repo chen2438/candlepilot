@@ -193,6 +193,7 @@ const emptyStatus: EngineStatus = {
   provider_routes: [],
   active_cadences: ["15m"],
   run_limits: { max_run_seconds: null, max_run_cost_usd: null },
+  risk_limits: { daily_loss_fraction: "0.05" },
   decision_timeout_seconds: null,
   startup_probe: null,
   auto_stop_reason: null,
@@ -347,7 +348,7 @@ const TABS: Array<{ key: TabKey; label: string; meta: string }> = [
 const METRIC_DEFINITIONS: Record<string, string> = {
   "候选标的": "最近一次全市场扫描后进入动态候选池的 USDT 永续合约数量；候选池最多保留 20 个，不等于每个周期实际送入模型的数量。",
   "最大杠杆": "硬风控允许模型请求的最高杠杆倍数；实际交易可以更低，不能由模型突破。",
-  "24h亏损熔断": "滚动过去 24 小时的净亏损达到窗口起始权益的 5% 时，硬风控拒绝新增风险仓位。",
+  "24h亏损熔断": "滚动过去 24 小时的净亏损达到设置比例时，硬风控拒绝开仓和加仓；减仓和平仓不受影响。",
   "权益": "账户现金或钱包余额加上按最新标记价计算的未实现盈亏。",
   "可用余额": "扣除当前保证金占用后，仍可用于新订单保证金的账户余额。",
   "占用保证金": "当前非零持仓占用的保证金合计，由交易所返回。",
@@ -1628,7 +1629,7 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
             <div className="risk-grid">
               <RiskItem label="候选标的" value={`${status.candidate_count} / 20`} detail="动态候选池" />
               <RiskItem label="最大杠杆" value="10×" detail="模型不可突破" />
-              <RiskItem label="24h亏损熔断" value="5.0%" detail="窗口起始权益" />
+              <RiskItem label="24h亏损熔断" value={formatDailyLossPercent(status.risk_limits.daily_loss_fraction)} detail="窗口起始权益" />
               <RiskItem label="单笔风险" value="1.0%" detail="权益上限" />
               <RiskItem label="组合止损风险" value="4.0%" detail="权益上限" />
               <RiskItem label="最低盈亏比" value="> 1.3:1" detail="原始值" />
@@ -3291,6 +3292,10 @@ export function CollapsiblePanel({
 
 function RiskItem({ label, value, detail }: { label: string; value: string; detail: string }) {
   return <div className="risk-item" data-tooltip={RISK_DEFINITIONS[label]}><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;
+}
+
+export function formatDailyLossPercent(fraction: string): string {
+  return `${(Number(fraction) * 100).toFixed(1)}%`;
 }
 
 export function StructureGateSummaryCard({ summary }: { summary: StructureGateSummary | null }) {
