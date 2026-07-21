@@ -44,6 +44,10 @@ def test_feature_pipeline_produces_finite_multiscale_features() -> None:
         "prior_range_low_20",
         "breakout_above_20",
         "breakdown_below_20",
+        "breakout_hold_high_20",
+        "breakout_hold_low_20",
+        "breakout_hold_above_20",
+        "breakdown_hold_below_20",
         "last_swing_high",
         "last_swing_high_confirmed",
         "bars_since_swing_high",
@@ -252,9 +256,28 @@ def test_daily_structure_places_the_live_mark_between_the_daily_extremes() -> No
 
 def test_structure_features_confirm_pivots_and_breakouts_without_repainting() -> None:
     rows = _flat_rows()
-    # Create a confirmed local high, then close the latest bar through the
-    # preceding 20-bar boundary. The latest bar itself must not define the
-    # boundary it is being compared with.
+    # Create a confirmed local high, then hold two closes beyond the same
+    # pre-break boundary. Neither confirmation bar may redefine that boundary.
+    rows[-8][2] = "103"
+    rows[-8][4] = "102"
+    rows[-2][2] = "104"
+    rows[-2][4] = "104"
+    rows[-1][2] = "104"
+    rows[-1][4] = "104.5"
+
+    features = FeaturePipeline().calculate(rows)
+
+    assert features["last_swing_high"] == 103
+    assert features["last_swing_high_confirmed"] == 1
+    assert features["bars_since_swing_high"] == 7
+    assert features["prior_range_high_20"] == 104
+    assert features["breakout_above_20"] == 1
+    assert features["breakout_hold_high_20"] == 103
+    assert features["breakout_hold_above_20"] == 1
+
+
+def test_breakout_hold_requires_two_closed_bars() -> None:
+    rows = _flat_rows()
     rows[-8][2] = "103"
     rows[-8][4] = "102"
     rows[-1][2] = "104"
@@ -262,11 +285,8 @@ def test_structure_features_confirm_pivots_and_breakouts_without_repainting() ->
 
     features = FeaturePipeline().calculate(rows)
 
-    assert features["last_swing_high"] == 103
-    assert features["last_swing_high_confirmed"] == 1
-    assert features["bars_since_swing_high"] == 7
-    assert features["prior_range_high_20"] == 103
     assert features["breakout_above_20"] == 1
+    assert features["breakout_hold_above_20"] == 0
 
 
 def test_daily_position_is_not_clamped_when_price_breaks_the_range() -> None:

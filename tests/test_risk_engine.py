@@ -63,6 +63,16 @@ def _structured_intent() -> TradeIntent:
     )
 
 
+def _breakout_intent() -> TradeIntent:
+    return _structured_intent().model_copy(
+        update={
+            "setup_type": "TREND_BREAKOUT",
+            "trigger_type": "BREAKOUT",
+            "trigger_price": Decimal("99.5"),
+        }
+    )
+
+
 def _intent(action: TradeAction = TradeAction.OPEN_LONG) -> TradeIntent:
     return TradeIntent(
         symbol="BTCUSDT",
@@ -137,6 +147,38 @@ def test_structure_gate_enforce_accepts_a_grounded_plan() -> None:
         "trigger",
         "invalidation",
     }
+
+
+def test_unconfirmed_breakout_is_rejected_even_in_shadow_mode() -> None:
+    result = AggressiveRiskPolicy(
+        structure_gate_mode="shadow",
+    ).evaluate(_breakout_intent(), _structured_snapshot(), _portfolio(), RULES)
+
+    assert not result.decision.accepted
+    assert result.order is None
+    assert result.decision.reason == (
+        "breakout requires two closed bars beyond the pre-break boundary"
+    )
+    assert result.decision.structure_assessment is not None
+
+
+def test_confirmed_two_bar_breakout_passes_the_hard_gate() -> None:
+    snapshot = _structured_snapshot().model_copy(
+        update={
+            "features": {
+                **_structured_snapshot().features,
+                "5m_breakout_hold_above_20": 1.0,
+                "5m_breakout_hold_high_20": 99.5,
+            }
+        }
+    )
+    result = AggressiveRiskPolicy(
+        max_symbol_margin_fraction=Decimal("1"),
+        structure_gate_mode="shadow",
+    ).evaluate(_breakout_intent(), snapshot, _portfolio(), RULES)
+
+    assert result.decision.accepted
+    assert result.order is not None
 
 
 def test_single_symbol_initial_margin_is_capped_at_ten_percent_of_equity() -> None:

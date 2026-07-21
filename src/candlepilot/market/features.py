@@ -149,6 +149,18 @@ class FeaturePipeline:
         far_high, far_low = _range(closed, 50)
         prior = closed[:-1] or closed
         prior_high, prior_low = _range(prior, 20)
+        # A breakout is only durable enough to trade after two consecutive
+        # closed bars hold beyond the same pre-break boundary.  Computing that
+        # boundary from bars before both confirmations prevents the first
+        # breakout bar from moving the level used to judge the second one.
+        hold_reference = closed[:-2]
+        if len(hold_reference) >= 20:
+            hold_high, hold_low = _range(hold_reference, 20)
+            breakout_hold = closes[-2] > hold_high and last > hold_high
+            breakdown_hold = closes[-2] < hold_low and last < hold_low
+        else:
+            hold_high, hold_low = prior_high, prior_low
+            breakout_hold = breakdown_hold = False
         swing_high = _last_confirmed_swing(closed, high=True)
         swing_low = _last_confirmed_swing(closed, high=False)
         far_span = far_high - far_low
@@ -166,6 +178,10 @@ class FeaturePipeline:
             "prior_range_low_20": prior_low,
             "breakout_above_20": float(last > prior_high),
             "breakdown_below_20": float(last < prior_low),
+            "breakout_hold_high_20": hold_high,
+            "breakout_hold_low_20": hold_low,
+            "breakout_hold_above_20": float(breakout_hold),
+            "breakdown_hold_below_20": float(breakdown_hold),
             # A two-bars-each-side pivot cannot repaint. When none exists in the
             # fetched window, expose the prior range edge with an explicit false
             # flag rather than inventing a confirmed swing.

@@ -187,6 +187,17 @@ class AggressiveRiskPolicy:
         structure_assessment = self._assess_structure(
             intent, snapshot, requested_side
         )
+        breakout_rejection = self._breakout_rejection(
+            intent, snapshot, requested_side
+        )
+        if breakout_rejection is not None:
+            return RiskEvaluation(
+                RiskDecision(
+                    accepted=False,
+                    reason=breakout_rejection,
+                    structure_assessment=structure_assessment,
+                )
+            )
         if structure_assessment is not None and not structure_assessment.passed:
             if self.structure_gate_mode == "enforce":
                 failed = ", ".join(
@@ -432,6 +443,41 @@ class AggressiveRiskPolicy:
             order=order,
         )
 
+    @staticmethod
+    def _breakout_rejection(
+        intent: TradeIntent,
+        snapshot: MarketSnapshot,
+        side: str,
+    ) -> str | None:
+        if intent.setup_type != "TREND_BREAKOUT" and intent.trigger_type != "BREAKOUT":
+            return None
+        if intent.trigger_type != "BREAKOUT":
+            return "trend breakout requires a BREAKOUT trigger"
+        if intent.anchor_timeframe is None or intent.trigger_price is None:
+            return "breakout requires an anchor timeframe and trigger price"
+
+        prefix = intent.anchor_timeframe
+        features = snapshot.features
+        atr = Decimal(str(features.get(f"{prefix}_atr_14", 0)))
+        hold_key = (
+            f"{prefix}_breakout_hold_above_20"
+            if side == "LONG"
+            else f"{prefix}_breakdown_hold_below_20"
+        )
+        boundary_key = (
+            f"{prefix}_breakout_hold_high_20"
+            if side == "LONG"
+            else f"{prefix}_breakout_hold_low_20"
+        )
+        boundary = Decimal(str(features.get(boundary_key, 0)))
+        if features.get(hold_key) != 1.0:
+            return "breakout requires two closed bars beyond the pre-break boundary"
+        if atr <= 0 or boundary <= 0:
+            return "breakout confirmation is missing its ATR or pre-break boundary"
+        if abs(intent.trigger_price - boundary) > atr / Decimal("4"):
+            return "breakout trigger is not anchored to the pre-break boundary"
+        return None
+
     def _assess_structure(
         self,
         intent: TradeIntent,
@@ -517,19 +563,16 @@ class AggressiveRiskPolicy:
         )
         trigger_ok = trigger_crossed
         trigger_detail = "current mark crossed the declared trigger"
-        if intent.order_type == OrderType.LIMIT and intent.entry_price is not None:
-            trigger_ok = atr > 0 and abs(intent.entry_price - intent.trigger_price) <= atr / 4
-            trigger_detail = "pending limit entry is anchored to its declared trigger"
-        elif intent.trigger_type == "BREAKOUT":
+        if intent.trigger_type == "BREAKOUT":
             breakout_key = (
-                f"{prefix}_breakout_above_20"
+                f"{prefix}_breakout_hold_above_20"
                 if side == "LONG"
-                else f"{prefix}_breakdown_below_20"
+                else f"{prefix}_breakdown_hold_below_20"
             )
             boundary_key = (
-                f"{prefix}_prior_range_high_20"
+                f"{prefix}_breakout_hold_high_20"
                 if side == "LONG"
-                else f"{prefix}_prior_range_low_20"
+                else f"{prefix}_breakout_hold_low_20"
             )
             boundary = Decimal(str(features.get(boundary_key, 0)))
             trigger_ok = (
@@ -538,7 +581,12 @@ class AggressiveRiskPolicy:
                 and atr > 0
                 and abs(intent.trigger_price - boundary) <= atr / 4
             )
-            trigger_detail = "breakout flag, old boundary, and trigger must agree"
+            trigger_detail = (
+                "two-bar breakout hold, pre-break boundary, and trigger must agree"
+            )
+        elif intent.order_type == OrderType.LIMIT and intent.entry_price is not None:
+            trigger_ok = atr > 0 and abs(intent.entry_price - intent.trigger_price) <= atr / 4
+            trigger_detail = "pending limit entry is anchored to its declared trigger"
         elif intent.trigger_type == "REJECTION":
             close_position = Decimal(
                 str(features.get(f"{prefix}_last_bar_close_position", Decimal("0.5")))
