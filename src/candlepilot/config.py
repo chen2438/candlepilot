@@ -66,6 +66,8 @@ def _parse_database_url(raw: str | None) -> str:
         raise ValueError("database URL must use sqlite+aiosqlite")
     if not url.database:
         raise ValueError("database URL must name a SQLite database")
+    if url.database == ":memory:" or url.database.startswith("file:"):
+        raise ValueError("database URL must name a file-backed SQLite path")
     return value
 
 

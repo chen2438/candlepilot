@@ -177,11 +177,10 @@ if not url.startswith(prefix):
 target = unquote(url.removeprefix(prefix).split("?", 1)[0])
 if not target:
     raise SystemExit("installed database URL has no database path")
-if target == ":memory:":
-    print("")
-else:
-    path = Path(target)
-    print((path if path.is_absolute() else app_dir / path).resolve())
+if target == ":memory:" or target.startswith("file:"):
+    raise SystemExit("installed database URL must name a file-backed SQLite path")
+path = Path(target)
+print((path if path.is_absolute() else app_dir / path).resolve())
 PY
   )" || fail "could not resolve installed CANDLEPILOT_DATABASE_URL"
   current_branch="$(runuser -u "$APP_USER" -- git -C "$APP_DIR" branch --show-current)"

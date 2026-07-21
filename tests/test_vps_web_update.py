@@ -50,6 +50,7 @@ def test_installer_backs_up_the_database_selected_in_env() -> None:
     assert 'sqlite3 "$installed_database_path"' in update_body
     assert '"$backup_dir/database.sqlite3" "$installed_database_path"' in update_body
     assert '"$APP_DIR/candlepilot.db"' not in update_body
+    assert 'target == ":memory:" or target.startswith("file:")' in update_body
 
 
 def test_uninstaller_removes_the_privileged_update_surface() -> None:

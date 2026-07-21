@@ -21,13 +21,15 @@ def test_database_url_requires_the_supported_async_sqlite_driver(monkeypatch) ->
         "sqlite:///./sync.db",
         "postgresql+asyncpg://db.example/candlepilot",
         "sqlite+aiosqlite://",
+        "sqlite+aiosqlite:///:memory:",
+        "sqlite+aiosqlite:///file:candlepilot.db?uri=true",
     ):
         monkeypatch.setenv("CANDLEPILOT_DATABASE_URL", raw)
         with pytest.raises(ValueError, match="database URL"):
             Settings.from_env()
 
-    monkeypatch.setenv("CANDLEPILOT_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
-    assert Settings.from_env().database_url == "sqlite+aiosqlite:///:memory:"
+    monkeypatch.setenv("CANDLEPILOT_DATABASE_URL", "sqlite+aiosqlite:///./candlepilot.db")
+    assert Settings.from_env().database_url == "sqlite+aiosqlite:///./candlepilot.db"
 
 
 def test_load_dotenv_sets_vars_but_real_env_wins(tmp_path: Path, monkeypatch) -> None:

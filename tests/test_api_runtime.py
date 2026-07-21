@@ -1476,6 +1476,11 @@ def test_settings_endpoint_reads_masked_and_writes_env(tmp_path: Path, monkeypat
             {"CANDLEPILOT_DAILY_LOSS_PERCENT": "50.1"},
             {"CANDLEPILOT_DATABASE_URL": "not a database URL"},
             {"CANDLEPILOT_DATABASE_URL": "sqlite:///./sync.db"},
+            {"CANDLEPILOT_DATABASE_URL": "sqlite+aiosqlite:///:memory:"},
+            {
+                "CANDLEPILOT_DATABASE_URL":
+                "sqlite+aiosqlite:///file:candlepilot.db?uri=true"
+            },
             {
                 "CANDLEPILOT_DATABASE_URL":
                 "postgresql+asyncpg://db.example/candlepilot"
