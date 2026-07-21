@@ -1000,9 +1000,10 @@ def create_app(
             }
         except Exception as exc:
             checks["database"] = {"ready": False, "error": str(exc)}
-        # No broker check: it is a required constructor argument and create_app
-        # refuses to build without credentials, so an engine without one cannot
-        # reach this endpoint.
+        checks["testnet_broker"] = {
+            "ready": engine.testnet_broker is not None,
+            "configured": engine.testnet_broker is not None,
+        }
         ready = all(check["ready"] for check in checks.values())
         return JSONResponse(
             status_code=200 if ready else 503,

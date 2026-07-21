@@ -133,7 +133,10 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
             "schema_version": CURRENT_SCHEMA_VERSION,
             "expected_schema_version": CURRENT_SCHEMA_VERSION,
         }
-        assert "testnet_broker" not in readiness.json()["checks"]
+        assert readiness.json()["checks"]["testnet_broker"] == {
+            "ready": True,
+            "configured": True,
+        }
         runtime_metrics = client.get("/api/metrics/runtime")
         assert runtime_metrics.status_code == 200
         assert int(runtime_metrics.headers["X-Request-ID"], 16) >= 0
@@ -143,6 +146,16 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         status = client.get("/api/status").json()
         assert status["running"] is False
         assert status["user_stream"]["enabled"] is False
+
+        configured_broker = engine.testnet_broker
+        engine.testnet_broker = None
+        not_ready = client.get("/api/health/ready")
+        assert not_ready.status_code == 503
+        assert not_ready.json()["checks"]["testnet_broker"] == {
+            "ready": False,
+            "configured": False,
+        }
+        engine.testnet_broker = configured_broker
         assert status["route_failure_count"] == 0
         assert status["route_failure_limit"] == 3
         assert status["risk_limits"] == {"daily_loss_fraction": "0.05"}

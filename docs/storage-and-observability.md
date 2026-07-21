@@ -23,7 +23,8 @@
   不允许后台任务在资源关闭后继续运行。
 
 - 健康检查：`/api/health/live`（存活）、`/api/health/ready`（就绪，覆盖迁移版本与
-  测试网 Broker 配置）。
+  测试网 Broker 配置）。任一检查不满足时 `/ready` 返回 503；Broker 检查只确认进程已构造交易
+  客户端，不向币安发起额外网络请求。
 - 结构化日志：HTTP 请求 JSON 日志 + request ID。
 - 运行指标：`/api/metrics/runtime` 提供请求量、错误率、并发数、平均/P95 延迟、状态码分布。
 - 告警：`/api/alerts` 覆盖紧急锁定、测试网配置/保护/用户流、API 错误率、模型错误率/P95 延迟；
