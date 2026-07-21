@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 from candlepilot.broker.binance_testnet import (
     AccountReconciliationError,
@@ -152,13 +153,21 @@ class TradingEngine:
         if changed:
             self.invalidate_startup_probe("provider route changed")
 
-    def provider_route_status(self, *, now: datetime | None = None) -> list[dict[str, object]]:
+    def provider_route_status(
+        self, *, now: datetime | None = None
+    ) -> list[dict[str, object]]:
         now = now or datetime.now(UTC)
         statuses: list[dict[str, object]] = []
         for priority, name in enumerate(self.provider_chain, start=1):
             route = self._provider_route_states.setdefault(name, ProviderRouteState())
             cooling = route.cooldown_until is not None and route.cooldown_until > now
-            state = "active" if name == self.active_provider else "cooldown" if cooling else "standby"
+            state = (
+                "active"
+                if name == self.active_provider
+                else "cooldown"
+                if cooling
+                else "standby"
+            )
             statuses.append(
                 {
                     "provider": name,
@@ -185,7 +194,9 @@ class TradingEngine:
         invalid = requested - set(SUPPORTED_CADENCES)
         if invalid:
             raise ValueError(f"unsupported cadences: {', '.join(sorted(invalid))}")
-        chosen = tuple(cadence for cadence in SUPPORTED_CADENCES if cadence in requested)
+        chosen = tuple(
+            cadence for cadence in SUPPORTED_CADENCES if cadence in requested
+        )
         if not chosen:
             raise ValueError("exactly one analysis cadence must be selected")
         if len(chosen) != 1:
@@ -272,10 +283,7 @@ class TradingEngine:
                 return f"run duration limit reached ({self.max_run_seconds}s)"
         if self.max_run_cost_usd is not None and run_cost_usd is not None:
             if run_cost_usd >= self.max_run_cost_usd:
-                return (
-                    f"run cost budget reached (${run_cost_usd:.4f} of "
-                    f"${self.max_run_cost_usd:.4f})"
-                )
+                return f"run cost budget reached (${run_cost_usd:.4f} of ${self.max_run_cost_usd:.4f})"
         if self.route_failure_count >= DECISION_PROVIDER_MAX_ATTEMPTS:
             return (
                 "every provider in the route failed for "
@@ -346,6 +354,13 @@ class TradingEngine:
             "max_run_cost_usd": self.max_run_cost_usd,
             "rescue_limit": MAX_RESCUES_PER_RUN,
             "daily_loss_fraction": str(self.risk.daily_loss_fraction),
+            # A replay starts from the same account state as the formal run.
+            # Later positions must evolve from the replayed model's own fills;
+            # overwriting them with the original run on every decision would
+            # make counterfactual PnL internally inconsistent.
+            "initial_portfolio": (await self.current_portfolio()).model_dump(
+                mode="json"
+            ),
         }
         if run_config is not None:
             config.update(run_config)
@@ -433,9 +448,7 @@ class TradingEngine:
         if report.open_order_count:
             blockers.append(f"仍有挂单：{report.open_order_count}")
         if blockers:
-            raise AccountReconciliationError(
-                f"无法解除紧急锁：{'；'.join(blockers)}"
-            )
+            raise AccountReconciliationError(f"无法解除紧急锁：{'；'.join(blockers)}")
         self.emergency_locked = False
         self.emergency_locked_until = None
         await self.audit.delete_runtime_state("emergency_locked_until")
@@ -498,7 +511,9 @@ class TradingEngine:
             else asyncio.sleep(0, result=())
         )
         snapshot_loader = getattr(broker, "account_snapshot", None)
-        account_loader = snapshot_loader if callable(snapshot_loader) else broker.account
+        account_loader = (
+            snapshot_loader if callable(snapshot_loader) else broker.account
+        )
         account, levels, realized_24h, pending_entry_symbols = await asyncio.gather(
             account_loader(), broker.protective_levels(), income_24h, pending_entries
         )
@@ -537,7 +552,10 @@ class TradingEngine:
         unrealized_pnl = (
             Decimal(str(account_unrealized))
             if account_unrealized is not None
-            else sum((position.unrealized_pnl for position in positions.values()), Decimal("0"))
+            else sum(
+                (position.unrealized_pnl for position in positions.values()),
+                Decimal("0"),
+            )
         )
         local_pending_symbols = {
             item["intent"].symbol
@@ -546,7 +564,9 @@ class TradingEngine:
             )
         }
         return PortfolioState(
-            equity=account.get("totalMarginBalance", account.get("totalWalletBalance", "0")),
+            equity=account.get(
+                "totalMarginBalance", account.get("totalWalletBalance", "0")
+            ),
             available_balance=account.get("availableBalance", "0"),
             pnl_24h=Decimal(str(realized_24h)) + unrealized_pnl,
             open_positions=len(positions),
@@ -577,9 +597,7 @@ class TradingEngine:
                     "evaluated_at": datetime.now(UTC),
                 }
             )
-            await self.audit.update_risk(
-                item["inference_id"], decision, completed=True
-            )
+            await self.audit.update_risk(item["inference_id"], decision, completed=True)
         return len(entries)
 
     async def process_pending_entry(self, symbol: str) -> str | None:
@@ -626,9 +644,7 @@ class TradingEngine:
                     "evaluated_at": now,
                 }
             )
-            await self.audit.update_risk(
-                item["inference_id"], expired, completed=True
-            )
+            await self.audit.update_risk(item["inference_id"], expired, completed=True)
             return "expired"
 
         snapshot = await self.market.market_snapshot(intent.symbol, intent.cadence)
@@ -660,14 +676,16 @@ class TradingEngine:
             )
             return "waiting"
 
-        await self.audit.update_risk(
-            item["inference_id"], decision, completed=True
-        )
+        await self.audit.update_risk(item["inference_id"], decision, completed=True)
         if not decision.accepted or evaluation.order is None:
             return "cancelled"
         if reason := self._order_submission_block_reason():
             cancelled = decision.model_copy(
-                update={"accepted": False, "reason": reason, "evaluated_at": datetime.now(UTC)}
+                update={
+                    "accepted": False,
+                    "reason": reason,
+                    "evaluated_at": datetime.now(UTC),
+                }
             )
             await self.audit.update_risk(
                 item["inference_id"], cancelled, completed=True
@@ -685,7 +703,9 @@ class TradingEngine:
         if self.venue_contract_rules is not None:
             rules = self.venue_contract_rules.get(symbol)
             if rules is None:
-                raise RuntimeError(f"testnet contract rules are unavailable for {symbol}")
+                raise RuntimeError(
+                    f"testnet contract rules are unavailable for {symbol}"
+                )
             return rules
         contract = (await self.market.exchange_info()).get(symbol)
         if contract is None:
@@ -839,8 +859,10 @@ class TradingEngine:
                 candidates = [
                     min(
                         self.provider_chain,
-                        key=lambda name: self._provider_route_states[name].cooldown_until
-                        or datetime.min.replace(tzinfo=UTC),
+                        key=lambda name: (
+                            self._provider_route_states[name].cooldown_until
+                            or datetime.min.replace(tzinfo=UTC)
+                        ),
                     )
                 ]
 
@@ -863,8 +885,7 @@ class TradingEngine:
                                 failed_result, live_run_id=self.live_run_id
                             )
                         raise RuntimeError(
-                            "decision retry input refresh failed: "
-                            f"{type(exc).__name__}"
+                            f"decision retry input refresh failed: {type(exc).__name__}"
                         ) from exc
                     refresh_retry_inputs = False
                 round_candidates = (
@@ -967,6 +988,9 @@ class TradingEngine:
                 result = failed_results[-1]
         inference_id = await self.audit.record_inference(
             result, live_run_id=self.live_run_id
+        )
+        await self._record_replay_inputs(
+            [analysis_snapshot], analysis_portfolio, {analysis_snapshot.symbol: rules}
         )
         if (
             result.intent.action != TradeAction.HOLD
@@ -1077,16 +1101,26 @@ class TradingEngine:
                 raise RuntimeError("provider route failure threshold already reached")
             now = datetime.now(UTC)
             candidates = [
-                name for name in self.provider_chain
-                if (state := self._provider_route_states.setdefault(name, ProviderRouteState())).cooldown_until is None
+                name
+                for name in self.provider_chain
+                if (
+                    state := self._provider_route_states.setdefault(
+                        name, ProviderRouteState()
+                    )
+                ).cooldown_until
+                is None
                 or state.cooldown_until <= now
             ]
             if not candidates:
-                candidates = [min(
-                    self.provider_chain,
-                    key=lambda name: self._provider_route_states[name].cooldown_until
-                    or datetime.min.replace(tzinfo=UTC),
-                )]
+                candidates = [
+                    min(
+                        self.provider_chain,
+                        key=lambda name: (
+                            self._provider_route_states[name].cooldown_until
+                            or datetime.min.replace(tzinfo=UTC)
+                        ),
+                    )
+                ]
             analysis_snapshots = list(snapshots)
             analysis_portfolio = portfolio
             failed_batches: list[list[ProviderResult]] = []
@@ -1111,7 +1145,9 @@ class TradingEngine:
                             f"decision retry input refresh failed: {type(exc).__name__}"
                         ) from exc
                     refresh_retry_inputs = False
-                round_candidates = candidates if attempt_number == 1 else list(self.provider_chain)
+                round_candidates = (
+                    candidates if attempt_number == 1 else list(self.provider_chain)
+                )
                 for position, name in enumerate(round_candidates, start=1):
                     provider = self.providers.get(name)
                     try:
@@ -1120,14 +1156,24 @@ class TradingEngine:
                                 analysis_snapshots, analysis_portfolio
                             )
                         if len(results) != len(analysis_snapshots):
-                            raise ProviderError("provider returned the wrong number of batch intents")
-                        expected = [(item.symbol, item.cadence) for item in analysis_snapshots]
-                        actual = [(item.intent.symbol, item.intent.cadence) for item in results]
+                            raise ProviderError(
+                                "provider returned the wrong number of batch intents"
+                            )
+                        expected = [
+                            (item.symbol, item.cadence) for item in analysis_snapshots
+                        ]
+                        actual = [
+                            (item.intent.symbol, item.intent.cadence)
+                            for item in results
+                        ]
                         if actual != expected:
-                            raise ProviderError("provider batch intents do not match input order")
+                            raise ProviderError(
+                                "provider batch intents do not match input order"
+                            )
                     except Exception as exc:
                         provider_error = (
-                            exc if isinstance(exc, ProviderError)
+                            exc
+                            if isinstance(exc, ProviderError)
                             else ProviderError(f"{type(exc).__name__}: {exc}")
                         )
                         failed_at = datetime.now(UTC)
@@ -1136,13 +1182,22 @@ class TradingEngine:
                         state.cooldown_until = failed_at + PROVIDER_FAILURE_COOLDOWN
                         state.last_error = str(provider_error)
                         state.last_failed_at = failed_at
-                        continues = position < len(round_candidates) or attempt_number < DECISION_PROVIDER_MAX_ATTEMPTS
-                        failed_batches.append(self._provider_failure_batch(
-                            provider_name=name, provider=provider, error=provider_error,
-                            snapshots=analysis_snapshots, portfolio=analysis_portfolio,
-                            route_position=self.provider_chain.index(name) + 1,
-                            failover_continues=continues, decision_attempt=attempt_number,
-                        ))
+                        continues = (
+                            position < len(round_candidates)
+                            or attempt_number < DECISION_PROVIDER_MAX_ATTEMPTS
+                        )
+                        failed_batches.append(
+                            self._provider_failure_batch(
+                                provider_name=name,
+                                provider=provider,
+                                error=provider_error,
+                                snapshots=analysis_snapshots,
+                                portfolio=analysis_portfolio,
+                                route_position=self.provider_chain.index(name) + 1,
+                                failover_continues=continues,
+                                decision_attempt=attempt_number,
+                            )
+                        )
                         results = None
                         continue
                     state = self._provider_route_states[name]
@@ -1167,11 +1222,17 @@ class TradingEngine:
                 if results is None and batch is failed_batches[-1]:
                     continue
                 for failed_result in batch:
-                    await self.audit.record_inference(failed_result, live_run_id=self.live_run_id)
+                    await self.audit.record_inference(
+                        failed_result, live_run_id=self.live_run_id
+                    )
             if results is None:
                 if not failed_batches:
                     raise RuntimeError("no provider route was attempted")
                 results = failed_batches[-1]
+
+        await self._record_replay_inputs(
+            analysis_snapshots, analysis_portfolio, rules_by_symbol
+        )
 
         outcomes: list[DecisionOutcome] = []
         for snapshot, result in zip(analysis_snapshots, results, strict=True):
@@ -1183,6 +1244,39 @@ class TradingEngine:
             )
         return outcomes
 
+    async def _record_replay_inputs(
+        self,
+        snapshots: list[MarketSnapshot],
+        portfolio: PortfolioState,
+        rules_by_symbol: Mapping[str, SymbolRules],
+    ) -> None:
+        """Save exactly what the final formal decision attempt consumed."""
+
+        if self.live_run_id is None:
+            return
+        portfolio_payload = portfolio.model_dump(mode="json")
+        batch_id = str(uuid4())
+        await self.audit.record_live_decision_snapshots(
+            self.live_run_id,
+            [
+                {
+                    "symbol": snapshot.symbol,
+                    "batch_id": batch_id,
+                    "cadence": snapshot.cadence,
+                    "captured_at": snapshot.timestamp,
+                    "market": snapshot.model_dump(mode="json"),
+                    "portfolio": portfolio_payload,
+                    "rules": {
+                        key: str(value) if isinstance(value, Decimal) else value
+                        for key, value in asdict(
+                            rules_by_symbol[snapshot.symbol]
+                        ).items()
+                    },
+                }
+                for snapshot in snapshots
+            ],
+        )
+
     async def _evaluate_batch_result(
         self,
         analysis_snapshot: MarketSnapshot,
@@ -1190,7 +1284,9 @@ class TradingEngine:
         result: ProviderResult,
         rules: SymbolRules,
     ) -> DecisionOutcome:
-        inference_id = await self.audit.record_inference(result, live_run_id=self.live_run_id)
+        inference_id = await self.audit.record_inference(
+            result, live_run_id=self.live_run_id
+        )
         if (
             result.intent.action != TradeAction.HOLD
             and (reason := self._order_submission_block_reason()) is not None
@@ -1203,13 +1299,17 @@ class TradingEngine:
         evaluation_snapshot = analysis_snapshot
         evaluation_portfolio = analysis_portfolio
         if result.intent.action != TradeAction.HOLD:
-            analysis_age = (datetime.now(UTC) - analysis_snapshot.timestamp).total_seconds()
+            analysis_age = (
+                datetime.now(UTC) - analysis_snapshot.timestamp
+            ).total_seconds()
             if analysis_age < -2 or analysis_age > self.risk.max_snapshot_age_seconds:
                 rejection = RiskDecision(
                     accepted=False,
                     reason="analysis snapshot expired before pre-trade refresh",
                 )
-                await self.audit.record_risk(analysis_snapshot.symbol, rejection, inference_id=inference_id)
+                await self.audit.record_risk(
+                    analysis_snapshot.symbol, rejection, inference_id=inference_id
+                )
                 return DecisionOutcome(result.intent, rejection, None, result.provider)
             try:
                 evaluation_snapshot = await self.market.market_snapshot(
@@ -1221,7 +1321,9 @@ class TradingEngine:
                     accepted=False,
                     reason=f"pre-trade refresh failed: {type(exc).__name__}",
                 )
-                await self.audit.record_risk(analysis_snapshot.symbol, rejection, inference_id=inference_id)
+                await self.audit.record_risk(
+                    analysis_snapshot.symbol, rejection, inference_id=inference_id
+                )
                 return DecisionOutcome(result.intent, rejection, None, result.provider)
         evaluation = self._prepare_pending_evaluation(
             result.intent,
@@ -1256,26 +1358,47 @@ class TradingEngine:
                 result.intent,
                 evaluation.order,
             )
-        return DecisionOutcome(result.intent, evaluation.decision, execution, result.provider)
+        return DecisionOutcome(
+            result.intent, evaluation.decision, execution, result.provider
+        )
 
     @classmethod
     def _provider_failure_batch(
-        cls, *, provider_name: str, provider: object, error: ProviderError,
-        snapshots: list[MarketSnapshot], portfolio: PortfolioState, route_position: int,
-        failover_continues: bool, decision_attempt: int,
+        cls,
+        *,
+        provider_name: str,
+        provider: object,
+        error: ProviderError,
+        snapshots: list[MarketSnapshot],
+        portfolio: PortfolioState,
+        route_position: int,
+        failover_continues: bool,
+        decision_attempt: int,
     ) -> list[ProviderResult]:
         results = [
             cls._provider_failure_result(
-                provider_name=provider_name, provider=provider, error=error, snapshot=snapshot,
-                portfolio=portfolio, route_position=route_position,
-                failover_continues=failover_continues, decision_attempt=decision_attempt,
-            ) for snapshot in snapshots
+                provider_name=provider_name,
+                provider=provider,
+                error=error,
+                snapshot=snapshot,
+                portfolio=portfolio,
+                route_position=route_position,
+                failover_continues=failover_continues,
+                decision_attempt=decision_attempt,
+            )
+            for snapshot in snapshots
         ]
         size = len(results)
         for index, result in enumerate(results):
             usage = dict(result.usage)
-            for key in ("input_tokens", "cached_input_tokens", "cache_read_input_tokens",
-                        "cache_creation_input_tokens", "output_tokens", "total_tokens"):
+            for key in (
+                "input_tokens",
+                "cached_input_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+                "output_tokens",
+                "total_tokens",
+            ):
                 if key in usage:
                     total = int(usage[key] or 0)
                     usage[key] = total // size + (1 if index < total % size else 0)
@@ -1315,9 +1438,13 @@ class TradingEngine:
             f"{'continuing failover' if failover_continues else 'no provider succeeded'}: {error}"
         )
         return ProviderResult(
-            intent=TradeIntent.hold(snapshot.symbol, snapshot.cadence, rationale[:2000]),
+            intent=TradeIntent.hold(
+                snapshot.symbol, snapshot.cadence, rationale[:2000]
+            ),
             provider=provider_name,
-            model=diagnostics.model if diagnostics else getattr(provider, "model", None),
+            model=diagnostics.model
+            if diagnostics
+            else getattr(provider, "model", None),
             duration=diagnostics.duration if diagnostics else timedelta(0),
             raw_output=diagnostics.raw_output if diagnostics else str(error),
             usage=usage,

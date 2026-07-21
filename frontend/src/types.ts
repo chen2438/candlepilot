@@ -620,6 +620,7 @@ export interface BacktestRun {
     providers: string[];
     provider_configs: Record<string, { model: string | null; reasoning_effort: string | null }>;
     use_recorded_book: boolean;
+    replay_live_run_id: number | null;
     timeout_seconds: number | null;
     timeout_source: "explicit" | "provider_config" | "not_applicable";
     estimate: { decisions_per_model: number; total_calls: number; estimated_hours: number };
@@ -627,6 +628,16 @@ export interface BacktestRun {
   created_at: string;
   ended_at: string | null;
   models: BacktestModelRun[];
+}
+
+export interface ReplayableFormalRun {
+  id: number;
+  status: string;
+  started_at: string;
+  ended_at: string | null;
+  snapshot_count: number;
+  symbols: string[];
+  cadences: string[];
 }
 
 export interface CollectorStatus {

@@ -16,6 +16,8 @@ from candlepilot.domain.models import (
     StructureCheck,
     TradeAction,
     TradeIntent,
+    MarketSnapshot,
+    PortfolioState,
 )
 from candlepilot.providers.base import ProviderResult
 from candlepilot.providers.pricing import parse_models_dev
@@ -46,7 +48,10 @@ def test_inference_audit_round_trip(tmp_path: Path) -> None:
                 prompt_version="trade-intent-v1",
                 data_version="market-snapshot-v1:sha256:test",
                 provider_version="codex-cli 1.0",
-                input_payload={"market": {"symbol": "BTCUSDT"}, "portfolio": {"equity": "1"}},
+                input_payload={
+                    "market": {"symbol": "BTCUSDT"},
+                    "portfolio": {"equity": "1"},
+                },
                 prompt="fixture prompt",
             )
         )
@@ -76,6 +81,56 @@ def test_inference_audit_round_trip(tmp_path: Path) -> None:
     assert detail["audit_status"] == "complete"
     assert '"symbol":"BTCUSDT"' in detail["raw_output"]
     assert detail["usage"]["input_tokens"] == 10
+
+
+def test_live_decision_snapshots_are_independent_replay_inputs(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'replay.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        portfolio = PortfolioState(equity="10000", available_balance="10000")
+        run_id = await repository.create_live_run(
+            {"initial_portfolio": portfolio.model_dump(mode="json")}
+        )
+        snapshot = MarketSnapshot(
+            symbol="BTCUSDT",
+            cadence="5m",
+            timestamp=datetime.now(UTC),
+            mark_price="100",
+            bid="99.9",
+            ask="100.1",
+            quote_volume_24h="1",
+            features={"5m_ema_20": 99.0},
+        )
+        await repository.record_live_decision_snapshots(
+            run_id,
+            [
+                {
+                    "symbol": snapshot.symbol,
+                    "batch_id": "00000000-0000-0000-0000-000000000001",
+                    "cadence": snapshot.cadence,
+                    "captured_at": snapshot.timestamp,
+                    "market": snapshot.model_dump(mode="json"),
+                    "portfolio": portfolio.model_dump(mode="json"),
+                    "rules": {
+                        "quantity_step": "0.001",
+                        "min_quantity": "0.001",
+                        "min_notional": "5",
+                        "tick_size": "0.01",
+                    },
+                }
+            ],
+        )
+        rows = await repository.live_decision_snapshots(run_id)
+        runs = await repository.replayable_live_runs()
+        await database.close()
+        return rows, runs
+
+    rows, runs = asyncio.run(scenario())
+    assert rows[0]["market"]["features"]["5m_ema_20"] == 99.0
+    assert rows[0]["portfolio"]["equity"] == "10000"
+    assert runs[0]["snapshot_count"] == 1
+    assert runs[0]["symbols"] == ["BTCUSDT"]
 
 
 def test_live_runs_group_inferences_and_record_terminal_reason(tmp_path: Path) -> None:
@@ -123,8 +178,8 @@ def test_live_runs_group_inferences_and_record_terminal_reason(tmp_path: Path) -
         await database.close()
         return run_id, inference_id, events, performance, stale_id, interrupted, legacy
 
-    run_id, inference_id, events, performance, stale_id, interrupted, legacy = asyncio.run(
-        scenario()
+    run_id, inference_id, events, performance, stale_id, interrupted, legacy = (
+        asyncio.run(scenario())
     )
     assert events[0]["id"] == inference_id
     assert events[0]["live_run_id"] == run_id
@@ -203,7 +258,9 @@ def test_execution_and_risk_queries_filter_and_order(tmp_path: Path) -> None:
         repository = AuditRepository(database.sessions)
         await repository.record_execution(
             "BTCUSDT",
-            ExecutionReport(client_order_id="cp-1", status="FILLED", average_price=Decimal("100")),
+            ExecutionReport(
+                client_order_id="cp-1", status="FILLED", average_price=Decimal("100")
+            ),
         )
         await repository.record_execution(
             "ETHUSDT",
@@ -220,7 +277,9 @@ def test_execution_and_risk_queries_filter_and_order(tmp_path: Path) -> None:
                 usage={},
             )
         )
-        await repository.record_risk("BTCUSDT", RiskDecision(accepted=True, reason="within limits"))
+        await repository.record_risk(
+            "BTCUSDT", RiskDecision(accepted=True, reason="within limits")
+        )
         await repository.record_risk(
             "ETHUSDT",
             RiskDecision(accepted=False, reason="missing stop"),
@@ -234,7 +293,9 @@ def test_execution_and_risk_queries_filter_and_order(tmp_path: Path) -> None:
         await database.close()
         return orders, fills, risk, rejections, inference_id, structure_summary
 
-    orders, fills, risk, rejections, inference_id, structure_summary = asyncio.run(scenario())
+    orders, fills, risk, rejections, inference_id, structure_summary = asyncio.run(
+        scenario()
+    )
     assert [item["client_order_id"] for item in orders] == ["cp-2", "cp-1"]
     assert [item["status"] for item in fills] == ["FILLED"]
     assert fills[0]["report"]["average_price"] == "100"
@@ -246,7 +307,9 @@ def test_execution_and_risk_queries_filter_and_order(tmp_path: Path) -> None:
     assert structure_summary["pass_rate"] is None
 
 
-def test_structure_gate_summary_aggregates_embedded_shadow_checks(tmp_path: Path) -> None:
+def test_structure_gate_summary_aggregates_embedded_shadow_checks(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> dict[str, object]:
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'structure-summary.db'}")
         await database.initialize()
@@ -261,8 +324,12 @@ def test_structure_gate_summary_aggregates_embedded_shadow_checks(tmp_path: Path
                         mode="shadow",
                         passed=passed,
                         checks=(
-                            StructureCheck(key="metadata", passed=True, detail="complete"),
-                            StructureCheck(key="extension", passed=passed, detail="checked"),
+                            StructureCheck(
+                                key="metadata", passed=True, detail="complete"
+                            ),
+                            StructureCheck(
+                                key="extension", passed=passed, detail="checked"
+                            ),
                         ),
                     ),
                 ),
@@ -282,7 +349,9 @@ def test_structure_gate_summary_aggregates_embedded_shadow_checks(tmp_path: Path
     ]
 
 
-def test_order_events_advance_the_execution_audit_to_final_status(tmp_path: Path) -> None:
+def test_order_events_advance_the_execution_audit_to_final_status(
+    tmp_path: Path,
+) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'execution-updates.db'}")
         await database.initialize()
@@ -297,7 +366,14 @@ def test_order_events_advance_the_execution_audit_to_final_status(tmp_path: Path
                 now,
                 now,
                 "BTCUSDT",
-                {"o": {"c": "cp-live", "X": "PARTIALLY_FILLED", "z": "0.4", "ap": "99"}},
+                {
+                    "o": {
+                        "c": "cp-live",
+                        "X": "PARTIALLY_FILLED",
+                        "z": "0.4",
+                        "ap": "99",
+                    }
+                },
             )
         )
         await repository.record_user_event(
@@ -328,7 +404,9 @@ def test_order_events_advance_the_execution_audit_to_final_status(tmp_path: Path
     assert result["report"]["average_price"] == "100"
 
 
-def test_execution_record_catches_up_when_the_user_event_arrives_first(tmp_path: Path) -> None:
+def test_execution_record_catches_up_when_the_user_event_arrives_first(
+    tmp_path: Path,
+) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'execution-race.db'}")
         await database.initialize()
@@ -639,7 +717,19 @@ def test_live_run_performance_revalues_partial_manual_close_after_stop(
                 now,
                 now,
                 "BTCUSDT",
-                {"o": {"c": "cp-partial-entry", "s": "BTCUSDT", "S": "BUY", "x": "TRADE", "X": "FILLED", "z": "10", "ap": "100", "R": False, "rp": "0"}},
+                {
+                    "o": {
+                        "c": "cp-partial-entry",
+                        "s": "BTCUSDT",
+                        "S": "BUY",
+                        "x": "TRADE",
+                        "X": "FILLED",
+                        "z": "10",
+                        "ap": "100",
+                        "R": False,
+                        "rp": "0",
+                    }
+                },
             )
         )
         await repository.finish_live_run(
@@ -654,13 +744,23 @@ def test_live_run_performance_revalues_partial_manual_close_after_stop(
                 now + timedelta(seconds=2),
                 now + timedelta(seconds=2),
                 "BTCUSDT",
-                {"o": {"c": "cp-manual-partial", "s": "BTCUSDT", "S": "SELL", "x": "TRADE", "X": "FILLED", "z": "4", "ap": "110", "R": True, "rp": "40"}},
+                {
+                    "o": {
+                        "c": "cp-manual-partial",
+                        "s": "BTCUSDT",
+                        "S": "SELL",
+                        "x": "TRADE",
+                        "X": "FILLED",
+                        "z": "4",
+                        "ap": "110",
+                        "R": True,
+                        "rp": "40",
+                    }
+                },
             )
         )
         performance = await repository.recent_live_run_performance(
-            current_positions={
-                "BTCUSDT": {"mark_price": "105", "unrealized_pnl": "30"}
-            }
+            current_positions={"BTCUSDT": {"mark_price": "105", "unrealized_pnl": "30"}}
         )
         await database.close()
         return performance[0]
@@ -762,7 +862,9 @@ def test_model_close_fill_uses_linked_intent_instead_of_order_id_shape(
             )
         fills = await repository.recent_trade_fills()
         await database.close()
-        return next(fill for fill in fills if fill["client_order_id"] == "cp-generic-close")
+        return next(
+            fill for fill in fills if fill["client_order_id"] == "cp-generic-close"
+        )
 
     fill = asyncio.run(scenario())
     assert fill["purpose"] == "model_close"
@@ -773,13 +875,19 @@ def test_model_close_fill_uses_linked_intent_instead_of_order_id_shape(
     assert Decimal(fill["realized_return_percent"]) < 0
     assert AuditRepository._trade_fill_identity(
         "cp-generic-reduce", intent_action="REDUCE"
-    ) == ("model_reduce", None)
-    assert AuditRepository._trade_fill_identity(
-        "external-order", reduce_only=True
-    ) == ("other_close", None)
+    ) == (
+        "model_reduce",
+        None,
+    )
+    assert AuditRepository._trade_fill_identity("external-order", reduce_only=True) == (
+        "other_close",
+        None,
+    )
 
 
-def test_trade_fill_realized_return_uses_combined_add_entry_margin(tmp_path: Path) -> None:
+def test_trade_fill_realized_return_uses_combined_add_entry_margin(
+    tmp_path: Path,
+) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'add-fill-return.db'}")
         await database.initialize()
@@ -832,7 +940,14 @@ def test_trade_fill_realized_return_uses_combined_add_entry_margin(tmp_path: Pat
                 message="filled",
             ),
         )
-        for client_order_id, side, quantity, average_price, realized_pnl, reduce_only in (
+        for (
+            client_order_id,
+            side,
+            quantity,
+            average_price,
+            realized_pnl,
+            reduce_only,
+        ) in (
             ("cp-add", "BUY", "50", "12", "0", False),
             ("cp-add-tp", "SELL", "150", "14", "500", True),
         ):
@@ -907,7 +1022,9 @@ def test_decision_events_join_inference_and_risk_outcomes(tmp_path: Path) -> Non
         )
         hold = TradeIntent.hold("ETHUSDT", "5m", "no setup")
         hold_id = await repository.record_inference(
-            ProviderResult(hold, "claude-code-auth", None, timedelta(milliseconds=20), "{}", {})
+            ProviderResult(
+                hold, "claude-code-auth", None, timedelta(milliseconds=20), "{}", {}
+            )
         )
         await repository.record_risk(
             "ETHUSDT",
@@ -1075,10 +1192,18 @@ def test_provider_metrics_aggregate_tokens_and_equivalent_cost(tmp_path: Path) -
 
         # Claude: tokens + equivalent USD cost.
         await repository.record_inference(
-            result("claude-code-auth", "claude-sonnet-5", {"total_tokens": 100, "cost_usd": 0.05})
+            result(
+                "claude-code-auth",
+                "claude-sonnet-5",
+                {"total_tokens": 100, "cost_usd": 0.05},
+            )
         )
         await repository.record_inference(
-            result("claude-code-auth", "claude-sonnet-5", {"total_tokens": 40, "cost_usd": 0.02})
+            result(
+                "claude-code-auth",
+                "claude-sonnet-5",
+                {"total_tokens": 40, "cost_usd": 0.02},
+            )
         )
         # Codex: tokens only, no cost data (subscription).
         await repository.record_inference(
@@ -1105,7 +1230,11 @@ def test_provider_metrics_price_codex_via_catalog(tmp_path: Path) -> None:
     catalog = parse_models_dev(
         {
             "openai": {
-                "models": {"gpt-5.6-sol": {"cost": {"input": 5, "output": 30, "cache_read": 0.5}}}
+                "models": {
+                    "gpt-5.6-sol": {
+                        "cost": {"input": 5, "output": 30, "cache_read": 0.5}
+                    }
+                }
             }
         }
     )
@@ -1141,7 +1270,9 @@ def test_provider_metrics_price_codex_via_catalog(tmp_path: Path) -> None:
     assert codex["tokens_total"] == 1200
 
 
-def test_run_session_metrics_respect_id_boundaries_and_complete_cost(tmp_path: Path) -> None:
+def test_run_session_metrics_respect_id_boundaries_and_complete_cost(
+    tmp_path: Path,
+) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'run-session.db'}")
         await database.initialize()
@@ -1281,7 +1412,9 @@ def test_database_migrations_are_versioned_and_idempotent(tmp_path: Path) -> Non
     assert asyncio.run(scenario()) == (CURRENT_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION)
 
 
-def test_current_database_baseline_advances_without_legacy_migrations(tmp_path: Path) -> None:
+def test_current_database_baseline_advances_without_legacy_migrations(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "schema-v12.db"
     connection = sqlite3.connect(path)
     connection.executescript(
@@ -1302,7 +1435,9 @@ def test_current_database_baseline_advances_without_legacy_migrations(tmp_path: 
     assert asyncio.run(scenario()) == CURRENT_SCHEMA_VERSION
 
 
-def test_prebaseline_database_is_rejected_instead_of_guessed_forward(tmp_path: Path) -> None:
+def test_prebaseline_database_is_rejected_instead_of_guessed_forward(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "schema-v11.db"
     connection = sqlite3.connect(path)
     connection.executescript(
@@ -1327,7 +1462,9 @@ def test_prebaseline_database_is_rejected_instead_of_guessed_forward(tmp_path: P
 async def _seed_decisions(repository: AuditRepository) -> None:
     """One decision of every outcome the classifier can produce."""
 
-    async def infer(symbol: str, cadence: str, provider: str, intent: TradeIntent) -> int:
+    async def infer(
+        symbol: str, cadence: str, provider: str, intent: TradeIntent
+    ) -> int:
         return await repository.record_inference(
             ProviderResult(
                 intent=intent,
@@ -1353,11 +1490,15 @@ async def _seed_decisions(repository: AuditRepository) -> None:
         )
 
     # hold
-    await infer("BTCUSDT", "5m", "codex-auth", TradeIntent.hold("BTCUSDT", "5m", "no setup"))
+    await infer(
+        "BTCUSDT", "5m", "codex-auth", TradeIntent.hold("BTCUSDT", "5m", "no setup")
+    )
     # analysis_only: an intent that never reached the risk policy.
     await infer("ETHUSDT", "5m", "codex-auth", opening("ETHUSDT", "5m"))
     # rejected
-    rejected = await infer("BTCUSDT", "15m", "claude-code-auth", opening("BTCUSDT", "15m"))
+    rejected = await infer(
+        "BTCUSDT", "15m", "claude-code-auth", opening("BTCUSDT", "15m")
+    )
     await repository.record_risk(
         "BTCUSDT", RiskDecision(accepted=False, reason="no"), inference_id=rejected
     )
@@ -1374,7 +1515,10 @@ async def _seed_decisions(repository: AuditRepository) -> None:
     await repository.record_execution_attempt(
         "SOLUSDT",
         ExecutionAttempt(
-            inference_id=executed, status="SUCCEEDED", stage="COMPLETE", message="filled"
+            inference_id=executed,
+            status="SUCCEEDED",
+            stage="COMPLETE",
+            message="filled",
         ),
     )
     # execution_failed
@@ -1422,7 +1566,9 @@ def test_outcome_filter_agrees_with_the_python_classifier(tmp_path: Path) -> Non
         assert expected, outcome
 
 
-def test_decision_events_page_backwards_without_skipping_or_repeating(tmp_path: Path) -> None:
+def test_decision_events_page_backwards_without_skipping_or_repeating(
+    tmp_path: Path,
+) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'paging.db'}")
         await database.initialize()
@@ -1518,7 +1664,9 @@ def test_paging_and_filtering_compose(tmp_path: Path) -> None:
     assert all(event["intent"]["symbol"] == "SOLUSDT" for event in both)
 
 
-def test_custom_endpoint_is_priced_once_it_declares_who_bills_it(tmp_path: Path) -> None:
+def test_custom_endpoint_is_priced_once_it_declares_who_bills_it(
+    tmp_path: Path,
+) -> None:
     """Custom API calls showed no cost at all, whatever the model.
 
     The provider name is "openai-compatible:<id>", which no fixed map contained,
@@ -1528,7 +1676,13 @@ def test_custom_endpoint_is_priced_once_it_declares_who_bills_it(tmp_path: Path)
     """
 
     catalog = parse_models_dev(
-        {"xai": {"models": {"grok-4.5": {"cost": {"input": 2, "output": 6, "cache_read": 0.5}}}}}
+        {
+            "xai": {
+                "models": {
+                    "grok-4.5": {"cost": {"input": 2, "output": 6, "cache_read": 0.5}}
+                }
+            }
+        }
     )
 
     async def scenario():
@@ -1543,7 +1697,11 @@ def test_custom_endpoint_is_priced_once_it_declares_who_bills_it(tmp_path: Path)
                 model="grok-4.5",
                 duration=timedelta(seconds=28),
                 raw_output=intent.model_dump_json(),
-                usage={"input_tokens": 1_000_000, "output_tokens": 1_000_000, "total_tokens": 2_000_000},
+                usage={
+                    "input_tokens": 1_000_000,
+                    "output_tokens": 1_000_000,
+                    "total_tokens": 2_000_000,
+                },
             )
         )
         declared = await repository.provider_metrics(

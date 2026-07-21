@@ -17,7 +17,7 @@ from datetime import datetime
 
 from candlepilot.backtest.runner import BacktestSpec, decision_times
 from candlepilot.backtest.snapshots import HistoricalSnapshotBuilder
-from candlepilot.domain.models import PortfolioState
+from candlepilot.domain.models import MarketSnapshot, PortfolioState
 from candlepilot.providers.base import DecisionProvider
 
 #: Calls per provider. Five samples are still cheap next to a full backtest,
@@ -147,6 +147,7 @@ async def probe_provider(
     portfolio: PortfolioState,
     ceiling: float = PROBE_CEILING_SECONDS,
     into: ProviderProbe | None = None,
+    snapshots: Sequence[MarketSnapshot] | None = None,
 ) -> ProviderProbe:
     """Time `PROBE_DECISIONS` real calls against `provider`.
 
@@ -160,7 +161,8 @@ async def probe_provider(
 
     result = into if into is not None else ProviderProbe(provider=provider.name)
     instants = probe_instants(spec)
-    if not instants:
+    replay_inputs = list(snapshots or ())
+    if not replay_inputs and not instants:
         result.error = "the window holds no decision instants to probe"
         result.done = True
         return result
@@ -168,12 +170,16 @@ async def probe_provider(
     previous = provider.timeout
     provider.timeout = ceiling
     try:
-        for when in instants:
-            try:
-                snapshot = builder.build(symbol, spec.cadences[0], when)
-            except ValueError as exc:
-                result.error = f"no snapshot at {when.isoformat()}: {exc}"[:200]
-                return result
+        for index in range(PROBE_DECISIONS):
+            if replay_inputs:
+                snapshot = replay_inputs[index % len(replay_inputs)]
+            else:
+                when = instants[index]
+                try:
+                    snapshot = builder.build(symbol, spec.cadences[0], when)
+                except ValueError as exc:
+                    result.error = f"no snapshot at {when.isoformat()}: {exc}"[:200]
+                    return result
             started = time.monotonic()
             result.started_at = started
             try:

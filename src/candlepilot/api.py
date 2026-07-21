@@ -16,7 +16,14 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
@@ -173,9 +180,7 @@ class RunLimits(ApiModel):
 
 
 class EngineStartRequest(ApiModel):
-    timeout_seconds: float | None = Field(
-        default=None, gt=0, le=MAX_SUGGESTED_TIMEOUT
-    )
+    timeout_seconds: float | None = Field(default=None, gt=0, le=MAX_SUGGESTED_TIMEOUT)
 
 
 class ClosePositionRequest(ApiModel):
@@ -210,6 +215,7 @@ class BacktestRequest(ApiModel):
     # Only possible over a window the collector covered; the coverage is
     # checked up front rather than degrading decision by decision.
     use_recorded_book: bool = False
+    replay_live_run_id: int | None = Field(default=None, gt=0)
     # Set from a probe of these providers. None inherits the providers'
     # configured timeout when the run is created; that effective value is
     # then frozen on the run for reproducibility.
@@ -220,12 +226,12 @@ class CollectorStart(ApiModel):
     symbols: list[str] = Field(min_length=1, max_length=MAX_COLLECTED_SYMBOLS)
 
 
-
 # CLI-accepted aliases that are not published as models.dev ids.
 _CURATED_MODEL_ALIASES: dict[str, tuple[str, ...]] = {
     "claude-code-auth": ("sonnet", "opus", "haiku", "fable"),
 }
 _MODEL_ID_PREFIX: dict[str, str] = {"openai": "gpt-5", "anthropic": "claude-"}
+
 
 def _capture_features(row: dict[str, Any]) -> dict[str, float]:
     """Rebuild the microstructure block from a stored capture.
@@ -365,7 +371,9 @@ def _json_value(value: Any) -> Any:
     return value
 
 
-def _status(engine: TradingEngine, scheduler: TradingScheduler | None = None) -> dict[str, Any]:
+def _status(
+    engine: TradingEngine, scheduler: TradingScheduler | None = None
+) -> dict[str, Any]:
     testnet_feed = scheduler.testnet_feed if scheduler is not None else None
     return {
         "running": engine.running,
@@ -393,7 +401,9 @@ def _status(engine: TradingEngine, scheduler: TradingScheduler | None = None) ->
         "rescue_count": engine.rescue_count,
         "rescue_limit": MAX_RESCUES_PER_RUN,
         "supported_cadences": list(SUPPORTED_CADENCES),
-        "candidates_per_cycle": scheduler.candidates_per_cycle if scheduler is not None else None,
+        "candidates_per_cycle": scheduler.candidates_per_cycle
+        if scheduler is not None
+        else None,
         "max_candidates_per_cycle": MAX_CANDIDATES_PER_CYCLE,
         "candidate_count": len(engine.candidates),
         "venue_excluded_symbols": list(engine.venue_excluded_symbols),
@@ -410,7 +420,9 @@ def _status(engine: TradingEngine, scheduler: TradingScheduler | None = None) ->
             "universe_last_error": scheduler.universe_last_error
             if scheduler is not None
             else None,
-            "guard_last_error": scheduler.guard_last_error if scheduler is not None else None,
+            "guard_last_error": scheduler.guard_last_error
+            if scheduler is not None
+            else None,
             "trailing_stop": scheduler.trailing_stops.status
             if scheduler is not None
             else None,
@@ -443,7 +455,8 @@ def create_app(
     database: Database | None = None,
     market: BinancePublicClient | None = None,
     engine: TradingEngine | None = None,
-    pricing_loader: Callable[[Path], Awaitable[ModelPricingCatalog | None]] | None = None,
+    pricing_loader: Callable[[Path], Awaitable[ModelPricingCatalog | None]]
+    | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     provider_pricing_ids = pricing_provider_ids(settings)
@@ -501,12 +514,15 @@ def create_app(
         TestnetUserFeed(
             testnet_stream,
             engine.audit,
-            event_handler=testnet_broker.handle_user_event if testnet_broker is not None else None,
+            event_handler=testnet_broker.handle_user_event
+            if testnet_broker is not None
+            else None,
         )
         if testnet_stream is not None
         else None
     )
     instance_lock = ServiceInstanceLock(database.url)
+
     async def current_run_cost_usd() -> float | None:
         if engine.run_start_inference_id is None:
             return None
@@ -599,7 +615,10 @@ def create_app(
                     account = {
                         **account,
                         "positions": [
-                            {**item, **risk_by_symbol.get(str(item.get("symbol", "")), {})}
+                            {
+                                **item,
+                                **risk_by_symbol.get(str(item.get("symbol", "")), {}),
+                            }
                             for item in account.get("positions", [])
                         ],
                     }
@@ -747,9 +766,13 @@ def create_app(
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             origin = request.headers.get("origin")
             if origin and urlsplit(origin).netloc != request.headers.get("host"):
-                return JSONResponse(status_code=403, content={"detail": "cross-site request denied"})
+                return JSONResponse(
+                    status_code=403, content={"detail": "cross-site request denied"}
+                )
             if request.headers.get("sec-fetch-site") == "cross-site":
-                return JSONResponse(status_code=403, content={"detail": "cross-site request denied"})
+                return JSONResponse(
+                    status_code=403, content={"detail": "cross-site request denied"}
+                )
         request.state.auth_identity = identity
         response = await call_next(request)
         response.headers.setdefault("Cache-Control", "no-store")
@@ -802,7 +825,9 @@ def create_app(
         end: datetime,
         limit: int,
     ) -> list[dict[str, Any]]:
-        cached = await asyncio.to_thread(history_cache.load, symbol, cadence, start, end, limit)
+        cached = await asyncio.to_thread(
+            history_cache.load, symbol, cadence, start, end, limit
+        )
         if cached is not None:
             return cached
         rows, events = await asyncio.gather(
@@ -810,7 +835,9 @@ def create_app(
             market.historical_funding_rates(symbol, start, end),
         )
         candles = build_backtest_candles(rows, events, cadence)
-        await asyncio.to_thread(history_cache.store, symbol, cadence, start, end, limit, candles)
+        await asyncio.to_thread(
+            history_cache.store, symbol, cadence, start, end, limit, candles
+        )
         return candles
 
     @app.get("/api/auth/status")
@@ -820,8 +847,12 @@ def create_app(
             content={
                 "enabled": auth.enabled,
                 "authenticated": identity is not None,
-                "username": identity.username if identity is not None and auth.enabled else None,
-                "expires_at": identity.expires_at if identity is not None and auth.enabled else None,
+                "username": identity.username
+                if identity is not None and auth.enabled
+                else None,
+                "expires_at": identity.expires_at
+                if identity is not None and auth.enabled
+                else None,
             },
             headers={"Cache-Control": "no-store"},
         )
@@ -932,7 +963,9 @@ def create_app(
                     "auth_source_options": list(
                         getattr(provider, "auth_source_options", ())
                     ),
-                    "pricing": provider_pricing_ids.get(item.provider) if custom else None,
+                    "pricing": provider_pricing_ids.get(item.provider)
+                    if custom
+                    else None,
                     "pricing_options": _pricing_options(catalog) if custom else [],
                     "model_options": _model_options(
                         item.provider, catalog, provider.model, provider_pricing_ids
@@ -949,7 +982,8 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         if engine.running:
             raise HTTPException(
-                status_code=409, detail="cannot change provider settings while the engine runs"
+                status_code=409,
+                detail="cannot change provider settings while the engine runs",
             )
         if background_model_work():
             raise HTTPException(
@@ -985,7 +1019,9 @@ def create_app(
                     detail="auth source can only be changed for Codex Auth",
                 )
             if auth_source is None:
-                raise HTTPException(status_code=422, detail="Codex auth source is required")
+                raise HTTPException(
+                    status_code=422, detail="Codex auth source is required"
+                )
             try:
                 setter(auth_source)
             except ValueError as exc:
@@ -1012,7 +1048,8 @@ def create_app(
             )
         if background_model_work():
             raise HTTPException(
-                status_code=409, detail="cannot test a provider while a probe or backtest runs"
+                status_code=409,
+                detail="cannot test a provider while a probe or backtest runs",
             )
         # A one-off call with a synthetic snapshot proves the applied model and
         # reasoning effort authenticate and return a schema-valid TradeIntent.
@@ -1090,7 +1127,9 @@ def create_app(
     @app.get("/api/metrics/providers")
     async def get_provider_metrics(hours: int = 24) -> dict[str, Any]:
         if not 1 <= hours <= 720:
-            raise HTTPException(status_code=422, detail="hours must be between 1 and 720")
+            raise HTTPException(
+                status_code=422, detail="hours must be between 1 and 720"
+            )
         catalog = await pricing_catalog()
         return {
             "window_hours": hours,
@@ -1134,7 +1173,9 @@ def create_app(
             "state": "running" if engine.running else "completed",
             "started_at": engine.run_started_at,
             "ended_at": ended_at,
-            "duration_seconds": max(0, int((measured_at - engine.run_started_at).total_seconds())),
+            "duration_seconds": max(
+                0, int((measured_at - engine.run_started_at).total_seconds())
+            ),
             **metrics,
         }
 
@@ -1154,9 +1195,7 @@ def create_app(
             if reconciliation is not None
             else (),
             user_stream_error=status["user_stream"]["last_error"],
-            testnet_broker_missing=(
-                engine.testnet_broker is None
-            ),
+            testnet_broker_missing=(engine.testnet_broker is None),
         )
         async with alert_lock:
             transitions = alert_notifier.diff(alerts)
@@ -1173,13 +1212,17 @@ def create_app(
     @app.get("/api/alerts/history")
     async def get_alert_history(limit: int = 100) -> dict[str, Any]:
         if not 1 <= limit <= 500:
-            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+            raise HTTPException(
+                status_code=422, detail="limit must be between 1 and 500"
+            )
         return {"events": await engine.audit.recent_alert_events(limit)}
 
     @app.get("/api/trailing-stops/history")
     async def get_trailing_stop_history(limit: int = 100) -> dict[str, Any]:
         if not 1 <= limit <= 500:
-            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+            raise HTTPException(
+                status_code=422, detail="limit must be between 1 and 500"
+            )
         return {"events": await engine.audit.recent_trailing_stop_events(limit)}
 
     @app.post("/api/history/clear")
@@ -1188,7 +1231,9 @@ def create_app(
         valid = db_categories | {"market_cache", "pricing_cache"}
         unknown = sorted(set(request.categories) - valid)
         if unknown:
-            raise HTTPException(status_code=422, detail=f"unknown categories: {', '.join(unknown)}")
+            raise HTTPException(
+                status_code=422, detail=f"unknown categories: {', '.join(unknown)}"
+            )
         active: list[str] = []
         if engine.running:
             active.append("the formal decision engine")
@@ -1294,7 +1339,9 @@ def create_app(
                     "require_api_key": entry.get("require_api_key", True),
                     "pricing": entry.get("pricing") or "",
                     # Header values are secrets too: expose only their names.
-                    "extra_header_names": sorted(headers) if isinstance(headers, dict) else [],
+                    "extra_header_names": sorted(headers)
+                    if isinstance(headers, dict)
+                    else [],
                     "api_key_configured": bool(key),
                     "api_key_masked": mask_secret(key) if key else "",
                 }
@@ -1321,15 +1368,15 @@ def create_app(
             raise HTTPException(status_code=404, detail="custom provider not found")
         key = entry.get("api_key")
         if not isinstance(key, str) or not key:
-            raise HTTPException(status_code=404, detail="custom provider has no API key")
+            raise HTTPException(
+                status_code=404, detail="custom provider has no API key"
+            )
         return {"api_key": key}
 
     @app.post("/api/custom-providers")
     async def save_custom_providers(update: CustomProvidersUpdate) -> dict[str, Any]:
         async with settings_file_lock:
-            stored = {
-                entry.get("id"): entry for entry in _stored_custom_providers()
-            }
+            stored = {entry.get("id"): entry for entry in _stored_custom_providers()}
             entries: list[dict[str, Any]] = []
             for provider in update.providers:
                 previous = stored.get(provider.id, {})
@@ -1344,7 +1391,11 @@ def create_app(
                     ) from exc
                 entry: dict[str, Any] = {"id": provider.id, "base_url": base_url}
                 # Omitted key means "unchanged", so carry the stored one over.
-                key = provider.api_key if provider.api_key is not None else previous.get("api_key")
+                key = (
+                    provider.api_key
+                    if provider.api_key is not None
+                    else previous.get("api_key")
+                )
                 if key:
                     entry["api_key"] = key
                 for field, value in (
@@ -1392,10 +1443,13 @@ def create_app(
         if active:
             raise HTTPException(
                 status_code=409,
-                detail="stop active work before restarting the backend: " + ", ".join(active),
+                detail="stop active work before restarting the backend: "
+                + ", ".join(active),
             )
         if restart_pending:
-            raise HTTPException(status_code=409, detail="backend restart is already in progress")
+            raise HTTPException(
+                status_code=409, detail="backend restart is already in progress"
+            )
         restart_pending = True
 
         async def _reexec() -> None:
@@ -1425,7 +1479,8 @@ def create_app(
         unknown = set(update.values) - set(ENV_FIELDS)
         if unknown:
             raise HTTPException(
-                status_code=422, detail=f"unknown settings: {', '.join(sorted(unknown))}"
+                status_code=422,
+                detail=f"unknown settings: {', '.join(sorted(unknown))}",
             )
         for key, value in update.values.items():
             if "\n" in value or "\r" in value:
@@ -1434,7 +1489,10 @@ def create_app(
                 )
         async with settings_file_lock:
             current = read_env_file(env_path)
-            candidate = {**current, **{k: v for k, v in update.values.items() if v != ""}}
+            candidate = {
+                **current,
+                **{k: v for k, v in update.values.items() if v != ""},
+            }
             for key, value in update.values.items():
                 if value == "":
                     candidate.pop(key, None)
@@ -1477,7 +1535,9 @@ def create_app(
         portfolio = await engine.current_portfolio()
         candidate_symbol_set = set(candidate_symbols)
         extra_position_symbols = [
-            symbol for symbol in portfolio.positions if symbol not in candidate_symbol_set
+            symbol
+            for symbol in portfolio.positions
+            if symbol not in candidate_symbol_set
         ]
         analysis_symbols = [*candidate_symbols, *extra_position_symbols]
         if not analysis_symbols:
@@ -1505,8 +1565,7 @@ def create_app(
         engine.startup_probe = progress
         sample_started = time.perf_counter()
         snapshots = [
-            await market.market_snapshot(symbol, cadence)
-            for symbol in analysis_symbols
+            await market.market_snapshot(symbol, cadence) for symbol in analysis_symbols
         ]
         portfolio = await engine.current_portfolio()
         shared_seconds = time.perf_counter() - sample_started
@@ -1517,7 +1576,9 @@ def create_app(
             started = time.perf_counter()
             try:
                 async with asyncio.timeout(provider.timeout):
-                    results = await provider.generate_trade_intents(snapshots, portfolio)
+                    results = await provider.generate_trade_intents(
+                        snapshots, portfolio
+                    )
             except TimeoutError as exc:
                 raise RuntimeError(
                     f"{name} exceeded the absolute {provider.timeout:g}s startup timeout"
@@ -1552,11 +1613,16 @@ def create_app(
             summary = {
                 "status": "completed",
                 "model": results[0].model if results else provider.model,
-                "reasoning_effort": results[0].reasoning_effort if results else provider.reasoning_effort,
+                "reasoning_effort": results[0].reasoning_effort
+                if results
+                else provider.reasoning_effort,
                 "duration_seconds": round(duration_seconds, 3),
                 "actions": actions,
-                "input_tokens": sum(int(result.usage.get("input_tokens") or 0) for result in results)
-                if token_reported else None,
+                "input_tokens": sum(
+                    int(result.usage.get("input_tokens") or 0) for result in results
+                )
+                if token_reported
+                else None,
                 "cached_input_tokens": sum(
                     int(
                         result.usage.get("cached_input_tokens")
@@ -1564,9 +1630,14 @@ def create_app(
                         or 0
                     )
                     for result in results
-                ) if token_reported else None,
-                "output_tokens": sum(int(result.usage.get("output_tokens") or 0) for result in results)
-                if token_reported else None,
+                )
+                if token_reported
+                else None,
+                "output_tokens": sum(
+                    int(result.usage.get("output_tokens") or 0) for result in results
+                )
+                if token_reported
+                else None,
                 "total_tokens": sum(
                     int(
                         result.usage.get("total_tokens")
@@ -1574,7 +1645,9 @@ def create_app(
                         + int(result.usage.get("output_tokens") or 0)
                     )
                     for result in results
-                ) if token_reported else None,
+                )
+                if token_reported
+                else None,
                 "equivalent_cost_usd": equivalent_cost_usd,
                 "intents": [
                     {
@@ -1650,7 +1723,9 @@ def create_app(
             "checked_at": datetime.now(UTC).isoformat(),
         }
 
-    def resolve_live_timeout(request: EngineStartRequest) -> tuple[list[Any], float | None]:
+    def resolve_live_timeout(
+        request: EngineStartRequest,
+    ) -> tuple[list[Any], float | None]:
         external = [
             engine.providers.get(name)
             for name in engine.provider_chain
@@ -1817,7 +1892,9 @@ def create_app(
         return _status(engine, scheduler)
 
     @app.post("/api/engine/run-once")
-    async def run_engine_once(request: EngineStartRequest | None = None) -> dict[str, Any]:
+    async def run_engine_once(
+        request: EngineStartRequest | None = None,
+    ) -> dict[str, Any]:
         """Analyze and trade one immediate batch, then stop without scheduling another."""
 
         if background_model_work():
@@ -1835,8 +1912,7 @@ def create_app(
             failure = exc
         finally:
             emergency_is_cancelling = (
-                isinstance(failure, asyncio.CancelledError)
-                and scheduler.stop_requested
+                isinstance(failure, asyncio.CancelledError) and scheduler.stop_requested
             )
             if engine.running and not emergency_is_cancelling:
                 await engine.stop(
@@ -1903,7 +1979,9 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"market history failed: {exc}") from exc
+            raise HTTPException(
+                status_code=502, detail=f"market history failed: {exc}"
+            ) from exc
         return [
             {
                 "timestamp": datetime.fromtimestamp(int(row[0]) / 1000, tz=UTC),
@@ -1931,12 +2009,16 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"funding history failed: {exc}") from exc
+            raise HTTPException(
+                status_code=502, detail=f"funding history failed: {exc}"
+            ) from exc
         return [
             {
                 "timestamp": event.timestamp,
                 "rate": str(event.rate),
-                "mark_price": str(event.mark_price) if event.mark_price is not None else None,
+                "mark_price": str(event.mark_price)
+                if event.mark_price is not None
+                else None,
             }
             for event in events
         ]
@@ -1950,11 +2032,15 @@ def create_app(
         limit: int = 10_000,
     ) -> list[dict[str, Any]]:
         try:
-            return await load_backtest_candles(symbol.upper(), cadence, start, end, limit)
+            return await load_backtest_candles(
+                symbol.upper(), cadence, start, end, limit
+            )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"backtest history failed: {exc}") from exc
+            raise HTTPException(
+                status_code=502, detail=f"backtest history failed: {exc}"
+            ) from exc
 
     @app.post("/api/universe/refresh")
     async def refresh_universe() -> list[dict[str, Any]]:
@@ -1962,13 +2048,17 @@ def create_app(
             await engine.refresh_universe()
             engine.invalidate_startup_probe("candidate universe refreshed")
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"market refresh failed: {exc}") from exc
+            raise HTTPException(
+                status_code=502, detail=f"market refresh failed: {exc}"
+            ) from exc
         return await get_universe()
 
     @app.get("/api/signals")
     async def get_signals(limit: int = 100) -> list[dict[str, Any]]:
         if not 1 <= limit <= 500:
-            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+            raise HTTPException(
+                status_code=422, detail="limit must be between 1 and 500"
+            )
         return await engine.audit.recent_intents(limit)
 
     @app.get("/api/decision-events")
@@ -1983,17 +2073,27 @@ def create_app(
         outcome: str | None = None,
     ) -> list[dict[str, Any]]:
         if not 1 <= limit <= 500:
-            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+            raise HTTPException(
+                status_code=422, detail="limit must be between 1 and 500"
+            )
         if before_id is not None and before_id < 1:
             raise HTTPException(status_code=422, detail="before_id must be positive")
         if run_limit is not None and not 1 <= run_limit <= 100:
-            raise HTTPException(status_code=422, detail="run_limit must be between 1 and 100")
+            raise HTTPException(
+                status_code=422, detail="run_limit must be between 1 and 100"
+            )
         if before_run_id is not None and before_run_id < 1:
-            raise HTTPException(status_code=422, detail="before_run_id must be positive")
+            raise HTTPException(
+                status_code=422, detail="before_run_id must be positive"
+            )
         if before_run_id is not None and run_limit is None:
-            raise HTTPException(status_code=422, detail="before_run_id requires run_limit")
+            raise HTTPException(
+                status_code=422, detail="before_run_id requires run_limit"
+            )
         if run_limit is not None and before_id is not None:
-            raise HTTPException(status_code=422, detail="run paging cannot use before_id")
+            raise HTTPException(
+                status_code=422, detail="run paging cannot use before_id"
+            )
         # An unknown filter value would otherwise return an empty page, which
         # reads as "no such decisions" rather than "you asked for nonsense".
         if outcome is not None and outcome not in DECISION_OUTCOMES:
@@ -2033,7 +2133,9 @@ def create_app(
     @app.get("/api/live-runs/performance")
     async def get_live_run_performance(limit: int = 100) -> list[dict[str, Any]]:
         if not 1 <= limit <= 500:
-            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+            raise HTTPException(
+                status_code=422, detail="limit must be between 1 and 500"
+            )
         try:
             account = await testnet_account()
         except Exception as exc:
@@ -2057,7 +2159,9 @@ def create_app(
     @app.get("/api/testnet/events")
     async def get_testnet_events(limit: int = 100) -> list[dict[str, Any]]:
         if not 1 <= limit <= 500:
-            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+            raise HTTPException(
+                status_code=422, detail="limit must be between 1 and 500"
+            )
         return await engine.audit.recent_user_events(limit)
 
     @app.get("/api/testnet/account-status")
@@ -2109,7 +2213,9 @@ def create_app(
                 "total_wallet_balance": str(account.get("totalWalletBalance", "0")),
                 "total_margin_balance": str(account.get("totalMarginBalance", "0")),
                 "available_balance": str(account.get("availableBalance", "0")),
-                "total_unrealized_profit": str(account.get("totalUnrealizedProfit", "0")),
+                "total_unrealized_profit": str(
+                    account.get("totalUnrealizedProfit", "0")
+                ),
                 "total_initial_margin": str(account.get("totalInitialMargin", "0")),
             },
             "positions": positions,
@@ -2169,7 +2275,9 @@ def create_app(
         positions: list[dict[str, Any]] = []
         reconciliation = engine.testnet_reconciliation
         unprotected = (
-            set(reconciliation.unprotected_symbols) if reconciliation is not None else None
+            set(reconciliation.unprotected_symbols)
+            if reconciliation is not None
+            else None
         )
         for item in account.get("positions", []):
             amount = Decimal(str(item.get("positionAmt", "0")))
@@ -2216,7 +2324,9 @@ def create_app(
     async def close_account_position(request: ClosePositionRequest) -> dict[str, Any]:
         broker = engine.testnet_broker
         if broker is None:
-            raise HTTPException(status_code=409, detail="testnet broker is not configured")
+            raise HTTPException(
+                status_code=409, detail="testnet broker is not configured"
+            )
         async with engine_start_lock, manual_close_lock:
             if engine.running:
                 raise HTTPException(
@@ -2259,15 +2369,21 @@ def create_app(
             )
 
     @app.get("/api/orders")
-    async def get_orders(limit: int = 100, status: str | None = None) -> list[dict[str, Any]]:
+    async def get_orders(
+        limit: int = 100, status: str | None = None
+    ) -> list[dict[str, Any]]:
         if not 1 <= limit <= 500:
-            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+            raise HTTPException(
+                status_code=422, detail="limit must be between 1 and 500"
+            )
         return await engine.audit.recent_executions(limit, status=status)
 
     @app.get("/api/fills")
     async def get_fills(limit: int = 100) -> list[dict[str, Any]]:
         if not 1 <= limit <= 500:
-            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+            raise HTTPException(
+                status_code=422, detail="limit must be between 1 and 500"
+            )
         broker = engine.testnet_broker
         manual_resolver = getattr(broker, "completed_order_fill_event", None)
         exit_resolver = getattr(broker, "completed_exit_fill_event", None)
@@ -2348,13 +2464,17 @@ def create_app(
         limit: int = 100, accepted: bool | None = None
     ) -> list[dict[str, Any]]:
         if not 1 <= limit <= 500:
-            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+            raise HTTPException(
+                status_code=422, detail="limit must be between 1 and 500"
+            )
         return await engine.audit.recent_risk_decisions(limit, accepted=accepted)
 
     @app.get("/api/structure-gate/summary")
     async def get_structure_gate_summary(limit: int = 500) -> dict[str, Any]:
         if not 1 <= limit <= 500:
-            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+            raise HTTPException(
+                status_code=422, detail="limit must be between 1 and 500"
+            )
         summary = await engine.audit.structure_gate_summary(limit)
         summary["mode"] = engine.risk.structure_gate_mode
         return summary
@@ -2389,11 +2509,68 @@ def create_app(
             providers=tuple(request.providers),
             config=BacktestConfig(**request.config.model_dump()),
             use_recorded_book=request.use_recorded_book,
+            replay_live_run_id=request.replay_live_run_id,
             timeout_seconds=request.timeout_seconds,
         )
 
     async def _checked_spec(request: BacktestRequest) -> BacktestSpec:
         spec = _spec_from(request)
+        if spec.replay_live_run_id is not None:
+            if spec.use_recorded_book:
+                raise HTTPException(
+                    status_code=422,
+                    detail="formal-run replay and recorded-book mode are mutually exclusive",
+                )
+            live_run = await engine.audit.live_run(spec.replay_live_run_id)
+            rows = await engine.audit.live_decision_snapshots(spec.replay_live_run_id)
+            if live_run is None:
+                raise HTTPException(status_code=404, detail="formal run not found")
+            if not rows:
+                raise HTTPException(
+                    status_code=409,
+                    detail="this formal run has no exact decision snapshots",
+                )
+            initial_payload = live_run["config"].get("initial_portfolio")
+            if initial_payload is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="this formal run predates account-aware replay data",
+                )
+            initial_portfolio = PortfolioState.model_validate(initial_payload)
+            missing_protection = [
+                symbol
+                for symbol, position in initial_portfolio.positions.items()
+                if position.stop_loss is None
+            ]
+            if missing_protection:
+                raise HTTPException(
+                    status_code=409,
+                    detail="recorded starting positions lack protective stops: "
+                    + ", ".join(sorted(missing_protection)),
+                )
+            symbols = tuple(dict.fromkeys(str(row["symbol"]) for row in rows))
+            cadences = tuple(dict.fromkeys(str(row["cadence"]) for row in rows))
+            missing_positions = set(initial_portfolio.positions) - set(symbols)
+            if missing_positions:
+                raise HTTPException(
+                    status_code=409,
+                    detail="recorded starting positions are missing market replay data: "
+                    + ", ".join(sorted(missing_positions)),
+                )
+            start = live_run["started_at"]
+            last_snapshot = max(row["captured_at"] for row in rows)
+            end = live_run["ended_at"] or (last_snapshot + timedelta(minutes=5))
+            if end <= last_snapshot:
+                end = last_snapshot + timedelta(minutes=5)
+            spec = replace(
+                spec,
+                symbols=symbols,
+                cadences=cadences,
+                start=start,
+                end=end,
+                config=replace(spec.config, initial_equity=initial_portfolio.equity),
+                replay_decision_count=len(rows),
+            )
         unsupported = set(spec.cadences) - set(SUPPORTED_CADENCES)
         if unsupported:
             raise HTTPException(
@@ -2428,6 +2605,38 @@ def create_app(
                 spec = replace(spec, timeout_seconds=configured_timeouts.pop())
         return spec
 
+    async def _live_replay_inputs(
+        spec: BacktestSpec,
+    ) -> tuple[
+        dict[tuple[str, str, datetime], tuple[MarketSnapshot, SymbolRules]],
+        PortfolioState | None,
+    ]:
+        if spec.replay_live_run_id is None:
+            return {}, None
+        live_run = await engine.audit.live_run(spec.replay_live_run_id)
+        rows = await engine.audit.live_decision_snapshots(spec.replay_live_run_id)
+        if live_run is None or not rows:
+            raise RuntimeError(
+                "formal replay data disappeared before the backtest started"
+            )
+        initial = PortfolioState.model_validate(live_run["config"]["initial_portfolio"])
+        snapshots: dict[
+            tuple[str, str, datetime], tuple[MarketSnapshot, SymbolRules]
+        ] = {}
+        for row in rows:
+            snapshot = MarketSnapshot.model_validate(row["market"])
+            rules = SymbolRules(
+                **{
+                    key: Decimal(value) if value is not None else None
+                    for key, value in row["rules"].items()
+                }
+            )
+            snapshots[(snapshot.symbol, snapshot.cadence, snapshot.timestamp)] = (
+                snapshot,
+                rules,
+            )
+        return snapshots, initial
+
     def _providers_requiring_probe(spec: BacktestSpec) -> tuple[str, ...]:
         return tuple(
             name
@@ -2452,6 +2661,7 @@ def create_app(
             spec.config.fee_rate,
             spec.config.slippage_fraction,
             spec.use_recorded_book,
+            spec.replay_live_run_id,
             provider.model,
             provider.reasoning_effort,
         )
@@ -2473,7 +2683,9 @@ def create_app(
                 or len(probe.calls) != PROBE_DECISIONS
                 or probe.failures
             ):
-                invalid.append(f"{name} does not have {PROBE_DECISIONS} successful calls")
+                invalid.append(
+                    f"{name} does not have {PROBE_DECISIONS} successful calls"
+                )
                 continue
             assert probe.average_ok_seconds is not None
             latencies[name] = probe.average_ok_seconds
@@ -2513,6 +2725,10 @@ def create_app(
         spec = await _checked_spec(request)
         _projected, payload = _probe_estimate(spec)
         return payload
+
+    @app.get("/api/backtests/formal-runs")
+    async def replayable_formal_runs(limit: int = 50) -> list[dict[str, Any]]:
+        return await engine.audit.replayable_live_runs(max(1, min(limit, 100)))
 
     async def _load_series(
         spec: BacktestSpec,
@@ -2576,6 +2792,7 @@ def create_app(
     ) -> None:
         try:
             series, rules = await _load_series(spec)
+            replay_snapshots, initial_portfolio = await _live_replay_inputs(spec)
         except asyncio.CancelledError:
             try:
                 await engine.audit.finish_backtest_run(run_id, status="cancelled")
@@ -2613,10 +2830,13 @@ def create_app(
                     "remaining_seconds": run.remaining_seconds,
                     "live_result": live_result,
                 },
-                result=_json_value(asdict(run.result)) if run.result is not None else None,
+                result=_json_value(asdict(run.result))
+                if run.result is not None
+                else None,
                 error=run.error,
                 decision=decision_row,
             )
+
         try:
             catalog = await pricing_catalog()
             with _timeouts(spec):
@@ -2628,6 +2848,8 @@ def create_app(
                         rules=rules,
                         risk=engine.risk,
                         captures=captures,
+                        replay_snapshots=replay_snapshots,
+                        initial_portfolio=initial_portfolio,
                         cost_for_result=lambda result: _provider_result_cost_usd(
                             result, catalog, provider_pricing_ids
                         ),
@@ -2656,7 +2878,9 @@ def create_app(
             await engine.audit.finish_backtest_run(run_id, status="cancelled")
             raise
         except Exception as exc:  # noqa: BLE001
-            await engine.audit.finish_backtest_run(run_id, status="failed", error=str(exc)[:500])
+            await engine.audit.finish_backtest_run(
+                run_id, status="failed", error=str(exc)[:500]
+            )
         finally:
             backtest_tasks.pop(run_id, None)
 
@@ -2677,6 +2901,7 @@ def create_app(
         try:
             series, _rules = await _load_series(spec)
             captures = await _recorded_book(spec) if spec.use_recorded_book else {}
+            replay_snapshots, initial_portfolio = await _live_replay_inputs(spec)
         except asyncio.CancelledError:
             fail_all("cancelled")
             raise
@@ -2686,7 +2911,13 @@ def create_app(
 
         symbol = spec.symbols[0]
         builder = HistoricalSnapshotBuilder(series[symbol], captures.get(symbol))
-        portfolio = SimulatedExchange(spec.config).portfolio_state({})
+        portfolio = initial_portfolio or SimulatedExchange(spec.config).portfolio_state(
+            {}
+        )
+        replay_probe_snapshots = [
+            item[0]
+            for _, item in sorted(replay_snapshots.items(), key=lambda pair: pair[0][2])
+        ]
 
         async def one(name: str) -> None:
             probe = probes[name]
@@ -2698,6 +2929,7 @@ def create_app(
                     symbol=symbol,
                     portfolio=portfolio,
                     into=probe,
+                    snapshots=replay_probe_snapshots or None,
                 )
             except asyncio.CancelledError:
                 # probe_provider's finally already marks it done, but only the
@@ -2769,7 +3001,11 @@ def create_app(
                         else None
                     ),
                     "calls": [
-                        {"seconds": round(call.seconds, 1), "ok": call.ok, "error": call.error}
+                        {
+                            "seconds": round(call.seconds, 1),
+                            "ok": call.ok,
+                            "error": call.error,
+                        }
                         for call in item.calls
                     ],
                     "slowest_ok_seconds": (
@@ -2814,7 +3050,9 @@ def create_app(
                 "same provider and would queue behind each other",
             )
         if probe_task and not probe_task.done():
-            raise HTTPException(status_code=409, detail="cancel the running probe first")
+            raise HTTPException(
+                status_code=409, detail="cancel the running probe first"
+            )
         if active_backtest_tasks():
             raise HTTPException(status_code=409, detail="a backtest is already running")
         spec = await _checked_spec(request)
@@ -2849,6 +3087,7 @@ def create_app(
                     for name in spec.providers
                 },
                 "use_recorded_book": spec.use_recorded_book,
+                "replay_live_run_id": spec.replay_live_run_id,
                 # Recorded because the failure count is meaningless without it:
                 # otherwise nothing says whether a run that lost decisions ran
                 # with the probe's number or the global default.
@@ -2872,8 +3111,12 @@ def create_app(
     @app.get("/api/backtests")
     async def list_backtests(limit: int = 20) -> list[dict[str, Any]]:
         if not 1 <= limit <= 100:
-            raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
-        return [_json_value(item) for item in await engine.audit.recent_backtest_runs(limit)]
+            raise HTTPException(
+                status_code=422, detail="limit must be between 1 and 100"
+            )
+        return [
+            _json_value(item) for item in await engine.audit.recent_backtest_runs(limit)
+        ]
 
     @app.get("/api/backtests/{run_id}")
     async def get_backtest(run_id: int) -> dict[str, Any]:
@@ -2899,7 +3142,9 @@ def create_app(
         if after_id < 0:
             raise HTTPException(status_code=422, detail="after_id must not be negative")
         if not 1 <= limit <= 500:
-            raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+            raise HTTPException(
+                status_code=422, detail="limit must be between 1 and 500"
+            )
         rows, total = await engine.audit.backtest_decisions(
             run_id,
             provider=provider,
@@ -3002,17 +3247,24 @@ def create_app(
         if origin and urlsplit(origin).netloc != websocket.headers.get("host"):
             await websocket.close(code=4403, reason="cross-site websocket denied")
             return
-        if auth.enabled and auth.validate_session(websocket.cookies.get(SESSION_COOKIE)) is None:
+        if (
+            auth.enabled
+            and auth.validate_session(websocket.cookies.get(SESSION_COOKIE)) is None
+        ):
             await websocket.close(code=4401, reason="authentication required")
             return
         await websocket.accept()
         last_decisions: list[dict[str, Any]] | None = None
         try:
             while True:
-                await websocket.send_json({"type": "status", "data": _status(engine, scheduler)})
+                await websocket.send_json(
+                    {"type": "status", "data": _status(engine, scheduler)}
+                )
                 decisions = await engine.audit.recent_decision_events(run_limit=10)
                 if decisions != last_decisions:
-                    await websocket.send_json({"type": "decisions", "data": _json_value(decisions)})
+                    await websocket.send_json(
+                        {"type": "decisions", "data": _json_value(decisions)}
+                    )
                     last_decisions = decisions
                 await asyncio.sleep(2)
         except (WebSocketDisconnect, RuntimeError):

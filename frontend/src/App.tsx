@@ -12,6 +12,7 @@ import type {
   Candidate,
   CollectorStatus,
   ProbeStatus,
+  ReplayableFormalRun,
   DecisionEvent,
   DecisionDetail,
   EngineStatus,
@@ -2457,6 +2458,8 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
   const [runs, setRuns] = useState<BacktestRun[]>([]);
   const [collector, setCollector] = useState<CollectorStatus | null>(null);
   const [useRecordedBook, setUseRecordedBook] = useState(false);
+  const [formalRuns, setFormalRuns] = useState<ReplayableFormalRun[]>([]);
+  const [replayLiveRunId, setReplayLiveRunId] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showDiff, setShowDiff] = useState(false);
@@ -2498,13 +2501,14 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
     end: parseLocalDateTime(form.end).toISOString(),
     providers: form.providers,
     use_recorded_book: useRecordedBook,
+    ...(replayLiveRunId ? { replay_live_run_id: Number(replayLiveRunId) } : {}),
     ...(timeout.trim() ? { timeout_seconds: Number(timeout) } : {}),
     config: {
       initial_equity: form.initialEquity,
       fee_rate: form.feeRate,
       slippage_fraction: form.slippage,
     },
-  }), [form, useRecordedBook, timeout]);
+  }), [form, useRecordedBook, replayLiveRunId, timeout]);
 
   const refreshCollector = useCallback(async () => {
     try {
@@ -2522,6 +2526,12 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
 
   useEffect(() => { void refreshRuns(); }, [refreshRuns]);
 
+  useEffect(() => {
+    api<ReplayableFormalRun[]>("/api/backtests/formal-runs?limit=50")
+      .then(setFormalRuns)
+      .catch(() => undefined);
+  }, []);
+
   // Poll only while something is unfinished, so an idle frontend stays quiet.
   useEffect(() => {
     if (!runs.some((run) => run.status === "running")) return;
@@ -2534,7 +2544,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
   useEffect(() => {
     setEstimate(null);
     setAutoEstimatePending(false);
-  }, [form, useRecordedBook]);
+  }, [form, useRecordedBook, replayLiveRunId]);
 
   const refreshProbe = useCallback(async () => {
     try {
@@ -2826,23 +2836,44 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
           <div><span>01</span><strong>回测参数</strong></div>
           <small>YYYY/MM/DD HH:mm · 本地时区 <strong>{localTimeZone}</strong></small>
         </div>
+        <label className="replay-source">
+          <span>数据来源</span>
+          <select
+            value={replayLiveRunId}
+            disabled={busy !== null}
+            onChange={(event) => {
+              setReplayLiveRunId(event.target.value);
+              if (event.target.value) setUseRecordedBook(false);
+            }}
+          >
+            <option value="">自选历史窗口</option>
+            {formalRuns.map((run) => (
+              <option key={run.id} value={run.id}>
+                正式运行 #{run.id} · {formatLocalDateTime(new Date(run.started_at))} · {run.snapshot_count} 条
+              </option>
+            ))}
+          </select>
+          <small>{replayLiveRunId
+            ? "自动使用该次正式运行实际送入模型的行情、合约规则和真实起始账户；标的、周期、时间与初始权益由记录决定。之后仓位按回测模型自己的成交演化。"
+            : "按下方标的、时间和周期从历史行情构建回测。"}</small>
+        </label>
         <div className="backtest-form">
         <label><span>标的（逗号分隔，最多 5 个）</span>
-          <input value={form.symbols} disabled={busy !== null}
+          <input value={form.symbols} disabled={busy !== null || Boolean(replayLiveRunId)}
             onChange={(e) => setForm({ ...form, symbols: e.target.value })} />
         </label>
         <label><span>起（本地时间）</span>
           <input type="text" value={form.start} placeholder="YYYY/MM/DD HH:mm"
-            inputMode="numeric" disabled={busy !== null}
+            inputMode="numeric" disabled={busy !== null || Boolean(replayLiveRunId)}
             onChange={(e) => setForm({ ...form, start: e.target.value })} />
         </label>
         <label><span>止（本地时间 · 最长 31 天，约 1 个月）</span>
           <input type="text" value={form.end} placeholder="YYYY/MM/DD HH:mm"
-            inputMode="numeric" disabled={busy !== null}
+            inputMode="numeric" disabled={busy !== null || Boolean(replayLiveRunId)}
             onChange={(e) => setForm({ ...form, end: e.target.value })} />
         </label>
         <label><span>初始权益</span>
-          <input value={form.initialEquity} disabled={busy !== null}
+          <input value={form.initialEquity} disabled={busy !== null || Boolean(replayLiveRunId)}
             onChange={(e) => setForm({ ...form, initialEquity: e.target.value })} />
         </label>
         </div>
@@ -2853,7 +2884,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
           <div className="chips">
             {DECISION_CADENCES.map((cadence) => (
               <button key={cadence} className={form.cadences.includes(cadence) ? "active" : ""}
-                disabled={busy !== null} onClick={() => toggle("cadences", cadence)}>{cadence}</button>
+                disabled={busy !== null || Boolean(replayLiveRunId)} onClick={() => toggle("cadences", cadence)}>{cadence}</button>
             ))}
           </div>
         </div>
@@ -2877,7 +2908,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
 
       <div className="backtest-preflight-grid">
         <label className="backtest-real">
-          <input type="checkbox" checked={useRecordedBook} disabled={busy !== null}
+          <input type="checkbox" checked={useRecordedBook} disabled={busy !== null || Boolean(replayLiveRunId)}
             onChange={(e) => setUseRecordedBook(e.target.checked)} />
           <span>真实回测</span>
           <small>
@@ -3027,9 +3058,11 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                       Provider 失效提前结束 · 原计划 {formatLocalDateTime(new Date(run.spec.requested_end))}
                     </span>}
                   </small>
-                  {run.spec.use_recorded_book
-                    ? <small className="run-real">真实回测 · 含订单流</small>
-                    : <small>普通回测 · 无订单流</small>}
+                  {run.spec.replay_live_run_id
+                    ? <small className="run-real">正式运行回放 #{run.spec.replay_live_run_id} · 精确决策数据</small>
+                    : run.spec.use_recorded_book
+                      ? <small className="run-real">真实回测 · 含订单流</small>
+                      : <small>普通回测 · 无订单流</small>}
                   {run.spec.timeout_seconds
                     !== null
                     ? <small>

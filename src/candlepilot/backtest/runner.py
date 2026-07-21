@@ -26,8 +26,11 @@ from candlepilot.backtest.engine import (
     SimulatedExchange,
     summarize,
 )
-from candlepilot.backtest.snapshots import INTERVAL_MILLISECONDS, HistoricalSnapshotBuilder
-from candlepilot.domain.models import TradeAction
+from candlepilot.backtest.snapshots import (
+    INTERVAL_MILLISECONDS,
+    HistoricalSnapshotBuilder,
+)
+from candlepilot.domain.models import MarketSnapshot, PortfolioState, TradeAction
 from candlepilot.providers.base import DecisionProvider, ProviderResult
 from candlepilot.providers.retry import (
     DECISION_PROVIDER_MAX_ATTEMPTS,
@@ -47,6 +50,7 @@ MAX_BACKTEST_DAYS = 31
 #: is measured against the install's own latency.
 MAX_ESTIMATED_HOURS = 8.0
 
+
 @dataclass(frozen=True, slots=True)
 class BacktestSpec:
     symbols: tuple[str, ...]
@@ -60,6 +64,11 @@ class BacktestSpec:
     #: Only possible where the collector was running, so the window is checked
     #: for full coverage up front and refused if it has holes.
     use_recorded_book: bool = False
+    #: Replay exact inputs captured by one formal run. Unlike recorded-book
+    #: mode this uses the original decision timestamps, feature values and
+    #: starting account instead of reconstructing them from public history.
+    replay_live_run_id: int | None = None
+    replay_decision_count: int | None = None
     #: Seconds one decision may take, for this run only.
     #:
     #: The frontend sets it from a probe of the endpoints the run will use, since
@@ -89,9 +98,11 @@ def estimate(spec: BacktestSpec, *, seconds_per_call: float) -> BacktestEstimate
     """Count the calls the spec implies before any of them are paid for."""
 
     span_ms = (spec.end - spec.start).total_seconds() * 1000
-    per_model = sum(
-        int(span_ms // INTERVAL_MILLISECONDS[cadence]) * len(spec.symbols)
-        for cadence in spec.cadences
+    per_model = spec.replay_decision_count
+    if per_model is None:
+        per_model = sum(
+            int(span_ms // INTERVAL_MILLISECONDS[cadence]) * len(spec.symbols)
+            for cadence in spec.cadences
     )
     return BacktestEstimate(
         decisions_per_model=per_model,
@@ -103,7 +114,9 @@ def estimate(spec: BacktestSpec, *, seconds_per_call: float) -> BacktestEstimate
 def validate(spec: BacktestSpec) -> None:
     """Reject a spec that cannot finish, before it burns a single call."""
 
-    if not spec.symbols or len(spec.symbols) > MAX_BACKTEST_SYMBOLS:
+    if not spec.symbols or (
+        spec.replay_live_run_id is None and len(spec.symbols) > MAX_BACKTEST_SYMBOLS
+    ):
         raise ValueError(f"choose between 1 and {MAX_BACKTEST_SYMBOLS} symbols")
     if not spec.providers or len(spec.providers) > MAX_BACKTEST_MODELS:
         raise ValueError(f"choose between 1 and {MAX_BACKTEST_MODELS} models")
@@ -174,13 +187,17 @@ class ModelRun:
         self.usage_calls += 1
         self.input_tokens += input_tokens
         self.cached_input_tokens += int(
-            usage.get("cached_input_tokens") or usage.get("cache_read_input_tokens") or 0
+            usage.get("cached_input_tokens")
+            or usage.get("cache_read_input_tokens")
+            or 0
         )
         self.cache_creation_input_tokens += int(
             usage.get("cache_creation_input_tokens") or 0
         )
         self.output_tokens += output_tokens
-        self.total_tokens += int(usage.get("total_tokens") or input_tokens + output_tokens)
+        self.total_tokens += int(
+            usage.get("total_tokens") or input_tokens + output_tokens
+        )
         self.duration_ms_total += max(0.0, duration_ms)
         if cost_usd is not None:
             self.priced_calls += 1
@@ -217,6 +234,7 @@ class ModelRun:
             return
         remaining = max(0, self.decisions_total - self.decisions_done)
         self.remaining_seconds = self.elapsed_seconds / self.decisions_done * remaining
+
 
 @dataclass
 class BacktestDecision:
@@ -280,6 +298,11 @@ class BacktestRunner:
         cost_for_result: Callable[[ProviderResult], float | None] | None = None,
         provider_retry_delays: tuple[float, ...] | None = None,
         retry_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        replay_snapshots: dict[
+            tuple[str, str, datetime], tuple[MarketSnapshot, SymbolRules]
+        ]
+        | None = None,
+        initial_portfolio: PortfolioState | None = None,
     ) -> None:
         self._spec = spec
         self._series = series
@@ -292,6 +315,8 @@ class BacktestRunner:
             else provider_retry_delays
         )
         self._retry_sleep = retry_sleep
+        self._replay_snapshots = replay_snapshots or {}
+        self._initial_portfolio = initial_portfolio
         self._timestamps = {
             symbol: {
                 cadence: [candle.timestamp for candle in candles]
@@ -362,14 +387,27 @@ class BacktestRunner:
         it.
         """
 
-        exchange = SimulatedExchange(self._spec.config)
+        exchange = SimulatedExchange(
+            self._spec.config,
+            initial_portfolio=self._initial_portfolio,
+            initial_time=self._spec.start
+            if self._initial_portfolio is not None
+            else None,
+        )
         started_at = time.monotonic()
         curve: list[EquityPoint] = []
-        schedule = sorted(
-            (when, symbol, cadence)
-            for cadence in self._spec.cadences
-            for when in decision_times(self._spec, cadence)
-            for symbol in self._spec.symbols
+        schedule = (
+            sorted(
+                (when, symbol, cadence)
+                for symbol, cadence, when in self._replay_snapshots
+            )
+            if self._replay_snapshots
+            else sorted(
+                (when, symbol, cadence)
+                for cadence in self._spec.cadences
+                for when in decision_times(self._spec, cadence)
+                for symbol in self._spec.symbols
+            )
         )
         settled_next: dict[str, int] = {}
         settled_decision_key: tuple[datetime, str] | None = None
@@ -401,7 +439,10 @@ class BacktestRunner:
                 progress.live_result = BacktestLiveStats(
                     equity=portfolio.equity,
                     unrealized_pnl=sum(
-                        (position.unrealized_pnl for position in portfolio.positions.values()),
+                        (
+                            position.unrealized_pnl
+                            for position in portfolio.positions.values()
+                        ),
                         Decimal("0"),
                     ),
                     total_return=live_summary.total_return,
@@ -428,8 +469,13 @@ class BacktestRunner:
 
             entry = BacktestDecision(decided_at=when, symbol=symbol, cadence=cadence)
 
+            replay_input = self._replay_snapshots.get((symbol, cadence, when))
             try:
-                snapshot = self._builders[symbol].build(symbol, cadence, when)
+                snapshot = (
+                    replay_input[0]
+                    if replay_input is not None
+                    else self._builders[symbol].build(symbol, cadence, when)
+                )
             except ValueError as exc:
                 entry.outcome = "no_snapshot"
                 entry.detail = str(exc)[:200]
@@ -441,9 +487,7 @@ class BacktestRunner:
             result: ProviderResult | None = None
             last_error: Exception | None = None
             max_attempts = (
-                DECISION_PROVIDER_MAX_ATTEMPTS
-                if provider.capabilities.retryable
-                else 1
+                DECISION_PROVIDER_MAX_ATTEMPTS if provider.capabilities.retryable else 1
             )
             for attempt in range(max_attempts):
                 entry.attempt_started_at.append(datetime.now(UTC))
@@ -459,8 +503,7 @@ class BacktestRunner:
                 assert last_error is not None
                 entry.outcome = "call_failed"
                 entry.detail = (
-                    "provider unavailable after "
-                    f"{max_attempts} attempts: {last_error}"
+                    f"provider unavailable after {max_attempts} attempts: {last_error}"
                 )[:200]
                 progress.calls_failed += 1
                 progress.decisions_done += 1
@@ -498,7 +541,11 @@ class BacktestRunner:
             # the position cap, tick alignment and exchange minimums all have to
             # bite here or the run scores a system nobody runs.
             evaluation = self._risk.evaluate(
-                intent, snapshot, portfolio, self._rules[symbol], now=when
+                intent,
+                snapshot,
+                portfolio,
+                replay_input[1] if replay_input is not None else self._rules[symbol],
+                now=when,
             )
             if evaluation.order is None or not evaluation.decision.accepted:
                 entry.outcome = "rejected"

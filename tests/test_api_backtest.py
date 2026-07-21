@@ -6,18 +6,21 @@ from decimal import Decimal
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from sqlalchemy import update
 
 from candlepilot.api import create_app
 from candlepilot.application.engine import TradingEngine
 from candlepilot.backtest.probe import PROBE_CEILING_SECONDS, PROBE_DECISIONS
 from candlepilot.config import Settings
 from conftest import FakeTestnetBroker
+from candlepilot.domain.models import MarketSnapshot, PortfolioState
 from candlepilot.providers.base import ProviderResult
 from candlepilot.providers.local import LocalRuleProvider
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.storage.database import (
     AuditRepository,
     Database,
+    LiveRunRow,
 )
 
 from api_fixtures import ApiMarket, ApiProvider
@@ -634,6 +637,87 @@ def test_a_plain_backtest_does_not_need_any_captures(tmp_path: Path) -> None:
         payload = {"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)}
         created = _start_backtest(client, payload)
         assert created.status_code == 202
+    asyncio.run(database.close())
+
+
+def test_formal_run_replay_uses_exact_snapshot_count_and_starting_account(
+    tmp_path: Path,
+) -> None:
+    database, engine, app = _backtest_app(tmp_path, "bt-formal-replay.db")
+    window = _window(1)
+    start = datetime.fromisoformat(window["start"])
+    end = datetime.fromisoformat(window["end"])
+    initial = PortfolioState(equity="1234", available_balance="1234")
+    snapshot = MarketSnapshot(
+        symbol="BTCUSDT",
+        cadence="5m",
+        timestamp=start + timedelta(minutes=5),
+        mark_price="100",
+        bid="99.9",
+        ask="100.1",
+        quote_volume_24h="1000000",
+        features={"5m_ema_20": 99.0},
+    )
+
+    async def seed() -> int:
+        await database.initialize()
+        run_id = await engine.audit.create_live_run(
+            {"initial_portfolio": initial.model_dump(mode="json")}
+        )
+        async with database.sessions.begin() as session:
+            await session.execute(
+                update(LiveRunRow).where(LiveRunRow.id == run_id).values(started_at=start)
+            )
+        await engine.audit.record_live_decision_snapshots(
+            run_id,
+            [
+                {
+                    "batch_id": "00000000-0000-0000-0000-000000000001",
+                    "symbol": "BTCUSDT",
+                    "cadence": "5m",
+                    "captured_at": snapshot.timestamp,
+                    "market": snapshot.model_dump(mode="json"),
+                    "portfolio": initial.model_dump(mode="json"),
+                    "rules": {
+                        "quantity_step": "0.001",
+                        "min_quantity": "0.001",
+                        "min_notional": "5",
+                        "tick_size": "0.01",
+                        "max_quantity": None,
+                        "market_quantity_step": None,
+                        "market_min_quantity": None,
+                        "market_max_quantity": None,
+                    },
+                }
+            ],
+        )
+        await engine.audit.finish_live_run(
+            run_id, status="stopped", stop_reason="fixture", ended_at=end
+        )
+        return run_id
+
+    live_run_id = asyncio.run(seed())
+    payload = {
+        "symbols": ["ETHUSDT"],
+        "providers": ["api-fixture"],
+        "replay_live_run_id": live_run_id,
+        **window,
+    }
+    with TestClient(app) as client:
+        formal_runs = client.get("/api/backtests/formal-runs").json()
+        assert formal_runs[0]["snapshot_count"] == 1
+        assert formal_runs[0]["symbols"] == ["BTCUSDT"]
+        _complete_probe(client, payload)
+        estimate_response = client.post("/api/backtests/estimate", json=payload)
+        assert estimate_response.status_code == 200
+        assert estimate_response.json()["decisions_per_model"] == 1
+        created = client.post("/api/backtests", json=payload)
+        assert created.status_code == 202, created.text
+        run = _await_run(client, created.json()["id"])
+        assert run["status"] == "completed", run.get("error")
+        assert run["spec"]["symbols"] == ["BTCUSDT"]
+        assert run["spec"]["replay_live_run_id"] == live_run_id
+        assert run["models"][0]["result"]["initial_equity"] == "1234"
     asyncio.run(database.close())
 
 

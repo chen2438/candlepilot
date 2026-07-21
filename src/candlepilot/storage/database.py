@@ -35,7 +35,12 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from candlepilot.broker.user_stream import UserStreamEvent
-from candlepilot.domain.models import ExecutionAttempt, ExecutionReport, RiskDecision, TradeIntent
+from candlepilot.domain.models import (
+    ExecutionAttempt,
+    ExecutionReport,
+    RiskDecision,
+    TradeIntent,
+)
 from candlepilot.providers.base import ProviderResult
 from candlepilot.providers.pricing import PROVIDER_IDS, ModelPricingCatalog
 
@@ -54,7 +59,9 @@ class LiveRunRow(Base):
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
     )
-    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class InferenceRow(Base):
@@ -124,7 +131,9 @@ class ExecutionAttemptRow(Base):
         ForeignKey("inferences.id", ondelete="CASCADE"), unique=True, index=True
     )
     symbol: Mapped[str] = mapped_column(String(32), index=True)
-    client_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    client_order_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
     status: Mapped[str] = mapped_column(String(32), index=True)
     stage: Mapped[str] = mapped_column(String(32))
     attempt_json: Mapped[str] = mapped_column(Text)
@@ -143,7 +152,9 @@ class BacktestRunRow(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
     )
-    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class BacktestModelRunRow(Base):
@@ -214,6 +225,28 @@ class BookCaptureRow(Base):
     payload_json: Mapped[str] = mapped_column(Text)
 
 
+class LiveDecisionSnapshotRow(Base):
+    """Exact inputs used by one formal decision cycle.
+
+    This is deliberately independent from inference audit rows: provider
+    retries and history presentation must not decide whether replay data
+    survives or how many copies of a decision input exist.
+    """
+
+    __tablename__ = "live_decision_snapshots"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    live_run_id: Mapped[int] = mapped_column(
+        ForeignKey("live_runs.id", ondelete="CASCADE"), index=True
+    )
+    batch_id: Mapped[str] = mapped_column(String(36), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    cadence: Mapped[str] = mapped_column(String(8), index=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    market_json: Mapped[str] = mapped_column(Text)
+    portfolio_json: Mapped[str] = mapped_column(Text)
+    rules_json: Mapped[str] = mapped_column(Text)
+
+
 class RuntimeStateRow(Base):
     __tablename__ = "runtime_state"
 
@@ -282,7 +315,7 @@ class SchemaMigrationRow(Base):
 # replaying upgrade logic, while fresh databases are created directly from the
 # ORM metadata at the current shape.
 MINIMUM_SUPPORTED_SCHEMA_VERSION = 12
-CURRENT_SCHEMA_VERSION = 14
+CURRENT_SCHEMA_VERSION = 15
 MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
     (13, ()),
     (
@@ -299,6 +332,28 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             "ON trailing_stop_events (status)",
             "CREATE INDEX IF NOT EXISTS ix_trailing_stop_events_created_at "
             "ON trailing_stop_events (created_at)",
+        ),
+    ),
+    (
+        15,
+        (
+            "CREATE TABLE IF NOT EXISTS live_decision_snapshots ("
+            "id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, "
+            "live_run_id INTEGER NOT NULL REFERENCES live_runs(id) ON DELETE CASCADE, "
+            "batch_id VARCHAR(36) NOT NULL, "
+            "symbol VARCHAR(32) NOT NULL, cadence VARCHAR(8) NOT NULL, "
+            "captured_at DATETIME NOT NULL, market_json TEXT NOT NULL, "
+            "portfolio_json TEXT NOT NULL, rules_json TEXT NOT NULL)",
+            "CREATE INDEX IF NOT EXISTS ix_live_decision_snapshots_live_run_id "
+            "ON live_decision_snapshots (live_run_id)",
+            "CREATE INDEX IF NOT EXISTS ix_live_decision_snapshots_batch_id "
+            "ON live_decision_snapshots (batch_id)",
+            "CREATE INDEX IF NOT EXISTS ix_live_decision_snapshots_symbol "
+            "ON live_decision_snapshots (symbol)",
+            "CREATE INDEX IF NOT EXISTS ix_live_decision_snapshots_cadence "
+            "ON live_decision_snapshots (cadence)",
+            "CREATE INDEX IF NOT EXISTS ix_live_decision_snapshots_captured_at "
+            "ON live_decision_snapshots (captured_at)",
         ),
     ),
 )
@@ -328,7 +383,9 @@ class Database:
     @staticmethod
     async def _apply_migrations(connection: AsyncConnection) -> None:
         current = await connection.scalar(
-            select(SchemaMigrationRow.version).order_by(SchemaMigrationRow.version.desc()).limit(1)
+            select(SchemaMigrationRow.version)
+            .order_by(SchemaMigrationRow.version.desc())
+            .limit(1)
         )
         if current is not None and current < MINIMUM_SUPPORTED_SCHEMA_VERSION:
             raise RuntimeError(
@@ -388,6 +445,7 @@ class AuditRepository:
         # Model runs cascade from the run, so clearing the parent is enough.
         "backtests": BacktestRunRow,
         "book_captures": BookCaptureRow,
+        "live_decision_snapshots": LiveDecisionSnapshotRow,
     }
 
     def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
@@ -426,6 +484,118 @@ class AuditRepository:
             await session.flush()
         return row.id
 
+    async def record_live_decision_snapshots(
+        self,
+        live_run_id: int,
+        rows: list[Mapping[str, Any]],
+    ) -> int:
+        """Persist the exact batch inputs once the final provider route is known."""
+
+        if not rows:
+            return 0
+        values = [
+            {
+                "live_run_id": live_run_id,
+                "batch_id": str(row["batch_id"]),
+                "symbol": str(row["symbol"]),
+                "cadence": str(row["cadence"]),
+                "captured_at": row["captured_at"],
+                "market_json": json.dumps(
+                    row["market"], separators=(",", ":"), ensure_ascii=False
+                ),
+                "portfolio_json": json.dumps(
+                    row["portfolio"], separators=(",", ":"), ensure_ascii=False
+                ),
+                "rules_json": json.dumps(
+                    row["rules"], separators=(",", ":"), ensure_ascii=False
+                ),
+            }
+            for row in rows
+        ]
+        async with self.sessions.begin() as session:
+            await session.execute(insert(LiveDecisionSnapshotRow), values)
+        return len(values)
+
+    async def live_decision_snapshots(
+        self,
+        live_run_id: int,
+    ) -> list[dict[str, Any]]:
+        async with self.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(LiveDecisionSnapshotRow)
+                    .where(LiveDecisionSnapshotRow.live_run_id == live_run_id)
+                    .order_by(
+                        LiveDecisionSnapshotRow.captured_at.asc(),
+                        LiveDecisionSnapshotRow.id.asc(),
+                    )
+                )
+            ).all()
+        return [
+            {
+                "id": row.id,
+                "live_run_id": row.live_run_id,
+                "batch_id": row.batch_id,
+                "symbol": row.symbol,
+                "cadence": row.cadence,
+                "captured_at": row.captured_at.replace(tzinfo=UTC)
+                if row.captured_at.tzinfo is None
+                else row.captured_at,
+                "market": json.loads(row.market_json),
+                "portfolio": json.loads(row.portfolio_json),
+                "rules": json.loads(row.rules_json),
+            }
+            for row in rows
+        ]
+
+    async def live_run(self, run_id: int) -> dict[str, Any] | None:
+        async with self.sessions() as session:
+            row = await session.get(LiveRunRow, run_id)
+        return self._live_run_dict(row) if row is not None else None
+
+    async def replayable_live_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        async with self.sessions() as session:
+            runs = (
+                await session.scalars(
+                    select(LiveRunRow)
+                    .where(
+                        LiveRunRow.id.in_(select(LiveDecisionSnapshotRow.live_run_id))
+                    )
+                    .order_by(LiveRunRow.id.desc())
+                    .limit(limit)
+                )
+            ).all()
+            snapshots = (
+                (
+                    await session.scalars(
+                        select(LiveDecisionSnapshotRow).where(
+                            LiveDecisionSnapshotRow.live_run_id.in_(
+                                [row.id for row in runs]
+                            )
+                        )
+                    )
+                ).all()
+                if runs
+                else []
+            )
+        grouped: dict[int, list[LiveDecisionSnapshotRow]] = defaultdict(list)
+        for snapshot in snapshots:
+            grouped[snapshot.live_run_id].append(snapshot)
+        result: list[dict[str, Any]] = []
+        for row in runs:
+            items = grouped[row.id]
+            payload = self._live_run_dict(row)
+            assert payload is not None
+            result.append(
+                {
+                    **payload,
+                    "snapshot_count": len(items),
+                    "symbols": list(dict.fromkeys(item.symbol for item in items)),
+                    "cadences": list(dict.fromkeys(item.cadence for item in items)),
+                }
+            )
+        return result
+
     async def finish_live_run(
         self,
         run_id: int,
@@ -460,27 +630,40 @@ class AuditRepository:
             ).all()
             run_ids = [row.id for row in runs]
             attempt_rows = (
-                await session.execute(
-                    select(
-                        ExecutionAttemptRow.client_order_id,
+                (
+                    await session.execute(
+                        select(
+                            ExecutionAttemptRow.client_order_id,
                         InferenceRow.live_run_id,
-                        InferenceRow.symbol,
-                        InferenceRow.intent_json,
+                            InferenceRow.symbol,
+                            InferenceRow.intent_json,
+                        )
+                        .join(
+                            InferenceRow,
+                            InferenceRow.id == ExecutionAttemptRow.inference_id,
+                        )
+                        .where(
+                            InferenceRow.live_run_id.in_(run_ids),
+                            ExecutionAttemptRow.client_order_id.is_not(None),
+                        )
                     )
-                    .join(InferenceRow, InferenceRow.id == ExecutionAttemptRow.inference_id)
-                    .where(
-                        InferenceRow.live_run_id.in_(run_ids),
-                        ExecutionAttemptRow.client_order_id.is_not(None),
-                    )
-                )
-            ).all() if run_ids else []
+                ).all()
+                if run_ids
+                else []
+            )
 
         order_contexts: dict[str, tuple[int, str, str | None]] = {}
         for client_order_id, run_id, symbol, intent_json in attempt_rows:
             if client_order_id is None or run_id is None:
                 continue
             action = TradeIntent.model_validate_json(intent_json).action.value
-            side = "BUY" if action == "OPEN_LONG" else "SELL" if action == "OPEN_SHORT" else None
+            side = (
+                "BUY"
+                if action == "OPEN_LONG"
+                else "SELL"
+                if action == "OPEN_SHORT"
+                else None
+            )
             order_contexts[client_order_id] = (run_id, symbol, side)
 
         realized: defaultdict[int, Decimal] = defaultdict(Decimal)
@@ -551,7 +734,9 @@ class AuditRepository:
                     wins[run_id] += 1
 
         for symbol, position in (current_positions or {}).items():
-            active_lots = [lot for lot in lots_by_symbol[symbol] if lot["remaining"] > 0]
+            active_lots = [
+                lot for lot in lots_by_symbol[symbol] if lot["remaining"] > 0
+            ]
             if not active_lots:
                 continue
             owners = {lot["run_id"] for lot in active_lots}
@@ -593,7 +778,9 @@ class AuditRepository:
             )
         return result
 
-    async def interrupt_open_live_runs(self, *, ended_at: datetime | None = None) -> int:
+    async def interrupt_open_live_runs(
+        self, *, ended_at: datetime | None = None
+    ) -> int:
         async with self.sessions.begin() as session:
             result = await session.execute(
                 update(LiveRunRow)
@@ -623,7 +810,12 @@ class AuditRepository:
 
     @staticmethod
     def _validate_live_run_status(status: str) -> None:
-        if status not in {"stopped", "auto_stopped", "emergency_stopped", "interrupted"}:
+        if status not in {
+            "stopped",
+            "auto_stopped",
+            "emergency_stopped",
+            "interrupted",
+        }:
             raise ValueError(f"unsupported live run status: {status}")
 
     async def record_inference(
@@ -655,7 +847,9 @@ class AuditRepository:
                     InferenceDetailRow(
                         inference_id=row.id,
                         input_json=json.dumps(
-                            result.input_payload, separators=(",", ":"), ensure_ascii=False
+                            result.input_payload,
+                            separators=(",", ":"),
+                            ensure_ascii=False,
                         )
                         if result.input_payload is not None
                         else None,
@@ -703,7 +897,9 @@ class AuditRepository:
             input_tokens = int(usage.get("input_tokens") or 0)
             output_tokens = int(usage.get("output_tokens") or 0)
             cached_input_tokens = int(
-                usage.get("cached_input_tokens") or usage.get("cache_read_input_tokens") or 0
+                usage.get("cached_input_tokens")
+                or usage.get("cache_read_input_tokens")
+                or 0
             )
             totals["input_tokens"] += input_tokens
             totals["cached_input_tokens"] += cached_input_tokens
@@ -711,7 +907,9 @@ class AuditRepository:
                 usage.get("cache_creation_input_tokens") or 0
             )
             totals["output_tokens"] += output_tokens
-            totals["total_tokens"] += int(usage.get("total_tokens") or input_tokens + output_tokens)
+            totals["total_tokens"] += int(
+                usage.get("total_tokens") or input_tokens + output_tokens
+            )
             if "error" in usage:
                 error_count += 1
             cost = self._inference_cost(row, usage, catalog, provider_ids)
@@ -729,8 +927,12 @@ class AuditRepository:
             "priced_call_count": priced_call_count,
             "cost_complete": cost_complete,
             "equivalent_cost_usd": equivalent_cost_usd,
-            "average_duration_ms": duration_total_ms / call_count if call_count else 0.0,
-            "average_tokens": totals["total_tokens"] / call_count if call_count else 0.0,
+            "average_duration_ms": duration_total_ms / call_count
+            if call_count
+            else 0.0,
+            "average_tokens": totals["total_tokens"] / call_count
+            if call_count
+            else 0.0,
             "average_cost_usd": (
                 equivalent_cost_usd / call_count
                 if equivalent_cost_usd is not None and call_count
@@ -827,7 +1029,9 @@ class AuditRepository:
                         func.json_extract(UserStreamEventRow.payload_json, "$.o.c")
                         == report.client_order_id,
                     )
-                    .order_by(UserStreamEventRow.event_time.asc(), UserStreamEventRow.id.asc())
+                    .order_by(
+                        UserStreamEventRow.event_time.asc(), UserStreamEventRow.id.asc()
+                    )
                 )
             ).all()
             for prior_event in prior_events:
@@ -891,7 +1095,9 @@ class AuditRepository:
                 func.json_extract(UserStreamEventRow.payload_json, "$.o.X") == "FILLED",
                 func.json_extract(UserStreamEventRow.payload_json, "$.o.x") == "TRADE",
             )
-            .order_by(UserStreamEventRow.event_time.desc(), UserStreamEventRow.id.desc())
+            .order_by(
+                UserStreamEventRow.event_time.desc(), UserStreamEventRow.id.desc()
+            )
             # A historical database may contain both the live user-stream event
             # and its REST reconciliation copy. Fetch enough rows to discard
             # those semantic duplicates without shrinking the requested page.
@@ -929,7 +1135,9 @@ class AuditRepository:
                 str(json.loads(row.payload_json).get("o", {}).get("c", ""))
                 for row in event_rows
             }
-            client_ids = event_client_ids | {row.client_order_id for row in execution_rows}
+            client_ids = event_client_ids | {
+                row.client_order_id for row in execution_rows
+            }
             intent_actions: dict[str, str] = {}
             if client_ids:
                 action_rows = (
@@ -947,7 +1155,10 @@ class AuditRepository:
                     )
                 ).all()
                 for client_order_id, intent_json in action_rows:
-                    if client_order_id is not None and client_order_id not in intent_actions:
+                    if (
+                        client_order_id is not None
+                        and client_order_id not in intent_actions
+                    ):
                         intent_actions[client_order_id] = (
                             TradeIntent.model_validate_json(intent_json).action.value
                         )
@@ -985,7 +1196,9 @@ class AuditRepository:
                             "client_order_id": client_order_id,
                             "status": "FILLED",
                             "filled_quantity": str(order.get("z", "0")),
-                            "average_price": str(average_price) if average_price > 0 else None,
+                            "average_price": str(average_price)
+                            if average_price > 0
+                            else None,
                             "message": "Binance user stream trade fill",
                             "timestamp": self._utc(row.event_time),
                         },
@@ -1034,10 +1247,14 @@ class AuditRepository:
             return None
         try:
             cumulative_quantity = str(Decimal(str(order.get("z", "0"))).normalize())
-        except ArithmeticError:  # pragma: no cover - malformed exchange payload fallback
+        except (
+            ArithmeticError
+        ):  # pragma: no cover - malformed exchange payload fallback
             cumulative_quantity = str(order.get("z", ""))
         stable_order_id = (
-            f"exchange:{order_id}" if order_id is not None else f"client:{client_order_id}"
+            f"exchange:{order_id}"
+            if order_id is not None
+            else f"client:{client_order_id}"
         )
         return (
             str(order.get("s", "")),
@@ -1055,7 +1272,9 @@ class AuditRepository:
             report = fill["report"]
             quantity = Decimal(str(report.get("filled_quantity", "0")))
             raw_average = report.get("average_price")
-            average_price = Decimal(str(raw_average)) if raw_average is not None else None
+            average_price = (
+                Decimal(str(raw_average)) if raw_average is not None else None
+            )
             fill["notional_usdt"] = (
                 str(abs(quantity * average_price))
                 if quantity > 0 and average_price is not None and average_price > 0
@@ -1104,13 +1323,25 @@ class AuditRepository:
             if client_order_id is None or client_order_id in entry_contexts:
                 continue
             report = entry_reports.get(client_order_id)
-            if report is None or report.average_price is None or report.filled_quantity <= 0:
+            if (
+                report is None
+                or report.average_price is None
+                or report.filled_quantity <= 0
+            ):
                 continue
             intent = TradeIntent.model_validate_json(inference.intent_json)
             entry_basis = report.average_price
-            if intent.action.value == "ADD" and detail is not None and detail.input_json:
+            if (
+                intent.action.value == "ADD"
+                and detail is not None
+                and detail.input_json
+            ):
                 payload = json.loads(detail.input_json)
-                position = payload.get("portfolio", {}).get("positions", {}).get(inference.symbol)
+                position = (
+                    payload.get("portfolio", {})
+                    .get("positions", {})
+                    .get(inference.symbol)
+                )
                 if isinstance(position, dict):
                     existing_quantity = Decimal(str(position.get("quantity", "0")))
                     existing_entry = Decimal(str(position.get("entry_price", "0")))
@@ -1135,7 +1366,9 @@ class AuditRepository:
                 continue
             realized_pnl = Decimal(str(fill["realized_pnl"]))
             fill["realized_pnl_margin_usdt"] = str(margin)
-            fill["realized_return_percent"] = str((realized_pnl / margin) * Decimal("100"))
+            fill["realized_return_percent"] = str(
+                (realized_pnl / margin) * Decimal("100")
+            )
 
     @staticmethod
     def _trade_fill_identity(
@@ -1176,7 +1409,9 @@ class AuditRepository:
                     UserStreamEventRow.event_time <= exit_event.event_time,
                     UserStreamEventRow.id != exit_event.id,
                 )
-                .order_by(UserStreamEventRow.event_time.desc(), UserStreamEventRow.id.desc())
+                .order_by(
+                    UserStreamEventRow.event_time.desc(), UserStreamEventRow.id.desc()
+                )
                 .limit(100)
             )
         ).all()
@@ -1244,7 +1479,9 @@ class AuditRepository:
             "passed": passed,
             "failed": sample_size - passed,
             "pass_rate": passed / sample_size if sample_size else None,
-            "latest_at": self._utc(assessments[0][0].created_at) if assessments else None,
+            "latest_at": self._utc(assessments[0][0].created_at)
+            if assessments
+            else None,
             "checks": [
                 {
                     "key": key,
@@ -1256,7 +1493,9 @@ class AuditRepository:
             ],
         }
 
-    async def executions_between(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
+    async def executions_between(
+        self, start: datetime, end: datetime
+    ) -> list[dict[str, Any]]:
         async with self.sessions() as session:
             rows = (
                 await session.scalars(
@@ -1280,7 +1519,9 @@ class AuditRepository:
             for row in rows
         ]
 
-    async def risk_decisions_between(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
+    async def risk_decisions_between(
+        self, start: datetime, end: datetime
+    ) -> list[dict[str, Any]]:
         async with self.sessions() as session:
             rows = (
                 await session.scalars(
@@ -1349,7 +1590,9 @@ class AuditRepository:
             await session.flush()
         return row.id
 
-    async def recent_trailing_stop_events(self, limit: int = 100) -> list[dict[str, Any]]:
+    async def recent_trailing_stop_events(
+        self, limit: int = 100
+    ) -> list[dict[str, Any]]:
         async with self.sessions() as session:
             rows = (
                 await session.scalars(
@@ -1395,7 +1638,8 @@ class AuditRepository:
                 )
                 if order_id is not None:
                     lookup = lookup.where(
-                        func.json_extract(UserStreamEventRow.payload_json, "$.o.i") == order_id
+                        func.json_extract(UserStreamEventRow.payload_json, "$.o.i")
+                        == order_id
                     )
                 else:
                     lookup = lookup.where(
@@ -1409,7 +1653,9 @@ class AuditRepository:
                     (
                         candidate
                         for candidate in candidates
-                        if self._terminal_fill_identity(json.loads(candidate.payload_json))
+                        if self._terminal_fill_identity(
+                            json.loads(candidate.payload_json)
+                        )
                         == identity
                     ),
                     None,
@@ -1446,7 +1692,9 @@ class AuditRepository:
                         )
                     )
                     if execution is not None:
-                        self._apply_order_update(execution, event.payload, event.event_time)
+                        self._apply_order_update(
+                            execution, event.payload, event.event_time
+                        )
         return row.id
 
     @staticmethod
@@ -1498,7 +1746,9 @@ class AuditRepository:
         async with self.sessions() as session:
             rows = (
                 await session.scalars(
-                    select(UserStreamEventRow).order_by(UserStreamEventRow.id.desc()).limit(limit)
+                    select(UserStreamEventRow)
+                    .order_by(UserStreamEventRow.id.desc())
+                    .limit(limit)
                 )
             ).all()
         return [
@@ -1554,9 +1804,9 @@ class AuditRepository:
                     "provider": row.provider,
                     "model": row.model,
                     "provenance": usage.get("_provenance", {}),
-                    "intent": TradeIntent.model_validate_json(row.intent_json).model_dump(
-                        mode="json"
-                    ),
+                    "intent": TradeIntent.model_validate_json(
+                        row.intent_json
+                    ).model_dump(mode="json"),
                     "duration_ms": row.duration_ms,
                     "created_at": row.created_at.replace(tzinfo=UTC)
                     if row.created_at.tzinfo is None
@@ -1592,7 +1842,10 @@ class AuditRepository:
                 ExecutionAttemptRow.id.is_(None),
             ),
             "executed": and_(
-                not_(is_hold), RiskRow.accepted, ExecutionAttemptRow.id.is_not(None), succeeded
+                not_(is_hold),
+                RiskRow.accepted,
+                ExecutionAttemptRow.id.is_not(None),
+                succeeded,
             ),
             "execution_failed": and_(
                 not_(is_hold),
@@ -1821,7 +2074,9 @@ class AuditRepository:
         async with self.sessions() as session:
             runs = (
                 await session.scalars(
-                    select(BacktestRunRow).order_by(BacktestRunRow.id.desc()).limit(limit)
+                    select(BacktestRunRow)
+                    .order_by(BacktestRunRow.id.desc())
+                    .limit(limit)
                 )
             ).all()
             if not runs:
@@ -1837,7 +2092,8 @@ class AuditRepository:
         for model in models:
             by_run.setdefault(model.run_id, []).append(model)
         return [
-            self._backtest_dict(run, by_run.get(run.id, []), detail=False) for run in runs
+            self._backtest_dict(run, by_run.get(run.id, []), detail=False)
+            for run in runs
         ]
 
     def _backtest_dict(
@@ -1957,8 +2213,7 @@ class AuditRepository:
                 run_ids = tuple(
                     (
                         await session.scalars(
-                            run_query
-                            .distinct()
+                            run_query.distinct()
                             .order_by(InferenceRow.live_run_id.desc())
                             .limit(run_limit)
                         )
@@ -2197,7 +2452,9 @@ class AuditRepository:
             "prompt": detail.prompt_text if detail is not None else None,
             "audit_status": audit_status,
             "raw_output": inference.raw_output,
-            "usage": {key: value for key, value in usage.items() if key != "_provenance"},
+            "usage": {
+                key: value for key, value in usage.items() if key != "_provenance"
+            },
             "equivalent_cost_usd": self._inference_cost(
                 inference, usage, catalog, provider_ids
             ),

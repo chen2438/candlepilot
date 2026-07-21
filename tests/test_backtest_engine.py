@@ -9,12 +9,19 @@ from candlepilot.backtest.engine import (
     SimulatedExchange,
     summarize,
 )
-from candlepilot.domain.models import OrderPlan, OrderType
+from candlepilot.domain.models import (
+    OrderPlan,
+    OrderType,
+    PortfolioState,
+    PositionState,
+)
 
 START = datetime(2026, 6, 1, tzinfo=UTC)
 
 
-def _candle(index: int, *, open_=100, high=101, low=99, close=100, funding="0") -> Candle:
+def _candle(
+    index: int, *, open_=100, high=101, low=99, close=100, funding="0"
+) -> Candle:
     return Candle(
         timestamp=START + timedelta(minutes=5 * index),
         open=Decimal(str(open_)),
@@ -55,7 +62,9 @@ def test_a_candle_touching_both_triggers_books_the_stop() -> None:
     exists to avoid.
     """
 
-    exchange = SimulatedExchange(BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0")))
+    exchange = SimulatedExchange(
+        BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0"))
+    )
     exchange.execute(_order(), _candle(0), leverage=1)
 
     # This bar reaches the take profit at 104 and the stop at 98.
@@ -69,7 +78,9 @@ def test_a_candle_touching_both_triggers_books_the_stop() -> None:
 def test_entries_fill_on_the_next_candle_not_the_decided_one() -> None:
     """The model reasoned on a closed bar, so filling inside it reads the future."""
 
-    exchange = SimulatedExchange(BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0")))
+    exchange = SimulatedExchange(
+        BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0"))
+    )
 
     report = exchange.execute(_order(), _candle(1, open_=103), leverage=1)
 
@@ -83,7 +94,9 @@ def test_resting_limit_waits_until_a_later_candle_touches_its_price() -> None:
     )
     order = _order(order_type=OrderType.LIMIT, price="50", stop="40", take="60")
 
-    report = exchange.execute(order, _candle(1, open_=100, high=110, low=90), leverage=1)
+    report = exchange.execute(
+        order, _candle(1, open_=100, high=110, low=90), leverage=1
+    )
     exchange.settle_candle("BTCUSDT", _candle(1, open_=100, high=110, low=90))
     before_touch = exchange.portfolio_state({})
     exchange.settle_candle("BTCUSDT", _candle(2, open_=55, high=58, low=45, close=52))
@@ -137,7 +150,9 @@ def test_slippage_and_fees_are_charged_against_the_trade() -> None:
 
 
 def test_funding_accrues_by_side_and_lands_in_the_trade() -> None:
-    exchange = SimulatedExchange(BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0")))
+    exchange = SimulatedExchange(
+        BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0"))
+    )
     exchange.execute(_order(), _candle(0), leverage=1)
 
     # A long pays funding when the rate is positive.
@@ -150,7 +165,9 @@ def test_funding_accrues_by_side_and_lands_in_the_trade() -> None:
 
 
 def test_open_positions_are_flattened_so_no_unrealised_tail_is_counted() -> None:
-    exchange = SimulatedExchange(BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0")))
+    exchange = SimulatedExchange(
+        BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0"))
+    )
     exchange.execute(_order(), _candle(0), leverage=1)
 
     exchange.close_all({"BTCUSDT": Decimal("102")}, START + timedelta(hours=1))
@@ -214,17 +231,29 @@ def test_result_reconciles_gross_pnl_costs_and_final_equity() -> None:
 def test_symbol_breakdown_reconciles_to_the_shared_portfolio() -> None:
     trades = [
         BacktestTrade(
-            symbol="BTCUSDT", side="LONG", quantity=Decimal("1"),
-            entry_time=START, entry_price=Decimal("100"),
-            exit_time=START + timedelta(minutes=5), exit_price=Decimal("110"),
-            net_pnl=Decimal("8"), fees=Decimal("1"), funding=Decimal("1"),
+            symbol="BTCUSDT",
+            side="LONG",
+            quantity=Decimal("1"),
+            entry_time=START,
+            entry_price=Decimal("100"),
+            exit_time=START + timedelta(minutes=5),
+            exit_price=Decimal("110"),
+            net_pnl=Decimal("8"),
+            fees=Decimal("1"),
+            funding=Decimal("1"),
             exit_reason="take_profit",
         ),
         BacktestTrade(
-            symbol="ETHUSDT", side="SHORT", quantity=Decimal("1"),
-            entry_time=START, entry_price=Decimal("100"),
-            exit_time=START + timedelta(minutes=5), exit_price=Decimal("104"),
-            net_pnl=Decimal("-5"), fees=Decimal("1"), funding=Decimal("0"),
+            symbol="ETHUSDT",
+            side="SHORT",
+            quantity=Decimal("1"),
+            entry_time=START,
+            entry_price=Decimal("100"),
+            exit_time=START + timedelta(minutes=5),
+            exit_price=Decimal("104"),
+            net_pnl=Decimal("-5"),
+            fees=Decimal("1"),
+            funding=Decimal("0"),
             exit_reason="stop_loss",
         ),
     ]
@@ -250,10 +279,14 @@ def test_symbol_breakdown_reconciles_to_the_shared_portfolio() -> None:
 def test_position_state_carries_the_context_the_model_needs() -> None:
     """The backtest portfolio must look like the live one to the model."""
 
-    exchange = SimulatedExchange(BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0")))
+    exchange = SimulatedExchange(
+        BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0"))
+    )
     exchange.execute(_order(), _candle(0), leverage=3)
 
-    position = exchange.portfolio_state({"BTCUSDT": Decimal("102")}).positions["BTCUSDT"]
+    position = exchange.portfolio_state({"BTCUSDT": Decimal("102")}).positions[
+        "BTCUSDT"
+    ]
 
     assert position.side == "LONG"
     assert position.entry_price == Decimal("100")
@@ -261,6 +294,40 @@ def test_position_state_carries_the_context_the_model_needs() -> None:
     assert position.stop_loss == Decimal("98")
     assert position.take_profit == Decimal("104")
     assert position.leverage == 3
+
+
+def test_replay_position_counts_only_pnl_after_the_recorded_start() -> None:
+    portfolio = PortfolioState(
+        equity="1010",
+        available_balance="955",
+        open_positions=1,
+        margin_used="55",
+        positions={
+            "BTCUSDT": PositionState(
+                side="LONG",
+                quantity="1",
+                entry_price="100",
+                unrealized_pnl="10",
+                leverage=2,
+                initial_margin="55",
+                stop_loss="90",
+                take_profit="120",
+            )
+        },
+    )
+    config = BacktestConfig(
+        initial_equity=portfolio.equity,
+        slippage_fraction=Decimal("0"),
+        fee_rate=Decimal("0"),
+    )
+    exchange = SimulatedExchange(
+        config, initial_portfolio=portfolio, initial_time=START
+    )
+
+    exchange.close_all({"BTCUSDT": Decimal("115")}, START + timedelta(minutes=5))
+
+    assert exchange.cash == Decimal("1015")
+    assert exchange.trades[0].net_pnl == Decimal("5")
 
 
 def test_add_updates_position_leverage_and_margin() -> None:
@@ -299,7 +366,9 @@ def test_pnl_24h_uses_a_rolling_window_instead_of_resetting_at_midnight() -> Non
 def test_profit_factor_is_undefined_rather_than_zero_without_losses() -> None:
     """Zero would read as the worst possible score for a flawless run."""
 
-    exchange = SimulatedExchange(BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0")))
+    exchange = SimulatedExchange(
+        BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0"))
+    )
     exchange.execute(_order(), _candle(0), leverage=1)
     exchange.settle_candle("BTCUSDT", _candle(1, high=105))
 

@@ -77,6 +77,7 @@ class _Position:
     take_profit: Decimal | None
     fees: Decimal = Decimal("0")
     funding: Decimal = Decimal("0")
+    carried_pnl: Decimal = Decimal("0")
 
 
 @dataclass(slots=True)
@@ -130,13 +131,49 @@ class SimulatedExchange:
     itself.
     """
 
-    def __init__(self, config: BacktestConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: BacktestConfig | None = None,
+        *,
+        initial_portfolio: PortfolioState | None = None,
+        initial_time: datetime | None = None,
+    ) -> None:
         self.config = config or BacktestConfig()
-        self.cash = self.config.initial_equity
         self._positions: dict[str, _Position] = {}
         self._pending: dict[str, _PendingOrder] = {}
         self.trades: list[BacktestTrade] = []
         self._equity_window: list[EquityPoint] = []
+        self.cash = self.config.initial_equity
+        if initial_portfolio is not None:
+            if initial_time is None or initial_time.tzinfo is None:
+                raise ValueError(
+                    "an initial portfolio needs a timezone-aware start time"
+                )
+            if initial_portfolio.equity != self.config.initial_equity:
+                raise ValueError(
+                    "initial portfolio equity must match backtest initial equity"
+                )
+            carried = sum(
+                (
+                    position.unrealized_pnl
+                    for position in initial_portfolio.positions.values()
+                ),
+                Decimal("0"),
+            )
+            self.cash = initial_portfolio.equity - carried
+            self._positions = {
+                symbol: _Position(
+                    side=position.side,
+                    quantity=position.quantity,
+                    entry_price=position.entry_price,
+                    entry_time=initial_time,
+                    leverage=position.leverage,
+                    stop_loss=position.stop_loss or position.entry_price,
+                    take_profit=position.take_profit,
+                    carried_pnl=position.unrealized_pnl,
+                )
+                for symbol, position in initial_portfolio.positions.items()
+            }
 
     def portfolio_state(
         self, marks: dict[str, Decimal], *, as_of: datetime | None = None
@@ -169,7 +206,10 @@ class SimulatedExchange:
             if self._equity_window and current_time < self._equity_window[-1].timestamp:
                 raise ValueError("portfolio time cannot move backwards")
             point = EquityPoint(current_time, equity)
-            if self._equity_window and current_time == self._equity_window[-1].timestamp:
+            if (
+                self._equity_window
+                and current_time == self._equity_window[-1].timestamp
+            ):
                 self._equity_window[-1] = point
             else:
                 self._equity_window.append(point)
@@ -201,7 +241,9 @@ class SimulatedExchange:
     def has_pending(self, symbol: str) -> bool:
         return symbol in self._pending
 
-    def execute(self, order: OrderPlan, candle: Candle, *, leverage: int) -> ExecutionReport:
+    def execute(
+        self, order: OrderPlan, candle: Candle, *, leverage: int
+    ) -> ExecutionReport:
         """Fill marketable orders at the open; keep resting limits pending."""
 
         if order.order_type.value == "LIMIT":
@@ -233,7 +275,11 @@ class SimulatedExchange:
         fill = self._slipped(base_price, order.side)
         if order.order_type.value == "LIMIT":
             assert order.price is not None
-            fill = min(fill, order.price) if order.side == "BUY" else max(fill, order.price)
+            fill = (
+                min(fill, order.price)
+                if order.side == "BUY"
+                else max(fill, order.price)
+            )
 
         fee = fill * order.quantity * self.config.fee_rate
         self.cash -= fee
@@ -285,7 +331,9 @@ class SimulatedExchange:
         if order.take_profit_price is not None:
             existing.take_profit = order.take_profit_price
 
-    def _reduce(self, order: OrderPlan, fill: Decimal, when: datetime, fee: Decimal) -> None:
+    def _reduce(
+        self, order: OrderPlan, fill: Decimal, when: datetime, fee: Decimal
+    ) -> None:
         position = self._positions.get(order.symbol)
         if position is None:
             return
@@ -304,10 +352,15 @@ class SimulatedExchange:
     ) -> None:
         share = quantity / position.quantity
         direction = Decimal("1") if position.side == "LONG" else Decimal("-1")
-        gross = quantity * (exit_price - position.entry_price) * direction
+        lifetime_gross = quantity * (exit_price - position.entry_price) * direction
+        carried_pnl = position.carried_pnl * share
+        gross = lifetime_gross - carried_pnl
         entry_fees = position.fees * share
         funding = position.funding * share
-        self.cash += gross - funding
+        # Cash started below equity by the already-unrealized PnL. Realising a
+        # carried position therefore credits its lifetime PnL, while the trade
+        # result only reports movement inside the replay window.
+        self.cash += lifetime_gross - funding
         self.trades.append(
             BacktestTrade(
                 symbol=symbol,
@@ -326,6 +379,7 @@ class SimulatedExchange:
         position.quantity -= quantity
         position.fees -= entry_fees
         position.funding -= funding
+        position.carried_pnl -= carried_pnl
         if position.quantity <= 0:
             del self._positions[symbol]
 
@@ -346,7 +400,13 @@ class SimulatedExchange:
                 fee = fill * position.quantity * self.config.fee_rate
                 self.cash -= fee
                 self._book(
-                    symbol, position, position.quantity, fill, candle.timestamp, fee, reason
+                    symbol,
+                    position,
+                    position.quantity,
+                    fill,
+                    candle.timestamp,
+                    fee,
+                    reason,
                 )
 
         pending = self._pending.get(symbol)
@@ -354,7 +414,11 @@ class SimulatedExchange:
             return
         order = pending.order
         assert order.price is not None
-        touched = candle.low <= order.price if order.side == "BUY" else candle.high >= order.price
+        touched = (
+            candle.low <= order.price
+            if order.side == "BUY"
+            else candle.high >= order.price
+        )
         if not touched:
             return
         if order.reduce_only and symbol not in self._positions:
