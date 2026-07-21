@@ -759,6 +759,9 @@ class TradingEngine:
                 replace_existing_protection=intent.action == TradeAction.ADD,
             )
         except ProtectiveStopError as exc:
+            rescue_succeeded = (
+                exc.rescue is not None and exc.failed_stage == "PROTECTION"
+            )
             await self.audit.record_execution(symbol, exc.entry)
             if exc.rescue is not None:
                 await self.audit.record_execution(symbol, exc.rescue)
@@ -767,7 +770,7 @@ class TradingEngine:
                 ExecutionAttempt(
                     inference_id=inference_id,
                     client_order_id=order.client_order_id,
-                    status="RESCUED" if exc.rescue is not None else "FAILED",
+                    status="RESCUED" if rescue_succeeded else "FAILED",
                     stage=exc.failed_stage,
                     message=str(exc),
                     exchange_error_code=exc.exchange_error_code,
@@ -776,7 +779,7 @@ class TradingEngine:
                     estimated_loss_usdt=exc.estimated_loss_usdt,
                 ),
             )
-            if exc.rescue is not None:
+            if rescue_succeeded:
                 self.rescue_count += 1
             if exc.requires_emergency_lock:
                 await self.emergency_stop()

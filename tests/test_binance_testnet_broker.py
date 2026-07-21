@@ -1142,6 +1142,76 @@ def test_take_profit_failure_triggers_emergency_reduce() -> None:
     assert rescue[0]["newOrderRespType"] == ["RESULT"]
 
 
+def test_incomplete_emergency_reduce_requires_an_emergency_lock() -> None:
+    from candlepilot.broker.binance_testnet import ProtectiveStopError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fapi/v1/time":
+            return httpx.Response(200, json={"serverTime": 1784040000000})
+        if request.url.path == "/fapi/v1/symbolConfig":
+            return httpx.Response(
+                200,
+                json=[{"symbol": "BTCUSDT", "marginType": "ISOLATED", "leverage": 3}],
+            )
+        query = parse_qs(request.url.query.decode())
+        if request.url.path == "/fapi/v1/algoOrder":
+            if request.method == "DELETE":
+                return httpx.Response(200, json={"status": "CANCELED"})
+            if query.get("type") == ["TAKE_PROFIT_MARKET"]:
+                return httpx.Response(400, json={"code": -2021, "msg": "would trigger"})
+            return httpx.Response(200, json={"status": "NEW"})
+        client_order_id = query["newClientOrderId"][0]
+        if client_order_id.endswith("-rescue"):
+            return httpx.Response(
+                200,
+                json={
+                    "clientOrderId": client_order_id,
+                    "status": "PARTIALLY_FILLED",
+                    "executedQty": "0.4",
+                    "avgPrice": "99",
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "clientOrderId": client_order_id,
+                "status": "FILLED",
+                "executedQty": "1",
+                "avgPrice": "100",
+            },
+        )
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(_credentials(), client=client)
+        with pytest.raises(ProtectiveStopError) as captured:
+            await broker.execute_with_stop(
+                OrderPlan(
+                    client_order_id="cp-partial",
+                    symbol="BTCUSDT",
+                    side="BUY",
+                    quantity=Decimal("1"),
+                    order_type=OrderType.MARKET,
+                    stop_price=Decimal("98"),
+                    take_profit_price=Decimal("104"),
+                ),
+                leverage=3,
+            )
+        await client.aclose()
+        return captured.value
+
+    failure = asyncio.run(scenario())
+    assert failure.rescue is not None
+    assert failure.rescue.status == "PARTIALLY_FILLED"
+    assert failure.rescue.filled_quantity == Decimal("0.4")
+    assert failure.failed_stage == "RESCUE"
+    assert failure.requires_emergency_lock is True
+    assert failure.estimated_loss_usdt is None
+    assert "incomplete (PARTIALLY_FILLED, 0.4/1)" in str(failure)
+
+
 def test_failed_protective_cleanup_requires_an_emergency_lock() -> None:
     from candlepilot.broker.binance_testnet import ProtectiveStopError
 
@@ -1348,21 +1418,22 @@ def test_income_24h_sums_trading_components_and_excludes_transfers() -> None:
 
 def test_emergency_flatten_cancels_orphan_orders_before_closing_positions() -> None:
     requests: list[httpx.Request] = []
+    closed = False
 
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal closed
         requests.append(request)
         if request.url.path == "/fapi/v1/time":
             return httpx.Response(200, json={"serverTime": 1784040000000})
         if request.url.path == "/fapi/v3/account":
-            return httpx.Response(
-                200,
-                json={"positions": [{"symbol": "BTCUSDT", "positionAmt": "1"}]},
-            )
+            positions = [] if closed else [{"symbol": "BTCUSDT", "positionAmt": "1"}]
+            return httpx.Response(200, json={"positions": positions})
         if request.url.path == "/fapi/v1/openOrders" and request.method == "GET":
             return httpx.Response(200, json=[{"symbol": "ETHUSDT"}])
         if request.url.path == "/fapi/v1/openAlgoOrders" and request.method == "GET":
             return httpx.Response(200, json=[{"symbol": "SOLUSDT"}])
         if request.method == "POST" and request.url.path == "/fapi/v1/order":
+            closed = True
             query = parse_qs(request.url.query.decode())
             return httpx.Response(
                 200,
@@ -1408,14 +1479,15 @@ def test_emergency_flatten_cancels_orphan_orders_before_closing_positions() -> N
 
 
 def test_emergency_flatten_error_keeps_successful_execution_reports() -> None:
+    closed = False
+
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal closed
         if request.url.path == "/fapi/v1/time":
             return httpx.Response(200, json={"serverTime": 1784040000000})
         if request.url.path == "/fapi/v3/account":
-            return httpx.Response(
-                200,
-                json={"positions": [{"symbol": "BTCUSDT", "positionAmt": "1"}]},
-            )
+            positions = [] if closed else [{"symbol": "BTCUSDT", "positionAmt": "1"}]
+            return httpx.Response(200, json={"positions": positions})
         if request.url.path == "/fapi/v1/openOrders" and request.method == "GET":
             return httpx.Response(200, json=[{"symbol": "ETHUSDT"}])
         if request.url.path == "/fapi/v1/openAlgoOrders" and request.method == "GET":
@@ -1423,6 +1495,7 @@ def test_emergency_flatten_error_keeps_successful_execution_reports() -> None:
         if request.method == "DELETE" and "ETHUSDT" in str(request.url):
             return httpx.Response(500, json={"code": -1, "msg": "cancel failed"})
         if request.method == "POST" and request.url.path == "/fapi/v1/order":
+            closed = True
             query = parse_qs(request.url.query.decode())
             return httpx.Response(
                 200,
@@ -1450,6 +1523,49 @@ def test_emergency_flatten_error_keeps_successful_execution_reports() -> None:
     assert len(failure.executions) == 1
     assert failure.executions[0].symbol == "BTCUSDT"
     assert failure.executions[0].report.status == "FILLED"
+
+
+def test_emergency_flatten_rejects_incomplete_close_and_remaining_position() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fapi/v1/time":
+            return httpx.Response(200, json={"serverTime": 1784040000000})
+        if request.url.path == "/fapi/v3/account":
+            return httpx.Response(
+                200,
+                json={"positions": [{"symbol": "BTCUSDT", "positionAmt": "0.6"}]},
+            )
+        if request.url.path in {"/fapi/v1/openOrders", "/fapi/v1/openAlgoOrders"}:
+            return httpx.Response(200, json=[])
+        if request.method == "POST" and request.url.path == "/fapi/v1/order":
+            query = parse_qs(request.url.query.decode())
+            return httpx.Response(
+                200,
+                json={
+                    "clientOrderId": query["newClientOrderId"][0],
+                    "status": "PARTIALLY_FILLED",
+                    "executedQty": "0.4",
+                    "avgPrice": "100",
+                },
+            )
+        return httpx.Response(200, json={"status": "FILLED"})
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BINANCE_FUTURES_TESTNET
+        )
+        broker = BinanceTestnetBroker(
+            _credentials(), client=client, recovery_attempts=1, recovery_delay=0
+        )
+        with pytest.raises(EmergencyFlattenError) as captured:
+            await broker.emergency_flatten()
+        await client.aclose()
+        return captured.value
+
+    failure = asyncio.run(scenario())
+    assert "incomplete order (PARTIALLY_FILLED, 0.4/0.6)" in str(failure)
+    assert "remaining position 0.6" in str(failure)
+    assert len(failure.executions) == 1
+    assert failure.executions[0].report.status == "PARTIALLY_FILLED"
 
 
 def test_manual_market_close_is_reduce_only_and_cleans_only_own_bracket() -> None:

@@ -1219,14 +1219,19 @@ def test_unrescued_protection_failure_emergency_locks_engine(tmp_path: Path) -> 
 
         async def execute_with_stop(self, order, **_):
             raise ProtectiveStopError(
-                "entry succeeded but protection and rescue both failed",
+                "entry succeeded but emergency rescue was incomplete",
                 entry=ExecutionReport(
                     client_order_id=order.client_order_id,
                     status="FILLED",
                     filled_quantity="1",
                     average_price="100",
                 ),
-                rescue=None,
+                rescue=ExecutionReport(
+                    client_order_id=f"{order.client_order_id}-rescue",
+                    status="PARTIALLY_FILLED",
+                    filled_quantity="0.4",
+                    average_price="99",
+                ),
                 exchange_error_code=-4120,
                 estimated_loss_usdt=None,
                 failed_stage="RESCUE",
@@ -1267,17 +1272,20 @@ def test_unrescued_protection_failure_emergency_locks_engine(tmp_path: Path) -> 
             engine.running,
             engine.emergency_locked,
             broker.flattened,
+            engine.rescue_count,
             events[0]["execution"],
         )
         await database.close()
         return result
 
-    running, locked, flattened, execution = asyncio.run(scenario())
+    running, locked, flattened, rescue_count, execution = asyncio.run(scenario())
     assert running is False
     assert locked is True
     assert flattened is True
+    assert rescue_count == 0
     assert execution["status"] == "FAILED"
     assert execution["stage"] == "RESCUE"
+    assert execution["rescue_report"]["status"] == "PARTIALLY_FILLED"
 
 
 def test_batch_does_not_submit_after_internal_emergency_stop(tmp_path: Path) -> None:

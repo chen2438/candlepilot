@@ -745,6 +745,11 @@ class BinanceTestnetBroker:
                 rescue = await self._emergency_reduce(protected_order, exit_side)
             except Exception as emergency_exc:
                 rescue_error = emergency_exc
+            rescue_complete = (
+                rescue is not None
+                and rescue.status == "FILLED"
+                and rescue.filled_quantity >= protected_order.quantity
+            )
             restoration_failed = False
             for stale_order in cancelled_stale:
                 try:
@@ -760,12 +765,19 @@ class BinanceTestnetBroker:
                 except Exception:
                     restoration_failed = True
             error_code = exc.code if isinstance(exc, BinanceApiError) else None
-            message = (
-                "entry succeeded but protective bracket failed; "
-                "emergency reduce-only order submitted"
-                if rescue is not None
-                else "entry succeeded but protective bracket and emergency reduce failed"
-            )
+            if rescue_complete:
+                message = (
+                    "entry succeeded but protective bracket failed; "
+                    "emergency reduce-only order filled"
+                )
+            elif rescue is not None:
+                message = (
+                    "entry succeeded but protective bracket failed; emergency reduce-only "
+                    f"order incomplete ({rescue.status}, "
+                    f"{rescue.filled_quantity}/{protected_order.quantity})"
+                )
+            else:
+                message = "entry succeeded but protective bracket and emergency reduce failed"
             if rescue_error is not None:
                 message = f"{message}: {type(rescue_error).__name__}"
             if cleanup_failed:
@@ -778,11 +790,11 @@ class BinanceTestnetBroker:
                 rescue=rescue,
                 exchange_error_code=error_code,
                 estimated_loss_usdt=self._estimated_rescue_loss(
-                    protected_order, entry, rescue
+                    protected_order, entry, rescue if rescue_complete else None
                 ),
-                failed_stage="PROTECTION" if rescue is not None else "RESCUE",
+                failed_stage="PROTECTION" if rescue_complete else "RESCUE",
                 requires_emergency_lock=(
-                    rescue is None or cleanup_failed or restoration_failed
+                    not rescue_complete or cleanup_failed or restoration_failed
                 ),
             ) from exc
         return entry
@@ -1355,11 +1367,43 @@ class BinanceTestnetBroker:
                     order_type=OrderType.MARKET,
                     reduce_only=True,
                 )
-                executions.append(
-                    EmergencyExecution(symbol=symbol, report=await self._place_order(order))
-                )
+                report = await self._place_order(order)
+                executions.append(EmergencyExecution(symbol=symbol, report=report))
+                if report.status != "FILLED" or report.filled_quantity < abs(quantity):
+                    failures.append(
+                        f"flatten {symbol}: incomplete order "
+                        f"({report.status}, {report.filled_quantity}/{abs(quantity)})"
+                    )
             except Exception as exc:
                 failures.append(f"flatten {symbol}: {type(exc).__name__}")
+
+        remaining_positions: dict[str, Decimal] | None = None
+        verification_error: Exception | None = None
+        for attempt in range(self.recovery_attempts):
+            if attempt and self.recovery_delay:
+                await asyncio.sleep(self.recovery_delay * (2 ** (attempt - 1)))
+            try:
+                refreshed = await self.account()
+            except Exception as exc:
+                verification_error = exc
+                continue
+            remaining_positions = {
+                str(position["symbol"]): Decimal(str(position.get("positionAmt", "0")))
+                for position in refreshed.get("positions", [])
+                if Decimal(str(position.get("positionAmt", "0"))) != 0
+            }
+            if not remaining_positions:
+                break
+        if remaining_positions is None:
+            failures.append(
+                "verify account: "
+                f"{type(verification_error).__name__ if verification_error else 'unknown error'}"
+            )
+        else:
+            failures.extend(
+                f"verify {symbol}: remaining position {quantity}"
+                for symbol, quantity in sorted(remaining_positions.items())
+            )
         if failures:
             raise EmergencyFlattenError(
                 "emergency account cleanup incomplete: " + "; ".join(failures),
