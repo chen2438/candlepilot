@@ -166,6 +166,37 @@ def test_slippage_and_fees_are_charged_against_the_trade() -> None:
     assert exchange.cash < Decimal("10000")
 
 
+def test_future_candle_fill_does_not_enter_the_portfolio_early() -> None:
+    exchange = SimulatedExchange(
+        BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0"))
+    )
+    submitted_at = START + timedelta(seconds=2)
+    fill_candle = _candle(1, open_=100, high=105, low=97)
+
+    report = exchange.execute(
+        _order(), fill_candle, leverage=1, submitted_at=submitted_at
+    )
+
+    assert report.status == "NEW"
+    assert not exchange.portfolio_state({}).positions
+
+    # The already-open 00:00 candle must not be allowed to stop a position
+    # whose next-open fill is scheduled for 00:05.
+    exchange.activate_scheduled("BTCUSDT", START)
+    exchange.settle_candle("BTCUSDT", _candle(0, low=90))
+    assert not exchange.trades
+
+    exchange.activate_scheduled("BTCUSDT", fill_candle.timestamp)
+    position = exchange.portfolio_state({}).positions["BTCUSDT"]
+    assert position.entry_price == fill_candle.open
+
+    exchange.settle_candle("BTCUSDT", fill_candle)
+    trade = exchange.trades[0]
+    assert trade.entry_time == fill_candle.timestamp
+    assert trade.exit_time == fill_candle.timestamp
+    assert trade.exit_time >= trade.entry_time
+
+
 def test_funding_accrues_by_side_and_lands_in_the_trade() -> None:
     exchange = SimulatedExchange(
         BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0"))

@@ -258,6 +258,46 @@ def test_entry_bar_protection_is_settled_before_the_next_decision() -> None:
     assert result.trades[0].exit_time == WINDOW_START + timedelta(minutes=5)
 
 
+def test_formal_snapshot_after_boundary_defers_next_open_fill() -> None:
+    spec = _spec(end=WINDOW_START + timedelta(minutes=15))
+    source = _runner(spec)
+    first_boundary = WINDOW_START + timedelta(minutes=5)
+    second_boundary = WINDOW_START + timedelta(minutes=10)
+    first_when = first_boundary + timedelta(seconds=2)
+    second_when = second_boundary + timedelta(seconds=2)
+    first_snapshot = source._builders["BTCUSDT"].build(
+        "BTCUSDT", "5m", first_boundary
+    ).model_copy(update={"timestamp": first_when})
+    second_snapshot = source._builders["BTCUSDT"].build(
+        "BTCUSDT", "5m", second_boundary
+    ).model_copy(update={"timestamp": second_when})
+    runner = BacktestRunner(
+        spec=spec,
+        series=source._series,
+        rules={"BTCUSDT": RULES},
+        risk=AggressiveRiskPolicy(require_take_profit=True),
+        provider_retry_delays=(0, 0),
+        replay_snapshots={
+            ("BTCUSDT", "5m", first_when): (first_snapshot, RULES),
+            ("BTCUSDT", "5m", second_when): (second_snapshot, RULES),
+        },
+    )
+    decisions: list[BacktestDecision] = []
+
+    async def capture(_run: ModelRun, decision: BacktestDecision | None) -> None:
+        if decision is not None:
+            decisions.append(decision)
+
+    result = asyncio.run(
+        runner.run(_Provider("formal"), ModelRun("formal"), on_progress=capture)
+    )
+
+    assert decisions[0].outcome == "pending"
+    assert decisions[1].outcome == "hold"
+    assert result.trades[0].entry_time == second_boundary
+    assert result.trades[0].exit_time >= result.trades[0].entry_time
+
+
 def test_higher_cadences_cannot_duplicate_funding_settlement() -> None:
     base_spec = _spec(end=WINDOW_START + timedelta(minutes=35))
     multi_spec = _spec(

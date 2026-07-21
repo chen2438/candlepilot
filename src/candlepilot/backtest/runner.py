@@ -363,7 +363,12 @@ class BacktestRunner:
         )
         end = bisect_right(self._five_minute_closed_at[symbol], through)
         for candle in candles[start:end]:
+            exchange.activate_scheduled(symbol, candle.timestamp)
             exchange.settle_candle(symbol, candle)
+        # A decision can arrive a few seconds after the boundary. Its previous
+        # next-open order becomes part of the portfolio at that boundary, but
+        # the still-open candle must not be settled until its close.
+        exchange.activate_scheduled(symbol, through)
         settled_next[symbol] = max(start, end)
 
     async def run(
@@ -562,7 +567,10 @@ class BacktestRunner:
                 await report(entry)
                 continue
             execution = exchange.execute(
-                evaluation.order, fill_candle, leverage=intent.leverage
+                evaluation.order,
+                fill_candle,
+                leverage=intent.leverage,
+                submitted_at=when,
             )
             entry.outcome = "traded" if execution.status == "FILLED" else "pending"
             entry.fill = {

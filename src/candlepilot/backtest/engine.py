@@ -88,6 +88,14 @@ class _PendingOrder:
     leverage: int
 
 
+@dataclass(slots=True)
+class _ScheduledOrder:
+    order: OrderPlan
+    submitted_at: datetime
+    fill_candle: Candle
+    leverage: int
+
+
 @dataclass(frozen=True, slots=True)
 class BacktestResult:
     initial_equity: Decimal
@@ -142,6 +150,7 @@ class SimulatedExchange:
         self.config = config or BacktestConfig()
         self._positions: dict[str, _Position] = {}
         self._pending: dict[str, _PendingOrder] = {}
+        self._scheduled: dict[str, _ScheduledOrder] = {}
         self._stop_loss_cooldown_until: dict[str, datetime] = {}
         self.trades: list[BacktestTrade] = []
         self._equity_window: list[EquityPoint] = []
@@ -249,12 +258,41 @@ class SimulatedExchange:
         return price + drift if side == "BUY" else price - drift
 
     def has_pending(self, symbol: str) -> bool:
-        return symbol in self._pending
+        return symbol in self._pending or symbol in self._scheduled
 
     def execute(
-        self, order: OrderPlan, candle: Candle, *, leverage: int
+        self,
+        order: OrderPlan,
+        candle: Candle,
+        *,
+        leverage: int,
+        submitted_at: datetime | None = None,
     ) -> ExecutionReport:
         """Fill marketable orders at the open; keep resting limits pending."""
+
+        if submitted_at is not None:
+            if submitted_at.tzinfo is None:
+                raise ValueError("order submission time must be timezone-aware")
+            if candle.timestamp > submitted_at:
+                self._scheduled[order.symbol] = _ScheduledOrder(
+                    order=order,
+                    submitted_at=submitted_at,
+                    fill_candle=candle,
+                    leverage=leverage,
+                )
+                return ExecutionReport(
+                    client_order_id=order.client_order_id,
+                    status="NEW",
+                    message="simulated order scheduled for the next candle open",
+                    timestamp=submitted_at,
+                )
+
+        return self._execute_at_candle(order, candle, leverage=leverage)
+
+    def _execute_at_candle(
+        self, order: OrderPlan, candle: Candle, *, leverage: int
+    ) -> ExecutionReport:
+        """Execute an order once simulated time reaches its fill candle."""
 
         if order.order_type.value == "LIMIT":
             assert order.price is not None
@@ -273,6 +311,21 @@ class SimulatedExchange:
                 )
 
         return self._fill(order, candle.open, candle.timestamp, leverage=leverage)
+
+    def activate_scheduled(self, symbol: str, through: datetime) -> None:
+        """Materialize a next-candle order only once simulated time reaches it."""
+
+        scheduled = self._scheduled.get(symbol)
+        if scheduled is None or scheduled.fill_candle.timestamp > through:
+            return
+        del self._scheduled[symbol]
+        if scheduled.order.reduce_only and symbol not in self._positions:
+            return
+        self._execute_at_candle(
+            scheduled.order,
+            scheduled.fill_candle,
+            leverage=scheduled.leverage,
+        )
 
     def _fill(
         self,
@@ -360,6 +413,8 @@ class SimulatedExchange:
         fee: Decimal,
         reason: str,
     ) -> None:
+        if when < position.entry_time:
+            raise ValueError("trade exit cannot precede its entry")
         share = quantity / position.quantity
         direction = Decimal("1") if position.side == "LONG" else Decimal("-1")
         lifetime_gross = quantity * (exit_price - position.entry_price) * direction
@@ -493,8 +548,9 @@ class SimulatedExchange:
             fee = fill * position.quantity * self.config.fee_rate
             self.cash -= fee
             self._book(symbol, position, position.quantity, fill, when, fee, "run_end")
-        cancelled_pending_orders = len(self._pending)
+        cancelled_pending_orders = len(self._pending) + len(self._scheduled)
         self._pending.clear()
+        self._scheduled.clear()
         return cancelled_pending_orders
 
 
