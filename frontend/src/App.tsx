@@ -2500,7 +2500,7 @@ const BACKTEST_VS_LIVE: Array<{ aspect: string; live: string; real: string; plai
   {
     aspect: "风控",
     live: "AggressiveRiskPolicy",
-    real: "同一个——24h亏损熔断、仓位上限、tick 对齐全部生效",
+    real: "同一个——24h亏损熔断、止损风险与保证金上限、tick 对齐全部生效",
     plain: "同左",
   },
 ];
