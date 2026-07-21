@@ -4,6 +4,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from candlepilot.application.engine import TradingEngine
+from candlepilot.broker.user_stream import UserStreamEvent
 from candlepilot.domain.models import (
     ExecutionReport,
     MarketSnapshot,
@@ -1759,9 +1760,27 @@ def test_testnet_portfolio_carries_entry_price_and_live_bracket(tmp_path: Path) 
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'testnet-portfolio.db'}")
         await database.initialize()
+        audit = AuditRepository(database.sessions)
+        stopped_at = datetime.now(UTC) - timedelta(minutes=5)
+        await audit.record_user_event(
+            UserStreamEvent(
+                "ORDER_TRADE_UPDATE",
+                stopped_at,
+                stopped_at,
+                "SOLUSDT",
+                {
+                    "o": {
+                        "c": "cp-prior-entry-sl",
+                        "s": "SOLUSDT",
+                        "x": "TRADE",
+                        "X": "FILLED",
+                    }
+                },
+            )
+        )
         engine = TradingEngine(
             providers=ProviderRegistry([FakeProvider()]),
-            audit=AuditRepository(database.sessions),
+            audit=audit,
             market=FakeMarket(),  # type: ignore[arg-type]
             testnet_broker=PositionBroker(),  # type: ignore[arg-type]
         )
@@ -1783,6 +1802,8 @@ def test_testnet_portfolio_carries_entry_price_and_live_bracket(tmp_path: Path) 
     assert position.take_profit is None
     assert portfolio.pnl_24h == Decimal("-13.75")
     assert portfolio.pending_entry_symbols == ("ETHUSDT",)
+    cooldown = portfolio.stop_loss_cooldown_until["SOLUSDT"]
+    assert timedelta(minutes=84) < cooldown - datetime.now(UTC) < timedelta(minutes=86)
     # A flat symbol is not a position.
     assert "ETHUSDT" not in portfolio.positions
 

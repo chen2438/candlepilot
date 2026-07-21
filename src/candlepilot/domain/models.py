@@ -193,6 +193,7 @@ class PortfolioState(StrictModel):
     margin_used: NonNegativeDecimal = Decimal("0")
     positions: dict[str, PositionState] = Field(default_factory=dict)
     pending_entry_symbols: tuple[str, ...] = ()
+    stop_loss_cooldown_until: dict[str, datetime] = Field(default_factory=dict)
 
 
 class StructureCheck(StrictModel):

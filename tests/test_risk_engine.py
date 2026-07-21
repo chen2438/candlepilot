@@ -181,6 +181,38 @@ def test_confirmed_two_bar_breakout_passes_the_hard_gate() -> None:
     assert result.order is not None
 
 
+def test_stop_loss_reentry_cooldown_rejects_opening_until_expiry() -> None:
+    now = datetime.now(UTC)
+    result = AggressiveRiskPolicy().evaluate(
+        _intent(),
+        _snapshot(),
+        _portfolio(stop_loss_cooldown_until={"BTCUSDT": now + timedelta(minutes=30)}),
+        RULES,
+        now=now,
+    )
+
+    assert not result.decision.accepted
+    assert result.order is None
+    assert result.decision.reason.startswith(
+        "stop-loss re-entry cooldown is active until "
+    )
+
+
+def test_expired_stop_loss_reentry_cooldown_does_not_reject() -> None:
+    now = datetime.now(UTC)
+    result = AggressiveRiskPolicy(
+        max_symbol_margin_fraction=Decimal("1"),
+    ).evaluate(
+        _intent(),
+        _snapshot(),
+        _portfolio(stop_loss_cooldown_until={"BTCUSDT": now - timedelta(seconds=1)}),
+        RULES,
+        now=now,
+    )
+
+    assert result.decision.accepted
+
+
 def test_single_symbol_initial_margin_is_capped_at_ten_percent_of_equity() -> None:
     intent = _intent().model_copy(update={"stop_loss": Decimal("99.95")})
     result = AggressiveRiskPolicy().evaluate(intent, _snapshot(), _portfolio(), RULES)

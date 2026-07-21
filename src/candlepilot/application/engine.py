@@ -41,7 +41,12 @@ from candlepilot.providers.retry import (
     DECISION_PROVIDER_RETRY_DELAYS,
     validate_retry_delays,
 )
-from candlepilot.risk.engine import AggressiveRiskPolicy, RiskEvaluation, SymbolRules
+from candlepilot.risk.engine import (
+    STOP_LOSS_REENTRY_COOLDOWN,
+    AggressiveRiskPolicy,
+    RiskEvaluation,
+    SymbolRules,
+)
 from candlepilot.storage.database import AuditRepository
 
 
@@ -498,6 +503,7 @@ class TradingEngine:
 
     async def current_portfolio(self) -> PortfolioState:
         broker = self.testnet_broker
+        now = datetime.now(UTC)
         income_24h_loader = getattr(broker, "income_24h", None)
         income_24h = (
             income_24h_loader()
@@ -514,8 +520,18 @@ class TradingEngine:
         account_loader = (
             snapshot_loader if callable(snapshot_loader) else broker.account
         )
-        account, levels, realized_24h, pending_entry_symbols = await asyncio.gather(
-            account_loader(), broker.protective_levels(), income_24h, pending_entries
+        (
+            account,
+            levels,
+            realized_24h,
+            pending_entry_symbols,
+            recent_stop_losses,
+        ) = await asyncio.gather(
+            account_loader(),
+            broker.protective_levels(),
+            income_24h,
+            pending_entries,
+            self.audit.recent_stop_loss_times(now - STOP_LOSS_REENTRY_COOLDOWN),
         )
         raw_positions = {
             str(item["symbol"]): item
@@ -575,6 +591,11 @@ class TradingEngine:
             pending_entry_symbols=tuple(
                 dict.fromkeys((*pending_entry_symbols, *sorted(local_pending_symbols)))
             ),
+            stop_loss_cooldown_until={
+                symbol: stopped_at + STOP_LOSS_REENTRY_COOLDOWN
+                for symbol, stopped_at in recent_stop_losses.items()
+                if stopped_at + STOP_LOSS_REENTRY_COOLDOWN > now
+            },
         )
 
     async def pending_entry_symbols(self) -> tuple[str, ...]:

@@ -11,7 +11,7 @@ from typing import Any
 from pydantic import BaseModel
 
 
-DECISION_PROMPT_VERSION = "trade-intent-v14"
+DECISION_PROMPT_VERSION = "trade-intent-v15"
 MARKET_SNAPSHOT_SCHEMA_VERSION = "market-snapshot-v3"
 BACKTEST_DATA_SCHEMA_VERSION = "backtest-candles-v1"
 #: Version of the microstructure derivation recorded by the collector.

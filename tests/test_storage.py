@@ -83,6 +83,44 @@ def test_inference_audit_round_trip(tmp_path: Path) -> None:
     assert detail["usage"]["input_tokens"] == 10
 
 
+def test_recent_stop_loss_times_returns_latest_candlepilot_fill(tmp_path: Path) -> None:
+    async def scenario() -> dict[str, datetime]:
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'stops.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        now = datetime.now(UTC)
+        for minutes, client_id, symbol in (
+            (1, "cp-first-sl", "BTCUSDT"),
+            (2, "manual-stop", "ETHUSDT"),
+            (3, "cp-latest-sl", "BTCUSDT"),
+        ):
+            event_time = now + timedelta(minutes=minutes)
+            await repository.record_user_event(
+                UserStreamEvent(
+                    "ORDER_TRADE_UPDATE",
+                    event_time,
+                    event_time,
+                    symbol,
+                    {
+                        "o": {
+                            "c": client_id,
+                            "s": symbol,
+                            "x": "TRADE",
+                            "X": "FILLED",
+                        }
+                    },
+                )
+            )
+        result = await repository.recent_stop_loss_times(now)
+        await database.close()
+        return result
+
+    result = asyncio.run(scenario())
+
+    assert set(result) == {"BTCUSDT"}
+    assert result["BTCUSDT"].tzinfo is not None
+
+
 def test_live_decision_snapshots_are_independent_replay_inputs(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'replay.db'}")

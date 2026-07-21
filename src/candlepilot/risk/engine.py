@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from uuid import uuid4
 
@@ -16,6 +16,9 @@ from candlepilot.domain.models import (
     TradeAction,
     TradeIntent,
 )
+
+
+STOP_LOSS_REENTRY_COOLDOWN = timedelta(minutes=90)
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +169,15 @@ class AggressiveRiskPolicy:
         opening = intent.action in {TradeAction.OPEN_LONG, TradeAction.OPEN_SHORT, TradeAction.ADD}
         if opening and intent.symbol in portfolio.pending_entry_symbols:
             return self._reject("a pending entry order already exists for this symbol")
+        cooldown_until = portfolio.stop_loss_cooldown_until.get(intent.symbol)
+        if opening and cooldown_until is not None:
+            if cooldown_until.tzinfo is None:
+                raise ValueError("stop-loss cooldown timestamps must be timezone-aware")
+            if now < cooldown_until:
+                return self._reject(
+                    "stop-loss re-entry cooldown is active until "
+                    f"{cooldown_until.isoformat()}"
+                )
         requested_side = (
             existing_side
             if intent.action == TradeAction.ADD

@@ -19,6 +19,7 @@ from candlepilot.domain.models import (
     PortfolioState,
     PositionState,
 )
+from candlepilot.risk.engine import STOP_LOSS_REENTRY_COOLDOWN
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +142,7 @@ class SimulatedExchange:
         self.config = config or BacktestConfig()
         self._positions: dict[str, _Position] = {}
         self._pending: dict[str, _PendingOrder] = {}
+        self._stop_loss_cooldown_until: dict[str, datetime] = {}
         self.trades: list[BacktestTrade] = []
         self._equity_window: list[EquityPoint] = []
         self.cash = self.config.initial_equity
@@ -161,6 +163,9 @@ class SimulatedExchange:
                 Decimal("0"),
             )
             self.cash = initial_portfolio.equity - carried
+            self._stop_loss_cooldown_until = dict(
+                initial_portfolio.stop_loss_cooldown_until
+            )
             self._positions = {
                 symbol: _Position(
                     side=position.side,
@@ -229,6 +234,11 @@ class SimulatedExchange:
             open_positions=len(self._positions),
             margin_used=margin_used,
             positions=positions,
+            stop_loss_cooldown_until={
+                symbol: expires_at
+                for symbol, expires_at in self._stop_loss_cooldown_until.items()
+                if as_of is None or expires_at > as_of
+            },
         )
 
     def equity(self, marks: dict[str, Decimal]) -> Decimal:
@@ -376,6 +386,10 @@ class SimulatedExchange:
                 exit_reason=reason,
             )
         )
+        if reason == "stop_loss":
+            self._stop_loss_cooldown_until[symbol] = (
+                when + STOP_LOSS_REENTRY_COOLDOWN
+            )
         position.quantity -= quantity
         position.fees -= entry_fees
         position.funding -= funding

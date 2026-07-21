@@ -75,6 +75,23 @@ def test_a_candle_touching_both_triggers_books_the_stop() -> None:
     assert exchange.trades[0].exit_price == Decimal("98")
 
 
+def test_stop_loss_adds_and_expires_reentry_cooldown_in_portfolio() -> None:
+    exchange = SimulatedExchange(
+        BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0"))
+    )
+    exchange.execute(_order(), _candle(0), leverage=1)
+    stopped_at = _candle(1, low=97).timestamp
+
+    exchange.settle_candle("BTCUSDT", _candle(1, low=97))
+
+    active = exchange.portfolio_state({}, as_of=stopped_at)
+    expired = exchange.portfolio_state({}, as_of=stopped_at + timedelta(minutes=90))
+    assert active.stop_loss_cooldown_until["BTCUSDT"] == stopped_at + timedelta(
+        minutes=90
+    )
+    assert "BTCUSDT" not in expired.stop_loss_cooldown_until
+
+
 def test_entries_fill_on_the_next_candle_not_the_decided_one() -> None:
     """The model reasoned on a closed bar, so filling inside it reads the future."""
 
