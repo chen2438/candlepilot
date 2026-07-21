@@ -118,7 +118,7 @@ def test_unrestorable_live_stop_failure_escalates_to_emergency(tmp_path) -> None
     assert asyncio.run(scenario())[0]["status"] == "failed"
 
 
-def test_recoverable_live_stop_failure_is_recorded_once(tmp_path) -> None:
+def test_recoverable_live_stop_failure_retries_the_same_candidate(tmp_path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'recoverable.db'}")
         await database.initialize()
@@ -131,16 +131,21 @@ def test_recoverable_live_stop_failure_is_recorded_once(tmp_path) -> None:
         errors = await manager.maintain(
             {"BTCUSDT": _position("104")}, {"BTCUSDT": RULES}
         )
+        broker.failure = None
+        retry_errors = await manager.maintain(
+            {"BTCUSDT": _position("104")}, {"BTCUSDT": RULES}
+        )
         events = await audit.recent_trailing_stop_events()
         await database.close()
-        return errors, events
+        return errors, retry_errors, broker.replacements, events
 
-    errors, events = asyncio.run(scenario())
+    errors, retry_errors, replacements, events = asyncio.run(scenario())
     assert errors == [
         "BTCUSDT: TrailingStopReplacementError: old stop was restored"
     ]
-    assert len(events) == 1
-    assert events[0]["status"] == "failed"
+    assert retry_errors == []
+    assert replacements == [Decimal("102.0")]
+    assert [event["status"] for event in events] == ["applied", "failed"]
 
 
 def test_switching_from_shadow_to_live_applies_the_existing_candidate(tmp_path) -> None:

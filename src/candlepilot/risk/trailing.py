@@ -270,7 +270,6 @@ class TrailingStopManager:
             )
             return True
 
-        progress.last_candidate = candidate
         try:
             replacement = await self.broker.replace_stop_loss(
                 position.symbol, position.side, candidate
