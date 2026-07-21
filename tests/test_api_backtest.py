@@ -137,6 +137,37 @@ def test_backtest_estimate_counts_calls_before_any_are_paid_for(tmp_path: Path) 
     asyncio.run(database.close())
 
 
+def test_backtest_estimate_rejects_invalid_time_windows(tmp_path: Path) -> None:
+    database, _engine, app = _backtest_app(tmp_path, "bt-invalid-window.db")
+    start = datetime.now(UTC).replace(minute=1, second=0, microsecond=0) - timedelta(hours=2)
+
+    with TestClient(app) as client:
+        base = {"symbols": ["BTCUSDT"], "providers": ["api-fixture"]}
+        naive = client.post(
+            "/api/backtests/estimate",
+            json={
+                **base,
+                "start": start.replace(tzinfo=None).isoformat(),
+                "end": (start + timedelta(minutes=10)).replace(tzinfo=None).isoformat(),
+            },
+        )
+        assert naive.status_code == 422
+        assert "must include a timezone" in naive.json()["detail"]
+
+        no_close = client.post(
+            "/api/backtests/estimate",
+            json={
+                **base,
+                "start": start.isoformat(),
+                "end": (start + timedelta(minutes=3)).isoformat(),
+            },
+        )
+        assert no_close.status_code == 422
+        assert "contains no closed decision bar" in no_close.json()["detail"]
+
+    asyncio.run(database.close())
+
+
 def test_participating_providers_probe_in_parallel_and_stale_data_is_rejected(
     tmp_path: Path,
 ) -> None:

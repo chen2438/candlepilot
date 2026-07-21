@@ -192,6 +192,24 @@ def test_specs_that_cannot_finish_are_refused() -> None:
         validate(_spec(start=datetime.now(UTC), end=datetime.now(UTC) + timedelta(hours=1)))
 
 
+def test_specs_require_timezone_and_at_least_one_closed_decision_bar() -> None:
+    with pytest.raises(ValueError, match="must include a timezone"):
+        validate(
+            _spec(
+                start=WINDOW_START.replace(tzinfo=None),
+                end=WINDOW_END.replace(tzinfo=None),
+            )
+        )
+
+    with pytest.raises(ValueError, match="contains no closed decision bar"):
+        validate(
+            _spec(
+                start=WINDOW_START + timedelta(minutes=1),
+                end=WINDOW_START + timedelta(minutes=4),
+            )
+        )
+
+
 def test_decisions_land_on_each_closed_bar_inside_the_window() -> None:
     times = decision_times(_spec(), "5m")
 

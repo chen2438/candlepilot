@@ -128,12 +128,26 @@ def validate(spec: BacktestSpec) -> None:
         raise ValueError("a model cannot be compared against itself")
     if not spec.cadences:
         raise ValueError("choose at least one cadence")
+    if (
+        spec.start.tzinfo is None
+        or spec.start.utcoffset() is None
+        or spec.end.tzinfo is None
+        or spec.end.utcoffset() is None
+    ):
+        raise ValueError("the window start and end must include a timezone")
     if spec.end <= spec.start:
         raise ValueError("the window must end after it starts")
     if spec.end - spec.start > timedelta(days=MAX_BACKTEST_DAYS):
         raise ValueError(f"the window cannot exceed {MAX_BACKTEST_DAYS} days")
     if spec.end > datetime.now(UTC):
         raise ValueError("the window cannot reach into the future")
+    if spec.replay_live_run_id is None and not any(
+        cadence in INTERVAL_MILLISECONDS and decision_times(spec, cadence)
+        for cadence in spec.cadences
+    ):
+        raise ValueError(
+            "the window contains no closed decision bar for the selected cadences"
+        )
 
 
 @dataclass(frozen=True, slots=True)
