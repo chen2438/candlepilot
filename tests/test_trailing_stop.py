@@ -60,8 +60,21 @@ def test_shadow_mode_records_2r_activation_without_touching_broker(tmp_path) -> 
     broker, status, events, state = asyncio.run(scenario())
     assert broker.replacements == []
     assert status["active_positions"] == 1
-    assert events[0]["status"] == "shadow"
-    assert events[0]["event"]["candidate_stop"] == "102"
+    assert status["active_strategies"] == 5
+    assert len(status["strategies"]) == 5
+    assert len(events) == 5
+    assert {event["event"]["profile_id"] for event in events} == {
+        "0.5R / 0.5R",
+        "0.5R / 0.75R",
+        "1R / 1R",
+        "1.5R / 0.5R",
+        "2R / 1R",
+    }
+    assert {
+        event["event"]["candidate_stop"]
+        for event in events
+        if event["event"]["profile_id"] == "0.5R / 0.5R"
+    } == {"103.0"}
     assert '"best_mark":"104"' in state
 
 
@@ -79,7 +92,9 @@ def test_live_mode_applies_only_the_deterministic_candidate(tmp_path) -> None:
 
     replacements, events = asyncio.run(scenario())
     assert replacements == [Decimal("102.0")]
+    assert len(events) == 1
     assert events[0]["status"] == "applied"
+    assert events[0]["event"]["profile_id"] == "2R / 1R"
 
 
 def test_unrestorable_live_stop_failure_escalates_to_emergency(tmp_path) -> None:
@@ -144,3 +159,29 @@ def test_switching_from_shadow_to_live_applies_the_existing_candidate(tmp_path) 
         return live_broker.replacements
 
     assert asyncio.run(scenario()) == [Decimal("102.0")]
+
+
+def test_old_single_profile_state_is_migrated_without_losing_original_r(tmp_path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'old-state.db'}")
+        await database.initialize()
+        audit = AuditRepository(database.sessions)
+        await audit.set_runtime_state(
+            "trailing_stop_states_v1",
+            '{"BTCUSDT":{"side":"LONG","quantity":"1",'
+            '"entry_price":"100","original_stop":"98",'
+            '"risk_distance":"2","best_mark":"104","active":true,'
+            '"last_candidate":"102"}}',
+        )
+        manager = TrailingStopManager(Broker(), audit, mode="shadow")
+        await manager.maintain(
+            {"BTCUSDT": _position("104", stop="102")}, {"BTCUSDT": RULES}
+        )
+        state = await audit.get_runtime_state("trailing_stop_states_v1")
+        await database.close()
+        return manager.status, state
+
+    status, state = asyncio.run(scenario())
+    assert len(status["strategies"]) == 5
+    assert '"original_stop":"98"' in state
+    assert '"profiles"' in state

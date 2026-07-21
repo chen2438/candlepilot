@@ -117,6 +117,7 @@ export interface EngineStatus {
     last_error: string | null;
     universe_last_error: string | null;
     guard_last_error: string | null;
+    trailing_stop?: TrailingStopStatus | null;
   };
   user_stream: {
     enabled: boolean;
@@ -127,6 +128,46 @@ export interface EngineStatus {
     dropped_event_count: number;
     last_error: string | null;
   };
+}
+
+export interface TrailingStopStrategy {
+  profile_id: string;
+  activation_r: string;
+  distance_r: string;
+}
+
+export interface TrailingStopStatus {
+  mode: "off" | "shadow" | "live";
+  strategies: TrailingStopStrategy[];
+  managed_positions: number;
+  active_positions: number;
+  active_strategies: number;
+  last_event: (TrailingStopEvent["event"] & {
+    symbol: string;
+    status: string;
+  }) | null;
+}
+
+export interface TrailingStopEvent {
+  id: number;
+  symbol: string;
+  mode: "off" | "shadow" | "live";
+  status: "shadow" | "applied" | "missed" | "failed";
+  event: {
+    side: "LONG" | "SHORT";
+    quantity: string;
+    entry_price: string;
+    mark_price: string;
+    original_stop: string | null;
+    best_mark: string | null;
+    previous_stop: string | null;
+    candidate_stop: string | null;
+    profile_id: string | null;
+    activation_r: string | null;
+    distance_r: string | null;
+    detail: string;
+  };
+  created_at: string;
 }
 
 export interface ProviderRouteStatus {

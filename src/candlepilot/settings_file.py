@@ -73,7 +73,7 @@ ENV_SECTIONS: tuple[EnvSection, ...] = (
                 "移动止损模式",
                 "enum",
                 ("off", "shadow", "live"),
-                description="2R 激活、回撤 1R；shadow 只记录，live 才会修改交易所止损。",
+                description="shadow 并行记录五组参数；live 只执行 2R 激活、回撤 1R。",
             ),
         ),
     ),

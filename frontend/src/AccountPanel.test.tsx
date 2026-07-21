@@ -2,7 +2,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AccountPanel, fillDirectionLabel } from "./App";
+import { AccountPanel, fillDirectionLabel, TrailingStopPanel } from "./App";
 import type { AccountPosition } from "./types";
 
 afterEach(cleanup);
@@ -150,5 +150,52 @@ describe("AccountPanel manual close", () => {
     const button = screen.getByRole("button", { name: "市价平仓" }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     expect(button.title).toBe("请先停止交易引擎");
+  });
+});
+
+describe("TrailingStopPanel", () => {
+  it("shows every shadow strategy and its recent candidate without a raw API", () => {
+    render(<TrailingStopPanel
+      status={{
+        mode: "shadow",
+        strategies: [
+          { profile_id: "0.5R / 0.5R", activation_r: "0.5", distance_r: "0.5" },
+          { profile_id: "2R / 1R", activation_r: "2", distance_r: "1" },
+        ],
+        managed_positions: 1,
+        active_positions: 1,
+        active_strategies: 1,
+        last_event: null,
+      }}
+      events={[{
+        id: 7,
+        symbol: "BTCUSDT",
+        mode: "shadow",
+        status: "shadow",
+        event: {
+          side: "LONG",
+          quantity: "0.01",
+          entry_price: "65000",
+          mark_price: "65500",
+          original_stop: "64000",
+          best_mark: "65500",
+          previous_stop: "64000",
+          candidate_stop: "65000",
+          profile_id: "0.5R / 0.5R",
+          activation_r: "0.5",
+          distance_r: "0.5",
+          detail: "",
+        },
+        created_at: "2026-07-21T07:00:00Z",
+      }]}
+      error={null}
+    />);
+
+    expect(screen.getByText("移动止损观测")).toBeTruthy();
+    expect(screen.getAllByText("0.5R / 0.5R").length).toBeGreaterThan(1);
+    expect(screen.getByText("2R / 1R")).toBeTruthy();
+    expect(screen.getByText("65000.0000")).toBeTruthy();
+    expect(screen.getByText("影子候选")).toBeTruthy();
+    expect(screen.getByText(/只记录，不改单/)).toBeTruthy();
   });
 });

@@ -145,6 +145,16 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         assert status["route_failure_count"] == 0
         assert status["route_failure_limit"] == 3
         assert status["scheduler"]["trailing_stop"]["mode"] == "shadow"
+        assert [
+            item["profile_id"]
+            for item in status["scheduler"]["trailing_stop"]["strategies"]
+        ] == [
+            "0.5R / 0.5R",
+            "0.5R / 0.75R",
+            "1R / 1R",
+            "1.5R / 0.5R",
+            "2R / 1R",
+        ]
         assert client.get("/api/trailing-stops/history").json() == {"events": []}
         assert client.get("/api/trailing-stops/history?limit=0").status_code == 422
         assert client.get("/api/testnet/events").json() == []

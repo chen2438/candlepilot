@@ -26,6 +26,7 @@ import type {
   SettingsField,
   SettingsPayload,
   TestnetAccountStatus,
+  TrailingStopEvent,
 } from "./types";
 
 const EXIT_REASON: Record<string, string> = {
@@ -707,6 +708,8 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
   const [providerMetrics, setProviderMetrics] = useState<ProviderMetric[]>([]);
   const [runSession, setRunSession] = useState<RunSessionMetrics>(emptyRunSession);
   const [testnetStatus, setTestnetStatus] = useState<TestnetAccountStatus | null>(null);
+  const [trailingStopEvents, setTrailingStopEvents] = useState<TrailingStopEvent[]>([]);
+  const [trailingStopError, setTrailingStopError] = useState<string | null>(null);
   const [operationsError, setOperationsError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -960,6 +963,18 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
     setTestnetStatus(nextTestnetStatus);
   }, []);
 
+  const refreshTrailingStops = useCallback(async () => {
+    try {
+      const response = await api<{ events: TrailingStopEvent[] }>(
+        "/api/trailing-stops/history?limit=100",
+      );
+      setTrailingStopEvents(response.events);
+      setTrailingStopError(null);
+    } catch (reason) {
+      setTrailingStopError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }, []);
+
   const closeAccountPosition = useCallback(async (symbol: string): Promise<boolean> => {
     setBusy(`position-close-${symbol}`);
     setError(null);
@@ -1043,11 +1058,13 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
   useEffect(() => {
     refresh().catch((reason: Error) => setError(reason.message));
     refreshAccount().catch((reason: Error) => setError(reason.message));
+    refreshTrailingStops().catch(() => undefined);
     refreshLiveRunPerformance().catch(() => undefined);
     refreshOperations().catch(() => undefined);
     refreshRunSession().catch(() => undefined);
     const account = window.setInterval(() => {
       refreshAccount().catch(() => undefined);
+      refreshTrailingStops().catch(() => undefined);
       refreshLiveRunPerformance().catch(() => undefined);
       refreshOperations().catch(() => undefined);
       api<EngineStatus>("/api/status").then(setStatus).catch(() => undefined);
@@ -1092,7 +1109,7 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       socket?.close();
     };
-  }, [refresh, refreshAccount, mergeDecisions, refreshLiveRunPerformance, refreshOperations, refreshRunSession]);
+  }, [refresh, refreshAccount, refreshTrailingStops, mergeDecisions, refreshLiveRunPerformance, refreshOperations, refreshRunSession]);
 
   const act = useCallback(async (name: string, path: string, body?: unknown) => {
     setBusy(name);
@@ -1686,6 +1703,11 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
             engineRunning={status.running}
             busy={busy}
             onClosePosition={closeAccountPosition}
+          />
+          <TrailingStopPanel
+            status={status.scheduler.trailing_stop ?? null}
+            events={trailingStopEvents}
+            error={trailingStopError}
           />
         </section>
         )}
@@ -3771,6 +3793,71 @@ function AnalysisDetail({
       </div>
     </section>
   );
+}
+
+const TRAILING_STATUS_LABELS: Record<TrailingStopEvent["status"], string> = {
+  shadow: "影子候选",
+  applied: "已应用",
+  missed: "已错过",
+  failed: "失败",
+};
+
+export function TrailingStopPanel({
+  status,
+  events,
+  error,
+}: {
+  status: NonNullable<EngineStatus["scheduler"]["trailing_stop"]> | null;
+  events: TrailingStopEvent[];
+  error: string | null;
+}) {
+  const mode = status?.mode ?? "off";
+  return <article className="panel trailing-panel">
+    <PanelTitle
+      code="06B"
+      title="移动止损观测"
+      meta={`${mode.toUpperCase()} · ${mode === "shadow" ? "只记录，不改单" : mode === "live" ? "交易所止损生效" : "已关闭"}`}
+    />
+    <p className="trailing-note">
+      Shadow 同时计算多组参数，候选价只写入本地审计；Live 始终只运行明确的单一策略，避免多组候选争抢交易所止损。
+    </p>
+    <div className="trailing-strategies">
+      {(status?.strategies ?? []).map((strategy) => {
+        const profileEvents = events.filter(
+          (item) => item.event.profile_id === strategy.profile_id,
+        );
+        const latest = profileEvents[0];
+        return <div className="trailing-strategy" key={strategy.profile_id}>
+          <span>{strategy.profile_id}</span>
+          <strong>{profileEvents.length}</strong>
+          <small>
+            {latest
+              ? `${latest.symbol.replace("USDT", "")} · 候选 ${executionPrice(latest.event.candidate_stop)}`
+              : `+${strategy.activation_r}R 激活 · 回撤 ${strategy.distance_r}R`}
+          </small>
+        </div>;
+      })}
+      {!status?.strategies.length && <div className="empty cards">移动止损已关闭</div>}
+    </div>
+    {error && <div className="operations-error">移动止损记录暂不可用：{error}</div>}
+    <div className="table-wrap trailing-table">
+      <table>
+        <thead><tr><th>时间</th><th>策略</th><th>标的</th><th>入场 / 标记</th><th>原始 / 当前止损</th><th>候选止损</th><th>结果</th></tr></thead>
+        <tbody>
+          {events.map((item) => <tr key={item.id}>
+            <td><small>{new Date(item.created_at).toLocaleString("zh-CN", { hour12: false })}</small></td>
+            <td><strong>{item.event.profile_id ?? "系统"}</strong><small>{item.mode.toUpperCase()}</small></td>
+            <td><strong>{item.symbol.replace("USDT", "")}</strong><small className={item.event.side === "LONG" ? "positive" : "negative"}>{item.event.side === "LONG" ? "多仓" : "空仓"}</small></td>
+            <td>{executionPrice(item.event.entry_price)} / {executionPrice(item.event.mark_price)}</td>
+            <td>{executionPrice(item.event.original_stop)} / {executionPrice(item.event.previous_stop)}</td>
+            <td className="accent">{executionPrice(item.event.candidate_stop)}</td>
+            <td><span className={`trailing-result ${item.status}`}>{TRAILING_STATUS_LABELS[item.status]}</span>{item.event.detail && <small title={item.event.detail}>{item.event.detail}</small>}</td>
+          </tr>)}
+          {!events.length && <tr><td colSpan={7} className="empty">尚无候选记录；持仓达到最早激活阈值后会自动显示。</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  </article>;
 }
 
 export function AccountPanel({
