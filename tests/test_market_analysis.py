@@ -11,7 +11,11 @@ from candlepilot.api import create_app
 from candlepilot.application.engine import TradingEngine
 from candlepilot.analysis.datapack import AnalysisDataPackBuilder
 from candlepilot.analysis.models import MarketAnalysis, market_analysis_output_schema
-from candlepilot.analysis.outcomes import evaluate_outcome, next_complete_5m_start
+from candlepilot.analysis.outcomes import (
+    evaluate_outcome,
+    evaluate_outcome_from_market,
+    next_complete_5m_start,
+)
 from candlepilot.analysis.prompt import PROMPT_VERSION, build_analysis_prompt
 from candlepilot.analysis.service import MarketAnalysisService
 from candlepilot.domain.models import ProviderHealth, TradeIntent
@@ -152,6 +156,128 @@ def test_outcome_marks_unknowable_intrabar_order_and_starts_after_completion_bar
     assert next_complete_5m_start(datetime(2026, 7, 22, 10, 0, 1, tzinfo=UTC)) == datetime(
         2026, 7, 22, 10, 5, tzinfo=UTC
     )
+
+
+def test_outcome_uses_complete_minute_bars_to_resolve_five_minute_order() -> None:
+    analysis = MarketAnalysis.model_validate(_analysis_payload())
+    window = datetime(2026, 7, 22, 10, 0, tzinfo=UTC)
+    outcome = evaluate_outcome(
+        analysis,
+        [_bar(0, "97", "102")],
+        minute_refinements={
+            window: [
+                _bar(0, "100.5", "102"),
+                _bar(1, "97", "99.5", opened="99"),
+                _bar(2, "99", "100", opened="99.5"),
+                _bar(3, "99", "100", opened="99.5"),
+                _bar(4, "99", "100", opened="99.5"),
+            ]
+        },
+    )
+
+    assert outcome.status == "stopped"
+    assert outcome.entry_at == window
+    assert outcome.resolved_at == window + timedelta(minutes=1)
+    assert outcome.bars_observed == 1
+    assert "已使用完整 1 分钟 K 线细分" in outcome.detail
+
+
+def test_outcome_keeps_ambiguity_when_conflict_remains_inside_one_minute() -> None:
+    analysis = MarketAnalysis.model_validate(_analysis_payload())
+    window = datetime(2026, 7, 22, 10, 0, tzinfo=UTC)
+    outcome = evaluate_outcome(
+        analysis,
+        [_bar(0, "97", "102")],
+        minute_refinements={
+            window: [
+                _bar(0, "97", "102"),
+                _bar(1, "99", "100"),
+                _bar(2, "99", "100"),
+                _bar(3, "99", "100"),
+                _bar(4, "99", "100"),
+            ]
+        },
+    )
+
+    assert outcome.status == "ambiguous"
+    assert outcome.resolved_at == window
+    assert "同一根完整 1 分钟 K 线" in outcome.detail
+
+
+def _outcome_row(
+    opened: datetime,
+    interval_minutes: int,
+    low: str,
+    high: str,
+    *,
+    price: str = "101",
+) -> list[object]:
+    return [
+        int(opened.timestamp() * 1000),
+        price,
+        high,
+        low,
+        price,
+        "1",
+        int((opened + timedelta(minutes=interval_minutes)).timestamp() * 1000) - 1,
+        "100",
+    ]
+
+
+class OutcomeMarket:
+    def __init__(self, *, complete_minutes: bool = True) -> None:
+        self.calls: list[tuple[str, datetime, datetime, int]] = []
+        self.complete_minutes = complete_minutes
+
+    async def historical_klines(
+        self, symbol, interval, start, end, *, max_candles=10_000
+    ):
+        self.calls.append((interval, start, end, max_candles))
+        if interval == "5m":
+            return [_outcome_row(start, 5, "97", "102")]
+        rows = [
+            _outcome_row(start, 1, "100.5", "102"),
+            _outcome_row(start + timedelta(minutes=1), 1, "97", "99.5", price="99"),
+            _outcome_row(start + timedelta(minutes=2), 1, "99", "100", price="99.5"),
+            _outcome_row(start + timedelta(minutes=3), 1, "99", "100", price="99.5"),
+            _outcome_row(start + timedelta(minutes=4), 1, "99", "100", price="99.5"),
+        ]
+        return rows if self.complete_minutes else rows[:-1]
+
+
+def test_market_outcome_fetches_minutes_only_for_ambiguous_window() -> None:
+    async def scenario():
+        market = OutcomeMarket()
+        outcome = await evaluate_outcome_from_market(
+            market,
+            symbol="BTCUSDT",
+            analysis=MarketAnalysis.model_validate(_analysis_payload()),
+            completed_at=datetime(2026, 7, 22, 9, 58, tzinfo=UTC),
+            end=datetime(2026, 7, 22, 10, 10, tzinfo=UTC),
+        )
+        return market, outcome
+
+    market, outcome = asyncio.run(scenario())
+    assert outcome.status == "stopped"
+    assert [(call[0], call[3]) for call in market.calls] == [("5m", 100_000), ("1m", 5)]
+    assert market.calls[1][1] == datetime(2026, 7, 22, 10, 0, tzinfo=UTC)
+    assert market.calls[1][2] == datetime(2026, 7, 22, 10, 5, tzinfo=UTC)
+
+
+def test_market_outcome_does_not_guess_with_incomplete_minute_window() -> None:
+    async def scenario():
+        market = OutcomeMarket(complete_minutes=False)
+        return await evaluate_outcome_from_market(
+            market,
+            symbol="BTCUSDT",
+            analysis=MarketAnalysis.model_validate(_analysis_payload()),
+            completed_at=datetime(2026, 7, 22, 9, 58, tzinfo=UTC),
+            end=datetime(2026, 7, 22, 10, 10, tzinfo=UTC),
+        )
+
+    outcome = asyncio.run(scenario())
+    assert outcome.status == "ambiguous"
+    assert "完整 1 分钟 K 线不足" in outcome.detail
 
 
 def _rows(interval_minutes: int, count: int) -> list[list[object]]:

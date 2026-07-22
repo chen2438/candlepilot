@@ -42,9 +42,7 @@ from candlepilot.application.testnet_feed import TestnetUserFeed
 from candlepilot.analysis.datapack import AnalysisDataPackBuilder
 from candlepilot.analysis.models import MarketAnalysis
 from candlepilot.analysis.outcomes import (
-    evaluate_outcome,
-    next_complete_5m_start,
-    parse_closed_rows,
+    evaluate_outcome_from_market,
 )
 from candlepilot.analysis.service import MarketAnalysisService
 from candlepilot.backtest.engine import BacktestConfig, Candle, SimulatedExchange
@@ -3323,16 +3321,12 @@ def create_app(
             key: value for key, value in row["result"].items() if key != "reward_risk"
         }
         analysis = MarketAnalysis.model_validate(analysis_payload)
-        bars = []
-        if analysis.direction != "neutral":
-            start = next_complete_5m_start(completed_at)
-            end = datetime.now(UTC)
-            if end > start:
-                rows = await market.historical_klines(
-                    row["symbol"], "5m", start, end, max_candles=100_000
-                )
-                bars = parse_closed_rows(rows)
-        outcome = evaluate_outcome(analysis, bars)
+        outcome = await evaluate_outcome_from_market(
+            market,
+            symbol=row["symbol"],
+            analysis=analysis,
+            completed_at=completed_at,
+        )
         await analysis_repository.save_outcome(
             analysis_id, outcome.model_dump(mode="json")
         )

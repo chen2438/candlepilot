@@ -74,7 +74,10 @@
 `succeeded/failed/cancelled`；批量中单项失败不阻断后续标的，批次取消会把尚未开始的记录一并标为
 `cancelled`。分析不调用 Broker 执行接口，也不改变紧急锁、亏损熔断或运行状态。
 `POST /api/market-analyses/{id}/outcome` 对已完成记录按需拉取分析后的 5m K 线并保存最新计划结果；
-它不调用模型或 Broker，未完成记录返回 409。详情与列表均返回 `outcome` 和更新时间。
+仅当某个 5m 窗口因多个计划价位触发而无法确定顺序时，接口才补取该窗口完整连续的五根 1m K 线
+重放同一结果状态机。缺少任一分钟或冲突仍在同一根 1m 内时保持 `ambiguous`。1m 只用于确定性事后
+判定，不发送给 Provider；接口不调用模型或 Broker，未完成记录返回 409。详情与列表均返回
+`outcome` 和更新时间。
 
 `POST /api/engine/clear-emergency-lock` 会先执行交易所账户对账；仅停止状态且无持仓、无普通或 Algo
 挂单时删除紧急锁，否则返回 409 并保留锁定。
