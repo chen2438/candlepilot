@@ -289,29 +289,17 @@ def test_backtest_requires_a_probe_for_the_current_settings(tmp_path: Path) -> N
     asyncio.run(database.close())
 
 
-def test_local_rule_variants_backtest_without_a_probe(tmp_path: Path) -> None:
+def test_local_rule_backtests_without_a_probe(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'bt-local-rule.db'}")
     market = BacktestMarket()
     engine = TradingEngine(
         testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
-        providers=ProviderRegistry(
-            [
-                LocalRuleProvider(),
-                LocalRuleProvider("structure"),
-                LocalRuleProvider("flow"),
-                LocalRuleProvider("structure-flow"),
-            ]
-        ),
+        providers=ProviderRegistry([LocalRuleProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
     )
     app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
-    provider_names = [
-        "local-rule",
-        "local-structure-shadow",
-        "local-flow-shadow",
-        "local-structure-flow-shadow",
-    ]
+    provider_names = ["local-rule"]
     payload = {"symbols": ["BTCUSDT"], "providers": provider_names, **_window()}
 
     with TestClient(app) as client:

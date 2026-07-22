@@ -425,9 +425,6 @@ function customProviderId(name: string): string | null {
 
 function providerLabel(name: string): string {
   if (name === "local-rule") return "本地规则";
-  if (name === "local-structure-shadow") return "结构确认 · SHADOW";
-  if (name === "local-flow-shadow") return "资金流 · SHADOW";
-  if (name === "local-structure-flow-shadow") return "结构 + 资金流 · SHADOW";
   if (name === "codex-auth") return "Codex Auth";
   if (name === "claude-code-auth") return "Claude Code Auth";
   const id = customProviderId(name);

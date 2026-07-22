@@ -21,13 +21,14 @@
   `market_analyses` 类别删除整类研究历史。
 - 旧版 `book_captures` 表为现有数据库兼容而保留，但应用不再写入或把它用于回测；遗留行只能通过
   数据管理清理。含完整盘口的回放数据由正式引擎自动写入 `live_decision_snapshots`。
-- `live_decision_snapshots.snapshot_json` 同时保存当时成功取得的实验性币安 5m OI 变化、全市场
+- `live_decision_snapshots.snapshot_json` 同时保存当时成功取得的币安 5m OI 变化、全市场
   账户多空比、大户持仓多空比与 taker 买卖量变化；可选端点缺失时字段不存在而不是写 0。它们
-  复用现有 JSON 快照，不新增迁移，也不会进入标准外部 Provider 的决策 payload。
+  复用现有 JSON 快照，不新增迁移；标准外部 Provider 将存在的字段整理为带缺失清单和解释边界的
+  独立衍生品上下文。
 - 溯源：SHA-256 数据版本、显式 Prompt 版本、模型标识、CLI Provider 版本。
-- 本地实验 Provider 的推理 usage 额外固化 `strategy_variant` 与 `live_shadow_only=true`；正式风控行的
-  `shadow_only` 是未提交 Broker 的最终证据，本地待触发限价意图后续复核和触价完成时也必须保留
-  该字段；回测模型结果则保留同一 Provider/version 供消融比较。
+- 标准本地基准的推理 usage 固化 `strategy_variant=standard` 与 `live_shadow_only=false`。旧实验
+  Provider 的历史 usage 保持原样可读，但系统不再生成新记录。正式风控行的 `shadow_only` 仍是
+  未提交 Broker 的最终证据，本地待触发限价意图后续复核和触价完成时也必须保留该字段。
 - 每次正式运行创建时把当前仓库 `HEAD` 的 7 位 Git 提交号写入 `live_runs.config_json` 的
   `software_version`，与该次唯一 Provider、周期和运行边界一起永久保留；软件更新不会用新版本
   回填历史运行。无法确认 Git 仓库时该字段省略，前端显示“版本未记录”。这是现有 JSON 配置

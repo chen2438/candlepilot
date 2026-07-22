@@ -106,8 +106,7 @@ ENV_SECTIONS: tuple[EnvSection, ...] = (
                 "单一 Provider",
                 placeholder="codex",
                 description=(
-                    "一次运行只能填写一个：本地规则填 local；实验规则填 local-structure、"
-                    "local-flow 或 local-structure-flow（正式只影子）；Codex 填 codex，"
+                    "一次运行只能填写一个：本地基准规则填 local；Codex 填 codex，"
                     "Claude Code 填 claude-code，自定义端点填 custom:<id>；不得用逗号连接多个。"
                 ),
             ),

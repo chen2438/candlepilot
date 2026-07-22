@@ -217,24 +217,6 @@ def test_local_rule_is_a_first_class_provider_name(monkeypatch) -> None:
     assert settings.provider_chain == ("local-rule",)
 
 
-@pytest.mark.parametrize(
-    ("alias", "registered_name"),
-    [
-        ("local-structure", "local-structure-shadow"),
-        ("local-flow", "local-flow-shadow"),
-        ("local-structure-flow", "local-structure-flow-shadow"),
-    ],
-)
-def test_local_shadow_variants_are_first_class_provider_names(
-    monkeypatch, alias: str, registered_name: str
-) -> None:
-    monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", alias)
-
-    settings = Settings.from_env()
-
-    assert settings.provider_chain == (registered_name,)
-
-
 def test_run_limits_default_to_unbounded_and_read_env(monkeypatch) -> None:
     monkeypatch.delenv("CANDLEPILOT_MAX_RUN_SECONDS", raising=False)
     monkeypatch.delenv("CANDLEPILOT_MAX_RUN_COST_USD", raising=False)
@@ -372,6 +354,9 @@ def test_provider_selection_accepts_current_names(monkeypatch, configured, expec
         "claude-code-auth",
         "custom-api:main",
         "openai-compatible:main",
+        "local-structure",
+        "local-flow",
+        "local-structure-flow",
     ),
 )
 def test_provider_chain_rejects_retired_aliases(monkeypatch, retired) -> None:
@@ -399,14 +384,13 @@ def test_env_example_documents_the_single_provider_contract() -> None:
     assert "do not use commas or fallback routes" in example
     for provider in (
         "local",
-        "local-structure",
-        "local-flow",
-        "local-structure-flow",
         "codex",
         "claude-code",
         "custom:<id>",
     ):
         assert provider in example
+    for retired in ("local-structure", "local-flow", "local-structure-flow"):
+        assert retired not in example
 
 
 def test_provider_references_must_exist_in_the_same_candidate() -> None:

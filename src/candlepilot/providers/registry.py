@@ -16,9 +16,6 @@ class ProviderRegistry:
     def __init__(self, providers: list[DecisionProvider] | None = None) -> None:
         configured = providers or [
             LocalRuleProvider(),
-            LocalRuleProvider("structure"),
-            LocalRuleProvider("flow"),
-            LocalRuleProvider("structure-flow"),
             CodexAuthProvider(),
             ClaudeCodeAuthProvider(),
         ]
@@ -28,9 +25,6 @@ class ProviderRegistry:
     def from_settings(cls, settings: Settings) -> ProviderRegistry:
         providers: list[DecisionProvider] = [
             LocalRuleProvider(),
-            LocalRuleProvider("structure"),
-            LocalRuleProvider("flow"),
-            LocalRuleProvider("structure-flow"),
             CodexAuthProvider(
                 timeout=settings.inference_timeout_seconds,
                 model=settings.codex_model,
