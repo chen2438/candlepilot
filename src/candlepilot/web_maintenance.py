@@ -22,7 +22,7 @@ WEB_BACKUP_STATUS_FILE = Path("/var/lib/candlepilot/backup-status.json")
 WEB_LOG_STATUS_FILE = Path("/var/lib/candlepilot/log-status.json")
 WEB_UPDATE_REPOSITORY = Path(__file__).resolve().parents[2]
 WEB_UPDATE_PHASES = {"idle", "running", "completed", "failed"}
-WEB_BACKUP_ACTIONS = {"refresh", "delete"}
+WEB_BACKUP_ACTIONS = {"refresh", "delete", "delete_all"}
 WEB_UPDATE_BRANCH_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
 WEB_UPDATE_COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40,64}$")
 WEB_BACKUP_ID_PATTERN = re.compile(r"^\d{8}T\d{6}Z-[0-9a-f]{7,64}$")
@@ -400,4 +400,3 @@ async def check_web_update(
         "update_available": update_available,
         "message": "发现可安装的新版本" if update_available else "当前已是最新版本",
     }
-

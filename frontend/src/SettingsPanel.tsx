@@ -243,6 +243,7 @@ export function BackupPanel({
 
   const blocked = busy !== null || working || inventory?.status.phase === "running";
   const total = inventory?.backups.reduce((sum, backup) => sum + backup.size_bytes, 0) ?? 0;
+  const staleBackups = inventory?.backups.filter((backup) => !backup.protected) ?? [];
 
   return (
     <div className="settings-section web-update-section backup-section">
@@ -255,6 +256,23 @@ export function BackupPanel({
         >
           {working && busy === "backup-refresh" ? "刷新中…" : "刷新备份清单"}
         </button>
+        {confirming === "all" ? (
+          <>
+            <span className="history-warn">确认永久删除全部 {staleBackups.length} 份多余备份，仅保留最新一份？</span>
+            <button
+              className="compact danger"
+              disabled={blocked}
+              onClick={() => runAction("/api/backups/delete-stale", "backup-delete-all")}
+            >{working && busy === "backup-delete-all" ? "删除中…" : "确认全部删除"}</button>
+            <button className="text-button" disabled={blocked} onClick={() => setConfirming(null)}>取消</button>
+          </>
+        ) : (
+          <button
+            className="compact danger"
+            disabled={blocked || staleBackups.length === 0}
+            onClick={() => setConfirming("all")}
+          >删除全部多余备份</button>
+        )}
         {inventory?.backups.length ? (
           <span className="settings-saved">{inventory.backups.length} 份 · {formatStorageSize(total)}</span>
         ) : null}

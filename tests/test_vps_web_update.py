@@ -44,16 +44,48 @@ def test_root_worker_never_executes_the_application_users_installer() -> None:
     assert "candlepilot-update.path" in installer
     assert "/run/candlepilot-update/request" in launcher
     assert "--delete-backup" in launcher
+    assert "--delete-stale-backups" in launcher
     assert "--clear-logs" in launcher
     assert "latest backup is protected" in worker
     assert 'target.resolve(strict=True).parent != root' in worker
     assert "len(backups) <= 1" in worker
+    assert 'write_backup_status "running" "delete_all"' in worker
     assert "sudo" not in launcher
     assert "systemctl" not in launcher
     assert "NoNewPrivileges=true" in installer
     assert "LogNamespace=candlepilot" in installer
     assert "journalctl --namespace=candlepilot --vacuum-time=1s" in worker
     assert "journalctl --vacuum-time=1s" not in worker
+
+
+def test_root_worker_bulk_delete_keeps_latest_and_ignores_unrecognized_entries(
+    tmp_path: Path,
+) -> None:
+    worker = (ROOT / "scripts/web_update_worker.sh").read_text(encoding="utf-8")
+    marker = 'delete_stale_backups() {\n  python3 - "$BACKUP_ROOT" <<\'PY\'\n'
+    program = worker.split(marker, 1)[1].split("\nPY\n}", 1)[0]
+    latest = tmp_path / "20260722T100000Z-aaaaaaaa"
+    stale_one = tmp_path / "20260721T100000Z-bbbbbbbb"
+    stale_two = tmp_path / "20260720T100000Z-cccccccc"
+    unrelated = tmp_path / "notes"
+    for directory in (latest, stale_one, stale_two, unrelated):
+        directory.mkdir()
+        (directory / "payload").write_text("backup", encoding="utf-8")
+
+    result = subprocess.run(
+        ["python3", "-", str(tmp_path)],
+        input=program,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert int(result.stdout.strip()) >= 0
+    assert latest.is_dir()
+    assert not stale_one.exists()
+    assert not stale_two.exists()
+    assert unrelated.is_dir()
 
 
 def test_installer_backs_up_the_database_selected_in_env() -> None:

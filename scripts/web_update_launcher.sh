@@ -11,6 +11,7 @@ action=""
 case "$#:${1:-}" in
   0:) action="update" ;;
   1:--refresh-backups) action="refresh-backups" ;;
+  1:--delete-stale-backups) action="delete-stale-backups" ;;
   1:--clear-logs) action="clear-logs" ;;
   2:--delete-backup)
     [[ "$2" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7,64}$ ]] || {

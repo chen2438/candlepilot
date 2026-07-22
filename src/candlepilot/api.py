@@ -1525,6 +1525,15 @@ def create_app(
     async def refresh_web_backups() -> dict[str, bool]:
         return await queue_backup_action("--refresh-backups")
 
+    @app.post("/api/backups/delete-stale", status_code=202)
+    async def delete_stale_web_backups() -> dict[str, bool]:
+        inventory = read_web_backup_inventory()
+        if not inventory["supported"]:
+            raise HTTPException(status_code=409, detail=inventory["status"]["message"])
+        if not any(not item["protected"] for item in inventory["backups"]):
+            raise HTTPException(status_code=409, detail="no stale backups to delete")
+        return await queue_backup_action("--delete-stale-backups")
+
     @app.post("/api/backups/{backup_id}/delete", status_code=202)
     async def delete_web_backup(backup_id: str) -> dict[str, bool]:
         if not WEB_BACKUP_ID_PATTERN.fullmatch(backup_id):

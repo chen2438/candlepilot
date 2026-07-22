@@ -103,7 +103,9 @@ sudo tail -n 100 /var/log/candlepilot-update.log
 `/var/lib/candlepilot/backups.json`；动作状态写入 `/var/lib/candlepilot/backup-status.json`。
 应用服务不具备读取 `/var/backups/candlepilot` 的权限，也不能传入文件路径。刷新清单与删除旧备份
 均由 root worker 执行，并与软件更新共用文件锁；删除前会再次解析真实目录，拒绝符号链接、越界、
-最新备份及仅存的一份备份。删除不可恢复，前端要求二次确认；安装器刷新助手时会同步重建清单。
+最新备份及仅存的一份备份。固定的批量清理动作不接收 ID 或路径，执行时重新扫描并只删除标准命名
+目录中除最新外的全部项，忽略未知目录；删除不可恢复，前端要求二次确认。无论批量删除成功或中途
+失败，worker 都会尽力刷新脱敏清单，使页面反映实际剩余项；安装器刷新助手时也会同步重建清单。
 
 主服务配置 `LogNamespace=candlepilot`，因此其 stdout/stderr 存在独立 systemd journal 中。
 设置页「CandlePilot 日志」经同一受限请求通道执行无参数清理：root worker 固定安装命名空间

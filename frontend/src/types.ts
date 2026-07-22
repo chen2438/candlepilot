@@ -71,7 +71,7 @@ export interface BackupInventory {
   backups: BackupEntry[];
   status: {
     phase: "idle" | "running" | "completed" | "failed";
-    action: "refresh" | "delete" | null;
+    action: "refresh" | "delete" | "delete_all" | null;
     message: string;
     started_at: string | null;
     finished_at: string | null;

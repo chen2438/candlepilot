@@ -284,6 +284,65 @@ describe("BackupPanel", () => {
     );
     request.mockRestore();
   });
+
+  it("requires confirmation before deleting every stale backup", async () => {
+    const latest = "20260722T100000Z-aaaaaaaa";
+    const stale = ["20260721T100000Z-bbbbbbbb", "20260720T100000Z-cccccccc"];
+    let deleted = false;
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (init?.method === "POST") {
+        if (url.endsWith("/api/backups/delete-stale")) deleted = true;
+        return new Response(JSON.stringify({ queued: true }), {
+          status: 202,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      const backups = [{
+        id: latest,
+        created_at: "2026-07-22T10:00:00Z",
+        source_commit: "a".repeat(40),
+        size_bytes: 1024,
+        protected: true,
+      }, ...(!deleted ? stale.map((id, index) => ({
+        id,
+        created_at: `2026-07-${21 - index}T10:00:00Z`,
+        source_commit: index ? "c".repeat(40) : "b".repeat(40),
+        size_bytes: 2048,
+        protected: false,
+      })) : [])];
+      return new Response(JSON.stringify({
+        supported: true,
+        generated_at: "2026-07-22T10:00:00Z",
+        backups,
+        status: deleted ? {
+          phase: "completed", action: "delete_all", message: "全部多余备份已删除，仅保留最新一份",
+          started_at: "2026-07-22T10:01:00Z", finished_at: "2026-07-22T10:01:01Z",
+          backup_id: null, reclaimed_bytes: 4096,
+        } : {
+          phase: "idle", action: null, message: "尚未执行备份维护",
+          started_at: null, finished_at: null, backup_id: null, reclaimed_bytes: null,
+        },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+
+    render(<BackupPanel busy={null} setBusy={vi.fn()} setError={vi.fn()} />);
+
+    const deleteAll = await screen.findByRole("button", { name: "删除全部多余备份" });
+    fireEvent.click(deleteAll);
+    expect(screen.getByText("确认永久删除全部 2 份多余备份，仅保留最新一份？")).toBeTruthy();
+    expect(deleted).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "确认全部删除" }));
+
+    await waitFor(() => expect(screen.getByText(/释放 4.00 KB/)).toBeTruthy(), { timeout: 2000 });
+    expect(screen.queryByText(stale[0], { exact: false })).toBeNull();
+    expect(screen.queryByText(stale[1], { exact: false })).toBeNull();
+    expect(request).toHaveBeenCalledWith(
+      "/api/backups/delete-stale",
+      expect.objectContaining({ method: "POST" }),
+    );
+    request.mockRestore();
+  });
 });
 
 describe("LogMaintenancePanel", () => {

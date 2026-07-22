@@ -2095,6 +2095,52 @@ def test_web_backup_delete_queues_only_an_unprotected_manifest_id(
     asyncio.run(database.close())
 
 
+def test_web_backup_delete_stale_queues_only_the_fixed_root_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'backup-delete-stale.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    inventory = {
+        "supported": True,
+        "generated_at": "2026-07-22T10:01:00Z",
+        "backups": [
+            {"id": "20260722T100000Z-" + "b" * 40, "protected": True},
+        ],
+        "status": {"phase": "idle", "message": "ready", "finished_at": None},
+    }
+    calls: list[tuple[str, ...]] = []
+
+    async def queue(*arguments: str) -> None:
+        calls.append(arguments)
+
+    monkeypatch.setattr(api_module, "read_web_backup_inventory", lambda: inventory)
+    monkeypatch.setattr(
+        api_module,
+        "read_web_update_status",
+        lambda: {"phase": "idle", "supported": True},
+    )
+    monkeypatch.setattr(api_module, "queue_web_maintenance", queue)
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        blocked = client.post("/api/backups/delete-stale")
+        inventory["backups"].append(
+            {"id": "20260721T100000Z-" + "a" * 40, "protected": False}
+        )
+        response = client.post("/api/backups/delete-stale")
+
+    assert blocked.status_code == 409
+    assert response.status_code == 202
+    assert calls == [("--delete-stale-backups",)]
+    asyncio.run(database.close())
+
+
 def test_web_log_clear_queues_only_the_fixed_root_action(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

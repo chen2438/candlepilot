@@ -179,6 +179,48 @@ print(allocated)
 PY
 }
 
+delete_stale_backups() {
+  python3 - "$BACKUP_ROOT" <<'PY'
+import os
+import re
+import shutil
+import stat
+import sys
+from pathlib import Path
+
+raw_root = Path(sys.argv[1])
+if raw_root.is_symlink():
+    raise SystemExit("unsafe backup root")
+root = raw_root.resolve(strict=True)
+pattern = re.compile(r"^\d{8}T\d{6}Z-[0-9a-f]{7,64}$")
+if str(root) == "/":
+    raise SystemExit("unsafe backup root")
+backups = sorted(
+    candidate
+    for candidate in root.iterdir()
+    if pattern.fullmatch(candidate.name) and candidate.is_dir() and not candidate.is_symlink()
+)
+if len(backups) <= 1:
+    raise SystemExit("no stale backups to delete")
+latest = backups[-1]
+targets = backups[:-1]
+for target in targets:
+    if target.resolve(strict=True).parent != root or target.is_symlink() or target == latest:
+        raise SystemExit("unsafe backup target")
+allocated = 0
+for target in targets:
+    for directory, names, files in os.walk(target, followlinks=False):
+        names[:] = [name for name in names if not (Path(directory) / name).is_symlink()]
+        for name in files:
+            info = (Path(directory) / name).lstat()
+            if stat.S_ISREG(info.st_mode):
+                allocated += info.st_blocks * 512
+for target in targets:
+    shutil.rmtree(target)
+print(allocated)
+PY
+}
+
 write_log_status() {
   local phase="$1" message="$2" started_at="$3" finished_at="${4:-}"
   local before_bytes="${5:-}" after_bytes="${6:-}"
@@ -292,6 +334,24 @@ if [[ "$action" == "delete-backup" ]]; then
   fi
   finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   write_backup_status "failed" "delete" "备份删除失败，请检查更新服务日志" "$started_at" "$finished_at" "$backup_id"
+  exit 1
+fi
+
+if [[ "$action" == "delete-stale-backups" ]]; then
+  started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  write_backup_status "running" "delete_all" "正在删除全部多余备份" "$started_at"
+  set +e
+  reclaimed_bytes="$(delete_stale_backups 2>>"$LOG_FILE")"
+  exit_code=$?
+  set -e
+  manifest_exit_code=0
+  refresh_backup_manifest >>"$LOG_FILE" 2>&1 || manifest_exit_code=$?
+  finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if (( exit_code == 0 && manifest_exit_code == 0 )); then
+    write_backup_status "completed" "delete_all" "全部多余备份已删除，仅保留最新一份" "$started_at" "$finished_at" "" "$reclaimed_bytes"
+    exit 0
+  fi
+  write_backup_status "failed" "delete_all" "多余备份删除失败，请检查更新服务日志" "$started_at" "$finished_at"
   exit 1
 fi
 
