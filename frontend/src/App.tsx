@@ -19,6 +19,7 @@ import type {
   TradeFillRecord,
   ProviderHealth,
   CodexAuthSession,
+  CodexUsageSnapshot,
   ProviderTestResult,
   ProviderMetric,
   ProviderMetricsResponse,
@@ -470,7 +471,10 @@ export function CodexCliAuthControls({
   onCancel,
   onLogin,
   onLogout,
+  onRefreshUsage,
   session,
+  usage,
+  usageLoading,
 }: {
   authenticated: boolean;
   busy: boolean;
@@ -478,7 +482,10 @@ export function CodexCliAuthControls({
   onCancel: () => void;
   onLogin: () => void;
   onLogout: () => void;
+  onRefreshUsage: () => void;
   session: CodexAuthSession | null;
+  usage: CodexUsageSnapshot | null;
+  usageLoading: boolean;
 }) {
   const [confirmLogout, setConfirmLogout] = useState(false);
   const active = session?.state === "starting" || session?.state === "pending";
@@ -516,7 +523,43 @@ export function CodexCliAuthControls({
       {session?.user_code && <code aria-label="Codex 一次性代码">{session.user_code}</code>}
       <small>在授权页面输入一次性代码；代码仅用于本次登录。</small>
     </div>}
+    {authenticated && <div className="codex-usage" aria-label="Codex 剩余额度">
+      <div className="codex-usage-head">
+        <span><strong>Codex 剩余额度</strong><small>{usage?.message ?? "尚未查询"}</small></span>
+        <button className="text-button" disabled={usageLoading || disabled} onClick={onRefreshUsage}>
+          {usageLoading ? "查询中…" : "刷新额度"}
+        </button>
+      </div>
+      {usage?.available && usage.buckets.flatMap((bucket) => bucket.windows.map((window) => (
+        <div className="codex-usage-row" key={`${bucket.limit_id ?? "default"}-${window.kind}`}>
+          <span>
+            <strong>{[codexPlanLabel(bucket.plan_type), codexWindowLabel(window.window_duration_minutes, bucket.limit_name)]
+              .filter(Boolean).join(" · ")}</strong>
+            <small>{window.resets_at
+              ? `${new Date(window.resets_at).toLocaleString("zh-CN", { hour12: false })} 重置`
+              : "Codex 未提供重置时间"}</small>
+          </span>
+          <b>{window.remaining_percent}%</b>
+        </div>
+      ))) }
+    </div>}
   </div>;
+}
+
+function codexPlanLabel(plan: string | null): string | null {
+  if (!plan) return null;
+  return ({ team: "Team", business: "Business", pro: "Pro", plus: "Plus", free: "Free" } as Record<string, string>)[plan]
+    ?? plan;
+}
+
+export function codexWindowLabel(minutes: number | null, name: string | null): string {
+  if (minutes !== null && minutes >= 28 * 1440 && minutes <= 31 * 1440) return "月额度";
+  if (minutes === 7 * 1440) return "周额度";
+  if (minutes === 1440) return "日额度";
+  if (minutes !== null && minutes % 1440 === 0) return `${minutes / 1440} 天额度`;
+  if (minutes !== null && minutes % 60 === 0) return `${minutes / 60} 小时额度`;
+  if (minutes !== null) return `${minutes} 分钟额度`;
+  return name?.trim() || "额度窗口";
 }
 
 function modelConfigSummary(model: string | null, effort: string | null): string {
@@ -768,6 +811,8 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
   const [status, setStatus] = useState<EngineStatus>(emptyStatus);
   const [providers, setProviders] = useState<ProviderHealth[]>([]);
   const [codexAuthSession, setCodexAuthSession] = useState<CodexAuthSession | null>(null);
+  const [codexUsage, setCodexUsage] = useState<CodexUsageSnapshot | null>(null);
+  const [codexUsageLoading, setCodexUsageLoading] = useState(false);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [decisions, setDecisions] = useState<DecisionEvent[]>([]);
   const [liveRunPerformance, setLiveRunPerformance] = useState<LiveRunPerformance[]>([]);
@@ -814,6 +859,29 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
   const refreshProviders = useCallback(async () => {
     setProviders(await api<ProviderHealth[]>("/api/providers"));
   }, []);
+
+  const refreshCodexUsage = useCallback(async () => {
+    setCodexUsageLoading(true);
+    try {
+      setCodexUsage(await api<CodexUsageSnapshot>("/api/providers/codex-auth/usage"));
+    } catch (reason) {
+      setCodexUsage({
+        available: false,
+        buckets: [],
+        checked_at: new Date().toISOString(),
+        message: reason instanceof Error ? reason.message : "额度查询失败",
+      });
+    } finally {
+      setCodexUsageLoading(false);
+    }
+  }, []);
+
+  const codexCliAuthenticated = providers.some((provider) => provider.provider === "codex-auth"
+    && provider.auth_source === "codex-cli" && provider.authenticated);
+  useEffect(() => {
+    if (codexCliAuthenticated) void refreshCodexUsage();
+    else setCodexUsage(null);
+  }, [codexCliAuthenticated, refreshCodexUsage]);
 
   const runCodexAuthAction = useCallback(async (
     action: "login" | "cancel" | "logout",
@@ -1725,6 +1793,9 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
                     onLogin={() => void runCodexAuthAction("login")}
                     onCancel={() => void runCodexAuthAction("cancel")}
                     onLogout={() => void runCodexAuthAction("logout")}
+                    onRefreshUsage={() => void refreshCodexUsage()}
+                    usage={codexUsage}
+                    usageLoading={codexUsageLoading}
                   />}
                 </div>;
               })}

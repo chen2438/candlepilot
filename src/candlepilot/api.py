@@ -1166,6 +1166,11 @@ def create_app(
     async def get_codex_auth_session() -> dict[str, Any]:
         return codex_auth_manager.status()
 
+    @app.get("/api/providers/codex-auth/usage")
+    async def get_codex_auth_usage(response: Response) -> dict[str, Any]:
+        response.headers["Cache-Control"] = "no-store"
+        return await codex_auth_manager.rate_limits()
+
     @app.post("/api/providers/codex-auth/login")
     async def start_codex_auth_login() -> dict[str, Any]:
         ensure_codex_auth_change_allowed()

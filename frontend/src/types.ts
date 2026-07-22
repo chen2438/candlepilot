@@ -294,6 +294,24 @@ export interface CodexAuthSession {
   finished_at: string | null;
 }
 
+export interface CodexUsageSnapshot {
+  available: boolean;
+  buckets: Array<{
+    limit_id: string | null;
+    limit_name: string | null;
+    plan_type: string | null;
+    windows: Array<{
+      kind: "primary" | "secondary";
+      used_percent: number;
+      remaining_percent: number;
+      window_duration_minutes: number | null;
+      resets_at: string | null;
+    }>;
+  }>;
+  checked_at: string;
+  message: string;
+}
+
 export interface ProviderTestResult {
   ok: boolean;
   provider: string;

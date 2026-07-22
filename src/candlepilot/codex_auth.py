@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import signal
@@ -15,6 +16,7 @@ from candlepilot.providers.cli import find_codex_cli_executable, sanitized_subpr
 
 DEVICE_AUTH_TIMEOUT_SECONDS = 20 * 60
 COMMAND_TIMEOUT_SECONDS = 15
+RATE_LIMIT_TIMEOUT_SECONDS = 15
 _ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 _URL_PATTERN = re.compile(r"https://[^\s<>]+")
 _CODE_PATTERN = re.compile(r"(?<![A-Z0-9])([A-Z0-9]{4,8}-[A-Z0-9]{4,8})(?![A-Z0-9])")
@@ -23,6 +25,76 @@ _NON_DEVICE_CODES = {"DEVICE-CODE", "OPENAI-CODEX", "TIME-CODE"}
 
 class CodexAuthError(RuntimeError):
     pass
+
+
+def _bounded_text(value: Any, *, maximum: int = 80) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value[:maximum] if value else None
+
+
+def _rate_limit_window(kind: str, value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    used = value.get("usedPercent")
+    if not isinstance(used, int) or isinstance(used, bool):
+        return None
+    duration = value.get("windowDurationMins")
+    resets_at = value.get("resetsAt")
+    return {
+        "kind": kind,
+        "used_percent": max(0, min(100, used)),
+        "remaining_percent": 100 - max(0, min(100, used)),
+        "window_duration_minutes": duration
+        if isinstance(duration, int) and not isinstance(duration, bool) and 0 < duration <= 2_628_000
+        else None,
+        "resets_at": datetime.fromtimestamp(resets_at, UTC)
+        if isinstance(resets_at, int) and not isinstance(resets_at, bool) and 0 < resets_at <= 32_503_680_000
+        else None,
+    }
+
+
+def sanitize_rate_limits(payload: Any) -> dict[str, Any]:
+    """Return the small display contract, never the app-server's raw response."""
+    if not isinstance(payload, dict):
+        raise CodexAuthError("Codex CLI 返回了无法识别的额度信息")
+    multi = payload.get("rateLimitsByLimitId")
+    snapshots: list[tuple[str | None, Any]]
+    if isinstance(multi, dict) and multi:
+        snapshots = [(str(key), value) for key, value in multi.items()]
+    else:
+        snapshots = [(None, payload.get("rateLimits"))]
+    buckets = []
+    for fallback_id, snapshot in snapshots:
+        if not isinstance(snapshot, dict):
+            continue
+        windows = [
+            window
+            for window in (
+                _rate_limit_window("primary", snapshot.get("primary")),
+                _rate_limit_window("secondary", snapshot.get("secondary")),
+            )
+            if window is not None
+        ]
+        if not windows:
+            continue
+        buckets.append(
+            {
+                "limit_id": _bounded_text(snapshot.get("limitId")) or _bounded_text(fallback_id),
+                "limit_name": _bounded_text(snapshot.get("limitName")),
+                "plan_type": _bounded_text(snapshot.get("planType"), maximum=32),
+                "windows": windows,
+            }
+        )
+    if not buckets:
+        raise CodexAuthError("Codex CLI 未返回可展示的额度窗口")
+    return {
+        "available": True,
+        "buckets": buckets,
+        "checked_at": datetime.now(UTC),
+        "message": "Codex 额度已刷新",
+    }
 
 
 def _safe_device_url(text: str) -> str | None:
@@ -159,6 +231,89 @@ class CodexAuthManager:
             self._finished_at = datetime.now(UTC)
             return self.status()
 
+    async def rate_limits(self) -> dict[str, Any]:
+        """Read account limits through Codex app-server without exposing credentials."""
+        async with self._lock:
+            if self.active:
+                return self._unavailable_limits("Codex CLI 登录进行中，完成后再查询额度")
+            executable = self._executable()
+            if executable is None:
+                return self._unavailable_limits("未检测到独立 Codex CLI")
+            with tempfile.TemporaryDirectory(prefix="candlepilot-codex-usage-") as directory:
+                try:
+                    process = await asyncio.create_subprocess_exec(
+                        str(executable),
+                        "app-server",
+                        "--stdio",
+                        cwd=directory,
+                        env=sanitized_subprocess_env(),
+                        stdin=asyncio.subprocess.PIPE,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+                except OSError:
+                    return self._unavailable_limits("无法启动 Codex CLI 额度查询")
+                try:
+                    result = await asyncio.wait_for(
+                        self._read_rate_limits(process), timeout=RATE_LIMIT_TIMEOUT_SECONDS
+                    )
+                    return sanitize_rate_limits(result)
+                except TimeoutError:
+                    return self._unavailable_limits("Codex CLI 额度查询超时")
+                except CodexAuthError as exc:
+                    return self._unavailable_limits(str(exc))
+                except (OSError, json.JSONDecodeError):
+                    return self._unavailable_limits("Codex CLI 额度查询不可用")
+                finally:
+                    await self._terminate(process)
+
+    @staticmethod
+    async def _read_rate_limits(process: asyncio.subprocess.Process) -> Any:
+        if process.stdin is None or process.stdout is None:
+            raise CodexAuthError("Codex CLI 额度查询不可用")
+        requests = (
+            {
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {
+                        "name": "candlepilot",
+                        "title": "CandlePilot",
+                        "version": "1",
+                    },
+                    "capabilities": {"experimentalApi": True},
+                },
+            },
+            {"id": 2, "method": "account/rateLimits/read", "params": None},
+        )
+        for request in requests:
+            process.stdin.write((json.dumps(request, separators=(",", ":")) + "\n").encode())
+            await process.stdin.drain()
+            while line := await process.stdout.readline():
+                response = json.loads(line)
+                if not isinstance(response, dict):
+                    raise CodexAuthError("Codex CLI 返回了无法识别的额度信息")
+                if response.get("id") != request["id"]:
+                    continue
+                if "error" in response:
+                    raise CodexAuthError("Codex CLI 当前无法提供额度信息")
+                if request["id"] == 2:
+                    return response.get("result")
+                break
+            else:
+                raise CodexAuthError("Codex CLI 提前结束额度查询")
+        raise CodexAuthError("Codex CLI 未返回额度信息")
+
+    @staticmethod
+    def _unavailable_limits(message: str) -> dict[str, Any]:
+        return {
+            "available": False,
+            "buckets": [],
+            "checked_at": datetime.now(UTC),
+            "message": message,
+        }
+
     async def close(self) -> None:
         await self.cancel_login()
 
@@ -225,11 +380,14 @@ class CodexAuthManager:
 
     @staticmethod
     async def _terminate(process: asyncio.subprocess.Process) -> None:
+        if process.returncode is not None:
+            return
         try:
             os.killpg(process.pid, signal.SIGTERM)
             await asyncio.wait_for(process.wait(), timeout=2)
-        except (ProcessLookupError, TimeoutError):
+        except (PermissionError, ProcessLookupError, TimeoutError):
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+                process.kill()
+                await process.wait()
+            except (PermissionError, ProcessLookupError):
+                return

@@ -79,6 +79,7 @@ def test_remote_console_authentication_protects_http_and_websocket(tmp_path: Pat
         assert client.get("/api/health/live").status_code == 200
         assert client.get("/api/status").status_code == 401
         assert client.get("/api/providers/codex-auth/session").status_code == 401
+        assert client.get("/api/providers/codex-auth/usage").status_code == 401
         assert client.get("/api/auth/status").json()["authenticated"] is False
         with pytest.raises(WebSocketDisconnect) as closed:
             with client.websocket_connect("/ws/events"):

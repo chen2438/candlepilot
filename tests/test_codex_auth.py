@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 
-from candlepilot.codex_auth import CodexAuthManager, parse_device_auth_line
+from candlepilot.codex_auth import CodexAuthManager, parse_device_auth_line, sanitize_rate_limits
 
 
 def _write_fake_codex(path: Path) -> Path:
@@ -14,6 +14,11 @@ def _write_fake_codex(path: Path) -> Path:
         "  exit 0\n"
         "fi\n"
         'if [ "$1" = "logout" ]; then exit 0; fi\n'
+        'if [ "$1" = "app-server" ]; then\n'
+        '  read init; echo \'{"id":1,"result":{"serverInfo":{"name":"codex"}}}\'\n'
+        '  read usage; echo \'{"id":2,"result":{"rateLimits":{"planType":"team","limitId":"codex","limitName":"Codex","primary":{"usedPercent":23,"windowDurationMins":43200,"resetsAt":1785542400}}}}\'\n'
+        "  exit 0\n"
+        "fi\n"
         "exit 1\n",
         encoding="utf-8",
     )
@@ -74,3 +79,45 @@ def test_codex_auth_manager_can_cancel_before_process_starts(tmp_path: Path) -> 
         assert manager.active is False
 
     asyncio.run(exercise())
+
+
+def test_codex_auth_manager_reads_only_sanitized_dynamic_rate_limit_windows(
+    tmp_path: Path,
+) -> None:
+    async def exercise() -> None:
+        manager = CodexAuthManager(executable=_write_fake_codex(tmp_path / "codex"))
+        usage = await manager.rate_limits()
+        assert usage["available"] is True
+        assert usage["buckets"] == [
+            {
+                "limit_id": "codex",
+                "limit_name": "Codex",
+                "plan_type": "team",
+                "windows": [
+                    {
+                        "kind": "primary",
+                        "used_percent": 23,
+                        "remaining_percent": 77,
+                        "window_duration_minutes": 43200,
+                        "resets_at": usage["buckets"][0]["windows"][0]["resets_at"],
+                    }
+                ],
+            }
+        ]
+        assert set(usage) == {"available", "buckets", "checked_at", "message"}
+
+    asyncio.run(exercise())
+
+
+def test_rate_limit_sanitizer_does_not_invent_missing_windows() -> None:
+    usage = sanitize_rate_limits(
+        {
+            "rateLimits": {
+                "planType": "team",
+                "primary": {"usedPercent": 10, "windowDurationMins": 43200},
+                "secret": "must-not-cross-api-boundary",
+            }
+        }
+    )
+    assert len(usage["buckets"][0]["windows"]) == 1
+    assert "secret" not in repr(usage)

@@ -2,7 +2,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { CodexAuthSourceSelect, CodexCliAuthControls, codexProviderIdentity } from "./App";
+import { CodexAuthSourceSelect, CodexCliAuthControls, codexProviderIdentity, codexWindowLabel } from "./App";
 
 afterEach(cleanup);
 
@@ -48,6 +48,9 @@ describe("Codex provider identity", () => {
         onCancel={onCancel}
         onLogin={onLogin}
         onLogout={onLogout}
+        onRefreshUsage={vi.fn()}
+        usage={null}
+        usageLoading={false}
         session={{
           available: true,
           state: "pending",
@@ -73,11 +76,38 @@ describe("Codex provider identity", () => {
       onCancel={onCancel}
       onLogin={onLogin}
       onLogout={onLogout}
+      onRefreshUsage={vi.fn()}
+      usage={{
+        available: true,
+        buckets: [{
+          limit_id: "codex",
+          limit_name: "Codex",
+          plan_type: "team",
+          windows: [{
+            kind: "primary",
+            used_percent: 23,
+            remaining_percent: 77,
+            window_duration_minutes: 43200,
+            resets_at: "2026-08-01T00:00:00Z",
+          }],
+        }],
+        checked_at: "2026-07-22T12:00:00Z",
+        message: "Codex 额度已刷新",
+      }}
+      usageLoading={false}
       session={null}
     />);
+    expect(screen.getByText("Team · 月额度")).toBeTruthy();
+    expect(screen.getByText("77%")).toBeTruthy();
+    expect(screen.queryByText(/周额度/)).toBeNull();
     await user.click(screen.getByRole("button", { name: "登出" }));
     expect(onLogout).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "确认登出" }));
     expect(onLogout).toHaveBeenCalledOnce();
+  });
+
+  it("labels only the window duration actually returned by Codex", () => {
+    expect(codexWindowLabel(43200, "Codex")).toBe("月额度");
+    expect(codexWindowLabel(null, "Team monthly")).toBe("Team monthly");
   });
 });

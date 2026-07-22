@@ -27,6 +27,11 @@
   `codex logout`；命令始终由 CandlePilot 服务用户以固定参数、白名单环境和隔离临时目录执行，
   不经过 Shell。登录 API 仅从输出提取 OpenAI/ChatGPT HTTPS 授权地址和一次性代码，绝不返回
   原始输出或凭据；引擎、试跑、回测或其他登录流程活动期间禁止改变登录态。
+  登录有效时还可通过固定的 `codex app-server --stdio` JSON-RPC
+  `account/rateLimits/read` 查询订阅额度；连接声明实验 API 能力，只提取套餐、额度桶名称、实际
+  返回的窗口、已用/剩余百分比和重置时间。不读取 `auth.json`、不返回原始响应，也不把
+  CandlePilot Token/成本推算成订阅余额。窗口按响应动态展示，Team 只返回月窗口时只显示月额度。
+  旧 CLI 或协议错误降级为额度暂不可用，不改变 Provider 就绪状态或正式调用链。
 - **Claude Code Auth**：依次检测 `PATH` 与 `~/.local/bin` 中的独立 `claude` CLI，
   复用 Claude.ai Pro/Max 登录态（`claude -p --output-format json --permission-mode default
   --max-turns 4 --disallowedTools …`，Prompt 走 stdin）。**不使用 plan 模式**（plan 模式会让

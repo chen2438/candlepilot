@@ -51,6 +51,7 @@
 **引擎与 Provider**：`GET /api/status`、`GET /api/providers`、
 `POST /api/providers/select`、`POST /api/providers/config`、`POST /api/providers/test`、
 `GET /api/providers/codex-auth/session`、`POST /api/providers/codex-auth/login`、
+`GET /api/providers/codex-auth/usage`、
 `POST /api/providers/codex-auth/login/cancel`、`POST /api/providers/codex-auth/logout`、
 `POST /api/cadences`、
 `POST /api/candidates-per-cycle`、`POST /api/run-limits`、
@@ -81,7 +82,12 @@ Codex CLI 登录接口异步启动固定的 `codex login --device-auth`，sessio
 `starting/pending/succeeded/failed/cancelled/idle` 状态、经域名校验的 OpenAI/ChatGPT HTTPS
 授权地址、一次性代码和安全摘要；不返回命令原始输出、token 或 `auth.json`。取消接口终止当前
 进程组；登出接口固定执行 `codex logout`，前端要求二次确认。登录态改变会使已有正式运行试跑
-失效；引擎、试跑、回测或另一登录任务活动时返回 409。四个接口都受控制台会话与同源写请求保护。
+失效；引擎、试跑、回测或另一登录任务活动时返回 409。登录态的四个接口都受控制台会话与同源写请求保护，
+额度读取接口受控制台会话保护。
+`GET /api/providers/codex-auth/usage` 通过独立 CLI 的 stdio app-server 读取当前额度，响应带
+`Cache-Control: no-store`，只包含安全消息、检查时间，以及额度桶的套餐、名称和实际存在的窗口
+（类型、已用/剩余百分比、时长、重置时间）。不返回认证凭据或原始协议字段；CLI 不支持实验接口、
+未登录、超时或响应异常时仍返回 200、`available=false` 和空桶，使展示失败不影响 Provider。
 `GET /api/status` 通过 `provider_chain`、`active_provider` 和 `provider_routes` 返回顺序、当前承载、
 冷却截止时间、最近错误与最近成功/失败时间；不返回任何凭据。
 
