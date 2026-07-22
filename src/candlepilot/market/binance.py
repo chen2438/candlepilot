@@ -295,6 +295,36 @@ class BinancePublicClient:
     async def agg_trades(self, symbol: str, limit: int = 1000) -> list[dict[str, Any]]:
         return await self._get("/fapi/v1/aggTrades", symbol=symbol, limit=limit)
 
+    async def derivatives_positioning(self, symbol: str) -> dict[str, float]:
+        """Fetch optional closed 5m positioning statistics for shadow analysis.
+
+        These public futures-data endpoints can be unavailable independently of
+        core price data.  A partial or failed response therefore removes only
+        the affected optional features instead of making the tradable snapshot
+        fail.
+        """
+
+        paths = (
+            "/futures/data/openInterestHist",
+            "/futures/data/globalLongShortAccountRatio",
+            "/futures/data/topLongShortPositionRatio",
+            "/futures/data/takerlongshortRatio",
+        )
+        results = await asyncio.gather(
+            *(
+                self._get(path, symbol=symbol, period="5m", limit=3)
+                for path in paths
+            ),
+            return_exceptions=True,
+        )
+        histories = [result if isinstance(result, list) else [] for result in results]
+        return FeaturePipeline.derivatives_positioning(
+            open_interest_history=histories[0],
+            global_long_short_history=histories[1],
+            top_position_history=histories[2],
+            taker_history=histories[3],
+        )
+
     async def market_snapshot(self, symbol: str, cadence: str) -> MarketSnapshot:
         if cadence not in set(DECISION_FEATURE_INTERVALS):
             raise ValueError("unsupported decision cadence")
@@ -310,11 +340,14 @@ class BinancePublicClient:
             self.depth(symbol),
             self.open_interest(symbol),
             self.agg_trades(symbol),
+            self.derivatives_positioning(symbol),
         )
         rows_by_interval = dict(
             zip(feature_intervals, results[: len(feature_intervals)], strict=True)
         )
-        book, ticker, premium, depth, interest, trades = results[len(feature_intervals) :]
+        book, ticker, premium, depth, interest, trades, positioning = results[
+            len(feature_intervals) :
+        ]
         pipeline = FeaturePipeline()
         mark_price = Decimal(premium["markPrice"])
         features = pipeline.microstructure(
@@ -325,6 +358,7 @@ class BinancePublicClient:
             asks=depth["asks"],
             trades=trades,
         )
+        features.update(positioning)
         daily_rows = rows_by_interval.pop(DAILY_STRUCTURE_INTERVAL)
         features.update(pipeline.multitimeframe(rows_by_interval))
         features.update(pipeline.daily_structure(daily_rows, mark_price=mark_price))

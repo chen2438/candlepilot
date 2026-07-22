@@ -18,6 +18,9 @@
   `market_analyses` 类别删除整类研究历史。
 - 旧版 `book_captures` 表为现有数据库兼容而保留，但应用不再写入或把它用于回测；遗留行只能通过
   数据管理清理。含完整盘口的回放数据由正式引擎自动写入 `live_decision_snapshots`。
+- `live_decision_snapshots.snapshot_json` 同时保存当时成功取得的实验性币安 5m OI 变化、全市场
+  账户多空比、大户持仓多空比与 taker 买卖量变化；可选端点缺失时字段不存在而不是写 0。它们
+  复用现有 JSON 快照，不新增迁移，也不会进入标准外部 Provider 的决策 payload。
 - 溯源：SHA-256 数据版本、显式 Prompt 版本、模型标识、CLI Provider 版本。
 - 每次正式运行创建时把当前仓库 `HEAD` 的 7 位 Git 提交号写入 `live_runs.config_json` 的
   `software_version`，与该次唯一 Provider、周期和运行边界一起永久保留；软件更新不会用新版本

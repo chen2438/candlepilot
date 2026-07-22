@@ -107,6 +107,43 @@ def test_microstructure_features_capture_direction_and_basis() -> None:
     assert features["recent_trade_imbalance"] == 1 / 3
 
 
+def test_derivatives_positioning_uses_latest_closed_pair_and_omits_missing() -> None:
+    features = FeaturePipeline.derivatives_positioning(
+        open_interest_history=[
+            {"sumOpenInterest": "100", "timestamp": 1},
+            {"sumOpenInterest": "103", "timestamp": 2},
+        ],
+        global_long_short_history=[
+            {"longShortRatio": "1.20", "timestamp": 1},
+            {"longShortRatio": "1.15", "timestamp": 2},
+        ],
+        top_position_history=[
+            {"longShortRatio": "1.50", "timestamp": 1},
+            {"longShortRatio": "1.55", "timestamp": 2},
+        ],
+        taker_history=[
+            {"buySellRatio": "0.8", "timestamp": 1},
+            {"buySellRatio": "1.1", "timestamp": 2},
+        ],
+    )
+
+    assert features["open_interest_change_5m"] == pytest.approx(0.03)
+    assert features["global_long_short_ratio"] == 1.15
+    assert features["global_long_short_ratio_change_5m"] == pytest.approx(-0.05)
+    assert features["top_long_short_position_ratio"] == 1.55
+    assert features["top_long_short_position_ratio_change_5m"] == pytest.approx(0.05)
+    assert features["taker_buy_sell_ratio"] == 1.1
+    assert features["taker_buy_sell_ratio_change_5m"] == pytest.approx(0.3)
+
+    missing = FeaturePipeline.derivatives_positioning(
+        open_interest_history=[{"sumOpenInterest": "100", "timestamp": 1}],
+        global_long_short_history=[],
+        top_position_history=[],
+        taker_history=[],
+    )
+    assert missing == {}
+
+
 def test_multitimeframe_features_are_namespaced() -> None:
     rows_by_interval = {interval: _rows() for interval in DECISION_FEATURE_INTERVALS}
     features = FeaturePipeline().multitimeframe(rows_by_interval)

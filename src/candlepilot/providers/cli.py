@@ -24,6 +24,7 @@ from candlepilot.domain.models import (
     ProviderHealth,
     TradeIntent,
 )
+from candlepilot.market.features import EXPERIMENTAL_POSITIONING_FEATURES
 from candlepilot.providers.base import (
     DecisionProvider,
     ProviderCapabilities,
@@ -236,8 +237,14 @@ async def _run_process(
 def _decision_payload(
     snapshot: MarketSnapshot, portfolio: PortfolioState
 ) -> dict[str, Any]:
+    market = snapshot.model_dump(mode="json")
+    market["features"] = {
+        name: value
+        for name, value in market["features"].items()
+        if name not in EXPERIMENTAL_POSITIONING_FEATURES
+    }
     return {
-        "market": snapshot.model_dump(mode="json"),
+        "market": market,
         "portfolio": portfolio.model_dump(mode="json"),
     }
 
@@ -245,8 +252,17 @@ def _decision_payload(
 def _batch_decision_payload(
     snapshots: Sequence[MarketSnapshot], portfolio: PortfolioState
 ) -> dict[str, Any]:
+    markets = []
+    for snapshot in snapshots:
+        market = snapshot.model_dump(mode="json")
+        market["features"] = {
+            name: value
+            for name, value in market["features"].items()
+            if name not in EXPERIMENTAL_POSITIONING_FEATURES
+        }
+        markets.append(market)
     return {
-        "markets": [snapshot.model_dump(mode="json") for snapshot in snapshots],
+        "markets": markets,
         "portfolio": portfolio.model_dump(mode="json"),
     }
 

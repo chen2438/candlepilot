@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -15,6 +16,21 @@ from candlepilot.domain.models import MarketSnapshot
 #: the model has to invent a use for, and it will invent a different one each
 #: call. 1m was dropped for exactly that reason: no setup rule names it.
 DECISION_FEATURE_INTERVALS = ("5m", "15m", "30m", "1h", "4h")
+
+# Collected into formal snapshots for deterministic shadow experiments, but
+# deliberately withheld from the standard external-Provider payload until a
+# replayed experiment establishes how each field changes decisions.
+EXPERIMENTAL_POSITIONING_FEATURES = frozenset(
+    {
+        "open_interest_change_5m",
+        "global_long_short_ratio",
+        "global_long_short_ratio_change_5m",
+        "top_long_short_position_ratio",
+        "top_long_short_position_ratio_change_5m",
+        "taker_buy_sell_ratio",
+        "taker_buy_sell_ratio_change_5m",
+    }
+)
 
 #: Interval supplying daily structure levels, and only those.
 #:
@@ -286,6 +302,58 @@ class FeaturePipeline:
             funding_rate=funding_rate,
             features=features,
         )
+
+    @staticmethod
+    def derivatives_positioning(
+        *,
+        open_interest_history: list[dict[str, Any]],
+        global_long_short_history: list[dict[str, Any]],
+        top_position_history: list[dict[str, Any]],
+        taker_history: list[dict[str, Any]],
+    ) -> dict[str, float]:
+        """Normalize closed 5m derivatives statistics without inventing missing values.
+
+        The ratios describe crowding and flow, not trader identity.  Changes are
+        relative for open interest and arithmetic for ratios so downstream
+        experiments can distinguish position creation from position closure.
+        """
+
+        def _latest_pair(
+            rows: list[dict[str, Any]], key: str
+        ) -> tuple[float, float] | None:
+            ordered = sorted(rows, key=lambda row: int(row.get("timestamp", 0)))
+            values: list[float] = []
+            for row in ordered:
+                try:
+                    value = float(row[key])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if math.isfinite(value):
+                    values.append(value)
+            if len(values) < 2:
+                return None
+            return values[-2], values[-1]
+
+        features: dict[str, float] = {}
+        oi = _latest_pair(open_interest_history, "sumOpenInterest")
+        if oi is not None and oi[0] > 0:
+            features["open_interest_change_5m"] = (oi[1] / oi[0]) - 1
+
+        for rows, key, name in (
+            (
+                global_long_short_history,
+                "longShortRatio",
+                "global_long_short_ratio",
+            ),
+            (top_position_history, "longShortRatio", "top_long_short_position_ratio"),
+            (taker_history, "buySellRatio", "taker_buy_sell_ratio"),
+        ):
+            pair = _latest_pair(rows, key)
+            if pair is None:
+                continue
+            features[name] = pair[1]
+            features[f"{name}_change_5m"] = pair[1] - pair[0]
+        return features
 
     @staticmethod
     def microstructure(

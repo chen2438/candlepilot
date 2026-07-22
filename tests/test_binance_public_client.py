@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import httpx
+import pytest
 
 from candlepilot.market.binance import BinancePublicClient, BinanceRateLimit
 from candlepilot.market.features import DECISION_FEATURE_INTERVALS
@@ -203,6 +204,22 @@ def test_market_snapshot_includes_microstructure() -> None:
             "/fapi/v1/depth": {"bids": [["100", "3"]], "asks": [["101", "1"]]},
             "/fapi/v1/openInterest": {"openInterest": "42"},
             "/fapi/v1/aggTrades": [{"p": "100", "q": "2", "m": False}],
+            "/futures/data/openInterestHist": [
+                {"sumOpenInterest": "40", "timestamp": 1},
+                {"sumOpenInterest": "42", "timestamp": 2},
+            ],
+            "/futures/data/globalLongShortAccountRatio": [
+                {"longShortRatio": "1.2", "timestamp": 1},
+                {"longShortRatio": "1.1", "timestamp": 2},
+            ],
+            "/futures/data/topLongShortPositionRatio": [
+                {"longShortRatio": "1.4", "timestamp": 1},
+                {"longShortRatio": "1.5", "timestamp": 2},
+            ],
+            "/futures/data/takerlongshortRatio": [
+                {"buySellRatio": "0.9", "timestamp": 1},
+                {"buySellRatio": "1.1", "timestamp": 2},
+            ],
         }
         payload = responses.get(request.url.path)
         return httpx.Response(200, json=payload) if payload is not None else httpx.Response(404)
@@ -236,6 +253,11 @@ def test_market_snapshot_includes_microstructure() -> None:
     ]
     assert snapshot.features["recent_trade_imbalance"] == 1.0
     assert snapshot.features["open_interest"] == 42.0
+    assert snapshot.features["open_interest_change_5m"] == pytest.approx(0.05)
+    assert snapshot.features["global_long_short_ratio"] == 1.1
+    assert snapshot.features["global_long_short_ratio_change_5m"] == pytest.approx(-0.1)
+    assert snapshot.features["top_long_short_position_ratio"] == 1.5
+    assert snapshot.features["taker_buy_sell_ratio"] == 1.1
     assert snapshot.features["5m_ema_spread"] == snapshot.features["30m_ema_spread"]
     assert snapshot.features["1h_ema_spread"] == snapshot.features["4h_ema_spread"]
     assert not [name for name in snapshot.features if name.startswith("1m_")]
@@ -248,6 +270,45 @@ def test_market_snapshot_includes_microstructure() -> None:
         "1d_previous_low",
         "1d_previous_close",
     }
+
+
+def test_positioning_endpoint_failures_do_not_drop_the_core_snapshot() -> None:
+    rows = []
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    for index in range(20):
+        open_ms = int(start.timestamp() * 1000) + index * 60_000
+        rows.append([open_ms, "100", "102", "99", "101", "10", open_ms + 59_999, "1000"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        responses = {
+            "/fapi/v1/klines": rows,
+            "/fapi/v1/ticker/bookTicker": {"bidPrice": "100", "askPrice": "101"},
+            "/fapi/v1/ticker/24hr": {"quoteVolume": "1000000"},
+            "/fapi/v1/premiumIndex": {
+                "markPrice": "100.5",
+                "indexPrice": "100",
+                "lastFundingRate": "0.0001",
+            },
+            "/fapi/v1/depth": {"bids": [["100", "3"]], "asks": [["101", "1"]]},
+            "/fapi/v1/openInterest": {"openInterest": "42"},
+            "/fapi/v1/aggTrades": [{"p": "100", "q": "2", "m": False}],
+        }
+        payload = responses.get(request.url.path)
+        return httpx.Response(200, json=payload) if payload is not None else httpx.Response(503)
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="https://example.test"
+        )
+        adapter = BinancePublicClient(client=client)
+        snapshot = await adapter.market_snapshot("BTCUSDT", "15m")
+        await client.aclose()
+        return snapshot
+
+    snapshot = asyncio.run(scenario())
+    assert snapshot.features["open_interest"] == 42.0
+    assert "open_interest_change_5m" not in snapshot.features
+    assert "global_long_short_ratio" not in snapshot.features
 
 
 def test_exchange_info_carries_the_price_tick_into_symbol_rules() -> None:
