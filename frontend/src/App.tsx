@@ -3737,10 +3737,10 @@ const COUNTERFACTUAL_LABELS: Record<
 };
 
 const SETUP_TYPE_LABELS: Record<string, string> = {
-  TREND_BREAKOUT: "趋势入场 · 突破",
-  TREND_CONTINUATION: "趋势入场 · 延续",
-  BREAKOUT_RETEST: "回调 · 突破回踩",
-  TREND_PULLBACK: "回调 · 趋势回撤",
+  TREND_BREAKOUT: "趋势突破",
+  TREND_CONTINUATION: "趋势延续",
+  BREAKOUT_RETEST: "突破回踩",
+  TREND_PULLBACK: "趋势回撤",
   REVERSAL: "反转",
 };
 

@@ -26,10 +26,10 @@ afterEach(() => {
 });
 
 it.each([
-  ["TREND_BREAKOUT", "趋势入场 · 突破"],
-  ["TREND_CONTINUATION", "趋势入场 · 延续"],
-  ["BREAKOUT_RETEST", "回调 · 突破回踩"],
-  ["TREND_PULLBACK", "回调 · 趋势回撤"],
+  ["TREND_BREAKOUT", "趋势突破"],
+  ["TREND_CONTINUATION", "趋势延续"],
+  ["BREAKOUT_RETEST", "突破回踩"],
+  ["TREND_PULLBACK", "趋势回撤"],
   ["REVERSAL", "反转"],
 ])("labels setup type %s as %s", (value, label) => {
   expect(setupTypeLabel(value)).toBe(label);
@@ -382,7 +382,7 @@ describe("DecisionPanel", () => {
     expect(screen.getByText("1.1400 : 1")).toBeTruthy();
     expect(screen.getByText("最终下单数量")).toBeTruthy();
     expect(screen.getByText("交易情形")).toBeTruthy();
-    expect(screen.getByText("趋势入场 · 延续")).toBeTruthy();
+    expect(screen.getByText("趋势延续")).toBeTruthy();
     expect(screen.queryByText("风控数量")).toBeNull();
     expect(screen.queryByText("成交额")).toBeNull();
     expect(screen.queryByText("保证金")).toBeNull();

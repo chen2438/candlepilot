@@ -69,11 +69,11 @@
   仍会独立复核。Prompt 还要求 `ADD` 沿用现有仓位杠杆，确定性风控会在定量前拒绝任何变杠杆加仓；
   Prompt 同时要求模型把价格、OI 变化、账户/持仓多空比和 taker 买卖比放回多周期价格结构中
   综合解释，不得使用跨标的统一比率阈值、推断交易者身份、把无符号 OI 当作方向仓位或让单一字段
-  直接决定交易。Prompt 还要求每个开仓/加仓必须按三类交易情形返回非空 `setup_type`：趋势入场按
-  确认突破或一般延续细分为 `TREND_BREAKOUT` / `TREND_CONTINUATION`，回调按突破位回踩或一般趋势
-  回撤细分为 `BREAKOUT_RETEST` / `TREND_PULLBACK`，反转使用 `REVERSAL`；其他动作返回空值。
-  该细分随推理审计持久化，可在统计时聚合回趋势入场、回调、反转三大类。当前 Prompt 版本为
-  `trade-intent-v19`。
+  直接决定交易。Prompt 还要求每个开仓/加仓必须在五个互斥交易情形中返回非空 `setup_type`：
+  `TREND_BREAKOUT`（趋势突破）、`TREND_CONTINUATION`（趋势延续）、`BREAKOUT_RETEST`（突破回踩）、
+  `TREND_PULLBACK`（趋势回撤）或 `REVERSAL`（反转）；其他动作返回空值。每类在 Prompt 中都有独立
+  触发定义，枚举随推理审计持久化，后续按五类分别统计。当前 Prompt 版本为
+  `trade-intent-v20`。
 - **隔离与安全**：LLM 子进程运行在独立空临时目录，环境变量白名单
   （含 `USER`/`LOGNAME` 以支持 macOS 钥匙串读取 Claude 登录态），移除所有币安/API Key
   变量；禁用工具、MCP、网络；单 Provider 并发 1、统一取消。外部 Provider 的代码默认超时为
