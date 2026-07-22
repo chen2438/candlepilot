@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -114,4 +114,20 @@ def market_analysis_output_schema() -> dict[str, object]:
     for CLI and HTTP providers prevents their contracts from drifting.
     """
 
-    return MarketAnalysis.model_json_schema()
+    schema = MarketAnalysis.model_json_schema()
+
+    def make_strict(node: Any) -> None:
+        if isinstance(node, dict):
+            node.pop("default", None)
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                node["required"] = list(properties)
+                node["additionalProperties"] = False
+            for value in node.values():
+                make_strict(value)
+        elif isinstance(node, list):
+            for value in node:
+                make_strict(value)
+
+    make_strict(schema)
+    return schema

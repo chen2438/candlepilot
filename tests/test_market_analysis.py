@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from candlepilot.api import create_app
 from candlepilot.application.engine import TradingEngine
 from candlepilot.analysis.datapack import AnalysisDataPackBuilder
-from candlepilot.analysis.models import MarketAnalysis
+from candlepilot.analysis.models import MarketAnalysis, market_analysis_output_schema
 from candlepilot.analysis.outcomes import evaluate_outcome, next_complete_5m_start
 from candlepilot.analysis.service import MarketAnalysisService
 from candlepilot.domain.models import ProviderHealth, TradeIntent
@@ -71,6 +71,26 @@ def test_analysis_contract_requires_explicit_directional_levels() -> None:
     invalid["entry_plan"] = None
     with pytest.raises(ValidationError, match="requires an entry plan"):
         MarketAnalysis.model_validate(invalid)
+
+
+def test_analysis_output_schema_requires_every_object_property() -> None:
+    schema = market_analysis_output_schema()
+
+    def assert_strict(node: object) -> None:
+        if isinstance(node, dict):
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                assert node.get("required") == list(properties)
+                assert node.get("additionalProperties") is False
+            assert "default" not in node
+            for value in node.values():
+                assert_strict(value)
+        elif isinstance(node, list):
+            for value in node:
+                assert_strict(value)
+
+    assert_strict(schema)
+    assert "missing_data_impact" in schema["required"]
 
 
 def test_neutral_analysis_requires_range_containing_anchor() -> None:
