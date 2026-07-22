@@ -342,6 +342,16 @@ class MarketAnalysisRow(Base):
     )
 
 
+class MarketAnalysisOutcomeRow(Base):
+    __tablename__ = "market_analysis_outcomes"
+
+    analysis_id: Mapped[int] = mapped_column(
+        ForeignKey("market_analyses.id", ondelete="CASCADE"), primary_key=True
+    )
+    outcome_json: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class SchemaMigrationRow(Base):
     __tablename__ = "schema_migrations"
 
@@ -354,7 +364,7 @@ class SchemaMigrationRow(Base):
 # replaying upgrade logic, while fresh databases are created directly from the
 # ORM metadata at the current shape.
 MINIMUM_SUPPORTED_SCHEMA_VERSION = 12
-CURRENT_SCHEMA_VERSION = 17
+CURRENT_SCHEMA_VERSION = 18
 MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
     (13, ()),
     (
@@ -425,6 +435,14 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             "CREATE INDEX IF NOT EXISTS ix_market_analyses_status ON market_analyses (status)",
             "CREATE INDEX IF NOT EXISTS ix_market_analyses_provider ON market_analyses (provider)",
             "CREATE INDEX IF NOT EXISTS ix_market_analyses_created_at ON market_analyses (created_at)",
+        ),
+    ),
+    (
+        18,
+        (
+            "CREATE TABLE IF NOT EXISTS market_analysis_outcomes ("
+            "analysis_id INTEGER NOT NULL PRIMARY KEY REFERENCES market_analyses(id) ON DELETE CASCADE, "
+            "outcome_json TEXT NOT NULL, updated_at DATETIME NOT NULL)",
         ),
     ),
 )
@@ -584,10 +602,47 @@ class MarketAnalysisRepository:
                 )
             )
 
+    async def save_outcome(self, analysis_id: int, outcome: Mapping[str, Any]) -> None:
+        async with self.sessions.begin() as session:
+            row = await session.get(MarketAnalysisOutcomeRow, analysis_id)
+            values = json.dumps(outcome, separators=(",", ":"), ensure_ascii=False)
+            if row is None:
+                session.add(
+                    MarketAnalysisOutcomeRow(
+                        analysis_id=analysis_id,
+                        outcome_json=values,
+                        updated_at=datetime.now(UTC),
+                    )
+                )
+            else:
+                row.outcome_json = values
+                row.updated_at = datetime.now(UTC)
+
+    async def outcome(self, analysis_id: int) -> dict[str, Any] | None:
+        async with self.sessions() as session:
+            row = await session.get(MarketAnalysisOutcomeRow, analysis_id)
+        if row is None:
+            return None
+        updated_at = row.updated_at.replace(tzinfo=UTC) if row.updated_at.tzinfo is None else row.updated_at
+        return {
+            "outcome": json.loads(row.outcome_json),
+            "outcome_updated_at": updated_at,
+        }
+
+    async def attach_outcome(self, payload: dict[str, Any]) -> dict[str, Any]:
+        stored = await self.outcome(int(payload["id"]))
+        return {
+            **payload,
+            "outcome": stored["outcome"] if stored else None,
+            "outcome_updated_at": stored["outcome_updated_at"] if stored else None,
+        }
+
     async def get(self, analysis_id: int, *, include_audit: bool = False) -> dict[str, Any] | None:
         async with self.sessions() as session:
             row = await session.get(MarketAnalysisRow, analysis_id)
-        return self._as_dict(row, include_audit=include_audit) if row else None
+        if row is None:
+            return None
+        return await self.attach_outcome(self._as_dict(row, include_audit=include_audit))
 
     async def recent(self, *, limit: int = 30, symbol: str | None = None) -> list[dict[str, Any]]:
         statement = select(MarketAnalysisRow)
@@ -597,7 +652,10 @@ class MarketAnalysisRepository:
             rows = (
                 await session.scalars(statement.order_by(MarketAnalysisRow.id.desc()).limit(limit))
             ).all()
-        return [self._as_dict(row, include_audit=False) for row in rows]
+        return [
+            await self.attach_outcome(self._as_dict(row, include_audit=False))
+            for row in rows
+        ]
 
     async def latest_success(self, symbol: str) -> dict[str, Any] | None:
         async with self.sessions() as session:

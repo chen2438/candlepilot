@@ -143,6 +143,15 @@ export interface MarketAnalysisRecord {
   error: string | null;
   created_at: string;
   completed_at: string | null;
+  outcome: null | {
+    status: "neutral_observation" | "waiting_entry" | "active" | "target1_partial" | "target2" | "stopped" | "breakeven_after_target1" | "ambiguous";
+    bars_observed: number;
+    entry_at: string | null;
+    target1_at: string | null;
+    resolved_at: string | null;
+    detail: string;
+  };
+  outcome_updated_at: string | null;
   input?: null | {
     as_of: string;
     timeframes: Record<"5m" | "15m" | "1h", {

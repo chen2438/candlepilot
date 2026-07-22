@@ -69,6 +69,8 @@
 回测、登录或其他 Provider 任务活动时返回 409，分析活动也反向阻止这些操作。必须已经唯一选择一个
 外部 Provider；选中 `local-rule` 返回 422。创建接口仅排队，前端按 ID 轮询终态
 `succeeded/failed/cancelled`。分析不调用 Broker 执行接口，也不改变紧急锁、亏损熔断或运行状态。
+`POST /api/market-analyses/{id}/outcome` 对已完成记录按需拉取分析后的 5m K 线并保存最新计划结果；
+它不调用模型或 Broker，未完成记录返回 409。详情与列表均返回 `outcome` 和更新时间。
 
 `POST /api/engine/clear-emergency-lock` 会先执行交易所账户对账；仅停止状态且无持仓、无普通或 Algo
 挂单时删除紧急锁，否则返回 409 并保留锁定。

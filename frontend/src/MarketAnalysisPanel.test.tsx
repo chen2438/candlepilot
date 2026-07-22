@@ -45,6 +45,8 @@ const record: MarketAnalysisRecord = {
   error: null,
   created_at: "2026-07-22T10:01:00Z",
   completed_at: "2026-07-22T10:01:12Z",
+  outcome: null,
+  outcome_updated_at: null,
   input: {
     as_of: "2026-07-22T10:00:05Z",
     timeframes: Object.fromEntries((["5m", "15m", "1h"] as const).map((timeframe) => [timeframe, {

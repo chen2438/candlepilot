@@ -2713,6 +2713,19 @@ function analysisDirectionLabel(direction: NonNullable<MarketAnalysisRecord["res
   return ({ long: "偏多", short: "偏空", neutral: "观望" } as const)[direction];
 }
 
+function analysisOutcomeLabel(status: NonNullable<MarketAnalysisRecord["outcome"]>["status"]): string {
+  return ({
+    neutral_observation: "观望记录",
+    waiting_entry: "等待入场",
+    active: "入场已触发",
+    target1_partial: "T1 已部分止盈",
+    target2: "T2 已到达",
+    stopped: "结构止损",
+    breakeven_after_target1: "T1 后余仓保本",
+    ambiguous: "同 K 线顺序不确定",
+  } as const)[status];
+}
+
 function analysisPrice(value: number): string {
   if (value >= 1000) return value.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
   if (value >= 1) return value.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
@@ -2866,6 +2879,21 @@ export function MarketAnalysisPanel({
     }
   };
 
+  const refreshOutcome = async () => {
+    if (!selected) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const detail = await api<MarketAnalysisRecord>(`/api/market-analyses/${selected.id}/outcome`, { method: "POST" });
+      setSelected(detail);
+      await refreshHistory();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const result = selected?.result;
   const running = selected && ["pending", "running"].includes(selected.status);
   return <article className="panel analysis-panel">
@@ -2912,6 +2940,14 @@ export function MarketAnalysisPanel({
             <div><span className="eyebrow">#{selected.id} · {selected.symbol}</span><h2>{result ? analysisDirectionLabel(result.direction) : analysisStatusLabel(selected.status)}</h2></div>
             <div><strong>{selected.model ?? selected.provider}</strong><small>{selected.reasoning_effort ? `推理 ${selected.reasoning_effort}` : "默认推理强度"} · {selected.duration_ms == null ? "—" : `${(selected.duration_ms / 1000).toFixed(1)}s`}</small></div>
           </header>
+          {selected.status === "succeeded" && <div className="analysis-outcome">
+            <div>
+              <small>计划结果 · 仅使用分析完成后的完整 5m K 线</small>
+              <strong className={selected.outcome?.status ?? "waiting"}>{selected.outcome ? analysisOutcomeLabel(selected.outcome.status) : "尚未评估"}</strong>
+              <span>{selected.outcome?.detail ?? "先确认入场，再判断止损、T1/T2；同一根 K 线无法确认顺序时不会猜测。"}</span>
+            </div>
+            <button disabled={busy} onClick={() => void refreshOutcome()}>{busy ? "更新中…" : "更新结果"}</button>
+          </div>}
           {selected.error && <div className="analysis-warning negative">{selected.error}</div>}
           {result && <>
             <p className="analysis-summary">{result.summary}</p>

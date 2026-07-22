@@ -40,6 +40,12 @@ from candlepilot.application.scheduler import (
 )
 from candlepilot.application.testnet_feed import TestnetUserFeed
 from candlepilot.analysis.datapack import AnalysisDataPackBuilder
+from candlepilot.analysis.models import MarketAnalysis
+from candlepilot.analysis.outcomes import (
+    evaluate_outcome,
+    next_complete_5m_start,
+    parse_closed_rows,
+)
 from candlepilot.analysis.service import MarketAnalysisService
 from candlepilot.backtest.engine import BacktestConfig, Candle, SimulatedExchange
 from candlepilot.backtest.probe import (
@@ -3229,6 +3235,36 @@ def create_app(
         analysis_task.cancel()
         await asyncio.gather(analysis_task, return_exceptions=True)
         return (await analysis_repository.get(analysis_id)) or row
+
+    @app.post("/api/market-analyses/{analysis_id}/outcome")
+    async def refresh_market_analysis_outcome(analysis_id: int) -> dict[str, Any]:
+        row = await analysis_repository.get(analysis_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="market analysis not found")
+        if row["status"] != "succeeded" or row["result"] is None:
+            raise HTTPException(status_code=409, detail="market analysis is not complete")
+        completed_at = row["completed_at"]
+        assert isinstance(completed_at, datetime)
+        analysis_payload = {
+            key: value for key, value in row["result"].items() if key != "reward_risk"
+        }
+        analysis = MarketAnalysis.model_validate(analysis_payload)
+        bars = []
+        if analysis.direction != "neutral":
+            start = next_complete_5m_start(completed_at)
+            end = datetime.now(UTC)
+            if end > start:
+                rows = await market.historical_klines(
+                    row["symbol"], "5m", start, end, max_candles=100_000
+                )
+                bars = parse_closed_rows(rows)
+        outcome = evaluate_outcome(analysis, bars)
+        await analysis_repository.save_outcome(
+            analysis_id, outcome.model_dump(mode="json")
+        )
+        refreshed = await analysis_repository.get(analysis_id, include_audit=True)
+        assert refreshed is not None
+        return refreshed
 
     def _set_probe_task(task: asyncio.Task[None]) -> None:
         nonlocal probe_task

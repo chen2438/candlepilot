@@ -1,5 +1,6 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -10,8 +11,10 @@ from candlepilot.api import create_app
 from candlepilot.application.engine import TradingEngine
 from candlepilot.analysis.datapack import AnalysisDataPackBuilder
 from candlepilot.analysis.models import MarketAnalysis
+from candlepilot.analysis.outcomes import evaluate_outcome, next_complete_5m_start
 from candlepilot.analysis.service import MarketAnalysisService
 from candlepilot.domain.models import ProviderHealth, TradeIntent
+from candlepilot.market.features import Kline
 from candlepilot.providers.base import DecisionProvider, ProviderResult, StructuredOutputResult
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.storage.database import AuditRepository, Database, MarketAnalysisRepository
@@ -80,6 +83,43 @@ def test_neutral_analysis_requires_range_containing_anchor() -> None:
         MarketAnalysis.model_validate(payload)
 
 
+def _bar(minutes: int, low: str, high: str, *, opened: str = "101") -> Kline:
+    return Kline(
+        open_time=datetime(2026, 7, 22, 10, minutes, tzinfo=UTC),
+        open=Decimal(opened),
+        high=Decimal(high),
+        low=Decimal(low),
+        close=Decimal(opened),
+        volume=Decimal("1"),
+        quote_volume=Decimal("100"),
+    )
+
+
+def test_outcome_ignores_levels_before_entry_and_tracks_t1_then_breakeven() -> None:
+    analysis = MarketAnalysis.model_validate(_analysis_payload())
+    outcome = evaluate_outcome(
+        analysis,
+        [
+            _bar(0, "97", "99", opened="98"),  # stop before entry: irrelevant
+            _bar(5, "100.5", "102"),
+            _bar(10, "103", "105", opened="104"),
+            _bar(15, "100", "102"),
+        ],
+    )
+    assert outcome.status == "breakeven_after_target1"
+    assert outcome.entry_at == datetime(2026, 7, 22, 10, 5, tzinfo=UTC)
+    assert outcome.target1_at == datetime(2026, 7, 22, 10, 10, tzinfo=UTC)
+
+
+def test_outcome_marks_unknowable_intrabar_order_and_starts_after_completion_bar() -> None:
+    analysis = MarketAnalysis.model_validate(_analysis_payload())
+    outcome = evaluate_outcome(analysis, [_bar(0, "97", "102")])
+    assert outcome.status == "ambiguous"
+    assert next_complete_5m_start(datetime(2026, 7, 22, 10, 0, 1, tzinfo=UTC)) == datetime(
+        2026, 7, 22, 10, 5, tzinfo=UTC
+    )
+
+
 def _rows(interval_minutes: int, count: int) -> list[list[object]]:
     end = datetime.now(UTC).replace(second=0, microsecond=0) - timedelta(minutes=interval_minutes)
     start = end - timedelta(minutes=interval_minutes * (count - 1))
@@ -133,6 +173,9 @@ class AnalysisMarket:
 
     async def ticker_24h(self, symbol: str):
         return {"priceChangePercent": "2", "quoteVolume": "1000000"}
+
+    async def historical_klines(self, symbol, interval, start, end, *, max_candles=100_000):
+        return []
 
     async def close(self):
         return None
@@ -249,3 +292,6 @@ def test_market_analysis_api_runs_selected_provider_and_returns_audit(tmp_path: 
         history = client.get("/api/market-analyses").json()
         assert history[0]["id"] == identifier
         assert "input" not in history[0]
+        outcome = client.post(f"/api/market-analyses/{identifier}/outcome")
+        assert outcome.status_code == 200
+        assert outcome.json()["outcome"]["status"] == "waiting_entry"
