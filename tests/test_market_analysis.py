@@ -343,21 +343,42 @@ def _bar(minutes: int, low: str, high: str, *, opened: str = "101") -> Kline:
     )
 
 
-def test_outcome_ignores_levels_before_entry_and_tracks_t1_then_breakeven() -> None:
+def test_outcome_tracks_t1_then_breakeven_after_entry() -> None:
     analysis = MarketAnalysis.model_validate(_analysis_payload())
     outcome = evaluate_outcome(
         analysis,
         [
-            _bar(0, "97", "99", opened="98"),  # stop before entry: irrelevant
-            _bar(5, "100.5", "102"),
-            _bar(10, "103", "105", opened="104"),
-            _bar(15, "100", "102"),
+            _bar(0, "100.5", "102"),
+            _bar(5, "103", "105", opened="104"),
+            _bar(10, "100", "102"),
         ],
     )
     assert outcome.status == "breakeven_after_target1"
-    assert outcome.entry_at == datetime(2026, 7, 22, 10, 5, tzinfo=UTC)
-    assert outcome.target1_at == datetime(2026, 7, 22, 10, 10, tzinfo=UTC)
+    assert outcome.entry_at == datetime(2026, 7, 22, 10, 0, tzinfo=UTC)
+    assert outcome.target1_at == datetime(2026, 7, 22, 10, 5, tzinfo=UTC)
     assert outcome.detail == "T1 部分止盈后，剩余仓位回到入场价"
+
+
+def test_outcome_records_stop_before_entry() -> None:
+    analysis = MarketAnalysis.model_validate(_analysis_payload())
+
+    outcome = evaluate_outcome(analysis, [_bar(0, "97", "99", opened="98")])
+
+    assert outcome.status == "stopped_before_entry"
+    assert outcome.entry_at is None
+    assert outcome.resolved_at == datetime(2026, 7, 22, 10, 0, tzinfo=UTC)
+    assert outcome.detail == "计划尚未入场，价格已先触及结构止损"
+
+
+def test_outcome_records_target1_before_entry() -> None:
+    analysis = MarketAnalysis.model_validate(_analysis_payload())
+
+    outcome = evaluate_outcome(analysis, [_bar(0, "103", "105", opened="104")])
+
+    assert outcome.status == "target1_before_entry"
+    assert outcome.entry_at is None
+    assert outcome.resolved_at == datetime(2026, 7, 22, 10, 0, tzinfo=UTC)
+    assert outcome.detail == "计划尚未入场，价格已先触及 T1"
 
 
 def test_outcome_marks_unknowable_intrabar_order_and_starts_after_completion_bar() -> None:
@@ -391,6 +412,29 @@ def test_outcome_uses_complete_minute_bars_to_resolve_five_minute_order() -> Non
     assert outcome.entry_at == window
     assert outcome.resolved_at == window + timedelta(minutes=1)
     assert outcome.bars_observed == 1
+    assert "已使用完整 1 分钟 K 线细分" in outcome.detail
+
+
+def test_outcome_uses_minutes_to_identify_stop_before_entry() -> None:
+    analysis = MarketAnalysis.model_validate(_analysis_payload())
+    window = datetime(2026, 7, 22, 10, 0, tzinfo=UTC)
+    outcome = evaluate_outcome(
+        analysis,
+        [_bar(0, "97", "102")],
+        minute_refinements={
+            window: [
+                _bar(0, "97", "99", opened="98"),
+                _bar(1, "100.5", "102"),
+                _bar(2, "99", "100", opened="99.5"),
+                _bar(3, "99", "100", opened="99.5"),
+                _bar(4, "99", "100", opened="99.5"),
+            ]
+        },
+    )
+
+    assert outcome.status == "stopped_before_entry"
+    assert outcome.entry_at is None
+    assert outcome.resolved_at == window
     assert "已使用完整 1 分钟 K 线细分" in outcome.detail
 
 

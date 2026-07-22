@@ -83,7 +83,8 @@
 仅当某个 5m 窗口因多个计划价位触发而无法确定顺序时，接口才补取该窗口完整连续的五根 1m K 线
 重放同一结果状态机。缺少任一分钟或冲突仍在同一根 1m 内时保持 `ambiguous`。1m 只用于确定性事后
 判定，不发送给 Provider；接口不调用模型或 Broker，未完成记录返回 409。详情与列表均返回
-`outcome` 和更新时间。
+`outcome` 和更新时间。等待 entry 时先触及结构 stop 或 T1 会返回终态 `stopped_before_entry` 或
+`target1_before_entry`；两者的 `entry_at` 均为空，不表示真实成交、亏损或止盈。
 `POST /api/market-analyses/outcomes` 接受 `{"analysis_ids":[1,2]}`，一次最多 30 个正整数 ID，按首次
 出现顺序去重并串行执行同一结果判定；响应分别返回 `updated_ids` 与逐项 `errors`。单条不存在、
 未完成或行情读取失败不会阻断其余项目，也不会把失败记录冒充已更新。

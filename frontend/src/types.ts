@@ -146,7 +146,7 @@ export interface MarketAnalysisRecord {
   created_at: string;
   completed_at: string | null;
   outcome: null | {
-    status: "neutral_observation" | "waiting_entry" | "active" | "target1_partial" | "target2" | "stopped" | "breakeven_after_target1" | "ambiguous";
+    status: "neutral_observation" | "waiting_entry" | "stopped_before_entry" | "target1_before_entry" | "active" | "target1_partial" | "target2" | "stopped" | "breakeven_after_target1" | "ambiguous";
     bars_observed: number;
     entry_at: string | null;
     target1_at: string | null;

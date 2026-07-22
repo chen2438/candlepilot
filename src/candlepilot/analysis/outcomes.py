@@ -16,6 +16,8 @@ class AnalysisOutcome(BaseModel):
     status: Literal[
         "neutral_observation",
         "waiting_entry",
+        "stopped_before_entry",
+        "target1_before_entry",
         "active",
         "target1_partial",
         "target2",
@@ -66,6 +68,20 @@ def _evaluate_bar(
     target2 = _touches(bar, plan.target2)
     if state.phase == "waiting":
         if not entry:
+            if stop:
+                return AnalysisOutcome(
+                    status="stopped_before_entry",
+                    bars_observed=bars_observed,
+                    resolved_at=bar.open_time,
+                    detail="计划尚未入场，价格已先触及结构止损",
+                )
+            if target1:
+                return AnalysisOutcome(
+                    status="target1_before_entry",
+                    bars_observed=bars_observed,
+                    resolved_at=bar.open_time,
+                    detail="计划尚未入场，价格已先触及 T1",
+                )
             return None
         state.entry_at = bar.open_time
         if any((stop, target1, target2)):

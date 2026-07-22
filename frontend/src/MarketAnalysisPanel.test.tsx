@@ -123,6 +123,32 @@ const stoppedRecord: MarketAnalysisRecord = {
   outcome_updated_at: "2026-07-22T10:25:00Z",
 };
 
+const stoppedBeforeEntryRecord: MarketAnalysisRecord = {
+  ...record,
+  outcome: {
+    status: "stopped_before_entry",
+    bars_observed: 2,
+    entry_at: null,
+    target1_at: null,
+    resolved_at: "2026-07-22T10:15:00Z",
+    detail: "计划尚未入场，价格已先触及结构止损",
+  },
+  outcome_updated_at: "2026-07-22T10:20:00Z",
+};
+
+const target1BeforeEntryRecord: MarketAnalysisRecord = {
+  ...shortRecord,
+  outcome: {
+    status: "target1_before_entry",
+    bars_observed: 2,
+    entry_at: null,
+    target1_at: null,
+    resolved_at: "2026-07-22T10:15:00Z",
+    detail: "计划尚未入场，价格已先触及 T1",
+  },
+  outcome_updated_at: "2026-07-22T10:20:00Z",
+};
+
 function response(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -270,5 +296,20 @@ describe("MarketAnalysisPanel", () => {
       "/api/market-analyses/outcomes",
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("shows pre-entry stop and T1 outcomes without implying an entry", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const path = String(input);
+      if (path === "/api/market-analyses?limit=30") {
+        return response([stoppedBeforeEntryRecord, target1BeforeEntryRecord]);
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<MarketAnalysisPanel engineRunning={false} provider="codex-auth" />);
+
+    expect(await screen.findByText("未入场止损")).toBeTruthy();
+    expect(screen.getByText("未入场 T1")).toBeTruthy();
   });
 });

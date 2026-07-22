@@ -2755,6 +2755,8 @@ function analysisOutcomeLabel(status: NonNullable<MarketAnalysisRecord["outcome"
   return ({
     neutral_observation: "观望记录",
     waiting_entry: "等待入场",
+    stopped_before_entry: "未入场止损",
+    target1_before_entry: "未入场 T1",
     active: "入场已触发",
     target1_partial: "T1 已部分止盈",
     target2: "T2 已到达",
