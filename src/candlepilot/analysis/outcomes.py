@@ -39,6 +39,8 @@ class AnalysisOutcome(BaseModel):
         "ambiguous",
     ]
     bars_observed: int
+    completion_entry_price: float | None = None
+    completion_entry_at: datetime | None = None
     entry_at: datetime | None = None
     target1_at: datetime | None = None
     resolved_at: datetime | None = None
@@ -52,6 +54,12 @@ def next_complete_5m_start(completed_at: datetime) -> datetime:
     if minutes >= 60:
         return base.replace(minute=0) + timedelta(hours=1)
     return base.replace(minute=minutes)
+
+
+def next_complete_1m_start(completed_at: datetime) -> datetime:
+    completed_at = completed_at.astimezone(UTC)
+    base = completed_at.replace(second=0, microsecond=0)
+    return base if completed_at == base else base + timedelta(minutes=1)
 
 
 def _touches(bar: Kline, value: float) -> bool:
@@ -293,8 +301,21 @@ async def evaluate_outcome_from_market(
 ) -> AnalysisOutcome:
     if analysis.direction == "neutral":
         return evaluate_outcome(analysis, [])
+    completion_entry_at = next_complete_1m_start(completed_at)
     start = next_complete_5m_start(completed_at)
     end = (end or datetime.now(UTC)).astimezone(UTC)
+    completion_entry_price: float | None = None
+    if end > completion_entry_at:
+        entry_rows = await market.historical_klines(
+            symbol,
+            "1m",
+            completion_entry_at,
+            min(completion_entry_at + timedelta(minutes=1), end),
+            max_candles=1,
+        )
+        entry_bars = parse_closed_rows(entry_rows, now=end)
+        if entry_bars and entry_bars[0].open_time == completion_entry_at:
+            completion_entry_price = float(entry_bars[0].open)
     bars: list[Kline] = []
     if end > start:
         rows = await market.historical_klines(
@@ -310,10 +331,28 @@ async def evaluate_outcome_from_market(
             minute_refinements=refinements,
         )
         if outcome.status != "ambiguous" or outcome.resolved_at is None:
-            return outcome
+            return outcome.model_copy(
+                update={
+                    "completion_entry_price": completion_entry_price,
+                    "completion_entry_at": (
+                        completion_entry_at
+                        if completion_entry_price is not None
+                        else None
+                    ),
+                }
+            )
         window_start = _five_minute_window(outcome.resolved_at)
         if window_start in refinements:
-            return outcome
+            return outcome.model_copy(
+                update={
+                    "completion_entry_price": completion_entry_price,
+                    "completion_entry_at": (
+                        completion_entry_at
+                        if completion_entry_price is not None
+                        else None
+                    ),
+                }
+            )
         rows = await market.historical_klines(
             symbol,
             "1m",
@@ -325,6 +364,12 @@ async def evaluate_outcome_from_market(
         if not _complete_minute_window(minute_bars, window_start):
             return outcome.model_copy(
                 update={
+                    "completion_entry_price": completion_entry_price,
+                    "completion_entry_at": (
+                        completion_entry_at
+                        if completion_entry_price is not None
+                        else None
+                    ),
                     "detail": (
                         f"{outcome.detail}；对应完整 1 分钟 K 线不足，暂无法细分"
                     )

@@ -163,7 +163,10 @@ def test_analysis_performance_compares_fixed_notional_and_fixed_risk() -> None:
             plan = {"entry": 100, "stop": 110, "target1": 90, "target2": 80}
         return {
             "result": {"direction": direction, "entry_plan": plan},
-            "outcome": {"status": outcome},
+            "outcome": {
+                "status": outcome,
+                "completion_entry_price": 100,
+            },
         }
 
     performance = calculate_analysis_performance(
@@ -194,6 +197,12 @@ def test_analysis_performance_compares_fixed_notional_and_fixed_risk() -> None:
         "wins": 3,
         "losses": 2,
         "win_rate_percent": pytest.approx(60),
+        "priced_plans": 5,
+        "fixed_notional_total_pnl_usdt": pytest.approx(10),
+        "fixed_notional_average_return_percent": pytest.approx(2),
+        "fixed_risk_total_pnl_usdt": pytest.approx(10),
+        "fixed_risk_total_r": pytest.approx(1),
+        "fixed_risk_average_r": pytest.approx(0.2),
     }
     assert performance["fixed_notional"]["total_pnl_usdt"] == pytest.approx(10)
     assert performance["fixed_notional"]["win_rate_percent"] == pytest.approx(200 / 3)
@@ -608,6 +617,8 @@ class OutcomeMarket:
         self.calls.append((interval, start, end, max_candles))
         if interval == "5m":
             return [_outcome_row(start, 5, "97", "102")]
+        if max_candles == 1:
+            return [_outcome_row(start, 1, "100", "101", price="100.5")]
         rows = [
             _outcome_row(start, 1, "100.5", "102"),
             _outcome_row(start + timedelta(minutes=1), 1, "97", "99.5", price="99"),
@@ -632,9 +643,15 @@ def test_market_outcome_fetches_minutes_only_for_ambiguous_window() -> None:
 
     market, outcome = asyncio.run(scenario())
     assert outcome.status == "stopped"
-    assert [(call[0], call[3]) for call in market.calls] == [("5m", 100_000), ("1m", 5)]
-    assert market.calls[1][1] == datetime(2026, 7, 22, 10, 0, tzinfo=UTC)
-    assert market.calls[1][2] == datetime(2026, 7, 22, 10, 5, tzinfo=UTC)
+    assert outcome.completion_entry_price == 100.5
+    assert outcome.completion_entry_at == datetime(2026, 7, 22, 9, 58, tzinfo=UTC)
+    assert [(call[0], call[3]) for call in market.calls] == [
+        ("1m", 1),
+        ("5m", 100_000),
+        ("1m", 5),
+    ]
+    assert market.calls[2][1] == datetime(2026, 7, 22, 10, 0, tzinfo=UTC)
+    assert market.calls[2][2] == datetime(2026, 7, 22, 10, 5, tzinfo=UTC)
 
 
 def test_market_outcome_does_not_guess_with_incomplete_minute_window() -> None:
@@ -1067,6 +1084,12 @@ def test_market_analysis_api_runs_selected_provider_and_returns_audit(tmp_path: 
             "wins": 1,
             "losses": 0,
             "win_rate_percent": 100.0,
+            "priced_plans": 1,
+            "fixed_notional_total_pnl_usdt": pytest.approx(500 / 101),
+            "fixed_notional_average_return_percent": pytest.approx(500 / 101),
+            "fixed_risk_total_pnl_usdt": pytest.approx(50 / 3),
+            "fixed_risk_total_r": pytest.approx(5 / 3),
+            "fixed_risk_average_r": pytest.approx(5 / 3),
         }
         assert performance.json()["fixed_notional"]["total_pnl_usdt"] == pytest.approx(
             500 / 101

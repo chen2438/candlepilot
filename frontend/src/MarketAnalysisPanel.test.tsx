@@ -175,6 +175,12 @@ const performance: MarketAnalysisPerformance = {
     wins: 3,
     losses: 2,
     win_rate_percent: 60,
+    priced_plans: 5,
+    fixed_notional_total_pnl_usdt: 35,
+    fixed_notional_average_return_percent: 7,
+    fixed_risk_total_pnl_usdt: 45,
+    fixed_risk_total_r: 4.5,
+    fixed_risk_average_r: 0.9,
   },
   fixed_notional: {
     amount_per_trade_usdt: 100,
@@ -422,11 +428,11 @@ describe("MarketAnalysisPanel", () => {
     expect(await screen.findByText("+25.0000 USDT")).toBeTruthy();
     expect(screen.getByText("+30.0000 USDT")).toBeTruthy();
     expect(screen.getAllByText("胜率 66.7%")).toHaveLength(2);
-    expect(screen.getByText("全部方向计划")).toBeTruthy();
-    expect(screen.getByText("60.0%")).toBeTruthy();
-    expect(screen.getByText("5 个已完成 · 3 胜 / 2 负")).toBeTruthy();
-    expect(screen.getByText("已入场 3 · 未入场 2")).toBeTruthy();
-    expect(screen.getByText(/金额和 R 仍只统计已入场且明确结算的计划/)).toBeTruthy();
+    expect(screen.getByText("全部方向计划 · 固定名义")).toBeTruthy();
+    expect(screen.getByText("+35.0000 USDT")).toBeTruthy();
+    expect(screen.getByText("固定止损 +45.0000 USDT")).toBeTruthy();
+    expect(screen.getByText("+4.50R · 胜率 60.0% · 5/5 个已计价 · 未入场 2")).toBeTruthy();
+    expect(screen.getByText(/按分析完成后的首个完整 1 分钟开盘价模拟入场/)).toBeTruthy();
 
     fireEvent.change(screen.getByLabelText("每笔固定名义金额"), { target: { value: "250" } });
     fireEvent.change(screen.getByLabelText("每笔固定止损金额"), { target: { value: "20" } });

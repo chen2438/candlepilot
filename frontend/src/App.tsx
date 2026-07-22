@@ -2582,7 +2582,7 @@ export function MarketAnalysisPanel({
     </div>
     <section className="analysis-performance">
       <header>
-        <div><small>历史盈亏表现</small><strong>仅统计已入场且明确结算的计划</strong></div>
+        <div><small>历史盈亏表现</small><strong>全部计划与已入场计划分口径测算</strong></div>
         <span>{performance ? `${performance.settled_trades} 笔结算 · ${performance.wins} 胜 / ${performance.losses} 负${performance.breakevens ? ` / ${performance.breakevens} 平` : ""}` : "读取中…"}</span>
       </header>
       <form onSubmit={applyPerformanceAssumptions}>
@@ -2592,10 +2592,10 @@ export function MarketAnalysisPanel({
       </form>
       <div className="analysis-performance-cards">
         <article>
-          <small>全部方向计划</small>
-          <strong>{performance?.all_plans.win_rate_percent == null ? "—" : `${performance.all_plans.win_rate_percent.toFixed(1)}%`}</strong>
-          <span>{performance ? `${performance.all_plans.resolved_plans} 个已完成 · ${performance.all_plans.wins} 胜 / ${performance.all_plans.losses} 负` : "读取中…"}</span>
-          <em>{performance ? `已入场 ${performance.all_plans.entered_plans} · 未入场 ${performance.all_plans.unentered_plans}` : "排除观望、进行中和顺序不确定"}</em>
+          <small>全部方向计划 · 固定名义</small>
+          <strong className={(performance?.all_plans.fixed_notional_total_pnl_usdt ?? 0) >= 0 ? "positive" : "negative"}>{performance ? signedUsdt(performance.all_plans.fixed_notional_total_pnl_usdt) : "—"}</strong>
+          <span>{performance ? `固定止损 ${signedUsdt(performance.all_plans.fixed_risk_total_pnl_usdt)}` : "读取中…"}</span>
+          <em>{performance ? `${performance.all_plans.fixed_risk_total_r > 0 ? "+" : ""}${performance.all_plans.fixed_risk_total_r.toFixed(2)}R · 胜率 ${performance.all_plans.win_rate_percent == null ? "—" : `${performance.all_plans.win_rate_percent.toFixed(1)}%`} · ${performance.all_plans.priced_plans}/${performance.all_plans.resolved_plans} 个已计价 · 未入场 ${performance.all_plans.unentered_plans}` : "排除观望、进行中和顺序不确定"}</em>
         </article>
         <article>
           <small>固定名义金额</small>
@@ -2610,7 +2610,7 @@ export function MarketAnalysisPanel({
           <em>累计 {performance ? `${performance.fixed_risk.total_r > 0 ? "+" : ""}${performance.fixed_risk.total_r.toFixed(2)}R` : "—"} · 平均 {performance?.fixed_risk.average_r == null ? "—" : `${performance.fixed_risk.average_r > 0 ? "+" : ""}${performance.fixed_risk.average_r.toFixed(2)}R`}</em>
         </article>
       </div>
-      <footer>全部方向计划包含已入场和未入场的明确结果，排除观望、进行中及顺序不确定；金额和 R 仍只统计已入场且明确结算的计划。T1 后按一半仓位结算，未计手续费、滑点和资金费。</footer>
+      <footer>全部方向计划包含已入场和未入场的明确结果；未触发入场的计划按分析完成后的首个完整 1 分钟开盘价模拟入场，旧结果需重新更新后计价。其余两项仍只统计实际触发入场且明确结算的计划。排除观望、进行中及顺序不确定，未计手续费、滑点和资金费。</footer>
     </section>
     {engineRunning && <div className="analysis-warning">正式引擎运行中；停止后才能发起独立分析。</div>}
     {!provider && <div className="analysis-warning">请先在总览选择 Codex、Claude Code 或 Custom API。</div>}

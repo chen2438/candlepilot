@@ -21,26 +21,41 @@ def _decimal(value: object) -> Decimal:
     return Decimal(str(value))
 
 
-def _trade_multiples(record: Mapping[str, Any]) -> tuple[Decimal, Decimal] | None:
+def _trade_multiples(
+    record: Mapping[str, Any], *, include_unentered: bool = False
+) -> tuple[Decimal, Decimal] | None:
     result = record.get("result")
     outcome = record.get("outcome")
     if not isinstance(result, Mapping) or not isinstance(outcome, Mapping):
         return None
     if result.get("direction") not in {"long", "short"}:
         return None
-    if outcome.get("status") not in PRICED_OUTCOME_STATUSES:
+    status = str(outcome.get("status"))
+    priced_statuses = (
+        PRICED_OUTCOME_STATUSES | UNENTERED_PLAN_STATUSES
+        if include_unentered
+        else PRICED_OUTCOME_STATUSES
+    )
+    if status not in priced_statuses:
         return None
     plan = result.get("entry_plan")
     if not isinstance(plan, Mapping):
         return None
 
-    entry = _decimal(plan["entry"])
+    if status in UNENTERED_PLAN_STATUSES:
+        completion_entry = outcome.get("completion_entry_price")
+        if completion_entry is None:
+            return None
+        entry = _decimal(completion_entry)
+    else:
+        entry = _decimal(plan["entry"])
     stop = _decimal(plan["stop"])
     target1 = _decimal(plan["target1"])
     target2 = _decimal(plan["target2"])
-    status = str(outcome["status"])
-    if status == "stopped":
+    if status in {"stopped", "stopped_before_entry"}:
         weighted_exit = stop
+    elif status == "target1_before_entry":
+        weighted_exit = target1
     elif status == "target2":
         weighted_exit = (target1 + target2) / Decimal(2)
     else:
@@ -64,6 +79,8 @@ def calculate_analysis_performance(
     risk = _decimal(fixed_risk_usdt)
     returns: list[Decimal] = []
     r_multiples: list[Decimal] = []
+    all_plan_returns: list[Decimal] = []
+    all_plan_r_multiples: list[Decimal] = []
     directional_analyses = 0
     ambiguous_results = 0
     open_trades = 0
@@ -97,6 +114,11 @@ def calculate_analysis_performance(
             return_fraction, r_multiple = multiples
             returns.append(return_fraction)
             r_multiples.append(r_multiple)
+        all_plan_multiples = _trade_multiples(record, include_unentered=True)
+        if all_plan_multiples is not None:
+            return_fraction, r_multiple = all_plan_multiples
+            all_plan_returns.append(return_fraction)
+            all_plan_r_multiples.append(r_multiple)
 
     settled_trades = len(returns)
     wins = sum(value > 0 for value in returns)
@@ -109,6 +131,8 @@ def calculate_analysis_performance(
     )
     total_return = sum(returns, Decimal(0))
     total_r = sum(r_multiples, Decimal(0))
+    all_plan_total_return = sum(all_plan_returns, Decimal(0))
+    all_plan_total_r = sum(all_plan_r_multiples, Decimal(0))
     resolved_plans = resolved_plan_wins + resolved_plan_losses
     resolved_plan_win_rate = (
         Decimal(resolved_plan_wins) / Decimal(resolved_plans) * Decimal(100)
@@ -134,6 +158,20 @@ def calculate_analysis_performance(
             "wins": resolved_plan_wins,
             "losses": resolved_plan_losses,
             "win_rate_percent": number(resolved_plan_win_rate),
+            "priced_plans": len(all_plan_returns),
+            "fixed_notional_total_pnl_usdt": number(all_plan_total_return * notional),
+            "fixed_notional_average_return_percent": number(
+                all_plan_total_return / Decimal(len(all_plan_returns)) * Decimal(100)
+                if all_plan_returns
+                else None
+            ),
+            "fixed_risk_total_pnl_usdt": number(all_plan_total_r * risk),
+            "fixed_risk_total_r": number(all_plan_total_r),
+            "fixed_risk_average_r": number(
+                all_plan_total_r / Decimal(len(all_plan_r_multiples))
+                if all_plan_r_multiples
+                else None
+            ),
         },
         "fixed_notional": {
             "amount_per_trade_usdt": number(notional),

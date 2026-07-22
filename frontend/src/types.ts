@@ -148,6 +148,8 @@ export interface MarketAnalysisRecord {
   outcome: null | {
     status: "neutral_observation" | "waiting_entry" | "stopped_before_entry" | "target1_before_entry" | "active" | "target1_partial" | "target2" | "stopped" | "breakeven_after_target1" | "ambiguous";
     bars_observed: number;
+    completion_entry_price?: number | null;
+    completion_entry_at?: string | null;
     entry_at: string | null;
     target1_at: string | null;
     resolved_at: string | null;
@@ -211,6 +213,12 @@ export interface MarketAnalysisPerformance {
     wins: number;
     losses: number;
     win_rate_percent: number | null;
+    priced_plans: number;
+    fixed_notional_total_pnl_usdt: number;
+    fixed_notional_average_return_percent: number | null;
+    fixed_risk_total_pnl_usdt: number;
+    fixed_risk_total_r: number;
+    fixed_risk_average_r: number | null;
   };
   fixed_notional: {
     amount_per_trade_usdt: number;
