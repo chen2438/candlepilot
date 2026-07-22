@@ -768,10 +768,12 @@ class TradingEngine:
             return "waiting"
 
         await self.audit.update_risk(item["inference_id"], decision, completed=True)
-        if not decision.accepted or evaluation.order is None:
-            return "cancelled"
-        if decision.shadow_only:
-            return "shadowed"
+        if not self._is_order_execution_eligible(evaluation):
+            return (
+                "shadowed"
+                if self._has_accepted_order(evaluation) and decision.shadow_only
+                else "cancelled"
+            )
         if reason := self._order_submission_block_reason():
             cancelled = decision.model_copy(
                 update={
@@ -910,6 +912,35 @@ class TradingEngine:
         if not self.running:
             return "order submission blocked because the engine is stopped"
         return None
+
+    @staticmethod
+    def _has_accepted_order(evaluation: RiskEvaluation) -> bool:
+        return evaluation.order is not None and evaluation.decision.accepted
+
+    @classmethod
+    def _is_order_execution_eligible(cls, evaluation: RiskEvaluation) -> bool:
+        """Apply the final, shared gate used by every live execution path."""
+
+        return bool(
+            cls._has_accepted_order(evaluation)
+            and not evaluation.decision.pending_entry
+            and not evaluation.decision.shadow_only
+        )
+
+    def _with_live_shadow_boundary(
+        self,
+        result: ProviderResult,
+        evaluation: RiskEvaluation,
+    ) -> RiskEvaluation:
+        if not (
+            self.analysis_decision_mode == "shadow"
+            or self.providers.get(result.provider).capabilities.live_shadow_only
+        ):
+            return evaluation
+        return RiskEvaluation(
+            decision=evaluation.decision.model_copy(update={"shadow_only": True}),
+            order=evaluation.order,
+        )
 
     @staticmethod
     def _prepare_pending_evaluation(
@@ -1188,35 +1219,19 @@ class TradingEngine:
         evaluation = await self._with_take_profit_reentry_shadow(
             result.intent, evaluation
         )
-        if (
-            evaluation.order is not None
-            and evaluation.decision.accepted
-            and (reason := self._order_submission_block_reason()) is not None
-        ):
+        if self._has_accepted_order(evaluation) and (
+            reason := self._order_submission_block_reason()
+        ) is not None:
             evaluation = RiskEvaluation(
                 decision=RiskDecision(accepted=False, reason=reason),
                 order=None,
             )
-        if (
-            self.analysis_decision_mode == "shadow"
-            or self.providers.get(result.provider).capabilities.live_shadow_only
-        ):
-            evaluation = RiskEvaluation(
-                decision=evaluation.decision.model_copy(
-                    update={"shadow_only": True}
-                ),
-                order=evaluation.order,
-            )
+        evaluation = self._with_live_shadow_boundary(result, evaluation)
         await self.audit.record_risk(
             analysis_snapshot.symbol, evaluation.decision, inference_id=inference_id
         )
         execution = None
-        if (
-            evaluation.order is not None
-            and evaluation.decision.accepted
-            and not evaluation.decision.pending_entry
-            and not evaluation.decision.shadow_only
-        ):
+        if self._is_order_execution_eligible(evaluation):
             execution = await self._execute_order(
                 analysis_snapshot.symbol,
                 inference_id,
@@ -1485,35 +1500,19 @@ class TradingEngine:
         evaluation = await self._with_take_profit_reentry_shadow(
             result.intent, evaluation
         )
-        if (
-            evaluation.order is not None
-            and evaluation.decision.accepted
-            and (reason := self._order_submission_block_reason()) is not None
-        ):
+        if self._has_accepted_order(evaluation) and (
+            reason := self._order_submission_block_reason()
+        ) is not None:
             evaluation = RiskEvaluation(
                 decision=RiskDecision(accepted=False, reason=reason),
                 order=None,
             )
-        if (
-            self.analysis_decision_mode == "shadow"
-            or self.providers.get(result.provider).capabilities.live_shadow_only
-        ):
-            evaluation = RiskEvaluation(
-                decision=evaluation.decision.model_copy(
-                    update={"shadow_only": True}
-                ),
-                order=evaluation.order,
-            )
+        evaluation = self._with_live_shadow_boundary(result, evaluation)
         await self.audit.record_risk(
             analysis_snapshot.symbol, evaluation.decision, inference_id=inference_id
         )
         execution = None
-        if (
-            evaluation.order is not None
-            and evaluation.decision.accepted
-            and not evaluation.decision.pending_entry
-            and not evaluation.decision.shadow_only
-        ):
+        if self._is_order_execution_eligible(evaluation):
             execution = await self._execute_order(
                 analysis_snapshot.symbol,
                 inference_id,

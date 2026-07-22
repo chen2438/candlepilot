@@ -288,8 +288,9 @@ def test_analysis_assisted_shadow_runs_hard_risk_without_submitting_order(
     assert orders == []
 
 
+@pytest.mark.parametrize("batched", [False, True], ids=["single", "batch"])
 def test_experimental_provider_capability_forces_live_shadow_only(
-    tmp_path: Path,
+    tmp_path: Path, batched: bool
 ) -> None:
     class ExperimentalProvider(FakeProvider):
         name = "local-experiment-shadow"
@@ -305,7 +306,9 @@ def test_experimental_provider_capability_forces_live_shadow_only(
             )
 
     async def scenario():
-        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'provider-shadow.db'}")
+        database = Database(
+            f"sqlite+aiosqlite:///{tmp_path / f'provider-shadow-{batched}.db'}"
+        )
         await database.initialize()
         broker = FakeTestnetBroker()
         provider = ExperimentalProvider()
@@ -317,21 +320,27 @@ def test_experimental_provider_capability_forces_live_shadow_only(
         )
         engine.select_provider_chain([provider.name])
         await engine.start()
-        outcome = await engine.evaluate(
-            MarketSnapshot(
-                symbol="BTCUSDT",
-                cadence="5m",
-                timestamp=datetime.now(UTC),
-                mark_price="100",
-                bid="99.9",
-                ask="100.1",
-                quote_volume_24h="1000000",
-            ),
-            PortfolioState(equity="10000", available_balance="8000"),
-            SymbolRules(
-                Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")
-            ),
+        snapshot = MarketSnapshot(
+            symbol="BTCUSDT",
+            cadence="5m",
+            timestamp=datetime.now(UTC),
+            mark_price="100",
+            bid="99.9",
+            ask="100.1",
+            quote_volume_24h="1000000",
         )
+        portfolio = PortfolioState(equity="10000", available_balance="8000")
+        rules = SymbolRules(
+            Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")
+        )
+        if batched:
+            outcome = (
+                await engine.evaluate_batch(
+                    [snapshot], portfolio, {snapshot.symbol: rules}
+                )
+            )[0]
+        else:
+            outcome = await engine.evaluate(snapshot, portfolio, rules)
         await engine.stop()
         await database.close()
         return outcome, broker.orders
