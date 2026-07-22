@@ -69,7 +69,11 @@
   仍会独立复核。Prompt 还要求 `ADD` 沿用现有仓位杠杆，确定性风控会在定量前拒绝任何变杠杆加仓；
   Prompt 同时要求模型把价格、OI 变化、账户/持仓多空比和 taker 买卖比放回多周期价格结构中
   综合解释，不得使用跨标的统一比率阈值、推断交易者身份、把无符号 OI 当作方向仓位或让单一字段
-  直接决定交易；当前 Prompt 版本为 `trade-intent-v18`。
+  直接决定交易。Prompt 还要求每个开仓/加仓必须按三类交易情形返回非空 `setup_type`：趋势入场按
+  确认突破或一般延续细分为 `TREND_BREAKOUT` / `TREND_CONTINUATION`，回调按突破位回踩或一般趋势
+  回撤细分为 `BREAKOUT_RETEST` / `TREND_PULLBACK`，反转使用 `REVERSAL`；其他动作返回空值。
+  该细分随推理审计持久化，可在统计时聚合回趋势入场、回调、反转三大类。当前 Prompt 版本为
+  `trade-intent-v19`。
 - **隔离与安全**：LLM 子进程运行在独立空临时目录，环境变量白名单
   （含 `USER`/`LOGNAME` 以支持 macOS 钥匙串读取 Claude 登录态），移除所有币安/API Key
   变量；禁用工具、MCP、网络；单 Provider 并发 1、统一取消。外部 Provider 的代码默认超时为
@@ -97,6 +101,8 @@
   1000 字符；若模型只违反该长度限制，Provider 会确定性截断到 1000 字符并在 usage 中写入
   `rationale_truncated=true`，同时完整原始输出仍留在本地审计。方向、杠杆、风险、价格与保护单
   等交易关键字段不做自动修正，任何不合规仍安全降级。
+  Provider 解析层额外拒绝 `setup_type` 为空的 `OPEN_LONG`、`OPEN_SHORT` 或 `ADD`，避免产生无法按
+  交易情形分组的新增开仓样本；字段缺失不会由程序猜测补齐。
 - **行情分析结构化调用**：Codex、Claude Code 和 Custom API 还实现供独立研究与分析辅助 SHADOW 使用的
   `generate_structured_output`。它与正式 `TradeIntent` 调用共享同一个 Provider 并发锁、取消和绝对
   超时；Codex 继续使用隔离临时目录、只读 sandbox 与 `--output-schema`，Claude 继续禁用

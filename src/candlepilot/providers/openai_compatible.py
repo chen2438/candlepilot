@@ -433,7 +433,7 @@ class OpenAICompatibleProvider(DecisionProvider):
             else:
                 result_text, response_model, usage = parse_chat_completion(envelope)
             intent, rationale_truncated = _parse_intent(result_text)
-        except (ProviderError, json.JSONDecodeError, TypeError, ValidationError) as exc:
+        except (ProviderError, json.JSONDecodeError, TypeError, ValueError, ValidationError) as exc:
             raise invocation_error(
                 "OpenAI-compatible endpoint returned an invalid TradeIntent",
                 raw_output=result_text,

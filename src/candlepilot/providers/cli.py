@@ -22,6 +22,7 @@ from candlepilot.domain.models import (
     MarketSnapshot,
     PortfolioState,
     ProviderHealth,
+    TradeAction,
     TradeIntent,
 )
 from candlepilot.market.features import DERIVATIVES_POSITIONING_FEATURES
@@ -404,12 +405,18 @@ def _decision_prompt(
         "volume/order flow does not materially contradict, and price is not chasing by "
         "ema20_distance_atr; alignment from 1h/4h strengthens the setup but does not replace "
         "the short-term trigger; a daily level immediately ahead argues "
-        "for a nearer target, not for skipping the trade; (2) pullback: the higher-timeframe "
+        "for a nearer target, not for skipping the trade. Set setup_type=TREND_BREAKOUT only "
+        "when the confirmed two-bar range hold is the entry setup; otherwise use "
+        "TREND_CONTINUATION; (2) pullback: the higher-timeframe "
         "1h/4h trend remains intact and price stabilizes at or reclaims a nearby level with renewed "
-        "participation, counting a daily level held as stronger evidence than an intraday one; "
+        "participation, counting a daily level held as stronger evidence than an intraday one. "
+        "Set setup_type=BREAKOUT_RETEST when price is retesting a confirmed breakout level; "
+        "otherwise use TREND_PULLBACK; "
         "(3) reversal: price rejects or reclaims a level plus momentum or flow confirmation, "
         "and a rejection at a daily level is the only reversal worth a full-size entry. "
-        "Overbought or oversold readings alone are never reversal confirmation. "
+        "Set setup_type=REVERSAL for this case. Overbought or oversold readings alone are never "
+        "reversal confirmation. setup_type must be exactly one of these five values for every "
+        "OPEN_LONG, OPEN_SHORT, or ADD decision and must be null for other actions. "
         "portfolio.positions carries each open position's entry_price, unrealized_pnl and the "
         "protective levels currently live on the exchange; its stop_loss is that position's "
         "invalidation. portfolio.stop_loss_cooldown_until maps symbols with a net-loss "
@@ -590,7 +597,14 @@ def _parse_intent(value: str | dict[str, Any]) -> tuple[TradeIntent, bool]:
             data = dict(data)
             data["rationale"] = rationale[:RATIONALE_MAX_LENGTH]
             rationale_truncated = True
-    return TradeIntent.model_validate(data), rationale_truncated
+    intent = TradeIntent.model_validate(data)
+    if (
+        intent.action
+        in {TradeAction.OPEN_LONG, TradeAction.OPEN_SHORT, TradeAction.ADD}
+        and intent.setup_type is None
+    ):
+        raise ValueError("opening and add intents require setup_type")
+    return intent, rationale_truncated
 
 
 def _parse_intents(
@@ -938,7 +952,7 @@ class CodexAuthProvider(DecisionProvider):
             )
         try:
             intent, rationale_truncated = _parse_intent(result_text)
-        except (json.JSONDecodeError, ValidationError) as exc:
+        except (ValueError, json.JSONDecodeError, ValidationError) as exc:
             raise ProviderInvocationError(
                 f"Codex returned an invalid TradeIntent: {exc}",
                 model=model,

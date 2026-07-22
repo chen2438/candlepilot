@@ -3736,6 +3736,18 @@ const COUNTERFACTUAL_LABELS: Record<
   ambiguous: "触发顺序不确定",
 };
 
+const SETUP_TYPE_LABELS: Record<string, string> = {
+  TREND_BREAKOUT: "趋势入场 · 突破",
+  TREND_CONTINUATION: "趋势入场 · 延续",
+  BREAKOUT_RETEST: "回调 · 突破回踩",
+  TREND_PULLBACK: "回调 · 趋势回撤",
+  REVERSAL: "反转",
+};
+
+export function setupTypeLabel(value: string | null | undefined): string {
+  return value ? SETUP_TYPE_LABELS[value] ?? value : "—";
+}
+
 function decisionOutcomeLabel(decision: DecisionEvent): string {
   if (decision.risk?.decision.pending_entry) return "等待触发";
   if (decision.risk?.decision.shadow_only && decision.risk.accepted) return "影子放行";
@@ -4145,7 +4157,7 @@ export function DecisionPanel({
                   <span data-tooltip="硬风控按下单前刷新行情得到的实际入场基准，以及对齐交易所精度后的止损和止盈计算；这是最低 1.15:1 边界真正校验的数值。">下单前盈亏比<strong>{preTradeRewardRiskLabel(decision)}</strong></span>
                   <span data-tooltip="后端硬风控根据止损风险、保证金上限和交易所数量规则计算的最终允许下单数量。">最终下单数量<strong>{decision.risk?.decision.max_quantity ?? "—"}</strong></span>
                   {decision.intent.decision_framework === "structure-v1" ? <>
-                    <span>结构形态<strong>{decision.intent.setup_type ?? "—"}</strong></span>
+                    <span>交易情形<strong>{setupTypeLabel(decision.intent.setup_type)}</strong></span>
                     <span>结构锚点<strong>{decision.intent.anchor_timeframe ?? "—"} · {intentPrice(decision.intent.anchor_price ?? null)}</strong></span>
                     <span>入场触发<strong>{decision.intent.trigger_type ?? "—"} · {intentPrice(decision.intent.trigger_price ?? null)}</strong></span>
                     <span>失效依据<strong>{decision.intent.invalidation_type ?? "—"} · {intentPrice(decision.intent.invalidation_level ?? null)}</strong></span>

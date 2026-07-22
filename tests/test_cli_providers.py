@@ -298,6 +298,8 @@ def test_codex_provider_parses_schema_output(tmp_path: Path) -> None:
         "stop_loss": "98",
         "take_profit": "104",
         "ttl_seconds": 60,
+        "decision_framework": "structure-v1",
+        "setup_type": "TREND_CONTINUATION",
         "rationale": "trend confirmation",
     }
     jsonl = "\n".join(
@@ -337,7 +339,7 @@ def test_codex_provider_parses_schema_output(tmp_path: Path) -> None:
     assert result.usage["input_tokens"] == 1200
     assert result.usage["cached_input_tokens"] == 800
     assert result.usage["total_tokens"] == 1250
-    assert result.prompt_version == "trade-intent-v18"
+    assert result.prompt_version == "trade-intent-v19"
     assert result.data_version is not None
     assert result.data_version.startswith("market-snapshot-v5:sha256:")
     assert result.input_payload is not None
@@ -348,10 +350,30 @@ def test_codex_provider_parses_schema_output(tmp_path: Path) -> None:
     assert "aggregate open stop risk to 4% of equity" in result.prompt
     assert "Do not apply universal ratio thresholds" in result.prompt
     assert "use exactly the existing position's leverage" in result.prompt
+    assert "setup_type=TREND_BREAKOUT" in result.prompt
+    assert "setup_type=BREAKOUT_RETEST" in result.prompt
+    assert "setup_type=REVERSAL" in result.prompt
     assert "breakout_hold_above_20" in result.prompt
     assert "stop_loss_cooldown_until" in result.prompt
     assert "reward/risk" not in result.prompt
     assert "1.3:1" not in result.prompt
+
+
+def test_external_opening_intent_requires_setup_type() -> None:
+    intent = {
+        "symbol": "BTCUSDT",
+        "cadence": "5m",
+        "action": "OPEN_LONG",
+        "confidence": 0.75,
+        "leverage": 3,
+        "risk_fraction": "0.01",
+        "stop_loss": "98",
+        "take_profit": "104",
+        "rationale": "trend confirmation",
+    }
+
+    with pytest.raises(ValueError, match="require setup_type"):
+        cli_module._parse_intent(intent)
 
 
 def test_claude_provider_unwraps_result(tmp_path: Path) -> None:
@@ -427,7 +449,7 @@ def test_claude_validation_failure_preserves_complete_audit_context(
     assert error.duration.total_seconds() > 0
     assert error.raw_output == envelope + "\n"
     assert error.usage["input_tokens"] == 25
-    assert error.prompt_version == "trade-intent-v18"
+    assert error.prompt_version == "trade-intent-v19"
     assert error.data_version.startswith("market-snapshot-v5:sha256:")
     assert error.input_payload["market"]["symbol"] == "BTCUSDT"
     assert '"portfolio"' in error.prompt
