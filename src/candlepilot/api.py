@@ -113,7 +113,7 @@ from candlepilot.providers.cli import sanitized_subprocess_env
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.runtime_lock import ServiceInstanceLock
 from candlepilot.providers.retry import DECISION_PROVIDER_MAX_ATTEMPTS
-from candlepilot.provenance import MICROSTRUCTURE_SCHEMA_VERSION
+from candlepilot.provenance import APPLICATION_GIT_COMMIT, MICROSTRUCTURE_SCHEMA_VERSION
 from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
 from candlepilot.settings_file import (
     CUSTOM_PROVIDERS_ENV,
@@ -622,6 +622,7 @@ def create_app(
     pricing_loader: Callable[[Path], Awaitable[ModelPricingCatalog | None]]
     | None = None,
     codex_auth_manager: CodexAuthManager | None = None,
+    application_commit: str | None = APPLICATION_GIT_COMMIT,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     provider_pricing_ids = pricing_provider_ids(settings)
@@ -2174,6 +2175,8 @@ def create_app(
             "candidates_per_cycle": scheduler.candidates_per_cycle,
             "trailing_stop_mode": scheduler.trailing_stops.mode,
         }
+        if application_commit is not None:
+            run_config["software_version"] = application_commit
         if single_cycle:
             run_config["single_cycle"] = True
         try:

@@ -3921,7 +3921,10 @@ function DecisionRunHeader({
   ].filter(Boolean).join(" · ");
   return <summary className={`decision-run-header ${run.status}`}>
     <span className="decision-run-primary">
-      <strong>正式运行 #{run.id} · {LIVE_RUN_STATUS[run.status]}</strong>
+      <strong>
+        正式运行 #{run.id} · {LIVE_RUN_STATUS[run.status]}
+        <em className="decision-run-version">版本 {run.config.software_version ?? "未记录"}</em>
+      </strong>
       <small>{formatLocalDateTimeSeconds(new Date(run.started_at))}{run.ended_at ? ` → ${formatLocalDateTimeSeconds(new Date(run.ended_at))}` : " → 现在"}</small>
     </span>
     <span className="decision-run-summary">

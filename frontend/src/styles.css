@@ -83,6 +83,7 @@ footer{width:min(1460px,calc(100% - 64px));margin:30px auto;display:flex;justify
 @media(max-width:620px){.analysis-detail-heading{align-items:flex-start;gap:8px;flex-direction:column}.analysis-usage-grid{grid-template-columns:1fr 1fr}}
 @media(max-width:620px){.execution-result-heading{align-items:flex-start;flex-direction:column}.execution-result-grid{grid-template-columns:1fr}}
 @media(max-width:620px){.provider-card-config,.provider-card-config.has-auth-source{grid-template-columns:1fr}.provider-card-actions{height:auto}.provider-card-main{grid-template-columns:38px 1fr}.provider-card-main .status-pill{grid-column:2;justify-self:start}.codex-cli-auth-head{align-items:flex-start}.codex-device-auth{grid-template-columns:1fr}.codex-device-auth a,.codex-device-auth code{justify-self:start}}
+.decision-run-version{display:inline-block;margin-left:8px;padding:2px 5px;border:1px solid #afc591;color:#587927;font:normal 8px "IBM Plex Mono"}
 @media(max-width:1000px){.run-usage-metrics{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:620px){.run-usage-heading{align-items:flex-start;flex-direction:column}.run-usage-metrics{grid-template-columns:repeat(2,1fr)}}
 

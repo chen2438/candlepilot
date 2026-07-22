@@ -349,6 +349,7 @@ export interface DecisionEvent {
       provider_chain?: string[];
       cadences?: string[];
       candidates_per_cycle?: number;
+      software_version?: string;
       [key: string]: unknown;
     };
     stop_reason: string | null;

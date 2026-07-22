@@ -1,8 +1,13 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 
-from candlepilot.provenance import BACKTEST_DATA_SCHEMA_VERSION, content_fingerprint
+from candlepilot.provenance import (
+    BACKTEST_DATA_SCHEMA_VERSION,
+    content_fingerprint,
+    repository_commit,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,3 +50,13 @@ def test_content_fingerprint_changes_with_market_data() -> None:
     assert content_fingerprint(
         _candles("101"), schema_version=BACKTEST_DATA_SCHEMA_VERSION
     ) != content_fingerprint(_candles("101.1"), schema_version=BACKTEST_DATA_SCHEMA_VERSION)
+
+
+def test_repository_commit_accepts_only_a_short_lowercase_git_hash(tmp_path: Path) -> None:
+    executable = tmp_path / "git"
+    executable.write_text("#!/bin/sh\necho cd69192\n", encoding="utf-8")
+    executable.chmod(0o755)
+    assert repository_commit(tmp_path, executable=str(executable)) == "cd69192"
+
+    executable.write_text("#!/bin/sh\necho NOT-A-COMMIT\n", encoding="utf-8")
+    assert repository_commit(tmp_path, executable=str(executable)) is None

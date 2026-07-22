@@ -119,6 +119,20 @@ describe("DecisionPanel", () => {
     );
   });
 
+  it("does not backfill an old run with the current software version", () => {
+    render(
+      <DecisionPanel
+        decisions={[decision]}
+        liveRunPerformance={[]}
+        filter="all"
+        onFilter={vi.fn()}
+        onLoadOlder={vi.fn(async () => undefined)}
+        exhausted
+      />,
+    );
+    expect(screen.getByText("版本 未记录")).toBeTruthy();
+  });
+
   it("identifies shared batch inference separately from per-decision completion", () => {
     render(<DecisionTiming decision={decision} />);
     expect(screen.getByText("批次耗时 50.98s")).toBeTruthy();
@@ -578,7 +592,11 @@ describe("DecisionPanel", () => {
       live_run: {
         id: 2,
         status: "running",
-        config: { cadences: ["15m"], provider_chain: ["claude-code-auth"] },
+        config: {
+          cadences: ["15m"],
+          provider_chain: ["claude-code-auth"],
+          software_version: "cd69192",
+        },
         stop_reason: null,
         started_at: "2026-07-19T16:53:22Z",
         ended_at: null,
@@ -593,7 +611,11 @@ describe("DecisionPanel", () => {
       live_run: {
         id: 1,
         status: "stopped",
-        config: { cadences: ["15m"], provider_chain: ["openai-compatible:openrouter"] },
+        config: {
+          cadences: ["15m"],
+          provider_chain: ["openai-compatible:openrouter"],
+          software_version: "c74dbb0",
+        },
         stop_reason: "stopped by user",
         started_at: "2026-07-19T15:08:39Z",
         ended_at: "2026-07-19T16:24:38Z",
@@ -636,6 +658,8 @@ describe("DecisionPanel", () => {
 
     expect(runningGroup?.open).toBe(true);
     expect(stoppedGroup?.open).toBe(false);
+    expect(screen.getByText("版本 cd69192")).toBeTruthy();
+    expect(screen.getByText("版本 c74dbb0")).toBeTruthy();
     expect(screen.getAllByText(/1 条决策/)).toHaveLength(2);
     expect(screen.getByText("+12.10 USDT")).toBeTruthy();
     expect(screen.getAllByText("交易净盈亏")).toHaveLength(2);

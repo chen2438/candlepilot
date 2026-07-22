@@ -108,7 +108,9 @@ Codex CLI 登录接口异步启动固定的 `codex login --device-auth`，sessio
 详情接口返回该次推理的结构化输入、实际 Prompt、原始输出、token usage 和等效成本。
 `decision-events` 以模型推理为主记录，关联硬风控和执行尝试并给出 `approved` / `executed` /
 `execution_failed` / `rejected` / `hold` / `analysis_only` 展示状态；执行对象包含状态、失败阶段、
-交易所错误、入场/回补报告与可用时的损失估算。`signals` 保留为原始推理查询，不推断订单是否成交。
+交易所错误、入场/回补报告与可用时的损失估算。归属正式运行时，`live_run.config.software_version`
+返回运行创建时持久化的 7 位 Git 提交号；旧运行或非 Git 安装可省略，调用方不得以当前版本代填。
+`signals` 保留为原始推理查询，不推断订单是否成交。
 
 **账户与风险**：`GET /api/account/portfolio`、`GET /api/account/positions`、
 `POST /api/account/positions/close`、

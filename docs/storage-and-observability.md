@@ -12,6 +12,10 @@
   `partial_take_profit_events`（1R 部分止盈、剩余保本与实仓结束影子事件）、
   `runtime_state`、`schema_migrations`。
 - 溯源：SHA-256 数据版本、显式 Prompt 版本、模型标识、CLI Provider 版本。
+- 每次正式运行创建时把当前仓库 `HEAD` 的 7 位 Git 提交号写入 `live_runs.config_json` 的
+  `software_version`，与该次 Provider 路由、周期和运行边界一起永久保留；软件更新不会用新版本
+  回填历史运行。无法确认 Git 仓库时该字段省略，前端显示“版本未记录”。这是现有 JSON 配置
+  快照的新增字段，不改变表结构，schema 仍为 v16。
 - 实时风控记录可选保存止盈后重入 shadow 评估：最近止盈时间、已过秒数及会命中的 15/30/60 分钟
   候选窗口；它是审计证据，不是拒单条件。
 - 正式运行表现把交易所 `rp` 作为价格已实现毛利，按持仓 lot 归属入场与退出的 USDT 手续费，并与

@@ -460,7 +460,12 @@ def test_run_once_executes_one_trading_batch_then_stops(tmp_path: Path) -> None:
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
     )
-    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    app = create_app(
+        database=database,
+        market=market,
+        engine=engine,
+        application_commit="cd69192",
+    )  # type: ignore[arg-type]
 
     with TestClient(app) as client:
         client.post("/api/providers/select", json={"providers": ["api-fixture"]})
@@ -474,6 +479,7 @@ def test_run_once_executes_one_trading_batch_then_stops(tmp_path: Path) -> None:
         assert len(decisions) == 1
         assert decisions[0]["outcome"] == "executed"
         assert decisions[0]["live_run"]["config"]["single_cycle"] is True
+        assert decisions[0]["live_run"]["config"]["software_version"] == "cd69192"
         assert decisions[0]["live_run"]["config"]["daily_loss_fraction"] == "0.05"
         assert decisions[0]["live_run"]["stop_reason"] == "single analysis completed"
         assert client.post("/api/engine/start").status_code == 409

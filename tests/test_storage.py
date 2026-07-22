@@ -203,7 +203,11 @@ def test_live_runs_group_inferences_and_record_terminal_reason(tmp_path: Path) -
         await database.initialize()
         repository = AuditRepository(database.sessions)
         run_id = await repository.create_live_run(
-            {"provider_chain": ["codex-auth"], "cadences": ["15m"]}
+            {
+                "provider_chain": ["codex-auth"],
+                "cadences": ["15m"],
+                "software_version": "cd69192",
+            }
         )
         intent = TradeIntent.hold("BTCUSDT", "15m", "grouped")
         inference_id = await repository.record_inference(
@@ -250,6 +254,7 @@ def test_live_runs_group_inferences_and_record_terminal_reason(tmp_path: Path) -
     assert events[0]["live_run"]["status"] == "auto_stopped"
     assert events[0]["live_run"]["stop_reason"] == "run duration limit reached (60s)"
     assert events[0]["live_run"]["config"]["cadences"] == ["15m"]
+    assert events[0]["live_run"]["config"]["software_version"] == "cd69192"
     assert performance[0]["total_pnl"] == "0"
     assert performance[0]["open_position_count"] == 0
     assert performance[0]["win_rate"] is None
