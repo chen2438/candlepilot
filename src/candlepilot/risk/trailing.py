@@ -41,6 +41,7 @@ SHADOW_PROFILES = (
 class TrailingProfileState:
     active: bool = False
     last_candidate: Decimal | None = None
+    simulated_triggered: bool = False
 
 
 @dataclass(slots=True)
@@ -103,9 +104,20 @@ class TrailingStopManager:
                 for state in self._states.values()
             ),
             "active_strategies": sum(
-                state.profiles.get(profile.profile_id, TrailingProfileState()).active
+                progress.active and not progress.simulated_triggered
                 for state in self._states.values()
                 for profile in profiles
+                if (progress := state.profiles.get(
+                    profile.profile_id, TrailingProfileState()
+                ))
+            ),
+            "simulated_fills": sum(
+                progress.simulated_triggered
+                for state in self._states.values()
+                for profile in profiles
+                if (progress := state.profiles.get(
+                    profile.profile_id, TrailingProfileState()
+                ))
             ),
             "last_event": self.last_event,
         }
@@ -217,6 +229,25 @@ class TrailingStopManager:
         profile: TrailingStopProfile,
     ) -> bool:
         progress = state.profiles[profile.profile_id]
+        if progress.simulated_triggered:
+            return False
+        if (
+            self.mode == "shadow"
+            and progress.last_candidate is not None
+            and self._trigger_crossed(
+                position.side, position.mark_price, progress.last_candidate
+            )
+        ):
+            progress.simulated_triggered = True
+            await self._record(
+                position,
+                "simulated_filled",
+                profile=profile,
+                candidate=progress.last_candidate,
+                simulated_fill=position.mark_price,
+                detail="first observed mark crossed the shadow trailing stop",
+            )
+            return True
         excursion = (
             state.best_mark - state.entry_price
             if position.side == "LONG"
@@ -303,6 +334,7 @@ class TrailingStopManager:
         profile: TrailingStopProfile | None = None,
         candidate: Decimal | None = None,
         previous_stop: Decimal | None = None,
+        simulated_fill: Decimal | None = None,
         detail: str = "",
     ) -> None:
         state = self._states.get(position.symbol)
@@ -317,6 +349,9 @@ class TrailingStopManager:
             if (previous_stop or position.stop_loss) is not None
             else None,
             "candidate_stop": str(candidate) if candidate is not None else None,
+            "simulated_fill_price": str(simulated_fill)
+            if simulated_fill is not None
+            else None,
             "profile_id": profile.profile_id if profile is not None else None,
             "activation_r": str(profile.activation_r) if profile is not None else None,
             "distance_r": str(profile.distance_r) if profile is not None else None,
@@ -357,6 +392,9 @@ class TrailingStopManager:
                             last_candidate=Decimal(progress["last_candidate"])
                             if progress.get("last_candidate") is not None
                             else None,
+                            simulated_triggered=bool(
+                                progress.get("simulated_triggered", False)
+                            ),
                         )
                         for profile_id, progress in raw_profiles.items()
                     },
@@ -365,6 +403,7 @@ class TrailingStopManager:
                 for state in self._states.values():
                     for progress in state.profiles.values():
                         progress.last_candidate = None
+                        progress.simulated_triggered = False
         self._loaded = True
 
     async def _save(self) -> None:
@@ -384,6 +423,7 @@ class TrailingStopManager:
                             "last_candidate": str(progress.last_candidate)
                             if progress.last_candidate is not None
                             else None,
+                            "simulated_triggered": progress.simulated_triggered,
                         }
                         for profile_id, progress in state.profiles.items()
                     },
@@ -398,6 +438,10 @@ class TrailingStopManager:
     @staticmethod
     def _is_loss_side(side: str, entry: Decimal, stop: Decimal) -> bool:
         return stop < entry if side == "LONG" else stop > entry
+
+    @staticmethod
+    def _trigger_crossed(side: str, mark: Decimal, trigger: Decimal) -> bool:
+        return mark <= trigger if side == "LONG" else mark >= trigger
 
     @staticmethod
     def _to_tick(value: Decimal, tick: Decimal, side: str) -> Decimal:

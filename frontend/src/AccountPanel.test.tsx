@@ -165,13 +165,14 @@ describe("TrailingStopPanel", () => {
         managed_positions: 1,
         active_positions: 1,
         active_strategies: 1,
+        simulated_fills: 1,
         last_event: null,
       }}
       events={[{
         id: 7,
         symbol: "BTCUSDT",
         mode: "shadow",
-        status: "shadow",
+        status: "simulated_filled",
         event: {
           side: "LONG",
           quantity: "0.01",
@@ -181,6 +182,7 @@ describe("TrailingStopPanel", () => {
           best_mark: "65500",
           previous_stop: "64000",
           candidate_stop: "65000",
+          simulated_fill_price: "64990",
           profile_id: "0.5R / 0.5R",
           activation_r: "0.5",
           distance_r: "0.5",
@@ -195,7 +197,8 @@ describe("TrailingStopPanel", () => {
     expect(screen.getAllByText("0.5R / 0.5R").length).toBeGreaterThan(1);
     expect(screen.getByText("2R / 1R")).toBeTruthy();
     expect(screen.getByText("65000.0000")).toBeTruthy();
-    expect(screen.getByText("影子候选")).toBeTruthy();
+    expect(screen.getByText("模拟成交")).toBeTruthy();
+    expect(screen.getByText(/观察 64990\.0000/)).toBeTruthy();
     expect(screen.getByText(/只记录，不改单/)).toBeTruthy();
   });
 });

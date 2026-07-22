@@ -97,6 +97,33 @@ def test_live_mode_applies_only_the_deterministic_candidate(tmp_path) -> None:
     assert events[0]["event"]["profile_id"] == "2R / 1R"
 
 
+def test_shadow_profile_records_first_simulated_fill_and_freezes(tmp_path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'shadow-fill.db'}")
+        await database.initialize()
+        audit = AuditRepository(database.sessions)
+        manager = TrailingStopManager(Broker(), audit, mode="shadow")
+        await manager.maintain({"BTCUSDT": _position("104")}, {"BTCUSDT": RULES})
+        await manager.maintain({"BTCUSDT": _position("102.9")}, {"BTCUSDT": RULES})
+        await manager.maintain({"BTCUSDT": _position("105")}, {"BTCUSDT": RULES})
+        events = await audit.recent_trailing_stop_events(limit=100)
+        state = await audit.get_runtime_state("trailing_stop_states_v1")
+        status = manager.status
+        await database.close()
+        return events, state, status
+
+    events, state, status = asyncio.run(scenario())
+    fills = [event for event in events if event["status"] == "simulated_filled"]
+    assert {event["event"]["profile_id"] for event in fills} == {
+        "0.5R / 0.5R",
+        "1.5R / 0.5R",
+    }
+    assert {event["event"]["simulated_fill_price"] for event in fills} == {"102.9"}
+    assert status["simulated_fills"] == 2
+    assert status["active_strategies"] == 3
+    assert '"simulated_triggered":true' in state
+
+
 def test_unrestorable_live_stop_failure_escalates_to_emergency(tmp_path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'critical.db'}")

@@ -4048,6 +4048,7 @@ function AnalysisDetail({
 
 const TRAILING_STATUS_LABELS: Record<TrailingStopEvent["status"], string> = {
   shadow: "影子候选",
+  simulated_filled: "模拟成交",
   applied: "已应用",
   missed: "已错过",
   failed: "失败",
@@ -4067,7 +4068,7 @@ export function TrailingStopPanel({
     <PanelTitle
       code="06B"
       title="移动止损观测"
-      meta={`${mode.toUpperCase()} · ${mode === "shadow" ? "只记录，不改单" : mode === "live" ? "交易所止损生效" : "已关闭"}`}
+      meta={`${mode.toUpperCase()} · ${mode === "shadow" ? `只记录，不改单 · 模拟成交 ${status?.simulated_fills ?? 0}` : mode === "live" ? "交易所止损生效" : "已关闭"}`}
     />
     <p className="trailing-note">
       Shadow 同时计算多组参数，候选价只写入本地审计；Live 始终只运行明确的单一策略，避免多组候选争抢交易所止损。
@@ -4101,7 +4102,7 @@ export function TrailingStopPanel({
             <td><strong>{item.symbol.replace("USDT", "")}</strong><small className={item.event.side === "LONG" ? "positive" : "negative"}>{item.event.side === "LONG" ? "多仓" : "空仓"}</small></td>
             <td>{executionPrice(item.event.entry_price)} / {executionPrice(item.event.mark_price)}</td>
             <td>{executionPrice(item.event.original_stop)} / {executionPrice(item.event.previous_stop)}</td>
-            <td className="accent">{executionPrice(item.event.candidate_stop)}</td>
+            <td className="accent">{executionPrice(item.event.candidate_stop)}{item.event.simulated_fill_price && <small>观察 {executionPrice(item.event.simulated_fill_price)}</small>}</td>
             <td><span className={`trailing-result ${item.status}`}>{TRAILING_STATUS_LABELS[item.status]}</span>{item.event.detail && <small title={item.event.detail}>{item.event.detail}</small>}</td>
           </tr>)}
           {!events.length && <tr><td colSpan={7} className="empty">尚无候选记录；持仓达到最早激活阈值后会自动显示。</td></tr>}

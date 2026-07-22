@@ -8,7 +8,7 @@
 - SQLite 表：`live_runs`（正式运行边界、配置快照与停止原因）、`inferences`（模型推理， nullable
   `live_run_id` 归属正式运行）、`inference_details`（逐次输入与 Prompt）、
   `risk_decisions`、`executions`（实际订单报告）、`execution_attempts`（推理对应的执行结论、失败阶段与损失）、
-  `user_stream_events`、`alert_events`、`trailing_stop_events`（影子候选、实盘替换与失败）、
+  `user_stream_events`、`alert_events`、`trailing_stop_events`（影子候选、首次模拟成交、实盘替换与失败）、
   `runtime_state`、`schema_migrations`。
 - 溯源：SHA-256 数据版本、显式 Prompt 版本、模型标识、CLI Provider 版本。
 - 数据库基线：历史迁移链已在历史数据清空后压缩，当前 schema v15 在 v14 上新增正式决策快照表；

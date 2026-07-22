@@ -25,7 +25,7 @@
 | `CANDLEPILOT_CANDIDATES_PER_CYCLE` | 每周期分析候选池前 N 个标的，默认 5（范围 1–20）|
 | `CANDLEPILOT_MAX_RUN_SECONDS` | 单次运行时长上限（秒）；留空=不限，非正数或格式错误会拒绝启动/保存 |
 | `CANDLEPILOT_MAX_RUN_COST_USD` | 单次运行等效成本预算（USD）；留空=不限，必须为有限正数，否则拒绝启动/保存 |
-| `CANDLEPILOT_TRAILING_STOP_MODE` | 确定性移动止损模式：`off` / `shadow` / `live`，默认 `shadow`；shadow 并行审计五组固定参数，live 只执行 +2R 激活、距最有利标记价 1R，只有 live 修改交易所止损 |
+| `CANDLEPILOT_TRAILING_STOP_MODE` | 确定性移动止损模式：`off` / `shadow` / `live`，默认 `shadow`；shadow 并行审计五组固定参数并冻结各组首次模拟成交，live 只执行 +2R 激活、距最有利标记价 1R，只有 live 修改交易所止损 |
 | `CANDLEPILOT_STRUCTURE_GATE_MODE` | 结构入场门槛：`off` / `shadow` / `enforce`，默认 `shadow`；shadow 只记录逐项检查而不改变订单，enforce 才拒绝不合格开仓/加仓 |
 | `CANDLEPILOT_DAILY_LOSS_PERCENT` | 滚动 24 小时亏损熔断百分比，范围 0.1–50，默认 5；前端设置页按百分数填写，保存后重启生效 |
 | `CANDLEPILOT_PROVIDER_CHAIN` | 启动时默认的逗号分隔有序 Provider 路由，例如 `local,codex,claude-code,custom:main`；只接受这四种面向 `.env` 的短名称，不允许重复，所有 Custom API ID 必须存在；状态/API 返回的 `local-rule`、`codex-auth`、`claude-code-auth`、`openai-compatible:<id>` 是内部注册名，不允许写回该变量 |
@@ -127,8 +127,9 @@ reduce-only 成交按关联决策区分模型平仓/减仓，无法关联的 red
 `POST /api/account/positions/close` 接受 `{"symbol":"BTCUSDT"}`，仅在引擎停止时执行该标的
 全部当前仓位的 reduce-only 市价平仓。成功返回交易所成交状态、成交数量、均价、客户端订单号与
 时间；无持仓/引擎运行返回 409，成交、归零验证或 CandlePilot 保护单清理不完整返回 502。
-`GET /api/trailing-stops/history` 返回最近 1–500 条移动止损影子候选、实盘应用、错过与失败审计，
-每条事件包含参数组 ID、激活 R 与回撤 R；账户页自动读取最近 100 条并每 5 秒刷新，无需手工打开 API。
+`GET /api/trailing-stops/history` 返回最近 1–500 条移动止损影子候选、首次模拟成交、实盘应用、错过与失败审计，
+每条事件包含参数组 ID、激活 R 与回撤 R；首次模拟成交还返回候选触发价及 5 秒看护观察到的穿越价。
+账户页自动读取最近 100 条并每 5 秒刷新，无需手工打开 API。
 `GET /api/status` 的 `scheduler.trailing_stop` 返回当前模式、参与计算的参数组、管理/已激活仓位及
 参数组数量和最近事件。
 

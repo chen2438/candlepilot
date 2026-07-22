@@ -154,6 +154,7 @@ export interface TrailingStopStatus {
   managed_positions: number;
   active_positions: number;
   active_strategies: number;
+  simulated_fills: number;
   last_event: (TrailingStopEvent["event"] & {
     symbol: string;
     status: string;
@@ -164,7 +165,7 @@ export interface TrailingStopEvent {
   id: number;
   symbol: string;
   mode: "off" | "shadow" | "live";
-  status: "shadow" | "applied" | "missed" | "failed";
+  status: "shadow" | "simulated_filled" | "applied" | "missed" | "failed";
   event: {
     side: "LONG" | "SHORT";
     quantity: string;
@@ -174,6 +175,7 @@ export interface TrailingStopEvent {
     best_mark: string | null;
     previous_stop: string | null;
     candidate_stop: string | null;
+    simulated_fill_price: string | null;
     profile_id: string | null;
     activation_r: string | null;
     distance_r: string | null;
