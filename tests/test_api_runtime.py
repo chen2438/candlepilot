@@ -13,7 +13,7 @@ from pydantic import SecretStr
 from starlette.websockets import WebSocketDisconnect
 
 import candlepilot.api as api_module
-from candlepilot.api import create_app, read_web_update_status
+from candlepilot.api import check_web_update, create_app, read_web_update_status
 from candlepilot.auth import hash_password
 from candlepilot.application.engine import TradingEngine
 from candlepilot.application.scheduler import CADENCE_SECONDS
@@ -1778,6 +1778,57 @@ def test_web_update_status_requires_an_executable_helper(tmp_path: Path) -> None
     assert status["supported"] is False
 
 
+def test_web_update_check_reports_only_fast_forward_github_updates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    current = "a" * 40
+    latest = "b" * 40
+    calls: list[tuple[str, ...]] = []
+
+    async def run_git(*args: str, repository_path: Path) -> tuple[int, str]:
+        assert repository_path == tmp_path
+        calls.append(args)
+        outputs = {
+            ("branch", "--show-current"): (0, "main"),
+            ("rev-parse", "HEAD"): (0, current),
+            ("remote", "get-url", "origin"): (
+                0,
+                "https://github.com/chen2438/candlepilot.git",
+            ),
+            ("fetch", "--quiet", "--no-tags", "origin", "main"): (0, ""),
+            ("rev-parse", "FETCH_HEAD"): (0, latest),
+            ("merge-base", "--is-ancestor", current, latest): (0, ""),
+        }
+        return outputs[args]
+
+    monkeypatch.setattr(api_module, "_run_web_update_git", run_git)
+
+    result = asyncio.run(check_web_update(tmp_path))
+
+    assert result["update_available"] is True
+    assert result["current_commit"] == current
+    assert result["latest_commit"] == latest
+    assert calls[-1] == ("merge-base", "--is-ancestor", current, latest)
+
+
+def test_web_update_check_rejects_non_github_origin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def run_git(*args: str, repository_path: Path) -> tuple[int, str]:
+        assert repository_path == tmp_path
+        outputs = {
+            ("branch", "--show-current"): (0, "main"),
+            ("rev-parse", "HEAD"): (0, "a" * 40),
+            ("remote", "get-url", "origin"): (0, "https://example.com/repo.git"),
+        }
+        return outputs[args]
+
+    monkeypatch.setattr(api_module, "_run_web_update_git", run_git)
+
+    with pytest.raises(api_module.WebUpdateCheckError, match="GitHub HTTPS"):
+        asyncio.run(check_web_update(tmp_path))
+
+
 def test_web_update_starts_only_the_fixed_root_helper(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1819,6 +1870,45 @@ def test_web_update_starts_only_the_fixed_root_helper(
 
     assert response.status_code == 202
     assert calls == [(str(api_module.WEB_UPDATE_HELPER),)]
+    asyncio.run(database.close())
+
+
+def test_web_update_check_endpoint_does_not_start_the_installer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'web-update-check.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+
+    async def checked() -> dict[str, object]:
+        return {
+            "supported": True,
+            "checked_at": datetime.now(UTC),
+            "branch": "main",
+            "current_commit": "a" * 40,
+            "latest_commit": "b" * 40,
+            "update_available": True,
+            "message": "发现可安装的新版本",
+        }
+
+    monkeypatch.setattr(
+        api_module,
+        "read_web_update_status",
+        lambda: {"supported": True, "phase": "idle"},
+    )
+    monkeypatch.setattr(api_module, "check_web_update", checked)
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        response = client.post("/api/update/check")
+
+    assert response.status_code == 200
+    assert response.json()["update_available"] is True
     asyncio.run(database.close())
 
 

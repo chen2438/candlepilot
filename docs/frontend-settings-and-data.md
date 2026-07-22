@@ -109,8 +109,10 @@ Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功
   不覆盖已有变量，若继承旧值则重写后的 `.env` 会被忽略、重启等于白做；shell 中显式 `export`
   的变量会保留（它本就优先于 `.env`）。重新执行统一走 `.venv/bin/python -m candlepilot.cli`，
   因此 `candlepilot serve` 与 `.venv/bin/python -m candlepilot.cli serve` 两种启动方式都能恢复。
-- **网页一键更新**（`GET /api/update/status`、`POST /api/update`，前端设置页「软件更新」）：仅在
-  Linux VPS 安装器已经部署 root 更新助手时启用。用户确认后，后端通过固定的无参数
+- **网页检查与安装更新**（`GET /api/update/status`、`POST /api/update/check`、`POST /api/update`，
+  前端设置页「软件更新」）：仅在 Linux VPS 安装器已经部署 root 更新助手时启用。「检查更新」
+  只从无内嵌凭据的 GitHub HTTPS `origin` 获取当前分支，比较本地与远端提交并确认是快进关系，
+  不改工作树或启动 root 更新器；发现新版本后才启用独立的「安装更新」，并继续要求用户确认。确认后，后端通过固定的无参数
   `/usr/local/sbin/candlepilot-web-update` 在 `/run/candlepilot-update` 创建请求文件；root 管理的
   `candlepilot-update.path` 只监听这个固定路径并启动独立 `candlepilot-update.service`。后端不调用
   `sudo`，主服务可继续启用 `NoNewPrivileges=true`；更新任务也不在应用服务的 cgroup 内，因此停止

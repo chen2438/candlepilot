@@ -28,6 +28,7 @@ import type {
   SettingsField,
   SettingsPayload,
   WebUpdateStatus,
+  WebUpdateCheck,
   StructureGateSummary,
   TestnetAccountStatus,
   TrailingStopEvent,
@@ -1987,6 +1988,7 @@ export function WebUpdatePanel({
   setError: (value: string | null) => void;
 }) {
   const [status, setStatus] = useState<WebUpdateStatus | null>(null);
+  const [checkResult, setCheckResult] = useState<WebUpdateCheck | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [note, setNote] = useState<string | null>(null);
 
@@ -1999,6 +2001,24 @@ export function WebUpdatePanel({
   useEffect(() => {
     refreshStatus().catch(() => undefined);
   }, [refreshStatus]);
+
+  const check = useCallback(async () => {
+    setBusy("update-check");
+    setError(null);
+    setConfirming(false);
+    setNote("正在检查远端版本…");
+    try {
+      const next = await api<WebUpdateCheck>("/api/update/check", { method: "POST" });
+      setCheckResult(next);
+      setNote(null);
+    } catch (reason) {
+      setCheckResult(null);
+      setNote(null);
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }, [setBusy, setError]);
 
   const update = useCallback(async () => {
     setBusy("update");
@@ -2055,13 +2075,20 @@ export function WebUpdatePanel({
     <div className="settings-section web-update-section">
       <h4 className="account-subhead">软件更新</h4>
       <div className="settings-actions">
+        <button
+          className="compact"
+          disabled={busy !== null || status === null || !status.supported || status.phase === "running"}
+          onClick={check}
+        >
+          {busy === "update-check" ? "检查中…" : "检查更新"}
+        </button>
         {!confirming ? (
           <button
             className="compact"
-            disabled={busy !== null || status === null || !status.supported}
+            disabled={busy !== null || status?.phase === "running" || !checkResult?.update_available}
             onClick={() => setConfirming(true)}
           >
-            一键检查并更新
+            安装更新
           </button>
         ) : (
           <>
@@ -2083,6 +2110,14 @@ export function WebUpdatePanel({
           ? "调用 VPS 安装器的安全原地更新：仅接受 main 快进，保留 .env、数据库、行情、TLS 和模型登录；更新前备份，失败自动回滚。"
           : status?.message ?? "正在检查 VPS 更新能力…"}
       </small>
+      {checkResult && (
+        <div className={`update-check-result ${checkResult.update_available ? "available" : "current"}`}>
+          <strong>{checkResult.message}</strong>
+          <span>{checkResult.branch}</span>
+          <span>{checkResult.current_commit.slice(0, 12)} → {checkResult.latest_commit.slice(0, 12)}</span>
+          <span>{formatLocalDateTime(new Date(checkResult.checked_at))}</span>
+        </div>
+      )}
       {status && status.phase !== "idle" && (
         <div className={`update-result ${status.phase}`}>
           <strong>{status.message}</strong>

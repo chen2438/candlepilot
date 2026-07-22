@@ -47,6 +47,16 @@ export interface WebUpdateStatus {
   backup: string | null;
 }
 
+export interface WebUpdateCheck {
+  supported: boolean;
+  checked_at: string;
+  branch: string;
+  current_commit: string;
+  latest_commit: string;
+  update_available: boolean;
+  message: string;
+}
+
 export interface StartupProbeProviderResult {
   status: "pending" | "completed";
   model?: string | null;

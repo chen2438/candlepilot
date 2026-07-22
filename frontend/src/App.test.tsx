@@ -105,9 +105,18 @@ describe("LoginScreen", () => {
 });
 
 describe("WebUpdatePanel", () => {
-  it("requires explicit confirmation before starting a supported VPS update", async () => {
-    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({
+  it("checks first and only then enables the separately confirmed install", async () => {
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      const payload = url.endsWith("/check") ? {
+        supported: true,
+        checked_at: "2026-07-22T10:00:00Z",
+        branch: "main",
+        current_commit: "a".repeat(40),
+        latest_commit: "b".repeat(40),
+        update_available: true,
+        message: "发现可安装的新版本",
+      } : {
         supported: true,
         phase: "idle",
         message: "ready",
@@ -116,17 +125,57 @@ describe("WebUpdatePanel", () => {
         from_commit: null,
         current_commit: null,
         backup: null,
-      }), { status: 200, headers: { "Content-Type": "application/json" } }),
-    );
+      };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
     render(<WebUpdatePanel busy={null} setBusy={vi.fn()} setError={vi.fn()} />);
 
-    const update = await screen.findByRole("button", { name: "一键检查并更新" });
-    await waitFor(() => expect(update.hasAttribute("disabled")).toBe(false));
-    fireEvent.click(update);
+    const check = await screen.findByRole("button", { name: "检查更新" });
+    const install = screen.getByRole("button", { name: "安装更新" });
+    await waitFor(() => expect(check.hasAttribute("disabled")).toBe(false));
+    expect(install.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(check);
+    await waitFor(() => expect(install.hasAttribute("disabled")).toBe(false));
+    expect(screen.getByText("发现可安装的新版本")).toBeTruthy();
+    fireEvent.click(install);
 
     expect(screen.getByText(/服务会短暂离线/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "确认更新" })).toBeTruthy();
     expect(request).toHaveBeenCalledWith("/api/update/status", expect.anything());
+    expect(request).toHaveBeenCalledWith("/api/update/check", expect.objectContaining({ method: "POST" }));
+    request.mockRestore();
+  });
+
+  it("keeps installation disabled when the current commit is latest", async () => {
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const isCheck = String(input).endsWith("/check");
+      return new Response(JSON.stringify(isCheck ? {
+        supported: true,
+        checked_at: "2026-07-22T10:00:00Z",
+        branch: "main",
+        current_commit: "a".repeat(40),
+        latest_commit: "a".repeat(40),
+        update_available: false,
+        message: "当前已是最新版本",
+      } : {
+        supported: true,
+        phase: "idle",
+        message: "ready",
+        started_at: null,
+        finished_at: null,
+        from_commit: null,
+        current_commit: null,
+        backup: null,
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    render(<WebUpdatePanel busy={null} setBusy={vi.fn()} setError={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "检查更新" }));
+    expect(await screen.findByText("当前已是最新版本")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "安装更新" }).hasAttribute("disabled")).toBe(true);
     request.mockRestore();
   });
 
@@ -146,7 +195,8 @@ describe("WebUpdatePanel", () => {
     render(<WebUpdatePanel busy={null} setBusy={vi.fn()} setError={vi.fn()} />);
 
     expect(await screen.findByText(/部署更新助手后可用/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "一键检查并更新" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "检查更新" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "安装更新" }).hasAttribute("disabled")).toBe(true);
     request.mockRestore();
   });
 });

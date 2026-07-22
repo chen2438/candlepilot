@@ -77,8 +77,9 @@ curl -fsSL https://raw.githubusercontent.com/chen2438/candlepilot/main/scripts/i
 
 现有 VPS 从不含网页更新助手的旧版本升级时，必须**最后执行一次**上面的终端命令，让 root 安装
 受限助手；即使代码已经是最新版本，安装器也会补装/刷新助手。此后在前端「设置 → 软件更新」中
-停止所有活动任务后即可检查并安装后续 `main` 快进更新，无需再次登录终端。网页会显示更新结果、
-提交变化和备份目录。更新日志只对 root 开放：
+可先用独立的「检查更新」只获取并验证后续 `main` 快进提交；确认存在新版本后，「安装更新」才会
+启用。停止所有活动任务并再次确认后即可安装，无需登录终端。检查不会启动 root 更新器或停止服务；
+安装页面会显示更新结果、提交变化和备份目录。更新日志只对 root 开放：
 
 ```bash
 sudo journalctl -u candlepilot-update.service -n 100 --no-pager

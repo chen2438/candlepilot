@@ -4,6 +4,9 @@ import asyncio
 import json
 import logging
 import os
+import re
+import shutil
+import signal
 import sys
 import time
 from uuid import uuid4
@@ -106,6 +109,7 @@ from candlepilot.providers.pricing import PROVIDER_IDS, ModelPricingCatalog
 from candlepilot.providers.pricing import load_catalog as load_pricing_catalog
 from candlepilot.providers.base import DecisionProvider, ProviderResult
 from candlepilot.providers.openai_compatible import validate_base_url
+from candlepilot.providers.cli import sanitized_subprocess_env
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.runtime_lock import ServiceInstanceLock
 from candlepilot.providers.retry import DECISION_PROVIDER_MAX_ATTEMPTS
@@ -129,7 +133,10 @@ from candlepilot.storage.database import (
 
 WEB_UPDATE_HELPER = Path("/usr/local/sbin/candlepilot-web-update")
 WEB_UPDATE_STATUS_FILE = Path("/var/lib/candlepilot/update-status.json")
+WEB_UPDATE_REPOSITORY = Path(__file__).resolve().parents[2]
 WEB_UPDATE_PHASES = {"idle", "running", "completed", "failed"}
+WEB_UPDATE_BRANCH_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
+WEB_UPDATE_COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40,64}$")
 
 
 def read_web_update_status(
@@ -186,6 +193,96 @@ def read_web_update_status(
     return {
         **payload,
         **{key: stored.get(key) for key in payload if key != "supported"},
+    }
+
+
+class WebUpdateCheckError(RuntimeError):
+    pass
+
+
+async def _run_web_update_git(
+    *args: str, repository_path: Path
+) -> tuple[int, str]:
+    executable = shutil.which("git")
+    if executable is None:
+        raise WebUpdateCheckError("Git 不可用，无法检查更新")
+    try:
+        process = await asyncio.create_subprocess_exec(
+            executable,
+            *args,
+            cwd=repository_path,
+            env=sanitized_subprocess_env(),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=20)
+    except TimeoutError as exc:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        await process.wait()
+        raise WebUpdateCheckError("检查更新超时，请稍后重试") from exc
+    except OSError as exc:
+        raise WebUpdateCheckError("无法执行 Git 更新检查") from exc
+    return process.returncode, stdout.decode("utf-8", errors="replace").strip()
+
+
+async def check_web_update(
+    repository_path: Path | None = None,
+) -> dict[str, Any]:
+    repository_path = repository_path or WEB_UPDATE_REPOSITORY
+
+    async def git(*args: str) -> str:
+        returncode, output = await _run_web_update_git(
+            *args, repository_path=repository_path
+        )
+        if returncode != 0:
+            raise WebUpdateCheckError("Git 仓库状态不允许检查更新")
+        return output
+
+    branch = await git("branch", "--show-current")
+    if not WEB_UPDATE_BRANCH_PATTERN.fullmatch(branch):
+        raise WebUpdateCheckError("当前 Git 分支无效，无法检查更新")
+    current_commit = await git("rev-parse", "HEAD")
+    if not WEB_UPDATE_COMMIT_PATTERN.fullmatch(current_commit):
+        raise WebUpdateCheckError("当前 Git 提交无效，无法检查更新")
+    origin = await git("remote", "get-url", "origin")
+    parsed_origin = urlsplit(origin)
+    if (
+        parsed_origin.scheme != "https"
+        or parsed_origin.hostname != "github.com"
+        or parsed_origin.username is not None
+        or parsed_origin.password is not None
+        or parsed_origin.query
+        or parsed_origin.fragment
+    ):
+        raise WebUpdateCheckError("只允许检查无内嵌凭据的 GitHub HTTPS origin")
+    await git("fetch", "--quiet", "--no-tags", "origin", branch)
+    latest_commit = await git("rev-parse", "FETCH_HEAD")
+    if not WEB_UPDATE_COMMIT_PATTERN.fullmatch(latest_commit):
+        raise WebUpdateCheckError("远端 Git 提交无效，无法检查更新")
+    update_available = latest_commit != current_commit
+    if update_available:
+        returncode, _ = await _run_web_update_git(
+            "merge-base",
+            "--is-ancestor",
+            current_commit,
+            latest_commit,
+            repository_path=repository_path,
+        )
+        if returncode != 0:
+            raise WebUpdateCheckError("远端版本不是当前版本的快进更新，已拒绝安装")
+    return {
+        "supported": True,
+        "checked_at": datetime.now(UTC),
+        "branch": branch,
+        "current_commit": current_commit,
+        "latest_commit": latest_commit,
+        "update_available": update_available,
+        "message": "发现可安装的新版本" if update_available else "当前已是最新版本",
     }
 
 
@@ -630,6 +727,7 @@ def create_app(
     restart_pending = False
     update_pending = False
     update_baseline_finished_at: str | None = None
+    web_update_check_lock = asyncio.Lock()
     testnet_account_memo: dict[str, Any] = {"account": None, "expires_at": 0.0}
     testnet_levels_lock = asyncio.Lock()
     testnet_levels_memo: dict[str, Any] = {"levels": None, "expires_at": 0.0}
@@ -1578,6 +1676,21 @@ def create_app(
             update_pending = False
         return status
 
+    @app.post("/api/update/check")
+    async def check_for_web_update() -> dict[str, Any]:
+        if web_update_check_lock.locked():
+            raise HTTPException(status_code=409, detail="an update check is already running")
+        async with web_update_check_lock:
+            status = read_web_update_status()
+            if not status["supported"]:
+                raise HTTPException(status_code=409, detail=status["message"])
+            if update_pending or status["phase"] == "running":
+                raise HTTPException(status_code=409, detail="an update is already running")
+            try:
+                return await check_web_update()
+            except WebUpdateCheckError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.post("/api/update", status_code=202)
     async def start_web_update() -> dict[str, Any]:
         nonlocal update_baseline_finished_at, update_pending
@@ -1598,6 +1711,8 @@ def create_app(
             )
         if restart_pending:
             raise HTTPException(status_code=409, detail="backend restart is in progress")
+        if web_update_check_lock.locked():
+            raise HTTPException(status_code=409, detail="an update check is in progress")
         status = read_web_update_status()
         if not status["supported"]:
             raise HTTPException(status_code=409, detail=status["message"])
@@ -1658,6 +1773,8 @@ def create_app(
             raise HTTPException(
                 status_code=409, detail="backend restart is already in progress"
             )
+        if web_update_check_lock.locked():
+            raise HTTPException(status_code=409, detail="an update check is in progress")
         if update_pending or read_web_update_status()["phase"] == "running":
             raise HTTPException(status_code=409, detail="a software update is in progress")
         restart_pending = True
