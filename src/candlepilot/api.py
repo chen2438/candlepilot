@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 from fastapi import (
     FastAPI,
     HTTPException,
+    Query,
     Request,
     Response,
     WebSocket,
@@ -43,6 +44,7 @@ from candlepilot.analysis.datapack import AnalysisDataPackBuilder
 from candlepilot.analysis.decision import AnalysisDecisionBridge
 from candlepilot.analysis.models import MarketAnalysis
 from candlepilot.analysis.options import DeribitOptionsContextProvider, OptionsContextSource
+from candlepilot.analysis.performance import calculate_analysis_performance
 from candlepilot.analysis.outcomes import (
     TERMINAL_OUTCOME_STATUSES,
     evaluate_outcome_from_market,
@@ -3441,6 +3443,19 @@ def create_app(
         if normalized is not None and not re.fullmatch(r"[A-Z0-9]+USDT", normalized):
             raise HTTPException(status_code=422, detail="invalid symbol")
         return await analysis_repository.recent(limit=limit, symbol=normalized)
+
+    @app.get("/api/market-analyses/performance")
+    async def market_analysis_performance(
+        fixed_notional_usdt: Annotated[
+            float, Query(gt=0, le=1_000_000)
+        ] = 100,
+        fixed_risk_usdt: Annotated[float, Query(gt=0, le=1_000_000)] = 10,
+    ) -> dict[str, Any]:
+        return calculate_analysis_performance(
+            await analysis_repository.performance_records(),
+            fixed_notional_usdt=fixed_notional_usdt,
+            fixed_risk_usdt=fixed_risk_usdt,
+        )
 
     async def _refresh_market_analysis_outcome(
         analysis_id: int, *, include_audit: bool

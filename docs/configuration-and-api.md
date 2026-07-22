@@ -88,6 +88,10 @@
 `POST /api/market-analyses/outcomes` 接受 `{"analysis_ids":[1,2]}`，一次最多 30 个正整数 ID，按首次
 出现顺序去重并串行执行同一结果判定；响应分别返回 `updated_ids` 与逐项 `errors`。单条不存在、
 未完成或行情读取失败不会阻断其余项目，也不会把失败记录冒充已更新。
+`GET /api/market-analyses/performance?fixed_notional_usdt=100&fixed_risk_usdt=10` 聚合全部独立分析历史；
+两个金额必须为正数且不超过 1,000,000 USDT。响应分别返回固定名义金额与固定止损金额口径的累计
+USDT 盈亏、平均回报或 R、胜率和样本计数。只统计已入场并明确结算的 stop、T2、T1 后保本结果；
+未入场、观望、进行中和顺序不确定均排除，且响应以 `costs_included=false` 明示未计费用、滑点和资金费。
 `GET /api/market-analyses/schedule` 返回进程内自动研究开关、固定 15 分钟间隔、下一 UTC 边界、本轮
 活动状态及上一轮候选/发起/跳过明细；`POST /api/market-analyses/schedule/start` 与 `/stop` 启停未来
 轮次且没有请求体。启动要求正式引擎已停止并已唯一选择外部 Provider；开关不会在服务重启后恢复。

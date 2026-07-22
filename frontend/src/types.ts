@@ -196,6 +196,30 @@ export interface MarketAnalysisScheduleStatus {
   };
 }
 
+export interface MarketAnalysisPerformance {
+  directional_analyses: number;
+  settled_trades: number;
+  open_trades: number;
+  ambiguous_results: number;
+  wins: number;
+  losses: number;
+  breakevens: number;
+  fixed_notional: {
+    amount_per_trade_usdt: number;
+    total_pnl_usdt: number;
+    average_return_percent: number | null;
+    win_rate_percent: number | null;
+  };
+  fixed_risk: {
+    risk_per_trade_usdt: number;
+    total_pnl_usdt: number;
+    total_r: number;
+    average_r: number | null;
+    win_rate_percent: number | null;
+  };
+  costs_included: false;
+}
+
 export interface StartupProbeProviderResult {
   status: "pending" | "completed";
   model?: string | null;

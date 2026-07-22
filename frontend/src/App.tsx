@@ -35,6 +35,7 @@ import type {
   TestnetAccountStatus,
   TrailingStopEvent,
   PartialTakeProfitEvent,
+  MarketAnalysisPerformance,
   MarketAnalysisRecord,
   MarketAnalysisScheduleStatus,
 } from "./types";
@@ -2859,6 +2860,10 @@ export function MarketAnalysisPanel({
   const [lastQueuedSymbols, setLastQueuedSymbols] = useState<string[]>([]);
   const [schedule, setSchedule] = useState<MarketAnalysisScheduleStatus | null>(null);
   const [scheduleBusy, setScheduleBusy] = useState(false);
+  const [performance, setPerformance] = useState<MarketAnalysisPerformance | null>(null);
+  const [performanceAssumptions, setPerformanceAssumptions] = useState({ notional: 100, risk: 10 });
+  const [notionalDraft, setNotionalDraft] = useState("100");
+  const [riskDraft, setRiskDraft] = useState("10");
   const [error, setError] = useState<string | null>(null);
   const [historyFilter, setHistoryFilter] = useState<"directional" | "long" | "short" | "all">("directional");
 
@@ -2880,11 +2885,21 @@ export function MarketAnalysisPanel({
     return status;
   }, []);
 
+  const refreshPerformance = useCallback(async () => {
+    const params = new URLSearchParams({
+      fixed_notional_usdt: String(performanceAssumptions.notional),
+      fixed_risk_usdt: String(performanceAssumptions.risk),
+    });
+    const next = await api<MarketAnalysisPerformance>(`/api/market-analyses/performance?${params}`);
+    setPerformance(next);
+    return next;
+  }, [performanceAssumptions]);
+
   useEffect(() => {
-    Promise.all([refreshHistory(), refreshSchedule()]).catch(
+    Promise.all([refreshHistory(), refreshSchedule(), refreshPerformance()]).catch(
       (reason) => setError(reason instanceof Error ? reason.message : String(reason)),
     );
-  }, [refreshHistory, refreshSchedule]);
+  }, [refreshHistory, refreshSchedule, refreshPerformance]);
 
   useEffect(() => {
     if (!schedule?.enabled && !schedule?.round_running) return;
@@ -2893,7 +2908,7 @@ export function MarketAnalysisPanel({
       try {
         const next = await refreshSchedule();
         if (!stopped && (next.round_running || next.last_finished_at !== schedule?.last_finished_at)) {
-          await refreshHistory();
+          await Promise.all([refreshHistory(), refreshPerformance()]);
         }
       } catch (reason) {
         if (!stopped) setError(reason instanceof Error ? reason.message : String(reason));
@@ -2901,7 +2916,7 @@ export function MarketAnalysisPanel({
     };
     const timer = window.setInterval(poll, 3000);
     return () => { stopped = true; window.clearInterval(timer); };
-  }, [schedule?.enabled, schedule?.round_running, schedule?.last_finished_at, refreshHistory, refreshSchedule]);
+  }, [schedule?.enabled, schedule?.round_running, schedule?.last_finished_at, refreshHistory, refreshPerformance, refreshSchedule]);
 
   useEffect(() => {
     if (!selected || !["pending", "running"].includes(selected.status)) return;
@@ -2912,7 +2927,7 @@ export function MarketAnalysisPanel({
         if (!stopped && ["pending", "running"].includes(detail.status)) {
           window.setTimeout(poll, 1200);
         } else if (!stopped) {
-          await refreshHistory();
+          await Promise.all([refreshHistory(), refreshPerformance()]);
         }
       } catch (reason) {
         if (!stopped) setError(reason instanceof Error ? reason.message : String(reason));
@@ -2920,7 +2935,7 @@ export function MarketAnalysisPanel({
     };
     const timer = window.setTimeout(poll, 500);
     return () => { stopped = true; window.clearTimeout(timer); };
-  }, [selected?.id, selected?.status, loadDetail, refreshHistory]);
+  }, [selected?.id, selected?.status, loadDetail, refreshHistory, refreshPerformance]);
 
   useEffect(() => {
     if (!batchIds.length) return;
@@ -3017,13 +3032,29 @@ export function MarketAnalysisPanel({
       const detail = await api<MarketAnalysisRecord>(`/api/market-analyses/${targetId}/cancel`, { method: "POST" });
       if (selected?.id === targetId) setSelected(detail);
       setBatchIds([]);
-      await refreshHistory();
+      await Promise.all([refreshHistory(), refreshPerformance()]);
       if (selected && selected.id !== targetId) await loadDetail(selected.id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setBusy(false);
     }
+  };
+
+  const applyPerformanceAssumptions = (event: FormEvent) => {
+    event.preventDefault();
+    const notional = Number(notionalDraft);
+    const risk = Number(riskDraft);
+    if (!Number.isFinite(notional) || notional <= 0 || notional > 1_000_000 || !Number.isFinite(risk) || risk <= 0 || risk > 1_000_000) {
+      setError("固定名义金额和固定止损金额必须大于 0 且不超过 1,000,000 USDT。");
+      return;
+    }
+    setError(null);
+    if (notional === performanceAssumptions.notional && risk === performanceAssumptions.risk) {
+      void refreshPerformance().catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+      return;
+    }
+    setPerformanceAssumptions({ notional, risk });
   };
 
   const refreshOutcome = async () => {
@@ -3033,7 +3064,7 @@ export function MarketAnalysisPanel({
     try {
       const detail = await api<MarketAnalysisRecord>(`/api/market-analyses/${selected.id}/outcome`, { method: "POST" });
       setSelected(detail);
-      await refreshHistory();
+      await Promise.all([refreshHistory(), refreshPerformance()]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -3056,7 +3087,7 @@ export function MarketAnalysisPanel({
         method: "POST",
         body: JSON.stringify({ analysis_ids: analysisIds }),
       });
-      await refreshHistory();
+      await Promise.all([refreshHistory(), refreshPerformance()]);
       if (selected && response.updated_ids.includes(selected.id)) {
         await loadDetail(selected.id);
       }
@@ -3155,6 +3186,32 @@ export function MarketAnalysisPanel({
         onClick={() => void toggleSchedule()}
       >{scheduleBusy ? "处理中…" : schedule?.enabled ? "停止自动分析" : "启动自动分析"}</button>
     </div>
+    <section className="analysis-performance">
+      <header>
+        <div><small>历史盈亏表现</small><strong>仅统计已入场且明确结算的计划</strong></div>
+        <span>{performance ? `${performance.settled_trades} 笔结算 · ${performance.wins} 胜 / ${performance.losses} 负${performance.breakevens ? ` / ${performance.breakevens} 平` : ""}` : "读取中…"}</span>
+      </header>
+      <form onSubmit={applyPerformanceAssumptions}>
+        <label><span>每笔固定名义金额</span><input aria-label="每笔固定名义金额" type="number" min="0.01" max="1000000" step="0.01" value={notionalDraft} onChange={(event) => setNotionalDraft(event.target.value)} /><em>USDT</em></label>
+        <label><span>每笔固定止损金额</span><input aria-label="每笔固定止损金额" type="number" min="0.01" max="1000000" step="0.01" value={riskDraft} onChange={(event) => setRiskDraft(event.target.value)} /><em>USDT</em></label>
+        <button type="submit">更新测算</button>
+      </form>
+      <div className="analysis-performance-cards">
+        <article>
+          <small>固定名义金额</small>
+          <strong className={(performance?.fixed_notional.total_pnl_usdt ?? 0) >= 0 ? "positive" : "negative"}>{performance ? signedUsdt(performance.fixed_notional.total_pnl_usdt) : "—"}</strong>
+          <span>胜率 {performance?.fixed_notional.win_rate_percent == null ? "—" : `${performance.fixed_notional.win_rate_percent.toFixed(1)}%`}</span>
+          <em>平均每笔 {performance?.fixed_notional.average_return_percent == null ? "—" : `${performance.fixed_notional.average_return_percent > 0 ? "+" : ""}${performance.fixed_notional.average_return_percent.toFixed(2)}%`}</em>
+        </article>
+        <article>
+          <small>固定止损金额</small>
+          <strong className={(performance?.fixed_risk.total_pnl_usdt ?? 0) >= 0 ? "positive" : "negative"}>{performance ? signedUsdt(performance.fixed_risk.total_pnl_usdt) : "—"}</strong>
+          <span>胜率 {performance?.fixed_risk.win_rate_percent == null ? "—" : `${performance.fixed_risk.win_rate_percent.toFixed(1)}%`}</span>
+          <em>累计 {performance ? `${performance.fixed_risk.total_r > 0 ? "+" : ""}${performance.fixed_risk.total_r.toFixed(2)}R` : "—"} · 平均 {performance?.fixed_risk.average_r == null ? "—" : `${performance.fixed_risk.average_r > 0 ? "+" : ""}${performance.fixed_risk.average_r.toFixed(2)}R`}</em>
+        </article>
+      </div>
+      <footer>未入场、观望、进行中及顺序不确定不计入交易；T1 后按一半仓位结算。未计手续费、滑点和资金费。</footer>
+    </section>
     {engineRunning && <div className="analysis-warning">正式引擎运行中；停止后才能发起独立分析。</div>}
     {!provider && <div className="analysis-warning">请先在总览选择 Codex、Claude Code 或 Custom API。</div>}
     {error && <div className="analysis-warning negative">{error}</div>}
@@ -3174,7 +3231,7 @@ export function MarketAnalysisPanel({
               className="text-button"
               type="button"
               disabled={outcomeBusy !== null}
-              onClick={() => void refreshHistory()}
+              onClick={() => void Promise.all([refreshHistory(), refreshPerformance()])}
             >刷新</button>
           </span>
         </div>

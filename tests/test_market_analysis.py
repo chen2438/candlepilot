@@ -22,6 +22,7 @@ from candlepilot.analysis.outcomes import (
     evaluate_outcome_from_market,
     next_complete_5m_start,
 )
+from candlepilot.analysis.performance import calculate_analysis_performance
 from candlepilot.analysis.prompt import PROMPT_VERSION, build_analysis_prompt
 from candlepilot.analysis.scheduler import (
     MarketAnalysisScheduler,
@@ -152,6 +153,43 @@ def test_analysis_contract_requires_explicit_directional_levels() -> None:
     invalid["entry_plan"] = None
     with pytest.raises(ValidationError, match="requires an entry plan"):
         MarketAnalysis.model_validate(invalid)
+
+
+def test_analysis_performance_compares_fixed_notional_and_fixed_risk() -> None:
+    def record(direction: str, outcome: str) -> dict[str, object]:
+        if direction == "long":
+            plan = {"entry": 100, "stop": 90, "target1": 110, "target2": 120}
+        else:
+            plan = {"entry": 100, "stop": 110, "target1": 90, "target2": 80}
+        return {
+            "result": {"direction": direction, "entry_plan": plan},
+            "outcome": {"status": outcome},
+        }
+
+    performance = calculate_analysis_performance(
+        [
+            record("long", "stopped"),
+            record("long", "target2"),
+            record("short", "breakeven_after_target1"),
+            record("long", "ambiguous"),
+            record("short", "active"),
+            {"result": {"direction": "neutral"}, "outcome": {"status": "neutral_observation"}},
+        ],
+        fixed_notional_usdt=100,
+        fixed_risk_usdt=10,
+    )
+
+    assert performance["directional_analyses"] == 5
+    assert performance["settled_trades"] == 3
+    assert performance["open_trades"] == 1
+    assert performance["ambiguous_results"] == 1
+    assert performance["wins"] == 2
+    assert performance["losses"] == 1
+    assert performance["fixed_notional"]["total_pnl_usdt"] == pytest.approx(10)
+    assert performance["fixed_notional"]["win_rate_percent"] == pytest.approx(200 / 3)
+    assert performance["fixed_risk"]["total_pnl_usdt"] == pytest.approx(10)
+    assert performance["fixed_risk"]["total_r"] == pytest.approx(1)
+    assert performance["fixed_risk"]["win_rate_percent"] == pytest.approx(200 / 3)
 
 
 def test_analysis_contract_keeps_low_reward_plan_for_downstream_risk() -> None:
@@ -975,8 +1013,38 @@ def test_market_analysis_api_runs_selected_provider_and_returns_audit(tmp_path: 
                 "detail": "market analysis not found",
             }
         ]
+        repository = MarketAnalysisRepository(database.sessions)
+        assert client.portal is not None
+        client.portal.call(
+            repository.save_outcome,
+            identifier,
+            {
+                "status": "target2",
+                "bars_observed": 4,
+                "entry_at": "2026-07-22T10:05:00Z",
+                "target1_at": "2026-07-22T10:10:00Z",
+                "resolved_at": "2026-07-22T10:15:00Z",
+                "detail": "T1 部分止盈后，剩余仓位触及 T2",
+            },
+        )
+        performance = client.get(
+            "/api/market-analyses/performance",
+            params={"fixed_notional_usdt": 100, "fixed_risk_usdt": 10},
+        )
+        assert performance.status_code == 200
+        assert performance.json()["settled_trades"] == 1
+        assert performance.json()["wins"] == 1
+        assert performance.json()["fixed_notional"]["total_pnl_usdt"] == pytest.approx(
+            500 / 101
+        )
+        assert performance.json()["fixed_risk"]["total_pnl_usdt"] == pytest.approx(
+            50 / 3
+        )
+        assert client.get(
+            "/api/market-analyses/performance?fixed_notional_usdt=0"
+        ).status_code == 422
         refreshed_history = client.get("/api/market-analyses").json()
-        assert refreshed_history[0]["outcome"]["status"] == "waiting_entry"
+        assert refreshed_history[0]["outcome"]["status"] == "target2"
 
         selection = client.post(
             "/api/candidates-per-cycle", json={"candidates_per_cycle": 2}

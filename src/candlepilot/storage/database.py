@@ -672,6 +672,31 @@ class MarketAnalysisRepository:
             return None
         return await self.attach_outcome(self._as_dict(row, include_audit=False))
 
+    async def performance_records(self) -> list[dict[str, Any]]:
+        statement = (
+            select(MarketAnalysisRow, MarketAnalysisOutcomeRow)
+            .outerjoin(
+                MarketAnalysisOutcomeRow,
+                MarketAnalysisOutcomeRow.analysis_id == MarketAnalysisRow.id,
+            )
+            .where(
+                MarketAnalysisRow.status == "succeeded",
+                MarketAnalysisRow.result_json.is_not(None),
+            )
+            .order_by(MarketAnalysisRow.id)
+        )
+        async with self.sessions() as session:
+            rows = (await session.execute(statement)).all()
+        return [
+            {
+                "id": analysis.id,
+                "symbol": analysis.symbol,
+                "result": json.loads(analysis.result_json or "null"),
+                "outcome": json.loads(outcome.outcome_json) if outcome else None,
+            }
+            for analysis, outcome in rows
+        ]
+
     @staticmethod
     def _as_dict(row: MarketAnalysisRow, *, include_audit: bool) -> dict[str, Any]:
         created_at = row.created_at.replace(tzinfo=UTC) if row.created_at.tzinfo is None else row.created_at
