@@ -28,6 +28,7 @@ import type {
   SettingsField,
   SettingsPayload,
   BackupInventory,
+  LogMaintenanceStatus,
   WebUpdateStatus,
   WebUpdateCheck,
   StructureGateSummary,
@@ -2331,6 +2332,101 @@ export function BackupPanel({
   );
 }
 
+export function LogMaintenancePanel({
+  busy,
+  setBusy,
+  setError,
+}: {
+  busy: string | null;
+  setBusy: (value: string | null) => void;
+  setError: (value: string | null) => void;
+}) {
+  const [status, setStatus] = useState<LogMaintenanceStatus | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    const next = await api<LogMaintenanceStatus>("/api/logs");
+    setStatus(next);
+    return next;
+  }, []);
+
+  useEffect(() => {
+    load().catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+  }, [load, setError]);
+
+  const clearLogs = useCallback(async () => {
+    setBusy("clear-logs");
+    setError(null);
+    setNote("日志清理已排队…");
+    try {
+      await api<{ queued: boolean }>("/api/logs/clear", { method: "POST" });
+      for (let attempt = 0; attempt < 180; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        let next: LogMaintenanceStatus;
+        try {
+          next = await load();
+        } catch {
+          setNote("服务正在切换专用日志，等待恢复…");
+          continue;
+        }
+        if (next.phase === "running" || next.phase === "idle") {
+          setNote("正在隔离并清理 CandlePilot 日志，服务可能短暂重连…");
+          continue;
+        }
+        if (next.phase === "failed") throw new Error(next.message);
+        const sizes = next.before_bytes !== null && next.after_bytes !== null
+          ? `（${formatStorageSize(next.before_bytes)} → ${formatStorageSize(next.after_bytes)}）`
+          : "";
+        setNote(`${next.message}${sizes}`);
+        setConfirming(false);
+        return;
+      }
+      throw new Error("日志清理在 90 秒内没有返回结果，请检查更新服务日志。");
+    } catch (reason) {
+      setNote(null);
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }, [load, setBusy, setError]);
+
+  const blocked = busy !== null || status === null || !status.supported || status.phase === "running";
+  return (
+    <div className="settings-section web-update-section">
+      <h4 className="account-subhead">CandlePilot 日志</h4>
+      <div className="settings-actions">
+        {!confirming ? (
+          <button className="compact danger" disabled={blocked} onClick={() => setConfirming(true)}>
+            清除日志
+          </button>
+        ) : (
+          <>
+            <span className="history-warn">确认永久清除 CandlePilot 专用日志？活动任务必须已停止，首次启用隔离时服务会短暂重启。</span>
+            <button className="compact danger" disabled={busy !== null} onClick={clearLogs}>确认清除</button>
+            <button className="text-button" disabled={busy !== null} onClick={() => setConfirming(false)}>取消</button>
+          </>
+        )}
+        {note && <span className="settings-saved">{note}</span>}
+      </div>
+      <small className="settings-hint">
+        {status?.supported
+          ? "只清理 CandlePilot 的独立 systemd journal，不影响 SSH、Nginx 或其他服务；删除不可恢复。"
+          : status?.message ?? "正在读取 VPS 日志管理状态…"}
+      </small>
+      {status?.finished_at && status.phase !== "running" && (
+        <div className={`update-result ${status.phase}`}>
+          <strong>{status.message}</strong>
+          {status.before_bytes !== null && status.after_bytes !== null && (
+            <span>{formatStorageSize(status.before_bytes)} → {formatStorageSize(status.after_bytes)}</span>
+          )}
+          <span>{formatLocalDateTime(new Date(status.finished_at))}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RestartPanel({
   busy,
   setBusy,
@@ -2670,6 +2766,7 @@ function SettingsPanel({
       </p>
       <WebUpdatePanel busy={busy} setBusy={setBusy} setError={setError} />
       <BackupPanel busy={busy} setBusy={setBusy} setError={setError} />
+      <LogMaintenancePanel busy={busy} setBusy={setBusy} setError={setError} />
       <RestartPanel busy={busy} setBusy={setBusy} setError={setError} />
       <CustomProvidersPanel busy={busy} setBusy={setBusy} setError={setError} />
       {payload.sections.map((section) => (

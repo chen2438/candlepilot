@@ -17,6 +17,20 @@ MANAGED_PYTHON_VERSION="${CANDLEPILOT_MANAGED_PYTHON_VERSION:-3.12.13}"
 UPDATE_CONFIRMATION="${CANDLEPILOT_UPDATE_CONFIRM:-}"
 UPDATE_BACKUP_ROOT="${CANDLEPILOT_UPDATE_BACKUP_ROOT:-/var/backups/candlepilot}"
 
+install_candlepilot_log_namespace() {
+  local systemd_version
+  systemd_version="$(systemd --version | awk 'NR == 1 {print $2}')"
+  [[ "$systemd_version" =~ ^[0-9]+$ ]] && (( systemd_version >= 248 )) \
+    || fail "systemd 248 or newer is required for isolated CandlePilot logs"
+  install -d -o root -g root -m 0755 /etc/systemd/system/candlepilot.service.d
+  cat >/etc/systemd/system/candlepilot.service.d/logging.conf <<'EOF'
+[Service]
+LogNamespace=candlepilot
+EOF
+  chmod 0644 /etc/systemd/system/candlepilot.service.d/logging.conf
+  systemctl daemon-reload
+}
+
 install_web_update_helper() {
   local helper_dir="/usr/local/libexec" source_dir
   source_dir="$(mktemp -d)"
@@ -203,6 +217,7 @@ PY
   runuser -u "$APP_USER" -- git -C "$APP_DIR" merge-base --is-ancestor "$old_sha" "$new_sha" \
     || fail "origin/$BRANCH is not a fast-forward update; refusing to rewrite history"
   if [[ "$old_sha" == "$new_sha" ]]; then
+    install_candlepilot_log_namespace
     install_web_update_helper
     echo "CandlePilot is already up to date at ${old_sha:0:12}."
     return
@@ -309,6 +324,8 @@ PY
     HOME="/home/$APP_USER" PATH="/usr/local/bin:/usr/bin:/bin" \
     pnpm --dir "$APP_DIR/frontend" run build
 
+  install_candlepilot_log_namespace
+
   if [[ "$service_was_active" == true ]]; then
     systemctl start candlepilot.service
     for _ in $(seq 1 30); do
@@ -320,7 +337,7 @@ PY
     done
     curl --silent --fail \
       "http://127.0.0.1:$installed_backend_port/api/health/ready" >/dev/null \
-      || { journalctl -u candlepilot --no-pager -n 80; return 1; }
+      || { journalctl --namespace=candlepilot -u candlepilot.service --no-pager -n 80; return 1; }
   fi
 
   # Publish privileged updater files only after the new application version has
@@ -563,6 +580,7 @@ Environment=PATH=/home/$APP_USER/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=$APP_DIR/.venv/bin/candlepilot serve
 Restart=on-failure
 RestartSec=5
+LogNamespace=candlepilot
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
@@ -617,7 +635,7 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 curl --silent --fail "http://127.0.0.1:$BACKEND_PORT/api/health/ready" >/dev/null \
-  || { journalctl -u candlepilot --no-pager -n 80; fail "backend did not become ready"; }
+  || { journalctl --namespace=candlepilot -u candlepilot.service --no-pager -n 80; fail "backend did not become ready"; }
 systemctl enable nginx
 systemctl reload-or-restart nginx
 for _ in $(seq 1 10); do
@@ -641,7 +659,7 @@ echo "Backend: http://127.0.0.1:$BACKEND_PORT"
 echo "Username: $ADMIN_USERNAME"
 echo "The certificate is self-signed; verify this SHA-256 fingerprint before accepting it:"
 openssl x509 -in /etc/candlepilot/tls/server.crt -noout -fingerprint -sha256
-echo "Service logs: journalctl -u candlepilot -f"
+echo "Service logs: journalctl --namespace=candlepilot -u candlepilot.service -f"
 echo "Optional Codex ChatGPT login (run as the application user):"
 echo "  sudo -iu $APP_USER codex login --device-auth"
 echo "  sudo -iu $APP_USER codex login status"

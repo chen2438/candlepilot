@@ -41,7 +41,12 @@
 - 健康检查：`/api/health/live`（存活）、`/api/health/ready`（就绪，覆盖迁移版本与
   测试网 Broker 配置）。任一检查不满足时 `/ready` 返回 503；Broker 检查只确认进程已构造交易
   客户端，不向币安发起额外网络请求。
-- 结构化日志：HTTP 请求 JSON 日志 + request ID。
+- 结构化日志：HTTP 请求 JSON 日志 + request ID。`httpx` 的成功请求日志提升到 WARNING 门槛，
+  避免高频账户轮询把带签名查询串的完整 Binance URL 写入日志；应用自身仍记录必要的请求摘要、
+  告警与错误。
+- VPS 上服务输出使用 `LogNamespace=candlepilot` 写入独立 systemd journal。清理只轮转并 vacuum
+  该命名空间，不影响默认 journal 中的 SSH、Nginx 或其他服务记录；首次从旧部署启用隔离时需要
+  root worker 重启一次已停止活动任务的主服务。
 - 运行指标：`/api/metrics/runtime` 提供请求量、错误率、并发数、平均/P95 延迟、状态码分布。
 - 告警：`/api/alerts` 覆盖紧急锁定、测试网配置/保护/用户流、API 错误率、模型错误率/P95 延迟；
   本地通知渠道对告警首次触发/解除去重后写入 JSON 日志与 `alert_events` 表，

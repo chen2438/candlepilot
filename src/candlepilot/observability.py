@@ -31,6 +31,10 @@ def configure_structured_logging(level: int = logging.INFO) -> None:
     root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(level)
+    # httpx includes the complete URL at INFO. Signed Binance URLs carry
+    # short-lived signatures and emit several repetitive lines per account
+    # refresh, so they are both sensitive and too noisy for the service log.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 class OperationalMetrics:

@@ -6,6 +6,7 @@ STATUS_DIR="/var/lib/candlepilot"
 STATUS_FILE="$STATUS_DIR/update-status.json"
 BACKUP_MANIFEST_FILE="$STATUS_DIR/backups.json"
 BACKUP_STATUS_FILE="$STATUS_DIR/backup-status.json"
+LOG_STATUS_FILE="$STATUS_DIR/log-status.json"
 LOG_FILE="/var/log/candlepilot-update.log"
 
 [[ -r "$CONFIG_FILE" ]] || { echo "missing $CONFIG_FILE" >&2; exit 1; }
@@ -178,6 +179,72 @@ print(allocated)
 PY
 }
 
+write_log_status() {
+  local phase="$1" message="$2" started_at="$3" finished_at="${4:-}"
+  local before_bytes="${5:-}" after_bytes="${6:-}"
+  python3 - "$LOG_STATUS_FILE" "$phase" "$message" "$started_at" \
+    "$finished_at" "$before_bytes" "$after_bytes" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+payload = {
+    "phase": sys.argv[2],
+    "message": sys.argv[3],
+    "started_at": sys.argv[4] or None,
+    "finished_at": sys.argv[5] or None,
+    "before_bytes": int(sys.argv[6]) if sys.argv[6] else None,
+    "after_bytes": int(sys.argv[7]) if sys.argv[7] else None,
+}
+temporary = path.with_suffix(".tmp")
+temporary.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+os.chmod(temporary, 0o644)
+os.replace(temporary, path)
+PY
+}
+
+log_namespace_size() {
+  local total=0 path bytes
+  while IFS= read -r -d '' path; do
+    [[ -d "$path" && ! -L "$path" ]] || continue
+    bytes="$(du --summarize --block-size=1 -- "$path" | awk '{print $1}')"
+    [[ "$bytes" =~ ^[0-9]+$ ]] || return 1
+    total=$((total + bytes))
+  done < <(
+    find /var/log/journal /run/log/journal -mindepth 1 -maxdepth 1 \
+      -type d -name '*.candlepilot' -print0 2>/dev/null
+  )
+  printf '%s\n' "$total"
+}
+
+clear_candlepilot_logs() {
+  local systemd_version before_bytes after_bytes
+  systemd_version="$(systemd --version | awk 'NR == 1 {print $2}')"
+  [[ "$systemd_version" =~ ^[0-9]+$ ]] && (( systemd_version >= 248 )) \
+    || return 1
+  before_bytes="$(log_namespace_size)"
+  install -d -o root -g root -m 0755 /etc/systemd/system/candlepilot.service.d
+  cat >/etc/systemd/system/candlepilot.service.d/logging.conf <<'EOF'
+[Service]
+LogNamespace=candlepilot
+EOF
+  chmod 0644 /etc/systemd/system/candlepilot.service.d/logging.conf
+  systemctl daemon-reload
+  # A restart is required to attach stdout/stderr to the dedicated journal.
+  # The API refuses this action while trading or model work is active.
+  if systemctl is-active --quiet candlepilot.service; then
+    sleep 2
+    systemctl restart candlepilot.service
+  fi
+  journalctl --namespace=candlepilot --rotate >>"$LOG_FILE" 2>&1
+  sleep 2
+  journalctl --namespace=candlepilot --vacuum-time=1s >>"$LOG_FILE" 2>&1
+  after_bytes="$(log_namespace_size)"
+  printf '%s\t%s\n' "$before_bytes" "$after_bytes"
+}
+
 if [[ "${1:-}" == "--refresh-manifest" ]]; then
   [[ "$#" -eq 1 ]] || exit 64
   refresh_backup_manifest
@@ -225,6 +292,25 @@ if [[ "$action" == "delete-backup" ]]; then
   fi
   finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   write_backup_status "failed" "delete" "备份删除失败，请检查更新服务日志" "$started_at" "$finished_at" "$backup_id"
+  exit 1
+fi
+
+if [[ "$action" == "clear-logs" ]]; then
+  started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  write_log_status "running" "正在清理 CandlePilot 专用日志" "$started_at"
+  set +e
+  sizes="$(clear_candlepilot_logs 2>>"$LOG_FILE")"
+  exit_code=$?
+  set -e
+  finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if (( exit_code == 0 )); then
+    before_bytes="${sizes%%$'\t'*}"
+    after_bytes="${sizes#*$'\t'}"
+    write_log_status "completed" "CandlePilot 日志已清理" "$started_at" \
+      "$finished_at" "$before_bytes" "$after_bytes"
+    exit 0
+  fi
+  write_log_status "failed" "日志清理失败，请检查更新服务日志" "$started_at" "$finished_at"
   exit 1
 fi
 

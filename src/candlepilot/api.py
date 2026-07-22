@@ -129,6 +129,7 @@ WEB_UPDATE_HELPER = Path("/usr/local/sbin/candlepilot-web-update")
 WEB_UPDATE_STATUS_FILE = Path("/var/lib/candlepilot/update-status.json")
 WEB_BACKUP_MANIFEST_FILE = Path("/var/lib/candlepilot/backups.json")
 WEB_BACKUP_STATUS_FILE = Path("/var/lib/candlepilot/backup-status.json")
+WEB_LOG_STATUS_FILE = Path("/var/lib/candlepilot/log-status.json")
 WEB_UPDATE_REPOSITORY = Path(__file__).resolve().parents[2]
 WEB_UPDATE_PHASES = {"idle", "running", "completed", "failed"}
 WEB_BACKUP_ACTIONS = {"refresh", "delete"}
@@ -337,6 +338,64 @@ def read_web_backup_inventory(
                 "message": "无法读取备份维护状态",
             }
     return payload
+
+
+def read_web_log_status(
+    *,
+    helper_path: Path | None = None,
+    status_path: Path | None = None,
+    platform: str | None = None,
+) -> dict[str, Any]:
+    """Read only the sanitized result of root-owned log maintenance."""
+
+    helper_path = helper_path or WEB_UPDATE_HELPER
+    status_path = status_path or WEB_LOG_STATUS_FILE
+    platform = platform or sys.platform
+    supported = (
+        platform.startswith("linux")
+        and helper_path.is_file()
+        and os.access(helper_path, os.X_OK)
+    )
+    payload: dict[str, Any] = {
+        "supported": supported,
+        "phase": "idle",
+        "message": (
+            "尚未清理 CandlePilot 日志"
+            if supported
+            else "日志管理仅在通过 VPS 安装器部署维护助手后可用"
+        ),
+        "started_at": None,
+        "finished_at": None,
+        "before_bytes": None,
+        "after_bytes": None,
+    }
+    if not supported or not status_path.is_file():
+        return payload
+    try:
+        stored = json.loads(status_path.read_text(encoding="utf-8"))
+        if not isinstance(stored, dict) or stored.get("phase") not in WEB_UPDATE_PHASES:
+            raise ValueError
+        message = stored.get("message")
+        if not isinstance(message, str) or len(message) > 1000:
+            raise ValueError
+        result = {**payload, "phase": stored["phase"], "message": message}
+        for key in ("started_at", "finished_at"):
+            value = stored.get(key)
+            if value is not None and (not isinstance(value, str) or len(value) > 128):
+                raise ValueError
+            result[key] = value
+        for key in ("before_bytes", "after_bytes"):
+            value = stored.get(key)
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not 0 <= value <= 2**63 - 1
+            ):
+                raise ValueError
+            result[key] = value
+        return result
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {**payload, "phase": "failed", "message": "无法读取日志维护状态"}
 
 
 async def queue_web_maintenance(*arguments: str) -> None:
@@ -868,6 +927,8 @@ def create_app(
     backup_pending = False
     backup_baseline_finished_at: str | None = None
     backup_baseline_generated_at: str | None = None
+    log_pending = False
+    log_baseline_finished_at: str | None = None
     web_update_check_lock = asyncio.Lock()
     testnet_account_memo: dict[str, Any] = {"account": None, "expires_at": 0.0}
     testnet_levels_lock = asyncio.Lock()
@@ -1808,6 +1869,8 @@ def create_app(
         update_status = read_web_update_status()
         if update_pending or update_status["phase"] == "running":
             raise HTTPException(status_code=409, detail="a software update is already running")
+        if log_pending or read_web_log_status()["phase"] == "running":
+            raise HTTPException(status_code=409, detail="log maintenance is running")
         try:
             await queue_web_maintenance(*arguments)
         except RuntimeError as exc:
@@ -1836,6 +1899,59 @@ def create_app(
             raise HTTPException(status_code=409, detail="latest backup is protected")
         return await queue_backup_action("--delete-backup", backup_id)
 
+    @app.get("/api/logs")
+    async def web_log_status() -> dict[str, Any]:
+        nonlocal log_pending
+        status = read_web_log_status()
+        if log_pending and status["phase"] in {"completed", "failed"}:
+            if status["finished_at"] == log_baseline_finished_at:
+                return {
+                    **status,
+                    "phase": "running",
+                    "message": "日志清理已排队，等待 root 服务启动",
+                    "finished_at": None,
+                }
+            log_pending = False
+        return status
+
+    @app.post("/api/logs/clear", status_code=202)
+    async def clear_web_logs() -> dict[str, bool]:
+        nonlocal log_baseline_finished_at, log_pending
+        active: list[str] = []
+        if engine.running:
+            active.append("the formal decision engine")
+        elif scheduler.running:
+            active.append("the trading scheduler")
+        if background_model_work():
+            active.append("a provider probe or backtest")
+        if active:
+            raise HTTPException(
+                status_code=409,
+                detail="stop active work before clearing CandlePilot logs: "
+                + ", ".join(active),
+            )
+        status = read_web_log_status()
+        if not status["supported"]:
+            raise HTTPException(status_code=409, detail=status["message"])
+        if log_pending or status["phase"] == "running":
+            raise HTTPException(status_code=409, detail="log maintenance is already running")
+        if restart_pending:
+            raise HTTPException(status_code=409, detail="backend restart is in progress")
+        if web_update_check_lock.locked():
+            raise HTTPException(status_code=409, detail="an update check is in progress")
+        if update_pending or read_web_update_status()["phase"] == "running":
+            raise HTTPException(status_code=409, detail="a software update is running")
+        backup_status = read_web_backup_inventory()["status"]
+        if backup_pending or backup_status["phase"] == "running":
+            raise HTTPException(status_code=409, detail="backup maintenance is running")
+        try:
+            await queue_web_maintenance("--clear-logs")
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        log_baseline_finished_at = status["finished_at"]
+        log_pending = True
+        return {"queued": True}
+
     @app.get("/api/update/status")
     async def web_update_status() -> dict[str, Any]:
         nonlocal update_pending
@@ -1863,6 +1979,8 @@ def create_app(
                 raise HTTPException(status_code=409, detail=status["message"])
             if update_pending or status["phase"] == "running":
                 raise HTTPException(status_code=409, detail="an update is already running")
+            if log_pending or read_web_log_status()["phase"] == "running":
+                raise HTTPException(status_code=409, detail="log maintenance is running")
             try:
                 return await check_web_update()
             except WebUpdateCheckError as exc:
@@ -1896,6 +2014,8 @@ def create_app(
         backup_status = read_web_backup_inventory()["status"]
         if backup_pending or backup_status["phase"] == "running":
             raise HTTPException(status_code=409, detail="backup maintenance is running")
+        if log_pending or read_web_log_status()["phase"] == "running":
+            raise HTTPException(status_code=409, detail="log maintenance is running")
 
         try:
             process = await asyncio.create_subprocess_exec(
@@ -1953,6 +2073,8 @@ def create_app(
             raise HTTPException(status_code=409, detail="an update check is in progress")
         if update_pending or read_web_update_status()["phase"] == "running":
             raise HTTPException(status_code=409, detail="a software update is in progress")
+        if log_pending or read_web_log_status()["phase"] == "running":
+            raise HTTPException(status_code=409, detail="log maintenance is in progress")
         restart_pending = True
 
         async def _reexec() -> None:

@@ -80,6 +80,16 @@ export interface BackupInventory {
   };
 }
 
+export interface LogMaintenanceStatus {
+  supported: boolean;
+  phase: "idle" | "running" | "completed" | "failed";
+  message: string;
+  started_at: string | null;
+  finished_at: string | null;
+  before_bytes: number | null;
+  after_bytes: number | null;
+}
+
 export interface StartupProbeProviderResult {
   status: "pending" | "completed";
   model?: string | null;

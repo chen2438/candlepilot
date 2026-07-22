@@ -44,12 +44,16 @@ def test_root_worker_never_executes_the_application_users_installer() -> None:
     assert "candlepilot-update.path" in installer
     assert "/run/candlepilot-update/request" in launcher
     assert "--delete-backup" in launcher
+    assert "--clear-logs" in launcher
     assert "latest backup is protected" in worker
     assert 'target.resolve(strict=True).parent != root' in worker
     assert "len(backups) <= 1" in worker
     assert "sudo" not in launcher
     assert "systemctl" not in launcher
     assert "NoNewPrivileges=true" in installer
+    assert "LogNamespace=candlepilot" in installer
+    assert "journalctl --namespace=candlepilot --vacuum-time=1s" in worker
+    assert "journalctl --vacuum-time=1s" not in worker
 
 
 def test_installer_backs_up_the_database_selected_in_env() -> None:
@@ -79,6 +83,7 @@ def test_uninstaller_removes_the_privileged_update_surface() -> None:
     for path in (
         "/etc/systemd/system/candlepilot-update.service",
         "/etc/systemd/system/candlepilot-update.path",
+        "/etc/systemd/system/candlepilot.service.d",
         "/etc/tmpfiles.d/candlepilot-update.conf",
         "/etc/sudoers.d/candlepilot-web-update",
         "/usr/local/sbin/candlepilot-web-update",

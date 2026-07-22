@@ -5,6 +5,7 @@ from candlepilot.observability import (
     AlertNotifier,
     JsonFormatter,
     OperationalMetrics,
+    configure_structured_logging,
     evaluate_alerts,
 )
 
@@ -39,6 +40,22 @@ def test_json_formatter_and_runtime_metrics_are_structured() -> None:
     assert snapshot["p95_duration_ms"] == 30.0
     assert snapshot["latency_sample_count"] == 3
     assert snapshot["status_counts"] == {"200": 2, "404": 1, "503": 1}
+
+
+def test_structured_logging_suppresses_full_httpx_request_urls() -> None:
+    root = logging.getLogger()
+    httpx_logger = logging.getLogger("httpx")
+    old_handlers = root.handlers[:]
+    old_root_level = root.level
+    old_httpx_level = httpx_logger.level
+    try:
+        configure_structured_logging()
+
+        assert httpx_logger.level == logging.WARNING
+    finally:
+        root.handlers = old_handlers
+        root.setLevel(old_root_level)
+        httpx_logger.setLevel(old_httpx_level)
 
 
 def test_alert_rules_require_minimum_volume_and_report_safety_failures() -> None:

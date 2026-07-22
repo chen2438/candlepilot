@@ -65,6 +65,7 @@ REMOVE_APP_USER="${REMOVE_APP_USER:-false}"
 cat <<EOF
 CandlePilot uninstall targets:
   systemd services: /etc/systemd/system/candlepilot.service
+                    /etc/systemd/system/candlepilot.service.d/logging.conf
                     /etc/systemd/system/candlepilot-update.service
                     /etc/systemd/system/candlepilot-update.path
   update helper:    /usr/local/sbin/candlepilot-web-update
@@ -101,6 +102,7 @@ rm -f -- \
   /etc/systemd/system/candlepilot-update.service \
   /etc/systemd/system/candlepilot-update.path \
   /etc/tmpfiles.d/candlepilot-update.conf
+rm -rf -- /etc/systemd/system/candlepilot.service.d
 systemctl daemon-reload
 systemctl reset-failed candlepilot.service candlepilot-update.service 2>/dev/null || true
 

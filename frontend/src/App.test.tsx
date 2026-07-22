@@ -8,6 +8,7 @@ import {
   CadenceSelector,
   formatDailyLossPercent,
   LoginScreen,
+  LogMaintenancePanel,
   ProviderChoiceButton,
   WebUpdatePanel,
 } from "./App";
@@ -279,6 +280,45 @@ describe("BackupPanel", () => {
     expect(screen.queryByText(stale, { exact: false })).toBeNull();
     expect(request).toHaveBeenCalledWith(
       `/api/backups/${stale}/delete`,
+      expect.objectContaining({ method: "POST" }),
+    );
+    request.mockRestore();
+  });
+});
+
+describe("LogMaintenancePanel", () => {
+  it("requires confirmation and clears only through the fixed log endpoint", async () => {
+    let cleared = false;
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (init?.method === "POST") {
+        cleared = true;
+        return new Response(JSON.stringify({ queued: true }), {
+          status: 202,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({
+        supported: true,
+        phase: cleared ? "completed" : "idle",
+        message: cleared ? "CandlePilot 日志已清理" : "尚未清理 CandlePilot 日志",
+        started_at: cleared ? "2026-07-22T10:00:00Z" : null,
+        finished_at: cleared ? "2026-07-22T10:00:01Z" : null,
+        before_bytes: cleared ? 4096 : null,
+        after_bytes: cleared ? 1024 : null,
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+
+    render(<LogMaintenancePanel busy={null} setBusy={vi.fn()} setError={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "清除日志" }));
+    expect(screen.getByText(/确认永久清除/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "确认清除" }));
+
+    await waitFor(() => expect(screen.getAllByText(/4.00 KB → 1.00 KB/).length).toBeGreaterThan(0), {
+      timeout: 2000,
+    });
+    expect(request).toHaveBeenCalledWith(
+      "/api/logs/clear",
       expect.objectContaining({ method: "POST" }),
     );
     request.mockRestore();

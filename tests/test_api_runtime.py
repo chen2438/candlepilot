@@ -1759,6 +1759,43 @@ def test_web_update_status_requires_an_executable_helper(tmp_path: Path) -> None
     assert status["supported"] is False
 
 
+def test_web_log_status_reads_only_bounded_public_fields(tmp_path: Path) -> None:
+    helper = tmp_path / "web-update"
+    helper.write_text("#!/bin/sh\n", encoding="utf-8")
+    helper.chmod(0o755)
+    status_file = tmp_path / "log-status.json"
+    status_file.write_text(
+        json.dumps(
+            {
+                "phase": "completed",
+                "message": "cleared",
+                "started_at": "2026-07-22T10:00:00Z",
+                "finished_at": "2026-07-22T10:00:01Z",
+                "before_bytes": 4096,
+                "after_bytes": 1024,
+                "journal_path": "/must/not/cross/the/api",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status = api_module.read_web_log_status(
+        helper_path=helper,
+        status_path=status_file,
+        platform="linux",
+    )
+
+    assert status == {
+        "supported": True,
+        "phase": "completed",
+        "message": "cleared",
+        "started_at": "2026-07-22T10:00:00Z",
+        "finished_at": "2026-07-22T10:00:01Z",
+        "before_bytes": 4096,
+        "after_bytes": 1024,
+    }
+
+
 def test_web_backup_inventory_reads_only_sanitized_manifest(tmp_path: Path) -> None:
     helper = tmp_path / "web-update"
     helper.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -1889,6 +1926,53 @@ def test_web_backup_delete_queues_only_an_unprotected_manifest_id(
     assert protected.status_code == 409
     assert deleted.status_code == 202
     assert calls == [("--delete-backup", older)]
+    asyncio.run(database.close())
+
+
+def test_web_log_clear_queues_only_the_fixed_root_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'log-clear.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    calls: list[tuple[str, ...]] = []
+
+    async def queue(*arguments: str) -> None:
+        calls.append(arguments)
+
+    monkeypatch.setattr(
+        api_module,
+        "read_web_log_status",
+        lambda: {
+            "supported": True,
+            "phase": "idle",
+            "message": "ready",
+            "finished_at": None,
+        },
+    )
+    monkeypatch.setattr(
+        api_module,
+        "read_web_update_status",
+        lambda: {"phase": "idle", "supported": True},
+    )
+    monkeypatch.setattr(
+        api_module,
+        "read_web_backup_inventory",
+        lambda: {"status": {"phase": "idle"}},
+    )
+    monkeypatch.setattr(api_module, "queue_web_maintenance", queue)
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        response = client.post("/api/logs/clear")
+
+    assert response.status_code == 202
+    assert calls == [("--clear-logs",)]
     asyncio.run(database.close())
 
 
