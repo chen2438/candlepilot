@@ -6,7 +6,16 @@ from candlepilot.market.history import build_backtest_candles
 
 
 def _row(timestamp_ms: int) -> list[object]:
-    return [timestamp_ms, "100", "110", "90", "105", "12"]
+    return [
+        timestamp_ms,
+        "100",
+        "110",
+        "90",
+        "105",
+        "12",
+        timestamp_ms + 1,
+        "1261",
+    ]
 
 
 def test_funding_is_charged_only_on_its_settlement_candle() -> None:
@@ -21,6 +30,7 @@ def test_funding_is_charged_only_on_its_settlement_candle() -> None:
     candles = build_backtest_candles(rows, [event], "5m")
 
     assert [item["funding_rate"] for item in candles] == ["0", "0.0001", "0", "0"]
+    assert [item["quote_volume"] for item in candles] == ["1261"] * 4
 
 
 def test_multiple_funding_events_in_one_candle_are_summed() -> None:

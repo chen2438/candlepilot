@@ -24,6 +24,7 @@ class _Row:
     low: Decimal
     close: Decimal
     volume: Decimal
+    quote_volume: Decimal
 
 
 def _candles(close: str = "101") -> list[_Row]:
@@ -35,6 +36,7 @@ def _candles(close: str = "101") -> list[_Row]:
             Decimal("99"),
             Decimal(close),
             Decimal("10"),
+            Decimal("1005"),
         )
     ]
 
@@ -43,7 +45,7 @@ def test_content_fingerprint_is_stable_for_identical_market_data() -> None:
     first = content_fingerprint(_candles(), schema_version=BACKTEST_DATA_SCHEMA_VERSION)
     second = content_fingerprint(_candles(), schema_version=BACKTEST_DATA_SCHEMA_VERSION)
     assert first == second
-    assert first.startswith("backtest-candles-v1:sha256:")
+    assert first.startswith("backtest-candles-v2:sha256:")
 
 
 def test_content_fingerprint_changes_with_market_data() -> None:

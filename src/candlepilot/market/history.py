@@ -45,6 +45,7 @@ def build_backtest_candles(
             "low": row[3],
             "close": row[4],
             "volume": row[5],
+            "quote_volume": row[7],
             "funding_rate": str(rates_by_open.get(int(row[0]), Decimal("0"))),
         }
         for row in rows

@@ -8,6 +8,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 
+_CACHE_SCHEMA_VERSION = "v2"
 _SCHEMA = pa.schema(
     [
         pa.field("timestamp", pa.timestamp("ms", tz="UTC"), nullable=False),
@@ -16,6 +17,7 @@ _SCHEMA = pa.schema(
         pa.field("low", pa.string(), nullable=False),
         pa.field("close", pa.string(), nullable=False),
         pa.field("volume", pa.string(), nullable=False),
+        pa.field("quote_volume", pa.string(), nullable=False),
         pa.field("funding_rate", pa.string(), nullable=False),
     ]
 )
@@ -87,4 +89,10 @@ class HistoricalMarketCache:
             raise ValueError("invalid cache interval")
         start_ms = int(start.timestamp() * 1000)
         end_ms = int(end.timestamp() * 1000)
-        return self.root / symbol / interval / f"{start_ms}-{end_ms}-{limit}.parquet"
+        return (
+            self.root
+            / _CACHE_SCHEMA_VERSION
+            / symbol
+            / interval
+            / f"{start_ms}-{end_ms}-{limit}.parquet"
+        )

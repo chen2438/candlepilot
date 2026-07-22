@@ -48,6 +48,7 @@ def _series(interval: str, *, count: int = 400) -> list[Candle]:
                 low=price * Decimal("0.996"),
                 close=price,
                 volume=Decimal("500"),
+                quote_volume=Decimal("500") * price,
             )
         )
     return candles
@@ -332,6 +333,7 @@ def test_entry_bar_protection_is_settled_before_the_next_decision() -> None:
         low=entry_bar.low,
         close=entry_bar.close,
         volume=entry_bar.volume,
+        quote_volume=entry_bar.quote_volume,
     )
 
     result = asyncio.run(runner.run(_Provider("model-a"), ModelRun("model-a")))
@@ -455,6 +457,7 @@ def test_higher_cadences_cannot_duplicate_funding_settlement() -> None:
             candle.low,
             candle.close,
             candle.volume,
+            candle.quote_volume,
             Decimal("0.001"),
         )
         # These exaggerated rates must be irrelevant: settlement is driven by
@@ -470,6 +473,7 @@ def test_higher_cadences_cannot_duplicate_funding_settlement() -> None:
                 item.low,
                 item.close,
                 item.volume,
+                item.quote_volume,
                 Decimal("1"),
             )
 
@@ -508,6 +512,7 @@ def test_all_symbols_settle_before_the_first_decision_at_an_instant() -> None:
         low=Decimal("97"),
         close=Decimal("99"),
         volume=Decimal("500"),
+        quote_volume=Decimal("49500"),
     )
     initial = PortfolioState(
         equity=spec.config.initial_equity,

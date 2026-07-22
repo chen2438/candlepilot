@@ -3803,6 +3803,7 @@ def create_app(
                         low=Decimal(item["low"]),
                         close=Decimal(item["close"]),
                         volume=Decimal(item["volume"]),
+                        quote_volume=Decimal(item["quote_volume"]),
                         funding_rate=Decimal(item.get("funding_rate", "0")),
                     )
                     for item in payloads

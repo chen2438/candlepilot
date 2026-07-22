@@ -54,7 +54,16 @@ class BacktestMarket(ApiMarket):
             price *= 1.0005
             open_ms = start_ms + index * step
             rows.append(
-                [open_ms, str(price), str(price * 1.004), str(price * 0.996), str(price), "500"]
+                [
+                    open_ms,
+                    str(price),
+                    str(price * 1.004),
+                    str(price * 0.996),
+                    str(price),
+                    "500",
+                    open_ms + step - 1,
+                    str(price * 500),
+                ]
             )
         return rows[:max_candles]
 

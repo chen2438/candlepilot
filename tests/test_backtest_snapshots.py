@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -30,6 +31,7 @@ def _series(interval: str, count: int, *, drift: str = "0.001") -> list[Candle]:
                 low=price * Decimal("0.998"),
                 close=price,
                 volume=Decimal("100"),
+                quote_volume=Decimal("100") * price,
             )
         )
     return candles
@@ -65,6 +67,44 @@ def test_snapshot_carries_the_same_ladder_the_live_system_sends() -> None:
     assert "1d_range_position_20" in snapshot.features
     # No unprefixed leftovers, exactly as live.
     assert "ema_spread" not in snapshot.features
+
+
+def test_snapshot_uses_exchange_quote_volume_without_close_price_approximation() -> None:
+    series = {
+        interval: _series(interval, 260) for interval in DECISION_FEATURE_INTERVALS
+    }
+    series["1d"] = _series("1d", 40)
+    cutoff = _cutoff("5m", 5)
+    closed_5m = [
+        candle
+        for candle in series["5m"]
+        if candle.timestamp + timedelta(minutes=5) <= cutoff
+    ]
+    latest = closed_5m[-1]
+    latest_index = series["5m"].index(latest)
+    series["5m"][latest_index] = replace(
+        latest, quote_volume=latest.quote_volume * Decimal("10")
+    )
+    series["30m"] = [
+        replace(candle, quote_volume=Decimal(index + 1) * Decimal("1000"))
+        for index, candle in enumerate(series["30m"])
+    ]
+
+    snapshot = HistoricalSnapshotBuilder(series).build("BTCUSDT", "5m", cutoff)
+    last_twenty = [candle.quote_volume for candle in closed_5m[-20:-1]] + [
+        latest.quote_volume * Decimal("10")
+    ]
+    expected_ratio = last_twenty[-1] / (sum(last_twenty) / Decimal("20"))
+    expected_24h = sum(
+        candle.quote_volume
+        for candle in series["30m"]
+        if cutoff - timedelta(hours=24) <= candle.timestamp < cutoff
+    )
+
+    assert snapshot.features["5m_quote_volume_ratio"] == pytest.approx(
+        float(expected_ratio)
+    )
+    assert snapshot.quote_volume_24h == expected_24h
 
 
 def test_snapshot_omits_the_flow_fields_history_cannot_supply() -> None:

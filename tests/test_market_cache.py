@@ -16,6 +16,7 @@ def test_parquet_cache_round_trip(tmp_path: Path) -> None:
             "low": "99",
             "close": "100.5",
             "volume": "12",
+            "quote_volume": "1203.7",
             "funding_rate": "0.0001",
         }
     ]
@@ -25,6 +26,7 @@ def test_parquet_cache_round_trip(tmp_path: Path) -> None:
     loaded = cache.load("BTCUSDT", "5m", start, end, 10_000)
 
     assert path.suffix == ".parquet"
+    assert "v2" in path.parts
     assert loaded == candles
 
 
@@ -40,6 +42,7 @@ def test_cache_clear_removes_parquet_files(tmp_path: Path) -> None:
             "low": "99",
             "close": "100",
             "volume": "1",
+            "quote_volume": "100",
             "funding_rate": "0",
         }
     ]

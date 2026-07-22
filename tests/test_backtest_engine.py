@@ -29,6 +29,7 @@ def _candle(
         low=Decimal(str(low)),
         close=Decimal(str(close)),
         volume=Decimal("10"),
+        quote_volume=Decimal("10") * Decimal(str(close)),
         funding_rate=Decimal(funding),
     )
 

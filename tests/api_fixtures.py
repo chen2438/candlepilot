@@ -81,7 +81,16 @@ class ApiMarket:
         }[interval]
         start_ms = int(start.timestamp() * 1000)
         return [
-            [start_ms + offset * step, "100", "101", "99", "100", "10"]
+            [
+                start_ms + offset * step,
+                "100",
+                "101",
+                "99",
+                "100",
+                "10",
+                start_ms + (offset + 1) * step - 1,
+                "1000",
+            ]
             for offset in range(min(2, max_candles))
         ]
 
@@ -108,6 +117,8 @@ class LLMReplayMarket(ApiMarket):
                 str(99 + index),
                 str(101 + index),
                 "10",
+                start_ms + (index + 1) * step - 1,
+                str((101 + index) * 10),
             ]
             for index in range(21)
         ]
@@ -162,4 +173,3 @@ class ApiTestnetBroker:
                 "leverage": "3",
             }
         ]
-

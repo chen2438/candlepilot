@@ -30,6 +30,7 @@ class Candle:
     low: Decimal
     close: Decimal
     volume: Decimal
+    quote_volume: Decimal
     funding_rate: Decimal = Decimal("0")
 
     def __post_init__(self) -> None:

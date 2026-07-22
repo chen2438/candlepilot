@@ -76,7 +76,7 @@ def _rows(candles: list[Candle]) -> list[list[Any]]:
             str(candle.close),
             str(candle.volume),
             int(candle.timestamp.timestamp() * 1000) + 1,
-            str(candle.volume * candle.close),
+            str(candle.quote_volume),
         ]
         for candle in candles
     ]
@@ -120,7 +120,7 @@ class HistoricalSnapshotBuilder:
         }
         quote_prefix = [Decimal("0")]
         for candle in series["30m"]:
-            quote_prefix.append(quote_prefix[-1] + candle.volume * candle.close)
+            quote_prefix.append(quote_prefix[-1] + candle.quote_volume)
         self._quote_volume_prefix = quote_prefix
         self._pipeline = FeaturePipeline()
 

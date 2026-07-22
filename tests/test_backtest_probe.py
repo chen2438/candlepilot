@@ -29,6 +29,7 @@ def _candles(interval_minutes: int, count: int) -> list[Candle]:
             low=Decimal("99"),
             close=Decimal("100"),
             volume=Decimal("10"),
+            quote_volume=Decimal("1000"),
         )
         for index in range(count)
     ]
