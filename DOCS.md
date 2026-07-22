@@ -2,7 +2,7 @@
 
 > 本文件与下方索引的 `docs/*.md` 专题共同构成 CandlePilot 的权威功能文档集。
 > 功能、接口、配置、验证方式或安全边界变化时，必须在同一提交中更新本入口及所有受影响的专题文档。
-> 最后更新：2026-07-22（统一正式订单最终执行资格门）
+> 最后更新：2026-07-22（拆分存储模型与仓库职责）
 
 ## 1. 如何阅读
 
@@ -65,6 +65,8 @@ USDⓈ-M USDT 永续合约。外部 LLM 或本地确定性策略生成结构化 
 - 后端：Python 3.12、FastAPI、Pydantic、SQLAlchemy、SQLite WAL；单进程异步，不依赖 Redis/Celery。
 - 前端：React、TypeScript、Vite；REST + WebSocket，白色浅色主题。
 - 存储：SQLite 保存业务、运行和审计数据；Parquet 保存大容量历史行情。
+- SQLite ORM 表与迁移定义集中在 `storage.models`，数据库生命周期和通用审计仓库保留在
+  `storage.database`，独立行情分析持久化由专用仓库模块承载；原有公开导入路径保持兼容。
 - 核心边界：`DecisionProvider` 负责模型接入，`FeaturePipeline` 负责特征，`TradingEngine` 负责编排，
   `AggressiveRiskPolicy` 负责确定性风控，Binance Broker 负责唯一的测试网执行。
 

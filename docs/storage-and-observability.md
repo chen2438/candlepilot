@@ -5,6 +5,9 @@
 
 ## 4.7 审计、存储与溯源
 
+- 存储代码按职责拆分：`storage.models` 只定义 ORM 表和迁移，`storage.database` 管理连接生命周期与
+  通用审计仓库，`storage.market_analysis_repository` 专管独立行情分析记录；`storage.database`
+  继续重导出既有公开类型，避免调用方依赖文件布局。
 - SQLite 表：`live_runs`（正式运行边界、配置快照与停止原因）、`inferences`（模型推理， nullable
   `live_run_id` 归属正式运行）、`inference_details`（逐次输入与 Prompt）、
   `risk_decisions`、`executions`（实际订单报告）、`execution_attempts`（推理对应的执行结论、失败阶段与损失）、
