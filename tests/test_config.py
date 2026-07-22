@@ -392,6 +392,23 @@ def test_provider_chain_rejects_multiple_different_providers(monkeypatch) -> Non
         Settings.from_env()
 
 
+def test_env_example_documents_the_single_provider_contract() -> None:
+    example = (Path(__file__).resolve().parents[1] / ".env.example").read_text()
+
+    assert "choose exactly one value" in example
+    assert "do not use commas or fallback routes" in example
+    for provider in (
+        "local",
+        "local-structure",
+        "local-flow",
+        "local-structure-flow",
+        "codex",
+        "claude-code",
+        "custom:<id>",
+    ):
+        assert provider in example
+
+
 def test_provider_references_must_exist_in_the_same_candidate() -> None:
     custom = '[{"id":"main","base_url":"https://main.example/v1"}]'
 

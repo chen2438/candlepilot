@@ -35,6 +35,9 @@
 | `CANDLEPILOT_ENV_FILE` | `.env` 路径（默认工作目录下 `.env`），加载器与前端设置页共用 |
 | `BINANCE_TESTNET_API_KEY` / `BINANCE_TESTNET_API_SECRET` | 必需；系统唯一运行模式使用的币安 Demo 测试网凭据 |
 
+仓库 `.env.example` 使用同一份单 Provider 约定并列出全部配置短名称；示例不再描述已经移除的主备
+fallback 路由。留空表示启动后在前端选择，不表示自动遍历 Provider。
+
 ## 6. CLI 命令
 
 - `candlepilot doctor` —— 检查 LLM 登录状态与币安只读公共接口，不下单。
