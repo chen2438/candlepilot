@@ -424,8 +424,10 @@ class SimulatedExchange:
         funding = position.funding * share
         # Cash started below equity by the already-unrealized PnL. Realising a
         # carried position therefore credits its lifetime PnL, while the trade
-        # result only reports movement inside the replay window.
-        self.cash += lifetime_gross - funding
+        # result only reports movement inside the replay window. Funding has
+        # already changed cash at each settlement boundary and is only
+        # apportioned here for trade attribution, so it must not be charged twice.
+        self.cash += lifetime_gross
         trade = BacktestTrade(
             symbol=symbol,
             side=position.side,
@@ -457,9 +459,11 @@ class SimulatedExchange:
         position = self._positions.get(symbol)
         if position is not None:
             direction = Decimal("1") if position.side == "LONG" else Decimal("-1")
-            position.funding += (
+            funding = (
                 position.quantity * candle.close * candle.funding_rate * direction
             )
+            position.funding += funding
+            self.cash -= funding
 
             trigger, reason = self._touched(position, candle)
             if trigger is not None:

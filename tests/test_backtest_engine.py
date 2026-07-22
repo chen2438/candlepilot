@@ -229,6 +229,30 @@ def test_funding_accrues_by_side_and_lands_in_the_trade() -> None:
     assert trade.exit_reason == "stop_loss"
 
 
+def test_funding_changes_equity_and_rolling_pnl_at_the_settlement_boundary() -> None:
+    exchange = SimulatedExchange(
+        BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0"))
+    )
+    exchange.execute(_order(), _candle(0), leverage=1)
+    exchange.portfolio_state({"BTCUSDT": Decimal("100")}, as_of=START)
+
+    settled = _candle(1, funding="0.01")
+    exchange.settle_candle("BTCUSDT", settled)
+    portfolio = exchange.portfolio_state(
+        {"BTCUSDT": Decimal("100")}, as_of=settled.timestamp
+    )
+
+    assert exchange.cash == Decimal("9999")
+    assert portfolio.equity == Decimal("9999")
+    assert portfolio.available_balance == Decimal("9899")
+    assert portfolio.pnl_24h == Decimal("-1")
+
+    exchange.close_all({"BTCUSDT": Decimal("100")}, settled.timestamp)
+    assert exchange.cash == Decimal("9999")
+    assert exchange.trades[0].funding == Decimal("1")
+    assert exchange.trades[0].net_pnl == Decimal("-1")
+
+
 def test_open_positions_are_flattened_so_no_unrealised_tail_is_counted() -> None:
     exchange = SimulatedExchange(
         BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0"))
