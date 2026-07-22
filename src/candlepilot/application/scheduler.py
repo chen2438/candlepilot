@@ -10,6 +10,7 @@ from candlepilot.application.testnet_feed import TestnetUserFeed
 from candlepilot.domain.models import MarketSnapshot, PortfolioState
 from candlepilot.market.binance import BinancePublicClient
 from candlepilot.risk.engine import SymbolRules
+from candlepilot.risk.partial_take_profit import PartialTakeProfitManager
 from candlepilot.risk.trailing import TrailingStopCriticalError, TrailingStopManager
 
 
@@ -58,6 +59,7 @@ class TradingScheduler:
             engine.audit,
             mode=trailing_stop_mode,  # type: ignore[arg-type]
         )
+        self.partial_take_profits = PartialTakeProfitManager(engine.audit)
         self._tasks: list[asyncio.Task[None]] = []
         self._one_shot_task: asyncio.Task[list[DecisionOutcome]] | None = None
         self._symbol_locks: dict[str, asyncio.Lock] = {}
@@ -253,17 +255,21 @@ class TradingScheduler:
         return errors
 
     async def _process_trailing_stops(self) -> list[str]:
-        if self.trailing_stops.mode == "off":
-            return []
         loader = getattr(self.engine.testnet_broker, "trailing_positions", None)
         if not callable(loader):
-            return ["broker does not expose trailing-stop position state"]
+            return ["broker does not expose protection-strategy position state"]
         positions = await loader()
         open_symbols = set(positions)
         if not positions:
-            return await self.trailing_stops.maintain(
+            trailing_errors = (
+                await self.trailing_stops.maintain({}, {}, open_symbols=open_symbols)
+                if self.trailing_stops.mode != "off"
+                else []
+            )
+            partial_errors = await self.partial_take_profits.maintain(
                 {}, {}, open_symbols=open_symbols
             )
+            return [*trailing_errors, *partial_errors]
         errors: list[str] = []
         for symbol, position in sorted(positions.items()):
             if not self.engine.running or self.engine.auto_stop_reason is not None:
@@ -274,8 +280,16 @@ class TradingScheduler:
             try:
                 async with lock:
                     rules = await self.engine._rules_for_symbol(symbol)
+                    if self.trailing_stops.mode != "off":
+                        errors.extend(
+                            await self.trailing_stops.maintain(
+                                {symbol: position},
+                                {symbol: rules},
+                                open_symbols=open_symbols,
+                            )
+                        )
                     errors.extend(
-                        await self.trailing_stops.maintain(
+                        await self.partial_take_profits.maintain(
                             {symbol: position},
                             {symbol: rules},
                             open_symbols=open_symbols,

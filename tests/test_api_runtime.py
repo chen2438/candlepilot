@@ -172,6 +172,18 @@ def test_control_api_lifecycle(tmp_path: Path) -> None:
         ]
         assert client.get("/api/trailing-stops/history").json() == {"events": []}
         assert client.get("/api/trailing-stops/history?limit=0").status_code == 422
+        assert status["scheduler"]["partial_take_profit"]["mode"] == "shadow"
+        assert [
+            item["profile_id"]
+            for item in status["scheduler"]["partial_take_profit"]["strategies"]
+        ] == ["1R / 25% + BE", "1R / 50% + BE"]
+        assert client.get("/api/partial-take-profits/history").json() == {
+            "events": []
+        }
+        assert (
+            client.get("/api/partial-take-profits/history?limit=0").status_code
+            == 422
+        )
         assert client.get("/api/testnet/events").json() == []
         assert client.get("/api/decision-events").json() == []
         assert client.get("/api/decision-events?limit=0").status_code == 422

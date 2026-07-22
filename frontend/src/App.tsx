@@ -30,6 +30,7 @@ import type {
   StructureGateSummary,
   TestnetAccountStatus,
   TrailingStopEvent,
+  PartialTakeProfitEvent,
 } from "./types";
 
 const EXIT_REASON: Record<string, string> = {
@@ -327,6 +328,7 @@ const HISTORY_CATEGORIES: Array<{ key: string; label: string; hint: string }> = 
   { key: "user_events", label: "测试网事件", hint: "用户数据流" },
   { key: "alerts", label: "告警历史", hint: "" },
   { key: "trailing_stops", label: "移动止损记录", hint: "影子候选与实盘改单" },
+  { key: "partial_take_profits", label: "部分止盈实验", hint: "1R 分批止盈与保本影子成交" },
   { key: "backtests", label: "回测记录", hint: "运行、逐模型结果与每条决策" },
   // Last, and worded plainly: the others are records of things that happened,
   // this one is data that can never be obtained again.
@@ -723,6 +725,8 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
   const [testnetStatus, setTestnetStatus] = useState<TestnetAccountStatus | null>(null);
   const [trailingStopEvents, setTrailingStopEvents] = useState<TrailingStopEvent[]>([]);
   const [trailingStopError, setTrailingStopError] = useState<string | null>(null);
+  const [partialTakeProfitEvents, setPartialTakeProfitEvents] = useState<PartialTakeProfitEvent[]>([]);
+  const [partialTakeProfitError, setPartialTakeProfitError] = useState<string | null>(null);
   const [operationsError, setOperationsError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -988,6 +992,18 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
     }
   }, []);
 
+  const refreshPartialTakeProfits = useCallback(async () => {
+    try {
+      const response = await api<{ events: PartialTakeProfitEvent[] }>(
+        "/api/partial-take-profits/history?limit=100",
+      );
+      setPartialTakeProfitEvents(response.events);
+      setPartialTakeProfitError(null);
+    } catch (reason) {
+      setPartialTakeProfitError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }, []);
+
   const closeAccountPosition = useCallback(async (symbol: string): Promise<boolean> => {
     setBusy(`position-close-${symbol}`);
     setError(null);
@@ -1076,6 +1092,7 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
     refresh().catch((reason: Error) => setError(reason.message));
     refreshAccount().catch((reason: Error) => setError(reason.message));
     refreshTrailingStops().catch(() => undefined);
+    refreshPartialTakeProfits().catch(() => undefined);
     refreshLiveRunPerformance().catch(() => undefined);
     refreshOperations().catch(() => undefined);
     refreshRunSession().catch(() => undefined);
@@ -1083,6 +1100,7 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
     const account = window.setInterval(() => {
       refreshAccount().catch(() => undefined);
       refreshTrailingStops().catch(() => undefined);
+      refreshPartialTakeProfits().catch(() => undefined);
       refreshLiveRunPerformance().catch(() => undefined);
       refreshOperations().catch(() => undefined);
       refreshStructureGateSummary().catch(() => undefined);
@@ -1128,7 +1146,7 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       socket?.close();
     };
-  }, [refresh, refreshAccount, refreshTrailingStops, mergeDecisions, refreshLiveRunPerformance, refreshOperations, refreshRunSession, refreshStructureGateSummary]);
+  }, [refresh, refreshAccount, refreshTrailingStops, refreshPartialTakeProfits, mergeDecisions, refreshLiveRunPerformance, refreshOperations, refreshRunSession, refreshStructureGateSummary]);
 
   const act = useCallback(async (name: string, path: string, body?: unknown) => {
     setBusy(name);
@@ -1728,6 +1746,11 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
             status={status.scheduler.trailing_stop ?? null}
             events={trailingStopEvents}
             error={trailingStopError}
+          />
+          <PartialTakeProfitPanel
+            status={status.scheduler.partial_take_profit ?? null}
+            events={partialTakeProfitEvents}
+            error={partialTakeProfitError}
           />
         </section>
         )}
@@ -4106,6 +4129,70 @@ export function TrailingStopPanel({
             <td><span className={`trailing-result ${item.status}`}>{TRAILING_STATUS_LABELS[item.status]}</span>{item.event.detail && <small title={item.event.detail}>{item.event.detail}</small>}</td>
           </tr>)}
           {!events.length && <tr><td colSpan={7} className="empty">尚无候选记录；持仓达到最早激活阈值后会自动显示。</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  </article>;
+}
+
+const PARTIAL_TAKE_PROFIT_STATUS_LABELS: Record<PartialTakeProfitEvent["status"], string> = {
+  partial_simulated_filled: "部分止盈成交",
+  breakeven_simulated_filled: "剩余保本成交",
+  position_closed: "随实仓结束",
+  unviable: "数量不可执行",
+};
+
+export function PartialTakeProfitPanel({
+  status,
+  events,
+  error,
+}: {
+  status: NonNullable<EngineStatus["scheduler"]["partial_take_profit"]> | null;
+  events: PartialTakeProfitEvent[];
+  error: string | null;
+}) {
+  const strategies = status?.strategies ?? [
+    { profile_id: "1R / 25% + BE", target_r: "1", fraction: "0.25", move_remainder_to_breakeven: true },
+    { profile_id: "1R / 50% + BE", target_r: "1", fraction: "0.50", move_remainder_to_breakeven: true },
+  ];
+  return <article className="panel account-wide trailing-panel">
+    <PanelTitle
+      code="06C"
+      title="部分止盈影子实验"
+      meta={`SHADOW · 只记录，不改单 · 当前仓位：部分成交 ${status?.partial_fills ?? 0} · 保本成交 ${status?.breakeven_fills ?? 0}`}
+    />
+    <p className="trailing-note">
+      同时比较 1R 止盈 25% 与 50%，剩余仓位按入场价模拟保本止损；数量先按交易所市价步长向下取整，结果不含手续费与资金费。
+    </p>
+    {error && <div className="operations-error">部分止盈记录暂不可用：{error}</div>}
+    <div className="trailing-strategies">
+      {strategies.map((strategy) => {
+        const fills = events.filter((item) => item.event.profile_id === strategy.profile_id);
+        return <div className="trailing-strategy" key={strategy.profile_id}>
+          <span>{strategy.profile_id}</span>
+          <strong>{fills.length}</strong>
+          <small>+{strategy.target_r}R 触发 · 止盈 {(Number(strategy.fraction) * 100).toFixed(0)}% · 余仓保本</small>
+        </div>;
+      })}
+    </div>
+    <div className="table-wrap trailing-table">
+      <table>
+        <thead><tr><th>时间</th><th>策略</th><th>标的</th><th>入场 / 观察</th><th>目标 / 模拟成交</th><th>数量</th><th>模拟毛利</th><th>结果</th></tr></thead>
+        <tbody>
+          {events.map((item) => <tr key={item.id}>
+            <td><small>{new Date(item.created_at).toLocaleString("zh-CN", { hour12: false })}</small></td>
+            <td><strong>{item.event.profile_id}</strong><small>SHADOW</small></td>
+            <td><strong>{item.symbol.replace("USDT", "")}</strong><small className={item.event.side === "LONG" ? "positive" : "negative"}>{item.event.side === "LONG" ? "多仓" : "空仓"}</small></td>
+            <td>{executionPrice(item.event.entry_price)} / {executionPrice(item.event.observed_mark_price)}</td>
+            <td className="accent">{executionPrice(item.event.target_price)} / {executionPrice(item.event.simulated_fill_price)}</td>
+            <td>{item.event.fill_quantity ?? "—"}<small>余 {item.event.remaining_quantity ?? "—"}</small></td>
+            <td className={Number(item.event.strategy_gross_pnl ?? item.event.fill_gross_pnl ?? 0) >= 0 ? "positive" : "negative"}>
+              {item.event.strategy_gross_pnl ?? item.event.fill_gross_pnl ?? "—"}
+              <small>USDT · 未扣费</small>
+            </td>
+            <td><span className={`trailing-result ${item.status}`}>{PARTIAL_TAKE_PROFIT_STATUS_LABELS[item.status]}</span>{item.event.detail && <small title={item.event.detail}>{item.event.detail}</small>}</td>
+          </tr>)}
+          {!events.length && <tr><td colSpan={8} className="empty">尚无部分止盈记录；持仓首次达到 1R 后会自动显示。</td></tr>}
         </tbody>
       </table>
     </div>

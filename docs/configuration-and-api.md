@@ -132,6 +132,11 @@ reduce-only 成交按关联决策区分模型平仓/减仓，无法关联的 red
 账户页自动读取最近 100 条并每 5 秒刷新，无需手工打开 API。
 `GET /api/status` 的 `scheduler.trailing_stop` 返回当前模式、参与计算的参数组、管理/已激活仓位及
 参数组数量和最近事件。
+`GET /api/partial-take-profits/history` 返回最近 1–500 条固定影子实验事件，包括 1R 部分模拟成交、
+剩余仓位保本模拟成交、数量不可执行及实仓先结束；事件包含参数组、交易所步长对齐后的部分数量、
+目标价、首次观察价、模拟成交价和未扣费价格毛利。`GET /api/status` 的
+`scheduler.partial_take_profit` 返回两组固定参数与当前活动生命周期计数；该实验没有实盘开关，
+不会修改真实订单。
 
 **测试网**：`GET /api/testnet/events`、`GET /api/testnet/account-status`。
 

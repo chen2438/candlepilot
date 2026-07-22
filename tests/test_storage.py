@@ -1600,6 +1600,28 @@ def test_trailing_stop_events_are_queryable_and_clearable(tmp_path: Path) -> Non
     assert after == []
 
 
+def test_partial_take_profit_events_are_queryable_and_clearable(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'partial-events.db'}")
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        await repository.record_partial_take_profit_event(
+            "BTCUSDT",
+            "partial_simulated_filled",
+            {"profile_id": "1R / 25% + BE", "simulated_fill_price": "102"},
+        )
+        before = await repository.recent_partial_take_profit_events()
+        counts = await repository.clear_history({"partial_take_profits"})
+        after = await repository.recent_partial_take_profit_events()
+        await database.close()
+        return before, counts, after
+
+    before, counts, after = asyncio.run(scenario())
+    assert before[0]["event"]["simulated_fill_price"] == "102"
+    assert counts == {"partial_take_profits": 1}
+    assert after == []
+
+
 def test_database_migrations_are_versioned_and_idempotent(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'migrations.db'}")

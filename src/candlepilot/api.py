@@ -489,6 +489,9 @@ def _status(
             "trailing_stop": scheduler.trailing_stops.status
             if scheduler is not None
             else None,
+            "partial_take_profit": scheduler.partial_take_profits.status
+            if scheduler is not None
+            else None,
         },
         "user_stream": {
             "enabled": testnet_feed is not None,
@@ -1294,6 +1297,16 @@ def create_app(
                 status_code=422, detail="limit must be between 1 and 500"
             )
         return {"events": await engine.audit.recent_trailing_stop_events(limit)}
+
+    @app.get("/api/partial-take-profits/history")
+    async def get_partial_take_profit_history(limit: int = 100) -> dict[str, Any]:
+        if not 1 <= limit <= 500:
+            raise HTTPException(
+                status_code=422, detail="limit must be between 1 and 500"
+            )
+        return {
+            "events": await engine.audit.recent_partial_take_profit_events(limit)
+        }
 
     @app.post("/api/history/clear")
     async def clear_history(request: HistoryClearRequest) -> dict[str, Any]:

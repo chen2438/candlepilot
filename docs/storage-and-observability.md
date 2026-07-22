@@ -9,9 +9,11 @@
   `live_run_id` 归属正式运行）、`inference_details`（逐次输入与 Prompt）、
   `risk_decisions`、`executions`（实际订单报告）、`execution_attempts`（推理对应的执行结论、失败阶段与损失）、
   `user_stream_events`、`alert_events`、`trailing_stop_events`（影子候选、首次模拟成交、实盘替换与失败）、
+  `partial_take_profit_events`（1R 部分止盈、剩余保本与实仓结束影子事件）、
   `runtime_state`、`schema_migrations`。
 - 溯源：SHA-256 数据版本、显式 Prompt 版本、模型标识、CLI Provider 版本。
-- 数据库基线：历史迁移链已在历史数据清空后压缩，当前 schema v15 在 v14 上新增正式决策快照表；
+- 数据库基线：历史迁移链已在历史数据清空后压缩，当前 schema v16 在 v15 上新增部分止盈影子审计表；
+  v15 在 v14 上新增正式决策快照表；
   v14 在 v13 上新增移动止损审计表；
   现有 v12 数据库先写入 v13 基线标记再创建该表。低于 v12 的数据库明确拒绝启动。新数据库直接由当前 ORM schema 创建，不再重放
   v1–v12 的表重建与字段补丁。`runtime_state` 不随历史清理删除，紧急锁安全状态不受影响。

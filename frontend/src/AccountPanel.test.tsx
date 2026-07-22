@@ -2,7 +2,12 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AccountPanel, fillDirectionLabel, TrailingStopPanel } from "./App";
+import {
+  AccountPanel,
+  fillDirectionLabel,
+  PartialTakeProfitPanel,
+  TrailingStopPanel,
+} from "./App";
 import type { AccountPosition } from "./types";
 
 afterEach(cleanup);
@@ -199,6 +204,60 @@ describe("TrailingStopPanel", () => {
     expect(screen.getByText("65000.0000")).toBeTruthy();
     expect(screen.getByText("模拟成交")).toBeTruthy();
     expect(screen.getByText(/观察 64990\.0000/)).toBeTruthy();
+    expect(screen.getByText(/只记录，不改单/)).toBeTruthy();
+  });
+});
+
+describe("PartialTakeProfitPanel", () => {
+  it("shows executable partial and breakeven shadow fills", () => {
+    render(<PartialTakeProfitPanel
+      status={{
+        mode: "shadow",
+        strategies: [{
+          profile_id: "1R / 25% + BE",
+          target_r: "1",
+          fraction: "0.25",
+          move_remainder_to_breakeven: true,
+        }],
+        managed_positions: 1,
+        partial_fills: 1,
+        breakeven_fills: 0,
+        unviable_strategies: 0,
+        last_event: null,
+      }}
+      events={[{
+        id: 9,
+        symbol: "BTCUSDT",
+        status: "partial_simulated_filled",
+        event: {
+          side: "LONG",
+          original_quantity: "0.04",
+          entry_price: "60000",
+          original_stop: "58000",
+          risk_distance: "2000",
+          observed_mark_price: "62100",
+          profile_id: "1R / 25% + BE",
+          target_r: "1",
+          partial_fraction: "0.25",
+          target_price: "62000",
+          breakeven_price: "60000",
+          partial_quantity: "0.01",
+          remaining_quantity: "0.03",
+          fill_quantity: "0.01",
+          simulated_fill_price: "62000",
+          fill_gross_pnl: "20",
+          strategy_gross_pnl: null,
+          detail: "",
+        },
+        created_at: "2026-07-22T07:00:00Z",
+      }]}
+      error={null}
+    />);
+
+    expect(screen.getByText("部分止盈影子实验")).toBeTruthy();
+    expect(screen.getAllByText("1R / 25% + BE").length).toBeGreaterThan(1);
+    expect(screen.getByText("部分止盈成交")).toBeTruthy();
+    expect(screen.getByText("62000.0000 / 62000.0000")).toBeTruthy();
     expect(screen.getByText(/只记录，不改单/)).toBeTruthy();
   });
 });

@@ -130,6 +130,7 @@ export interface EngineStatus {
     universe_last_error: string | null;
     guard_last_error: string | null;
     trailing_stop?: TrailingStopStatus | null;
+    partial_take_profit?: PartialTakeProfitStatus | null;
   };
   user_stream: {
     enabled: boolean;
@@ -179,6 +180,53 @@ export interface TrailingStopEvent {
     profile_id: string | null;
     activation_r: string | null;
     distance_r: string | null;
+    detail: string;
+  };
+  created_at: string;
+}
+
+export interface PartialTakeProfitStrategy {
+  profile_id: string;
+  target_r: string;
+  fraction: string;
+  move_remainder_to_breakeven: boolean;
+}
+
+export interface PartialTakeProfitStatus {
+  mode: "shadow";
+  strategies: PartialTakeProfitStrategy[];
+  managed_positions: number;
+  partial_fills: number;
+  breakeven_fills: number;
+  unviable_strategies: number;
+  last_event: (PartialTakeProfitEvent["event"] & {
+    symbol: string;
+    status: string;
+  }) | null;
+}
+
+export interface PartialTakeProfitEvent {
+  id: number;
+  symbol: string;
+  status: "partial_simulated_filled" | "breakeven_simulated_filled" | "position_closed" | "unviable";
+  event: {
+    side: "LONG" | "SHORT";
+    original_quantity: string;
+    entry_price: string;
+    original_stop: string;
+    risk_distance: string;
+    observed_mark_price: string;
+    profile_id: string;
+    target_r: string;
+    partial_fraction: string;
+    target_price: string | null;
+    breakeven_price: string;
+    partial_quantity: string | null;
+    remaining_quantity: string | null;
+    fill_quantity: string | null;
+    simulated_fill_price: string | null;
+    fill_gross_pnl: string | null;
+    strategy_gross_pnl: string | null;
     detail: string;
   };
   created_at: string;

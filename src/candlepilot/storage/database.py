@@ -303,6 +303,18 @@ class TrailingStopEventRow(Base):
     )
 
 
+class PartialTakeProfitEventRow(Base):
+    __tablename__ = "partial_take_profit_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    event_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
+    )
+
+
 class SchemaMigrationRow(Base):
     __tablename__ = "schema_migrations"
 
@@ -315,7 +327,7 @@ class SchemaMigrationRow(Base):
 # replaying upgrade logic, while fresh databases are created directly from the
 # ORM metadata at the current shape.
 MINIMUM_SUPPORTED_SCHEMA_VERSION = 12
-CURRENT_SCHEMA_VERSION = 15
+CURRENT_SCHEMA_VERSION = 16
 MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
     (13, ()),
     (
@@ -354,6 +366,21 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             "ON live_decision_snapshots (cadence)",
             "CREATE INDEX IF NOT EXISTS ix_live_decision_snapshots_captured_at "
             "ON live_decision_snapshots (captured_at)",
+        ),
+    ),
+    (
+        16,
+        (
+            "CREATE TABLE IF NOT EXISTS partial_take_profit_events ("
+            "id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, "
+            "symbol VARCHAR(32) NOT NULL, status VARCHAR(32) NOT NULL, "
+            "event_json TEXT NOT NULL, created_at DATETIME NOT NULL)",
+            "CREATE INDEX IF NOT EXISTS ix_partial_take_profit_events_symbol "
+            "ON partial_take_profit_events (symbol)",
+            "CREATE INDEX IF NOT EXISTS ix_partial_take_profit_events_status "
+            "ON partial_take_profit_events (status)",
+            "CREATE INDEX IF NOT EXISTS ix_partial_take_profit_events_created_at "
+            "ON partial_take_profit_events (created_at)",
         ),
     ),
 )
@@ -442,6 +469,7 @@ class AuditRepository:
         "user_events": UserStreamEventRow,
         "alerts": AlertEventRow,
         "trailing_stops": TrailingStopEventRow,
+        "partial_take_profits": PartialTakeProfitEventRow,
         # Model runs cascade from the run, so clearing the parent is enough.
         "backtests": BacktestRunRow,
         "book_captures": BookCaptureRow,
@@ -1669,6 +1697,41 @@ class AuditRepository:
                 "id": row.id,
                 "symbol": row.symbol,
                 "mode": row.mode,
+                "status": row.status,
+                "event": json.loads(row.event_json),
+                "created_at": self._utc(row.created_at),
+            }
+            for row in rows
+        ]
+
+    async def record_partial_take_profit_event(
+        self, symbol: str, status: str, event: Mapping[str, Any]
+    ) -> int:
+        row = PartialTakeProfitEventRow(
+            symbol=symbol,
+            status=status,
+            event_json=json.dumps(dict(event), separators=(",", ":")),
+        )
+        async with self.sessions.begin() as session:
+            session.add(row)
+            await session.flush()
+        return row.id
+
+    async def recent_partial_take_profit_events(
+        self, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        async with self.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(PartialTakeProfitEventRow)
+                    .order_by(PartialTakeProfitEventRow.id.desc())
+                    .limit(limit)
+                )
+            ).all()
+        return [
+            {
+                "id": row.id,
+                "symbol": row.symbol,
                 "status": row.status,
                 "event": json.loads(row.event_json),
                 "created_at": self._utc(row.created_at),
