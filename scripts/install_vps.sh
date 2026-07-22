@@ -79,6 +79,7 @@ EOF
   systemd-tmpfiles --create /etc/tmpfiles.d/candlepilot-update.conf
   systemctl daemon-reload
   systemctl enable --now candlepilot-update.path
+  "$helper_dir/candlepilot-web-update-worker" --refresh-manifest
 }
 
 fail() {

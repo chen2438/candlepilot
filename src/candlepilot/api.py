@@ -133,10 +133,14 @@ from candlepilot.storage.database import (
 
 WEB_UPDATE_HELPER = Path("/usr/local/sbin/candlepilot-web-update")
 WEB_UPDATE_STATUS_FILE = Path("/var/lib/candlepilot/update-status.json")
+WEB_BACKUP_MANIFEST_FILE = Path("/var/lib/candlepilot/backups.json")
+WEB_BACKUP_STATUS_FILE = Path("/var/lib/candlepilot/backup-status.json")
 WEB_UPDATE_REPOSITORY = Path(__file__).resolve().parents[2]
 WEB_UPDATE_PHASES = {"idle", "running", "completed", "failed"}
+WEB_BACKUP_ACTIONS = {"refresh", "delete"}
 WEB_UPDATE_BRANCH_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
 WEB_UPDATE_COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40,64}$")
+WEB_BACKUP_ID_PATTERN = re.compile(r"^\d{8}T\d{6}Z-[0-9a-f]{7,64}$")
 
 
 def read_web_update_status(
@@ -194,6 +198,175 @@ def read_web_update_status(
         **payload,
         **{key: stored.get(key) for key in payload if key != "supported"},
     }
+
+
+def read_web_backup_inventory(
+    *,
+    helper_path: Path | None = None,
+    manifest_path: Path | None = None,
+    status_path: Path | None = None,
+    platform: str | None = None,
+) -> dict[str, Any]:
+    """Read the root worker's sanitized backup manifest and action status."""
+
+    helper_path = helper_path or WEB_UPDATE_HELPER
+    manifest_path = manifest_path or WEB_BACKUP_MANIFEST_FILE
+    status_path = status_path or WEB_BACKUP_STATUS_FILE
+    platform = platform or sys.platform
+    supported = (
+        platform.startswith("linux")
+        and helper_path.is_file()
+        and os.access(helper_path, os.X_OK)
+    )
+    payload: dict[str, Any] = {
+        "supported": supported,
+        "generated_at": None,
+        "backups": [],
+        "status": {
+            "phase": "idle",
+            "action": None,
+            "message": (
+                "尚未执行备份维护"
+                if supported
+                else "备份管理仅在通过 VPS 安装器部署维护助手后可用"
+            ),
+            "started_at": None,
+            "finished_at": None,
+            "backup_id": None,
+            "reclaimed_bytes": None,
+        },
+    }
+    if not supported:
+        return payload
+    manifest_invalid = False
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            generated_at = manifest.get("generated_at")
+            stored_backups = manifest.get("backups")
+            if not isinstance(generated_at, str) or len(generated_at) > 64:
+                raise ValueError
+            if not isinstance(stored_backups, list) or len(stored_backups) > 1000:
+                raise ValueError
+            backups: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for item in stored_backups:
+                if not isinstance(item, dict):
+                    raise ValueError
+                backup_id = item.get("id")
+                created_at = item.get("created_at")
+                source_commit = item.get("source_commit")
+                size_bytes = item.get("size_bytes")
+                protected = item.get("protected")
+                if (
+                    not isinstance(backup_id, str)
+                    or not WEB_BACKUP_ID_PATTERN.fullmatch(backup_id)
+                    or backup_id in seen
+                    or not isinstance(created_at, str)
+                    or len(created_at) > 64
+                    or (
+                        source_commit is not None
+                        and (
+                            not isinstance(source_commit, str)
+                            or not re.fullmatch(r"[0-9a-f]{7,64}", source_commit)
+                        )
+                    )
+                    or isinstance(size_bytes, bool)
+                    or not isinstance(size_bytes, int)
+                    or not 0 <= size_bytes <= 2**63 - 1
+                    or not isinstance(protected, bool)
+                ):
+                    raise ValueError
+                seen.add(backup_id)
+                backups.append(
+                    {
+                        "id": backup_id,
+                        "created_at": created_at,
+                        "source_commit": source_commit,
+                        "size_bytes": size_bytes,
+                        "protected": protected,
+                    }
+                )
+            if backups != sorted(backups, key=lambda item: item["id"], reverse=True):
+                raise ValueError
+            if backups and (
+                not backups[0]["protected"]
+                or any(item["protected"] for item in backups[1:])
+            ):
+                raise ValueError
+            payload["generated_at"] = generated_at
+            payload["backups"] = backups
+        except (OSError, ValueError, TypeError, AttributeError):
+            manifest_invalid = True
+            payload["status"] = {
+                **payload["status"],
+                "phase": "failed",
+                "message": "备份清单格式无效，请刷新清单",
+            }
+    if status_path.is_file() and not manifest_invalid:
+        try:
+            stored_status = json.loads(status_path.read_text(encoding="utf-8"))
+            phase = stored_status.get("phase")
+            action = stored_status.get("action")
+            message = stored_status.get("message")
+            if phase not in WEB_UPDATE_PHASES or action not in WEB_BACKUP_ACTIONS:
+                raise ValueError
+            if not isinstance(message, str) or len(message) > 1000:
+                raise ValueError
+            status: dict[str, Any] = {
+                "phase": phase,
+                "action": action,
+                "message": message,
+            }
+            for key in ("started_at", "finished_at", "backup_id"):
+                value = stored_status.get(key)
+                if value is not None and (not isinstance(value, str) or len(value) > 128):
+                    raise ValueError
+                status[key] = value
+            if status["backup_id"] is not None and not WEB_BACKUP_ID_PATTERN.fullmatch(
+                status["backup_id"]
+            ):
+                raise ValueError
+            reclaimed = stored_status.get("reclaimed_bytes")
+            if reclaimed is not None and (
+                isinstance(reclaimed, bool)
+                or not isinstance(reclaimed, int)
+                or not 0 <= reclaimed <= 2**63 - 1
+            ):
+                raise ValueError
+            status["reclaimed_bytes"] = reclaimed
+            payload["status"] = status
+        except (OSError, ValueError, TypeError, AttributeError):
+            payload["status"] = {
+                **payload["status"],
+                "phase": "failed",
+                "message": "无法读取备份维护状态",
+            }
+    return payload
+
+
+async def queue_web_maintenance(*arguments: str) -> None:
+    """Queue one narrowly defined action through the unprivileged launcher."""
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            str(WEB_UPDATE_HELPER),
+            *arguments,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=10)
+    except TimeoutError as exc:
+        process.kill()
+        await process.wait()
+        raise RuntimeError("maintenance helper acknowledgement timed out") from exc
+    except OSError as exc:
+        raise RuntimeError(
+            f"could not start the maintenance helper: {type(exc).__name__}"
+        ) from exc
+    if process.returncode != 0:
+        detail = (stderr or stdout).decode("utf-8", errors="replace").strip()
+        raise RuntimeError((detail or "maintenance helper refused the request")[-500:])
 
 
 class WebUpdateCheckError(RuntimeError):
@@ -728,6 +901,9 @@ def create_app(
     restart_pending = False
     update_pending = False
     update_baseline_finished_at: str | None = None
+    backup_pending = False
+    backup_baseline_finished_at: str | None = None
+    backup_baseline_generated_at: str | None = None
     web_update_check_lock = asyncio.Lock()
     testnet_account_memo: dict[str, Any] = {"account": None, "expires_at": 0.0}
     testnet_levels_lock = asyncio.Lock()
@@ -1665,6 +1841,66 @@ def create_app(
             write_env_file(env_path, {CUSTOM_PROVIDERS_ENV: serialized})
         return await get_custom_providers()
 
+    @app.get("/api/backups")
+    async def web_backup_inventory() -> dict[str, Any]:
+        nonlocal backup_pending
+        inventory = read_web_backup_inventory()
+        status = inventory["status"]
+        if backup_pending and status["phase"] in {"completed", "failed"}:
+            if (
+                status["finished_at"] == backup_baseline_finished_at
+                and inventory["generated_at"] == backup_baseline_generated_at
+            ):
+                inventory["status"] = {
+                    **status,
+                    "phase": "running",
+                    "message": "备份维护已排队，等待 root 服务启动",
+                    "finished_at": None,
+                }
+            else:
+                backup_pending = False
+        return inventory
+
+    async def queue_backup_action(*arguments: str) -> dict[str, bool]:
+        nonlocal backup_baseline_finished_at
+        nonlocal backup_baseline_generated_at
+        nonlocal backup_pending
+        inventory = read_web_backup_inventory()
+        if not inventory["supported"]:
+            raise HTTPException(status_code=409, detail=inventory["status"]["message"])
+        if backup_pending or inventory["status"]["phase"] == "running":
+            raise HTTPException(status_code=409, detail="backup maintenance is already running")
+        update_status = read_web_update_status()
+        if update_pending or update_status["phase"] == "running":
+            raise HTTPException(status_code=409, detail="a software update is already running")
+        try:
+            await queue_web_maintenance(*arguments)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        backup_baseline_finished_at = inventory["status"]["finished_at"]
+        backup_baseline_generated_at = inventory["generated_at"]
+        backup_pending = True
+        return {"queued": True}
+
+    @app.post("/api/backups/refresh", status_code=202)
+    async def refresh_web_backups() -> dict[str, bool]:
+        return await queue_backup_action("--refresh-backups")
+
+    @app.post("/api/backups/{backup_id}/delete", status_code=202)
+    async def delete_web_backup(backup_id: str) -> dict[str, bool]:
+        if not WEB_BACKUP_ID_PATTERN.fullmatch(backup_id):
+            raise HTTPException(status_code=422, detail="invalid backup id")
+        inventory = read_web_backup_inventory()
+        backup = next(
+            (item for item in inventory["backups"] if item["id"] == backup_id),
+            None,
+        )
+        if backup is None:
+            raise HTTPException(status_code=404, detail="backup not found")
+        if backup["protected"]:
+            raise HTTPException(status_code=409, detail="latest backup is protected")
+        return await queue_backup_action("--delete-backup", backup_id)
+
     @app.get("/api/update/status")
     async def web_update_status() -> dict[str, Any]:
         nonlocal update_pending
@@ -1724,6 +1960,9 @@ def create_app(
             raise HTTPException(status_code=409, detail=status["message"])
         if update_pending or status["phase"] == "running":
             raise HTTPException(status_code=409, detail="an update is already running")
+        backup_status = read_web_backup_inventory()["status"]
+        if backup_pending or backup_status["phase"] == "running":
+            raise HTTPException(status_code=409, detail="backup maintenance is running")
 
         try:
             process = await asyncio.create_subprocess_exec(

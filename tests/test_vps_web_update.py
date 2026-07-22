@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_launcher_rejects_arguments_before_calling_systemd() -> None:
+def test_launcher_rejects_unsupported_actions_before_calling_systemd() -> None:
     result = subprocess.run(
         [str(ROOT / "scripts/web_update_launcher.sh"), "unexpected"],
         check=False,
@@ -14,7 +14,23 @@ def test_launcher_rejects_arguments_before_calling_systemd() -> None:
     )
 
     assert result.returncode == 64
-    assert "accepts no arguments" in result.stderr
+    assert "unsupported CandlePilot maintenance action" in result.stderr
+
+
+def test_launcher_rejects_backup_path_instead_of_an_id() -> None:
+    result = subprocess.run(
+        [
+            str(ROOT / "scripts/web_update_launcher.sh"),
+            "--delete-backup",
+            "../../var/backups/candlepilot",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 64
+    assert "invalid CandlePilot backup id" in result.stderr
 
 
 def test_root_worker_never_executes_the_application_users_installer() -> None:
@@ -27,6 +43,10 @@ def test_root_worker_never_executes_the_application_users_installer() -> None:
     assert "HEAD:scripts/install_vps.sh" in installer
     assert "candlepilot-update.path" in installer
     assert "/run/candlepilot-update/request" in launcher
+    assert "--delete-backup" in launcher
+    assert "latest backup is protected" in worker
+    assert 'target.resolve(strict=True).parent != root' in worker
+    assert "len(backups) <= 1" in worker
     assert "sudo" not in launcher
     assert "systemctl" not in launcher
     assert "NoNewPrivileges=true" in installer

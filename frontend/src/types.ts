@@ -57,6 +57,29 @@ export interface WebUpdateCheck {
   message: string;
 }
 
+export interface BackupEntry {
+  id: string;
+  created_at: string;
+  source_commit: string | null;
+  size_bytes: number;
+  protected: boolean;
+}
+
+export interface BackupInventory {
+  supported: boolean;
+  generated_at: string | null;
+  backups: BackupEntry[];
+  status: {
+    phase: "idle" | "running" | "completed" | "failed";
+    action: "refresh" | "delete" | null;
+    message: string;
+    started_at: string | null;
+    finished_at: string | null;
+    backup_id: string | null;
+    reclaimed_bytes: number | null;
+  };
+}
+
 export interface StartupProbeProviderResult {
   status: "pending" | "completed";
   model?: string | null;

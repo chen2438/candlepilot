@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BacktestDecisionLog,
   BacktestSymbolList,
+  BackupPanel,
   CadenceSelector,
   formatDailyLossPercent,
   LoginScreen,
@@ -220,6 +221,66 @@ describe("WebUpdatePanel", () => {
     expect(await screen.findByText(/部署更新助手后可用/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "检查更新" }).hasAttribute("disabled")).toBe(true);
     expect(screen.getByRole("button", { name: "安装更新" }).hasAttribute("disabled")).toBe(true);
+    request.mockRestore();
+  });
+});
+
+describe("BackupPanel", () => {
+  it("protects the latest backup and requires confirmation before deleting an older one", async () => {
+    const latest = "20260722T100000Z-aaaaaaaa";
+    const stale = "20260721T100000Z-bbbbbbbb";
+    let deleted = false;
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (init?.method === "POST") {
+        if (url.endsWith(`/api/backups/${stale}/delete`)) deleted = true;
+        return new Response(JSON.stringify({ queued: true }), {
+          status: 202,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      const backups = [{
+        id: latest,
+        created_at: "2026-07-22T10:00:00Z",
+        source_commit: "a".repeat(40),
+        size_bytes: 1024,
+        protected: true,
+      }, ...(!deleted ? [{
+        id: stale,
+        created_at: "2026-07-21T10:00:00Z",
+        source_commit: "b".repeat(40),
+        size_bytes: 2048,
+        protected: false,
+      }] : [])];
+      return new Response(JSON.stringify({
+        supported: true,
+        generated_at: "2026-07-22T10:00:00Z",
+        backups,
+        status: deleted ? {
+          phase: "completed", action: "delete", message: "过时备份已删除",
+          started_at: "2026-07-22T10:01:00Z", finished_at: "2026-07-22T10:01:01Z",
+          backup_id: stale, reclaimed_bytes: 2048,
+        } : {
+          phase: "idle", action: null, message: "尚未执行备份维护",
+          started_at: null, finished_at: null, backup_id: null, reclaimed_bytes: null,
+        },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+
+    render(<BackupPanel busy={null} setBusy={vi.fn()} setError={vi.fn()} />);
+
+    expect(await screen.findByText("最新 · 保留")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "删除" })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+    expect(screen.getByText("确认永久删除这份备份？")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+
+    await waitFor(() => expect(screen.getByText(/释放 2.00 KB/)).toBeTruthy(), { timeout: 2000 });
+    expect(screen.queryByText(stale, { exact: false })).toBeNull();
+    expect(request).toHaveBeenCalledWith(
+      `/api/backups/${stale}/delete`,
+      expect.objectContaining({ method: "POST" }),
+    );
     request.mockRestore();
   });
 });

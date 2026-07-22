@@ -113,17 +113,23 @@ Firefox 尚未实现，提示层会回落到静态位置且不跟随滚动，功
   前端设置页「软件更新」）：仅在 Linux VPS 安装器已经部署 root 更新助手时启用。「检查更新」
   只从无内嵌凭据的 GitHub HTTPS `origin` 获取当前分支，比较本地与远端提交并确认是快进关系，
   不改工作树或启动 root 更新器；发现新版本后才启用独立的「安装更新」，并继续要求用户确认。确认后，后端通过固定的无参数
-  `/usr/local/sbin/candlepilot-web-update` 在 `/run/candlepilot-update` 创建请求文件；root 管理的
+  `/usr/local/sbin/candlepilot-web-update` 在 `/run/candlepilot-update` 创建固定格式的动作与请求文件；root 管理的
   `candlepilot-update.path` 只监听这个固定路径并启动独立 `candlepilot-update.service`。后端不调用
   `sudo`，主服务可继续启用 `NoNewPrivileges=true`；更新任务也不在应用服务的 cgroup 内，因此停止
   `candlepilot.service` 不会杀掉更新器。引擎、调度器、
   Provider 探测、回测或盘口采集活动时返回 409；接受更新后拒绝新的写请求，前端允许后端暂时
   离线并轮询持久化状态，成功后自动刷新，失败时显示安装器的安全摘要。状态接口只公开阶段、时间、
   新旧提交号、备份路径和有限长度消息，不公开 root 日志。
-  launcher 由 root 持有、拒绝任何参数，应用用户只能写入由 systemd tmpfiles 创建的固定请求目录，
-  无权选择或直接启动 root 命令；worker 和安装器副本同样由 root 持有，绝不以 root 运行应用用户
+  launcher 由 root 持有，只接受无参数更新以及预定义的备份刷新/删除动作；删除参数必须是严格备份 ID，
+  应用用户只能写入由 systemd tmpfiles 创建的固定请求目录，无权选择文件路径或直接启动 root 命令；
+  worker 和安装器副本同样由 root 持有，绝不以 root 运行应用用户
   可写目录里的脚本。更新仍只接受配置的 GitHub origin 与分支快进，并沿用下文的备份、健康检查
   和失败回滚。
+- **服务器备份**（`GET /api/backups`、`POST /api/backups/refresh`、
+  `POST /api/backups/{id}/delete`，前端设置页「服务器备份」）：展示 root worker 生成的脱敏清单，
+  只含标准备份 ID、UTC 创建时间、来源提交、占用字节数和保护标记，不返回备份路径或内容。清单按
+  新到旧排列，最新一份只显示「保留」；旧备份必须二次确认后删除。前端不能绕过最新/仅存备份保护，
+  删除与软件更新互斥，完成后显示实际释放空间并刷新清单。初次安装或旧助手尚未生成清单时可手动刷新。
 - `.env` 路径默认为工作目录下的 `.env`，可用 `CANDLEPILOT_ENV_FILE` 指定。
 
 ## 4.12 数据管理

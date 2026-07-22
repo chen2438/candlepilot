@@ -166,12 +166,18 @@ reduce-only 成交按关联决策区分模型平仓/减仓，无法关联的 red
 **运维**：`GET /api/health/live`、`GET /api/health/ready`、`GET /api/metrics/runtime`、
 `GET /api/metrics/providers`、`GET /api/metrics/run-session`、`GET /api/alerts`、
 `GET /api/alerts/history`、`GET /api/trailing-stops/history`、`GET /api/update/status`、
-`POST /api/update/check`、`POST /api/update`、`POST /api/restart`。
+`POST /api/update/check`、`POST /api/update`、`GET /api/backups`、`POST /api/backups/refresh`、
+`POST /api/backups/{id}/delete`、`POST /api/restart`。
 
 `POST /api/update/check` 使用固定 Git 参数读取当前分支与提交，从无内嵌凭据的 GitHub HTTPS
 `origin` 获取该分支并验证远端是当前提交的快进后继；响应返回检查时间、分支、新旧提交和
 `update_available`，不启动 root 更新器或改动工作树。`POST /api/update` 仍是独立安装动作，
 继续由受限 root 助手执行备份、安装、健康检查与失败回滚。
+
+`GET /api/backups` 只读取 root worker 写入的脱敏清单和维护状态，不遍历 root-only 备份目录。
+`POST /api/backups/refresh` 请求 worker 重建清单；`POST /api/backups/{id}/delete` 只接受清单中严格
+格式且未受保护的 ID，并与更新动作互斥。API 预检不是唯一安全边界：root worker 会再次解析实际
+目录，拒绝符号链接、根目录越界、最新备份和仅存的一份备份。
 
 **数据管理**：`POST /api/history/clear`。
 

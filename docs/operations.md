@@ -97,6 +97,13 @@ sudo tail -n 100 /var/log/candlepilot-update.log
 状态摘要保存在 root 所有、只读公开的 `/var/lib/candlepilot/update-status.json`；完整安装输出不会
 通过 API 返回。更新服务最长运行 45 分钟，使用文件锁和 systemd unit 状态防止并发执行。
 
+同一受限请求通道也提供设置页「服务器备份」。root worker 扫描配置的备份根目录，只把标准
+`<UTC 时间>-<原提交>` 目录的 ID、创建时间、来源提交、磁盘占用和保护标记写入只读公开的
+`/var/lib/candlepilot/backups.json`；动作状态写入 `/var/lib/candlepilot/backup-status.json`。
+应用服务不具备读取 `/var/backups/candlepilot` 的权限，也不能传入文件路径。刷新清单与删除旧备份
+均由 root worker 执行，并与软件更新共用文件锁；删除前会再次解析真实目录，拒绝符号链接、越界、
+最新备份及仅存的一份备份。删除不可恢复，前端要求二次确认；安装器刷新助手时会同步重建清单。
+
 交互过程要求填写公网 IPv4、控制台密码和 Binance Demo Key/Secret；也可预先设置
 `CANDLEPILOT_PUBLIC_IP`、`CANDLEPILOT_PUBLIC_PORT`、`CANDLEPILOT_BACKEND_PORT`、`CANDLEPILOT_ADMIN_USERNAME`、
 `CANDLEPILOT_ADMIN_PASSWORD`、`BINANCE_TESTNET_API_KEY`、`BINANCE_TESTNET_API_SECRET`，用于可信的

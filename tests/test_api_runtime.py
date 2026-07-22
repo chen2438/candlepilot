@@ -1759,6 +1759,139 @@ def test_web_update_status_requires_an_executable_helper(tmp_path: Path) -> None
     assert status["supported"] is False
 
 
+def test_web_backup_inventory_reads_only_sanitized_manifest(tmp_path: Path) -> None:
+    helper = tmp_path / "web-update"
+    helper.write_text("#!/bin/sh\n", encoding="utf-8")
+    helper.chmod(0o755)
+    manifest = tmp_path / "backups.json"
+    newest = "20260722T100000Z-" + "b" * 40
+    older = "20260721T100000Z-" + "a" * 40
+    manifest.write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-07-22T10:01:00Z",
+                "backups": [
+                    {
+                        "id": newest,
+                        "created_at": "2026-07-22T10:00:00Z",
+                        "source_commit": "b" * 40,
+                        "size_bytes": 2048,
+                        "protected": True,
+                        "path": "/must/not/cross/the/api",
+                    },
+                    {
+                        "id": older,
+                        "created_at": "2026-07-21T10:00:00Z",
+                        "source_commit": "a" * 40,
+                        "size_bytes": 1024,
+                        "protected": False,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    inventory = api_module.read_web_backup_inventory(
+        helper_path=helper,
+        manifest_path=manifest,
+        status_path=tmp_path / "missing-status.json",
+        platform="linux",
+    )
+
+    assert inventory["supported"] is True
+    assert [item["id"] for item in inventory["backups"]] == [newest, older]
+    assert inventory["backups"][0]["protected"] is True
+    assert "path" not in inventory["backups"][0]
+
+
+def test_web_backup_inventory_rejects_manifest_without_protected_latest(
+    tmp_path: Path,
+) -> None:
+    helper = tmp_path / "web-update"
+    helper.write_text("#!/bin/sh\n", encoding="utf-8")
+    helper.chmod(0o755)
+    manifest = tmp_path / "backups.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-07-22T10:01:00Z",
+                "backups": [
+                    {
+                        "id": "20260722T100000Z-" + "b" * 40,
+                        "created_at": "2026-07-22T10:00:00Z",
+                        "source_commit": "b" * 40,
+                        "size_bytes": 2048,
+                        "protected": False,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    inventory = api_module.read_web_backup_inventory(
+        helper_path=helper,
+        manifest_path=manifest,
+        status_path=tmp_path / "missing-status.json",
+        platform="linux",
+    )
+
+    assert inventory["backups"] == []
+    assert inventory["status"]["phase"] == "failed"
+    assert "清单格式无效" in inventory["status"]["message"]
+
+
+def test_web_backup_delete_queues_only_an_unprotected_manifest_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'backup-delete.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    newest = "20260722T100000Z-" + "b" * 40
+    older = "20260721T100000Z-" + "a" * 40
+    inventory = {
+        "supported": True,
+        "generated_at": "2026-07-22T10:01:00Z",
+        "backups": [
+            {"id": newest, "protected": True},
+            {"id": older, "protected": False},
+        ],
+        "status": {
+            "phase": "idle",
+            "message": "ready",
+            "finished_at": None,
+        },
+    }
+    calls: list[tuple[str, ...]] = []
+
+    async def queue(*arguments: str) -> None:
+        calls.append(arguments)
+
+    monkeypatch.setattr(api_module, "read_web_backup_inventory", lambda: inventory)
+    monkeypatch.setattr(
+        api_module,
+        "read_web_update_status",
+        lambda: {"phase": "idle", "supported": True},
+    )
+    monkeypatch.setattr(api_module, "queue_web_maintenance", queue)
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        protected = client.post(f"/api/backups/{newest}/delete")
+        deleted = client.post(f"/api/backups/{older}/delete")
+
+    assert protected.status_code == 409
+    assert deleted.status_code == 202
+    assert calls == [("--delete-backup", older)]
+    asyncio.run(database.close())
+
+
 def test_web_update_check_reports_only_fast_forward_github_updates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

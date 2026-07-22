@@ -28,6 +28,7 @@ import type {
   RunSessionMetrics,
   SettingsField,
   SettingsPayload,
+  BackupInventory,
   WebUpdateStatus,
   WebUpdateCheck,
   StructureGateSummary,
@@ -2208,6 +2209,130 @@ export function WebUpdatePanel({
   );
 }
 
+function formatStorageSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = units[0];
+  for (let index = 1; index < units.length && value >= 1024; index += 1) {
+    value /= 1024;
+    unit = units[index];
+  }
+  return `${value >= 10 ? value.toFixed(1) : value.toFixed(2)} ${unit}`;
+}
+
+export function BackupPanel({
+  busy,
+  setBusy,
+  setError,
+}: {
+  busy: string | null;
+  setBusy: (value: string | null) => void;
+  setError: (value: string | null) => void;
+}) {
+  const [inventory, setInventory] = useState<BackupInventory | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [working, setWorking] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    const next = await api<BackupInventory>("/api/backups");
+    setInventory(next);
+    return next;
+  }, []);
+
+  useEffect(() => {
+    load().catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+  }, [load, setError]);
+
+  const waitForResult = useCallback(async () => {
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const next = await load();
+      if (next.status.phase === "completed") return next;
+      if (next.status.phase === "failed") throw new Error(next.status.message);
+    }
+    throw new Error("备份维护在 60 秒内没有返回结果，请检查更新服务日志。");
+  }, [load]);
+
+  const runAction = useCallback(async (path: string, busyKey: string) => {
+    setWorking(true);
+    setBusy(busyKey);
+    setError(null);
+    setNote("备份维护已排队…");
+    try {
+      await api<{ queued: boolean }>(path, { method: "POST" });
+      const next = await waitForResult();
+      const reclaimed = next.status.reclaimed_bytes;
+      setNote(reclaimed === null
+        ? next.status.message
+        : `${next.status.message}，释放 ${formatStorageSize(reclaimed)}`);
+      setConfirming(null);
+    } catch (reason) {
+      setNote(null);
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setWorking(false);
+      setBusy(null);
+    }
+  }, [setBusy, setError, waitForResult]);
+
+  const blocked = busy !== null || working || inventory?.status.phase === "running";
+  const total = inventory?.backups.reduce((sum, backup) => sum + backup.size_bytes, 0) ?? 0;
+
+  return (
+    <div className="settings-section web-update-section backup-section">
+      <h4 className="account-subhead">服务器备份</h4>
+      <div className="settings-actions">
+        <button
+          className="compact"
+          disabled={blocked || inventory === null || !inventory.supported}
+          onClick={() => runAction("/api/backups/refresh", "backup-refresh")}
+        >
+          {working && busy === "backup-refresh" ? "刷新中…" : "刷新备份清单"}
+        </button>
+        {inventory?.backups.length ? (
+          <span className="settings-saved">{inventory.backups.length} 份 · {formatStorageSize(total)}</span>
+        ) : null}
+        {note && <span className="settings-saved">{note}</span>}
+      </div>
+      <small className="settings-hint">
+        {inventory?.supported
+          ? "只列出安装器创建的标准备份。最新一份始终保留；删除由受限的 root 维护服务执行且不可恢复。"
+          : inventory?.status.message ?? "正在读取 VPS 备份清单…"}
+      </small>
+      {inventory?.backups.length === 0 && inventory.supported && (
+        <div className="empty backup-empty">清单为空；刷新后显示现有备份。</div>
+      )}
+      {inventory && inventory.backups.length > 0 && (
+        <div className="backup-list">
+          {inventory.backups.map((backup) => (
+            <div className="backup-row" key={backup.id}>
+              <div>
+                <strong>{formatLocalDateTime(new Date(backup.created_at))}</strong>
+                <small>{backup.id} · {formatStorageSize(backup.size_bytes)}{backup.source_commit ? ` · ${backup.source_commit.slice(0, 12)}` : ""}</small>
+              </div>
+              <div className="backup-actions">
+                {backup.protected ? (
+                  <span className="backup-protected">最新 · 保留</span>
+                ) : confirming === backup.id ? (
+                  <>
+                    <span className="history-warn">确认永久删除这份备份？</span>
+                    <button className="compact danger" disabled={blocked} onClick={() => runAction(`/api/backups/${backup.id}/delete`, "backup-delete")}>确认删除</button>
+                    <button className="text-button" disabled={blocked} onClick={() => setConfirming(null)}>取消</button>
+                  </>
+                ) : (
+                  <button className="text-button danger-text" disabled={blocked} onClick={() => setConfirming(backup.id)}>删除</button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RestartPanel({
   busy,
   setBusy,
@@ -2546,6 +2671,7 @@ function SettingsPanel({
         密钥只写不读：现有值仅显示掩码尾号，留空表示保持不变。shell 里 export 的同名变量在运行时优先级更高。
       </p>
       <WebUpdatePanel busy={busy} setBusy={setBusy} setError={setError} />
+      <BackupPanel busy={busy} setBusy={setBusy} setError={setError} />
       <RestartPanel busy={busy} setBusy={setBusy} setError={setError} />
       <CustomProvidersPanel busy={busy} setBusy={setBusy} setError={setError} />
       {payload.sections.map((section) => (
