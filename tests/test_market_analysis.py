@@ -86,6 +86,15 @@ def test_analysis_contract_requires_explicit_directional_levels() -> None:
         MarketAnalysis.model_validate(invalid)
 
 
+def test_analysis_contract_keeps_low_reward_plan_for_downstream_risk() -> None:
+    payload = _analysis_payload()
+    payload["entry_plan"]["target1"] = 103  # type: ignore[index]
+
+    analysis = MarketAnalysis.model_validate(payload)
+
+    assert analysis.reward_risk() == {"target1": 2 / 3, "target2": 7 / 3}
+
+
 def test_analysis_contract_normalizes_fractional_scenario_probabilities() -> None:
     payload = _analysis_payload()
     payload["scenarios"][0]["probability"] = 0.6  # type: ignore[index]

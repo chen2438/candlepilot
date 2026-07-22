@@ -167,9 +167,6 @@ class MarketAnalysis(AnalysisModel):
             valid = plan.stop > plan.entry > plan.target1 > plan.target2
         if not valid:
             raise ValueError("entry, stop and targets do not match the direction")
-        reward1 = abs(plan.target1 - plan.entry)
-        if reward1 / risk < 1:
-            raise ValueError("target1 reward/risk must be at least 1")
         return self
 
     def reward_risk(self) -> dict[str, float] | None:
