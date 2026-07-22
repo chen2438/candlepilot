@@ -138,10 +138,11 @@ def test_analysis_output_schema_requires_every_object_property() -> None:
 def test_analysis_prompt_requires_chinese_user_facing_text() -> None:
     prompt = build_analysis_prompt({"symbol": "BTCUSDT"})
 
-    assert PROMPT_VERSION == "market-analysis-v2"
+    assert PROMPT_VERSION == "market-analysis-v3"
     assert "Write every user-facing natural-language value in Simplified Chinese" in prompt
     assert "Keep JSON keys, enum values" in prompt
     assert "Previous analysis may be in another language" in prompt
+    assert "benchmark snapshots describe broad BTC/ETH market regime" in prompt
 
 
 def test_assisted_analysis_maps_t1_to_fixed_one_times_intent_and_keeps_t2_shadow() -> None:
@@ -190,7 +191,7 @@ def test_assisted_analysis_maps_t1_to_fixed_one_times_intent_and_keeps_t2_shadow
     assert result.intent.take_profit == Decimal("104")
     assert result.usage["shadow_target2"] == 108
     assert result.usage["assisted_execution_ready"] is True
-    assert result.prompt_version == "analysis-assisted-decision-v4"
+    assert result.prompt_version == "analysis-assisted-decision-v5"
 
 
 def test_assisted_schema_is_strict_and_prompt_declares_shadow_boundaries() -> None:
@@ -552,12 +553,24 @@ class AnalysisMarket:
         return None
 
 
+class AnalysisOptions:
+    async def context(self, symbol):
+        return {
+            "source": "fixture",
+            "available": True,
+            "direct": {"underlying": symbol.removesuffix("USDT"), "available": True},
+            "benchmark_underlyings": ["BTC", "ETH"],
+            "snapshots": {},
+        }
+
+
 def test_data_pack_uses_only_kansoku_timeframes_and_frozen_raw_bars() -> None:
     async def scenario():
         market = AnalysisMarket()
-        result = await AnalysisDataPackBuilder(market).build(  # type: ignore[arg-type]
-            "BTCUSDT", account=None, previous_analysis=None
-        )
+        result = await AnalysisDataPackBuilder(  # type: ignore[arg-type]
+            market,
+            options=AnalysisOptions(),
+        ).build("BTCUSDT", account=None, previous_analysis=None)
         return market, result
 
     market, result = asyncio.run(scenario())
@@ -570,6 +583,8 @@ def test_data_pack_uses_only_kansoku_timeframes_and_frozen_raw_bars() -> None:
         pytest.approx({"period": 55, "last": 112.4}),
     ]
     assert "news" in result["unavailable_inputs"]
+    assert "options_levels" not in result["unavailable_inputs"]
+    assert result["options_context"]["source"] == "fixture"
 
 
 class StaticBuilder:
@@ -699,7 +714,7 @@ def test_analysis_service_persists_frozen_input_and_validated_result(tmp_path: P
     assert row["result"]["reward_risk"]["target1"] == 1
     assert row["input"] == {"data_version": "test", "symbol": "BTCUSDT"}
     assert row["usage"]["total_tokens"] == 30
-    assert row["prompt_version"] == "market-analysis-v2"
+    assert row["prompt_version"] == "market-analysis-v3"
     assert row["result"]["summary"] == "15 分钟结构偏强，但仍需 1 小时周期确认。"
 
 
@@ -811,7 +826,12 @@ def test_market_analysis_api_runs_selected_provider_and_returns_audit(tmp_path: 
         )
         for index, symbol in enumerate(("BTCUSDT", "ETHUSDT", "SOLUSDT"))
     ]
-    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    app = create_app(
+        database=database,
+        market=market,
+        engine=engine,
+        options_context_provider=AnalysisOptions(),
+    )  # type: ignore[arg-type]
     with TestClient(app) as client:
         response = client.post("/api/market-analyses", json={"symbol": "BTCUSDT"})
         assert response.status_code == 202
@@ -885,7 +905,12 @@ def test_cancelling_one_batch_item_cancels_the_whole_queue(tmp_path: Path) -> No
         )
         for index, symbol in enumerate(("BTCUSDT", "ETHUSDT"))
     ]
-    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    app = create_app(
+        database=database,
+        market=market,
+        engine=engine,
+        options_context_provider=AnalysisOptions(),
+    )  # type: ignore[arg-type]
     with TestClient(app) as client:
         queued = client.post("/api/market-analyses/batch").json()["analyses"]
         cancellation = client.post(

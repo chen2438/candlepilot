@@ -42,6 +42,7 @@ from candlepilot.application.testnet_feed import TestnetUserFeed
 from candlepilot.analysis.datapack import AnalysisDataPackBuilder
 from candlepilot.analysis.decision import AnalysisDecisionBridge
 from candlepilot.analysis.models import MarketAnalysis
+from candlepilot.analysis.options import DeribitOptionsContextProvider, OptionsContextSource
 from candlepilot.analysis.outcomes import (
     evaluate_outcome_from_market,
 )
@@ -841,6 +842,7 @@ def create_app(
     pricing_loader: Callable[[Path], Awaitable[ModelPricingCatalog | None]]
     | None = None,
     codex_auth_manager: CodexAuthManager | None = None,
+    options_context_provider: OptionsContextSource | None = None,
     application_commit: str | None = APPLICATION_GIT_COMMIT,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
@@ -1054,7 +1056,9 @@ def create_app(
             return None
         return await testnet_account()
 
-    analysis_builder = AnalysisDataPackBuilder(market)
+    owns_options_context_provider = options_context_provider is None
+    options_context_provider = options_context_provider or DeribitOptionsContextProvider()
+    analysis_builder = AnalysisDataPackBuilder(market, options=options_context_provider)
     analysis_service = MarketAnalysisService(
         builder=analysis_builder,
         repository=analysis_repository,
@@ -1091,6 +1095,10 @@ def create_app(
                 warm_pricing.cancel()
                 await asyncio.gather(warm_pricing, return_exceptions=True)
                 await codex_auth_manager.close()
+                if owns_options_context_provider and isinstance(
+                    options_context_provider, DeribitOptionsContextProvider
+                ):
+                    await options_context_provider.close()
                 await scheduler.stop()
                 await engine.stop()
                 model_tasks = active_backtest_tasks()

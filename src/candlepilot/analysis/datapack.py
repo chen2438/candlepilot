@@ -7,6 +7,7 @@ from statistics import fmean
 from typing import Any
 
 from candlepilot.analysis.indicators import closed_klines, raw_bar, summarize
+from candlepilot.analysis.options import OptionsContextSource
 from candlepilot.market.binance import BinancePublicClient
 from candlepilot.market.features import Kline
 
@@ -14,7 +15,7 @@ from candlepilot.market.features import Kline
 TIMEFRAMES = ("5m", "15m", "1h")
 RAW_BAR_LIMIT = 60
 INDICATOR_BAR_LIMIT = 150
-DATA_VERSION = "kansoku-compatible-crypto-v1"
+DATA_VERSION = "kansoku-compatible-crypto-v2"
 
 
 def _relative_volume(rows: list[Kline]) -> dict[str, Any] | None:
@@ -83,8 +84,14 @@ def _depth_flow(depth: Mapping[str, Any], trades: list[Mapping[str, Any]]) -> di
 
 
 class AnalysisDataPackBuilder:
-    def __init__(self, market: BinancePublicClient) -> None:
+    def __init__(
+        self,
+        market: BinancePublicClient,
+        *,
+        options: OptionsContextSource | None = None,
+    ) -> None:
         self.market = market
+        self.options = options
 
     async def build(
         self,
@@ -106,6 +113,7 @@ class AnalysisDataPackBuilder:
             ticker,
             btc,
             eth,
+            options_context,
         ) = await asyncio.gather(
             self.market.klines(symbol, "5m", INDICATOR_BAR_LIMIT),
             self.market.klines(symbol, "15m", 500),
@@ -118,6 +126,26 @@ class AnalysisDataPackBuilder:
             self.market.ticker_24h(symbol),
             self.market.premium_index("BTCUSDT"),
             self.market.premium_index("ETHUSDT"),
+            (
+                self.options.context(symbol)
+                if self.options is not None
+                else asyncio.sleep(
+                    0,
+                    result={
+                        "source": None,
+                        "available": False,
+                        "as_of": None,
+                        "requested_underlying": symbol.removesuffix("USDT"),
+                        "direct": {
+                            "underlying": symbol.removesuffix("USDT"),
+                            "available": False,
+                            "reason": "no options source is configured",
+                        },
+                        "benchmark_underlyings": [],
+                        "snapshots": {},
+                    },
+                )
+            ),
         )
         parsed = {
             "5m": closed_klines(rows_5m),
@@ -148,6 +176,13 @@ class AnalysisDataPackBuilder:
                 ),
                 None,
             )
+        unavailable_inputs = {
+            "news": "no news source is configured",
+            "event_calendar": "no crypto event calendar is configured",
+            "pro_pattern_detectors": "not present in Kansoku's public implementation",
+        }
+        if not options_context["available"]:
+            unavailable_inputs["options_levels"] = "options context is temporarily unavailable"
         return {
             "data_version": DATA_VERSION,
             "as_of": datetime.now(UTC).isoformat(),
@@ -176,6 +211,7 @@ class AnalysisDataPackBuilder:
                 "btc": {"mark_price": float(btc["markPrice"]), "funding_rate": float(btc["lastFundingRate"])},
                 "eth": {"mark_price": float(eth["markPrice"]), "funding_rate": float(eth["lastFundingRate"])},
             },
+            "options_context": options_context,
             "account": {
                 "available": account is not None,
                 "total_wallet_balance": account.get("totalWalletBalance") if account else None,
@@ -184,10 +220,5 @@ class AnalysisDataPackBuilder:
             },
             "previous_analysis": previous_analysis,
             "lessons": [],
-            "unavailable_inputs": {
-                "news": "no news source is configured",
-                "event_calendar": "no crypto event calendar is configured",
-                "options_levels": "no options open-interest source is configured",
-                "pro_pattern_detectors": "not present in Kansoku's public implementation",
-            },
+            "unavailable_inputs": unavailable_inputs,
         }

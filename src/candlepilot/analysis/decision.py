@@ -23,7 +23,7 @@ from candlepilot.providers.cli import ProviderError, ProviderInvocationError
 from candlepilot.storage.database import MarketAnalysisRepository
 
 
-PROMPT_VERSION = "analysis-assisted-decision-v4"
+PROMPT_VERSION = "analysis-assisted-decision-v5"
 MINIMUM_CONFIDENCE = 0.55
 
 
@@ -109,7 +109,8 @@ For every data pack, return exactly one decision in the same order and with the 
 6. Use MARKET only when the entry trigger is already confirmed by completed supplied 5m bars. Otherwise use LIMIT and set a 5-900 second TTL. Never infer an intrabar confirmation from an unfinished candle.
 7. Set confidence to the estimated strength of the executable directional edge in the supplied snapshot, not a probability of profit. Choose structural setup, trigger, invalidation and target enum values that match the written plan.
 8. Do not choose leverage, position size, or risk limits. CandlePilot deterministically fixes assisted decisions at 1x leverage and applies all existing hard-risk checks after your output.
-9. Missing inputs are unknown, not benign. Evidence and anchor time must be tied to supplied data, and the anchor time must include a timezone.
+9. Options context is supporting evidence only: distinguish direct underlying options from BTC/ETH market benchmarks; never treat open interest as signed positioning, a large-OI strike as proven support/resistance, or put/call and IV as standalone direction.
+10. Missing inputs are unknown, not benign. Evidence and anchor time must be tied to supplied data, and the anchor time must include a timezone. If direct options are unavailable but benchmarks exist, state that distinction.
 
 Return only the required JSON object.
 
