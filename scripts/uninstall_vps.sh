@@ -6,6 +6,7 @@ set -euo pipefail
 
 APP_USER="${CANDLEPILOT_APP_USER:-candlepilot}"
 APP_DIR="${CANDLEPILOT_APP_DIR:-/opt/candlepilot}"
+BACKUP_ROOT="${CANDLEPILOT_UPDATE_BACKUP_ROOT:-}"
 REMOVE_APP_USER="${CANDLEPILOT_REMOVE_APP_USER:-}"
 CONFIRMATION="${CANDLEPILOT_UNINSTALL_CONFIRM:-}"
 DRY_RUN=false
@@ -25,6 +26,8 @@ Usage: uninstall_vps.sh [--dry-run] [--yes]
 Environment:
   CANDLEPILOT_APP_USER           Application user (default: candlepilot)
   CANDLEPILOT_APP_DIR            Installation directory (default: /opt/candlepilot)
+  CANDLEPILOT_UPDATE_BACKUP_ROOT Backup directory; defaults to the installed
+                                  web updater setting or /var/backups/candlepilot
   CANDLEPILOT_REMOVE_APP_USER    true/false; otherwise ask when the user exists
   CANDLEPILOT_UNINSTALL_CONFIRM  Set to REMOVE to skip the final confirmation
 EOF
@@ -51,6 +54,36 @@ case "$APP_DIR" in
 esac
 [[ "${APP_DIR#/}" == */* ]] || fail "CANDLEPILOT_APP_DIR must be at least two path components deep"
 
+UPDATE_CONFIG=/etc/candlepilot/web-update.conf
+if [[ -z "$BACKUP_ROOT" && -e "$UPDATE_CONFIG" ]]; then
+  [[ -f "$UPDATE_CONFIG" && ! -L "$UPDATE_CONFIG" ]] \
+    || fail "refusing unsafe web updater config: $UPDATE_CONFIG"
+  [[ "$(stat -c %u -- "$UPDATE_CONFIG")" == 0 ]] \
+    || fail "web updater config must be owned by root: $UPDATE_CONFIG"
+  CONFIG_MODE="$(stat -c %a -- "$UPDATE_CONFIG")"
+  (( (8#$CONFIG_MODE & 8#22) == 0 )) \
+    || fail "web updater config must not be group- or world-writable: $UPDATE_CONFIG"
+  BACKUP_ROOT="$(sed -n 's/^BACKUP_ROOT=//p' "$UPDATE_CONFIG" | tail -n 1)"
+  [[ -n "$BACKUP_ROOT" ]] || fail "web updater config does not define BACKUP_ROOT"
+fi
+BACKUP_ROOT="${BACKUP_ROOT:-/var/backups/candlepilot}"
+[[ "$BACKUP_ROOT" == /* ]] \
+  || fail "CANDLEPILOT_UPDATE_BACKUP_ROOT must be an absolute path"
+[[ "$BACKUP_ROOT" =~ ^/[A-Za-z0-9._/-]+$ ]] \
+  || fail "CANDLEPILOT_UPDATE_BACKUP_ROOT contains unsupported characters"
+LEXICAL_BACKUP_ROOT="$(realpath -ms -- "$BACKUP_ROOT")"
+RESOLVED_BACKUP_ROOT="$(realpath -m -- "$BACKUP_ROOT")"
+[[ "$LEXICAL_BACKUP_ROOT" == "$RESOLVED_BACKUP_ROOT" ]] \
+  || fail "refusing symlinked CANDLEPILOT_UPDATE_BACKUP_ROOT: $BACKUP_ROOT"
+BACKUP_ROOT="$LEXICAL_BACKUP_ROOT"
+case "$BACKUP_ROOT" in
+  /|/bin|/boot|/dev|/etc|/home|/lib|/lib64|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var|/var/backups)
+    fail "refusing unsafe CANDLEPILOT_UPDATE_BACKUP_ROOT: $BACKUP_ROOT"
+    ;;
+esac
+[[ "${BACKUP_ROOT#/}" == */* ]] \
+  || fail "CANDLEPILOT_UPDATE_BACKUP_ROOT must be at least two path components deep"
+
 if [[ -z "$REMOVE_APP_USER" ]] && id "$APP_USER" >/dev/null 2>&1 && [[ "$DRY_RUN" == false ]]; then
   read -r -p "Remove Linux user '$APP_USER' and its home directory (including Codex login state)? [y/N]: " answer </dev/tty
   case "$answer" in
@@ -76,6 +109,7 @@ CandlePilot uninstall targets:
   Nginx site:      /etc/nginx/sites-available/candlepilot
   TLS/config:      /etc/candlepilot
   update state/log: /var/lib/candlepilot, /var/log/candlepilot-update.log
+  update backups:  $BACKUP_ROOT
   application:     $APP_DIR
   Linux user:      $APP_USER ($([[ "$REMOVE_APP_USER" == true ]] && echo remove || echo preserve))
 
@@ -122,6 +156,9 @@ rm -f -- \
   /var/log/candlepilot-update.log
 rm -rf -- /etc/candlepilot /var/lib/candlepilot
 rm -rf -- /run/candlepilot-update
+if [[ -e "$BACKUP_ROOT" ]]; then
+  rm -rf -- "$BACKUP_ROOT"
+fi
 if [[ -e "$APP_DIR" || -L "$APP_DIR" ]]; then
   rm -rf -- "$APP_DIR"
 fi

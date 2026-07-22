@@ -153,13 +153,22 @@ curl -fsSL https://raw.githubusercontent.com/chen2438/candlepilot/main/scripts/u
   | sudo bash -s -- --dry-run
 ```
 
-去掉 `--dry-run` 后，脚本会单独询问是否删除 `candlepilot` Linux 用户及其 home（其中可能包含
+正式远程卸载命令为：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/chen2438/candlepilot/main/scripts/uninstall_vps.sh \
+  | sudo bash
+```
+
+脚本会单独询问是否删除 `candlepilot` Linux 用户及其 home（其中可能包含
 Codex 登录状态），并要求输入 `REMOVE` 才执行。卸载会停止并移除 CandlePilot 主服务和网页更新
 服务、root 更新助手、systemd path/tmpfiles 请求通道、旧版 sudoers 授权、更新状态/日志、Nginx
-站点、TLS 配置和应用目录
+站点、TLS 配置、应用目录及 CandlePilot 备份根目录
 （Debian 12 的隔离 Python 与 `uv` 也在其中）；不会卸载共享的
 Nginx、系统 Python、Node.js、pnpm、Codex CLI 或 Git，也不会删除可能与其他服务共用的防火墙
-规则。无人值守卸载可设置
+规则。备份根目录优先使用显式的 `CANDLEPILOT_UPDATE_BACKUP_ROOT`，否则读取 root 持有且非符号链接的
+`/etc/candlepilot/web-update.conf`，旧安装缺少该配置时回退 `/var/backups/candlepilot`；解析后的路径会
+在预演中显示，并必须是足够具体的安全绝对路径，宽泛系统目录与符号链接会被拒绝。无人值守卸载可设置
 `CANDLEPILOT_UNINSTALL_CONFIRM=REMOVE` 与 `CANDLEPILOT_REMOVE_APP_USER=true|false`。
 
 API 回归测试按职责拆分：`tests/test_api_runtime.py` 覆盖正式运行、账户、Provider、配置与

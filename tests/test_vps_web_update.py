@@ -94,3 +94,14 @@ def test_uninstaller_removes_the_privileged_update_surface() -> None:
         "/run/candlepilot-update",
     ):
         assert path in uninstaller
+
+
+def test_uninstaller_removes_the_validated_configured_backup_root() -> None:
+    uninstaller = (ROOT / "scripts/uninstall_vps.sh").read_text(encoding="utf-8")
+
+    assert "BACKUP_ROOT=\"${CANDLEPILOT_UPDATE_BACKUP_ROOT:-}\"" in uninstaller
+    assert "UPDATE_CONFIG=/etc/candlepilot/web-update.conf" in uninstaller
+    assert 'BACKUP_ROOT="${BACKUP_ROOT:-/var/backups/candlepilot}"' in uninstaller
+    assert 'LEXICAL_BACKUP_ROOT="$(realpath -ms -- "$BACKUP_ROOT")"' in uninstaller
+    assert "/var/backups)" in uninstaller
+    assert 'rm -rf -- "$BACKUP_ROOT"' in uninstaller

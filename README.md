@@ -194,8 +194,23 @@ systemd 监听的更新请求文件，不调用 `sudo`；主服务继续保留 `
 一份和仅存的一份始终受保护。应用进程只读取脱敏清单，实际删除由受限 root worker 复核并执行。
 
 最低建议 1 vCPU / 2 GB RAM / 25 GB SSD；持续运行建议 2 vCPU / 4 GB RAM / 40 GB SSD。
-卸载前可用 `scripts/uninstall_vps.sh --dry-run` 预览；正式卸载会要求确认，并可选择是否删除
-专用用户及其 Codex 登录状态。详细变量、无人值守安装/卸载参数、Codex 设备码登录与密码重置见
+卸载前先远程预览：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/chen2438/candlepilot/main/scripts/uninstall_vps.sh \
+  | sudo bash -s -- --dry-run
+```
+
+确认目标无误后正式卸载：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/chen2438/candlepilot/main/scripts/uninstall_vps.sh \
+  | sudo bash
+```
+
+正式卸载会要求输入 `REMOVE`，默认同时删除安装器配置的 CandlePilot 备份根目录，并可选择是否删除
+专用用户及其 Codex 登录状态；共享系统包和防火墙规则仍保留。详细变量、无人值守安装/卸载参数、
+Codex 设备码登录与密码重置见
 [运行、验证与 VPS 运维](docs/operations.md#81-linux-vps-一键安装)。
 
 ## 测试网
