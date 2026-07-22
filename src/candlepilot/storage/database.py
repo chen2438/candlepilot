@@ -668,7 +668,9 @@ class MarketAnalysisRepository:
                 .order_by(MarketAnalysisRow.id.desc())
                 .limit(1)
             )
-        return self._as_dict(row, include_audit=False) if row else None
+        if row is None:
+            return None
+        return await self.attach_outcome(self._as_dict(row, include_audit=False))
 
     @staticmethod
     def _as_dict(row: MarketAnalysisRow, *, include_audit: bool) -> dict[str, Any]:

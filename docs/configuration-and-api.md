@@ -88,6 +88,13 @@
 `POST /api/market-analyses/outcomes` 接受 `{"analysis_ids":[1,2]}`，一次最多 30 个正整数 ID，按首次
 出现顺序去重并串行执行同一结果判定；响应分别返回 `updated_ids` 与逐项 `errors`。单条不存在、
 未完成或行情读取失败不会阻断其余项目，也不会把失败记录冒充已更新。
+`GET /api/market-analyses/schedule` 返回进程内自动研究开关、固定 15 分钟间隔、下一 UTC 边界、本轮
+活动状态及上一轮候选/发起/跳过明细；`POST /api/market-analyses/schedule/start` 与 `/stop` 启停未来
+轮次且没有请求体。启动要求正式引擎已停止并已唯一选择外部 Provider；开关不会在服务重启后恢复。
+到达边界时若正式引擎、其他 Provider 任务或上一自动轮仍在活动，本轮直接跳过而不排队。正常一轮
+刷新每个候选最近成功方向分析的计划结果，等待入场、active、T1 部分止盈、顺序不确定或刷新失败的
+标的不会创建新记录；已经明确终结及 neutral 标的才进入逐标的串行队列。停止开关不取消已创建的
+当前轮；需要终止当前 Provider 调用时继续使用对应记录的 `/cancel`。
 
 `POST /api/engine/clear-emergency-lock` 会先执行交易所账户对账；仅停止状态且无持仓、无普通或 Algo
 挂单时删除紧急锁，否则返回 409 并保留锁定。

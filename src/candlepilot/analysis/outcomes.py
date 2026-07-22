@@ -10,6 +10,18 @@ from candlepilot.analysis.models import MarketAnalysis
 from candlepilot.market.features import Kline
 
 
+TERMINAL_OUTCOME_STATUSES = frozenset(
+    {
+        "neutral_observation",
+        "stopped_before_entry",
+        "target1_before_entry",
+        "target2",
+        "stopped",
+        "breakeven_after_target1",
+    }
+)
+
+
 class AnalysisOutcome(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

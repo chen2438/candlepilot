@@ -44,8 +44,10 @@ from candlepilot.analysis.decision import AnalysisDecisionBridge
 from candlepilot.analysis.models import MarketAnalysis
 from candlepilot.analysis.options import DeribitOptionsContextProvider, OptionsContextSource
 from candlepilot.analysis.outcomes import (
+    TERMINAL_OUTCOME_STATUSES,
     evaluate_outcome_from_market,
 )
+from candlepilot.analysis.scheduler import MarketAnalysisScheduler
 from candlepilot.analysis.service import MarketAnalysisService
 from candlepilot.backtest.engine import BacktestConfig, Candle, SimulatedExchange
 from candlepilot.backtest.probe import (
@@ -950,6 +952,7 @@ def create_app(
     analysis_task: asyncio.Task[None] | None = None
     analysis_task_ids: set[int] = set()
     analysis_start_lock = asyncio.Lock()
+    analysis_scheduler: MarketAnalysisScheduler | None = None
     restart_pending = False
     update_pending = False
     update_baseline_finished_at: str | None = None
@@ -1101,6 +1104,8 @@ def create_app(
                     await options_context_provider.close()
                 await scheduler.stop()
                 await engine.stop()
+                if analysis_scheduler is not None:
+                    await analysis_scheduler.close()
                 model_tasks = active_backtest_tasks()
                 if analysis_task is not None and not analysis_task.done():
                     analysis_task.cancel()
@@ -3195,13 +3200,18 @@ def create_app(
     def active_backtest_tasks() -> list[asyncio.Task[None]]:
         return [task for task in backtest_tasks.values() if not task.done()]
 
-    def background_model_work() -> bool:
+    def background_model_work(*, ignore_analysis_schedule: bool = False) -> bool:
         return bool(
             engine_start_lock.locked()
             or analysis_start_lock.locked()
             or active_backtest_tasks()
             or (probe_task and not probe_task.done())
             or (analysis_task and not analysis_task.done())
+            or (
+                not ignore_analysis_schedule
+                and analysis_scheduler is not None
+                and analysis_scheduler.round_running
+            )
             or codex_auth_manager.active
         )
 
@@ -3235,14 +3245,16 @@ def create_app(
         finally:
             analysis_task_ids.clear()
 
-    async def queue_market_analyses(symbols: list[str]) -> dict[str, Any]:
+    async def queue_market_analyses(
+        symbols: list[str], *, scheduled: bool = False
+    ) -> dict[str, Any]:
         nonlocal analysis_task
         if engine.running:
             raise HTTPException(
                 status_code=409,
                 detail="cannot run advisory analysis while the formal engine runs",
             )
-        if background_model_work():
+        if background_model_work(ignore_analysis_schedule=scheduled):
             raise HTTPException(
                 status_code=409,
                 detail="another provider task is already running",
@@ -3278,6 +3290,27 @@ def create_app(
             ],
         }
 
+    async def candidate_analysis_symbols() -> list[str]:
+        if not engine.candidates:
+            try:
+                await engine.refresh_universe()
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=502, detail=f"market refresh failed: {exc}"
+                ) from exc
+        symbols = list(
+            dict.fromkeys(
+                candidate.symbol
+                for candidate in engine.candidates[: scheduler.candidates_per_cycle]
+            )
+        )
+        if not symbols:
+            raise HTTPException(
+                status_code=422,
+                detail="the live universe has no eligible candidate symbols",
+            )
+        return symbols
+
     @app.post("/api/market-analyses", status_code=202)
     async def start_market_analysis(request: MarketAnalysisRequest) -> dict[str, Any]:
         queued = await queue_market_analyses([request.symbol.upper()])
@@ -3296,24 +3329,107 @@ def create_app(
                 status_code=409,
                 detail="another provider task is already running",
             )
-        if not engine.candidates:
-            try:
-                await engine.refresh_universe()
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=502, detail=f"market refresh failed: {exc}"
-                ) from exc
-        symbols = list(
-            dict.fromkeys(
-                candidate.symbol
-                for candidate in engine.candidates[: scheduler.candidates_per_cycle]
+        return await queue_market_analyses(await candidate_analysis_symbols())
+
+    async def run_scheduled_market_analysis() -> dict[str, Any]:
+        if engine.running:
+            return {
+                "status": "skipped",
+                "reason": "正式引擎运行中，本轮自动分析已跳过",
+                "candidates": [],
+                "queued": [],
+                "skipped": [],
+            }
+        if background_model_work(ignore_analysis_schedule=True):
+            return {
+                "status": "skipped",
+                "reason": "其他模型任务正在运行，本轮自动分析已跳过",
+                "candidates": [],
+                "queued": [],
+                "skipped": [],
+            }
+        symbols = await candidate_analysis_symbols()
+        eligible: list[str] = []
+        skipped: list[dict[str, Any]] = []
+        for symbol in symbols:
+            previous = await analysis_repository.latest_success(symbol)
+            if previous is None or previous["result"]["direction"] == "neutral":
+                eligible.append(symbol)
+                continue
+            outcome = previous.get("outcome")
+            if outcome is None or outcome["status"] not in TERMINAL_OUTCOME_STATUSES:
+                try:
+                    previous = await _refresh_market_analysis_outcome(
+                        int(previous["id"]), include_audit=False
+                    )
+                    outcome = previous.get("outcome")
+                except Exception:
+                    logging.getLogger("candlepilot").exception(
+                        "scheduled outcome refresh failed for %s", symbol
+                    )
+                    skipped.append(
+                        {
+                            "symbol": symbol,
+                            "analysis_id": previous["id"],
+                            "outcome": outcome["status"] if outcome else None,
+                            "reason": "计划结果刷新失败，为避免重叠分析已跳过",
+                        }
+                    )
+                    continue
+            if outcome is not None and outcome["status"] in TERMINAL_OUTCOME_STATUSES:
+                eligible.append(symbol)
+                continue
+            skipped.append(
+                {
+                    "symbol": symbol,
+                    "analysis_id": previous["id"],
+                    "outcome": outcome["status"] if outcome else None,
+                    "reason": "最近一份方向计划尚未了结",
+                }
             )
-        )
-        if not symbols:
+        queued: list[dict[str, Any]] = []
+        if eligible:
+            created = await queue_market_analyses(eligible, scheduled=True)
+            queued = created["analyses"]
+            current_task = analysis_task
+            assert current_task is not None
+            await current_task
+        return {
+            "status": "completed",
+            "reason": None,
+            "candidates": symbols,
+            "queued": queued,
+            "skipped": skipped,
+        }
+
+    analysis_scheduler = MarketAnalysisScheduler(run_scheduled_market_analysis)
+    app.state.analysis_scheduler = analysis_scheduler
+
+    @app.get("/api/market-analyses/schedule")
+    async def get_market_analysis_schedule() -> dict[str, Any]:
+        assert analysis_scheduler is not None
+        return analysis_scheduler.status()
+
+    @app.post("/api/market-analyses/schedule/start")
+    async def start_market_analysis_schedule() -> dict[str, Any]:
+        assert analysis_scheduler is not None
+        if engine.running:
             raise HTTPException(
-                status_code=422, detail="the live universe has no eligible candidate symbols"
+                status_code=409,
+                detail="cannot enable advisory analysis while the formal engine runs",
             )
-        return await queue_market_analyses(symbols)
+        selected_analysis_provider()
+        try:
+            analysis_scheduler.start()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return analysis_scheduler.status()
+
+    @app.post("/api/market-analyses/schedule/stop")
+    async def stop_market_analysis_schedule() -> dict[str, Any]:
+        assert analysis_scheduler is not None
+        await analysis_scheduler.stop()
+        return analysis_scheduler.status()
 
     @app.get("/api/market-analyses")
     async def list_market_analyses(

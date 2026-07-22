@@ -174,6 +174,28 @@ export interface MarketAnalysisRecord {
   raw_output?: string | null;
 }
 
+export interface MarketAnalysisScheduleStatus {
+  enabled: boolean;
+  interval_minutes: 15;
+  round_running: boolean;
+  next_run_at: string | null;
+  last_started_at: string | null;
+  last_finished_at: string | null;
+  last_error: string | null;
+  last_result: null | {
+    status: "completed" | "skipped";
+    reason: string | null;
+    candidates: string[];
+    queued: Array<{ id: number; symbol: string }>;
+    skipped: Array<{
+      symbol: string;
+      analysis_id: number;
+      outcome: NonNullable<MarketAnalysisRecord["outcome"]>["status"] | null;
+      reason: string;
+    }>;
+  };
+}
+
 export interface StartupProbeProviderResult {
   status: "pending" | "completed";
   model?: string | null;

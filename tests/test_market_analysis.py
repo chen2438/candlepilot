@@ -23,6 +23,10 @@ from candlepilot.analysis.outcomes import (
     next_complete_5m_start,
 )
 from candlepilot.analysis.prompt import PROMPT_VERSION, build_analysis_prompt
+from candlepilot.analysis.scheduler import (
+    MarketAnalysisScheduler,
+    next_analysis_boundary,
+)
 from candlepilot.analysis.service import MarketAnalysisService
 from candlepilot.domain.models import MarketSnapshot, PortfolioState, ProviderHealth, TradeIntent
 from candlepilot.market.features import Kline
@@ -74,6 +78,70 @@ def _analysis_payload(direction: str = "long") -> dict[str, object]:
         "missing_data_impact": ["新闻与事件风险未知"],
     }
     return base
+
+
+def test_analysis_scheduler_aligns_to_utc_quarter_hour() -> None:
+    assert next_analysis_boundary(
+        datetime(2026, 7, 22, 10, 7, 31, tzinfo=UTC)
+    ) == datetime(2026, 7, 22, 10, 15, tzinfo=UTC)
+    assert next_analysis_boundary(
+        datetime(2026, 7, 22, 10, 45, tzinfo=UTC)
+    ) == datetime(2026, 7, 22, 11, 0, tzinfo=UTC)
+
+
+def test_analysis_scheduler_records_an_independent_round() -> None:
+    async def scenario() -> dict[str, object]:
+        now = datetime(2026, 7, 22, 10, 7, tzinfo=UTC)
+
+        async def run_round() -> dict[str, object]:
+            return {
+                "status": "completed",
+                "candidates": ["BTCUSDT"],
+                "queued": [{"id": 1, "symbol": "BTCUSDT"}],
+                "skipped": [],
+            }
+
+        scheduler = MarketAnalysisScheduler(run_round, clock=lambda: now)
+        await scheduler.run_now()
+        status = scheduler.status()
+        await scheduler.close()
+        return status
+
+    status = asyncio.run(scenario())
+    assert status["round_running"] is False
+    assert status["last_started_at"] == datetime(2026, 7, 22, 10, 7, tzinfo=UTC)
+    assert status["last_finished_at"] == datetime(2026, 7, 22, 10, 7, tzinfo=UTC)
+    assert status["last_result"]["queued"] == [{"id": 1, "symbol": "BTCUSDT"}]
+
+
+def test_stopping_analysis_schedule_keeps_the_current_round_alive() -> None:
+    async def scenario() -> tuple[dict[str, object], dict[str, object]]:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        now = datetime(2026, 7, 22, 10, 7, tzinfo=UTC)
+
+        async def run_round() -> dict[str, object]:
+            started.set()
+            await release.wait()
+            return {"status": "completed", "candidates": [], "queued": [], "skipped": []}
+
+        scheduler = MarketAnalysisScheduler(run_round, clock=lambda: now)
+        scheduler.start()
+        running = asyncio.create_task(scheduler.run_now())
+        await started.wait()
+        await scheduler.stop()
+        stopped_status = scheduler.status()
+        release.set()
+        await running
+        finished_status = scheduler.status()
+        await scheduler.close()
+        return stopped_status, finished_status
+
+    stopped_status, finished_status = asyncio.run(scenario())
+    assert stopped_status["enabled"] is False
+    assert stopped_status["round_running"] is True
+    assert finished_status["round_running"] is False
+    assert finished_status["last_result"]["status"] == "completed"
 
 
 def test_analysis_contract_requires_explicit_directional_levels() -> None:
@@ -925,6 +993,98 @@ def test_market_analysis_api_runs_selected_provider_and_returns_audit(tmp_path: 
                     break
                 __import__("time").sleep(0.01)
             assert detail["status"] == "succeeded", detail
+
+
+def test_automatic_analysis_skips_symbols_with_unresolved_plans(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'analysis-schedule.db'}")
+    market = AnalysisMarket()
+    provider = AnalysisProvider()
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([provider]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    engine.select_provider_chain([provider.name])
+    engine.candidates = [
+        Candidate(
+            symbol=symbol,
+            score=Decimal(str(1 - index / 10)),
+            volume_rank=index + 1,
+            spread_bps=Decimal("1"),
+            volatility=Decimal("0.02"),
+            trend_strength=Decimal("0.01"),
+        )
+        for index, symbol in enumerate(("BTCUSDT", "ETHUSDT"))
+    ]
+    app = create_app(
+        database=database,
+        market=market,
+        engine=engine,
+        options_context_provider=AnalysisOptions(),
+    )  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/market-analyses", json={"symbol": "BTCUSDT"}
+        ).json()
+        identifier = created["id"]
+        for _ in range(50):
+            detail = client.get(f"/api/market-analyses/{identifier}").json()
+            if detail["status"] == "succeeded":
+                break
+            __import__("time").sleep(0.01)
+        assert client.post(
+            f"/api/market-analyses/{identifier}/outcome"
+        ).json()["outcome"]["status"] == "waiting_entry"
+
+        started = client.post("/api/market-analyses/schedule/start")
+        assert started.status_code == 200
+        assert started.json()["enabled"] is True
+        assert started.json()["interval_minutes"] == 15
+        assert started.json()["next_run_at"] is not None
+
+        assert client.portal is not None
+        client.portal.call(app.state.analysis_scheduler.run_now)
+        status = client.get("/api/market-analyses/schedule").json()
+        assert status["last_result"]["status"] == "completed"
+        assert [item["symbol"] for item in status["last_result"]["queued"]] == [
+            "ETHUSDT"
+        ]
+        assert status["last_result"]["skipped"] == [
+            {
+                "symbol": "BTCUSDT",
+                "analysis_id": identifier,
+                "outcome": "waiting_entry",
+                "reason": "最近一份方向计划尚未了结",
+            }
+        ]
+        history = client.get("/api/market-analyses?limit=30").json()
+        assert [item["symbol"] for item in history[:2]] == ["ETHUSDT", "BTCUSDT"]
+
+        repository = MarketAnalysisRepository(database.sessions)
+        client.portal.call(
+            repository.save_outcome,
+            identifier,
+            {
+                "status": "stopped",
+                "bars_observed": 3,
+                "entry_at": "2026-07-22T10:05:00Z",
+                "target1_at": None,
+                "resolved_at": "2026-07-22T10:15:00Z",
+                "detail": "计划已入场，随后触及结构止损",
+            },
+        )
+        client.portal.call(app.state.analysis_scheduler.run_now)
+        second_round = client.get("/api/market-analyses/schedule").json()[
+            "last_result"
+        ]
+        assert [item["symbol"] for item in second_round["queued"]] == ["BTCUSDT"]
+        assert [item["symbol"] for item in second_round["skipped"]] == ["ETHUSDT"]
+
+        stopped = client.post("/api/market-analyses/schedule/stop")
+        assert stopped.status_code == 200
+        assert stopped.json()["enabled"] is False
+        assert stopped.json()["next_run_at"] is None
 
 
 def test_cancelling_one_batch_item_cancels_the_whole_queue(tmp_path: Path) -> None:

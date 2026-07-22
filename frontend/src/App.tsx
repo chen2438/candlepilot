@@ -36,6 +36,7 @@ import type {
   TrailingStopEvent,
   PartialTakeProfitEvent,
   MarketAnalysisRecord,
+  MarketAnalysisScheduleStatus,
 } from "./types";
 
 const EXIT_REASON: Record<string, string> = {
@@ -2856,6 +2857,8 @@ export function MarketAnalysisPanel({
   const [outcomeBusy, setOutcomeBusy] = useState<"single" | "batch" | null>(null);
   const [batchIds, setBatchIds] = useState<number[]>([]);
   const [lastQueuedSymbols, setLastQueuedSymbols] = useState<string[]>([]);
+  const [schedule, setSchedule] = useState<MarketAnalysisScheduleStatus | null>(null);
+  const [scheduleBusy, setScheduleBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [historyFilter, setHistoryFilter] = useState<"directional" | "long" | "short" | "all">("directional");
 
@@ -2871,9 +2874,34 @@ export function MarketAnalysisPanel({
     return detail;
   }, []);
 
+  const refreshSchedule = useCallback(async () => {
+    const status = await api<MarketAnalysisScheduleStatus>("/api/market-analyses/schedule");
+    setSchedule(status);
+    return status;
+  }, []);
+
   useEffect(() => {
-    refreshHistory().catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
-  }, [refreshHistory]);
+    Promise.all([refreshHistory(), refreshSchedule()]).catch(
+      (reason) => setError(reason instanceof Error ? reason.message : String(reason)),
+    );
+  }, [refreshHistory, refreshSchedule]);
+
+  useEffect(() => {
+    if (!schedule?.enabled && !schedule?.round_running) return;
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const next = await refreshSchedule();
+        if (!stopped && (next.round_running || next.last_finished_at !== schedule?.last_finished_at)) {
+          await refreshHistory();
+        }
+      } catch (reason) {
+        if (!stopped) setError(reason instanceof Error ? reason.message : String(reason));
+      }
+    };
+    const timer = window.setInterval(poll, 3000);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [schedule?.enabled, schedule?.round_running, schedule?.last_finished_at, refreshHistory, refreshSchedule]);
 
   useEffect(() => {
     if (!selected || !["pending", "running"].includes(selected.status)) return;
@@ -2960,6 +2988,22 @@ export function MarketAnalysisPanel({
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const toggleSchedule = async () => {
+    setScheduleBusy(true);
+    setError(null);
+    try {
+      const action = schedule?.enabled ? "stop" : "start";
+      setSchedule(await api<MarketAnalysisScheduleStatus>(
+        `/api/market-analyses/schedule/${action}`,
+        { method: "POST" },
+      ));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setScheduleBusy(false);
     }
   };
 
@@ -3065,13 +3109,13 @@ export function MarketAnalysisPanel({
         required
       /></label>
       <div><small>当前 Provider</small><strong>{provider ?? "未选择外部 Provider"}</strong></div>
-      <button className="primary" disabled={busy || outcomeBusy !== null || engineRunning || !provider || Boolean(running)}>
+      <button className="primary" disabled={busy || outcomeBusy !== null || engineRunning || !provider || Boolean(running) || Boolean(schedule?.round_running)}>
         {running ? "分析进行中…" : busy ? "正在创建…" : "开始分析"}
       </button>
       <button
         type="button"
         className="batch"
-        disabled={busy || outcomeBusy !== null || engineRunning || !provider || Boolean(running)}
+        disabled={busy || outcomeBusy !== null || engineRunning || !provider || Boolean(running) || Boolean(schedule?.round_running)}
         title={displayedCandidateSymbols.join(", ")}
         onClick={() => void startBatch()}
       >
@@ -3086,6 +3130,30 @@ export function MarketAnalysisPanel({
     <div className="analysis-candidates">
       <small>正式引擎同批候选</small>
       <span>{displayedCandidateSymbols.length ? displayedCandidateSymbols.join(" · ") : "候选池尚未就绪；批量分析时将先扫描"}</span>
+    </div>
+    <div className={`analysis-schedule ${schedule?.enabled ? "enabled" : ""}`}>
+      <div>
+        <small>自动分析 · 每 15 分钟</small>
+        <strong>{schedule?.round_running ? "本轮运行中" : schedule?.enabled ? "等待下一轮" : "未启用"}</strong>
+        <span>
+          {schedule?.enabled && schedule.next_run_at
+            ? `下轮 ${new Date(schedule.next_run_at).toLocaleString("zh-CN", { hour12: false })}`
+            : "对齐 UTC 15 分钟边界；服务重启后保持关闭"}
+        </span>
+      </div>
+      <div className="analysis-schedule-result">
+        {schedule?.last_result
+          ? <><span>上轮：候选 {schedule.last_result.candidates.length} · 发起 {schedule.last_result.queued.length} · 跳过 {schedule.last_result.skipped.length}</span>
+            {Boolean(schedule.last_result.skipped.length) && <small title={schedule.last_result.skipped.map((item) => `${item.symbol}: ${item.reason}`).join("\n")}>跳过 {schedule.last_result.skipped.map((item) => item.symbol).join(" · ")}</small>}
+            {schedule.last_result.reason && <small>{schedule.last_result.reason}</small>}</>
+          : <span>{schedule?.round_running ? "停止只影响后续轮次；可在分析历史选择当前任务并取消" : "每个标的独立发送；尚未了结的方向计划自动跳过"}</span>}
+        {schedule?.last_error && <small className="negative">{schedule.last_error}</small>}
+      </div>
+      <button
+        type="button"
+        disabled={scheduleBusy || (!schedule?.enabled && (engineRunning || !provider || Boolean(running)))}
+        onClick={() => void toggleSchedule()}
+      >{scheduleBusy ? "处理中…" : schedule?.enabled ? "停止自动分析" : "启动自动分析"}</button>
     </div>
     {engineRunning && <div className="analysis-warning">正式引擎运行中；停止后才能发起独立分析。</div>}
     {!provider && <div className="analysis-warning">请先在总览选择 Codex、Claude Code 或 Custom API。</div>}

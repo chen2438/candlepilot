@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MarketAnalysisPanel } from "./App";
-import type { MarketAnalysisRecord } from "./types";
+import type { MarketAnalysisRecord, MarketAnalysisScheduleStatus } from "./types";
 
 afterEach(() => {
   cleanup();
@@ -149,6 +149,17 @@ const target1BeforeEntryRecord: MarketAnalysisRecord = {
   outcome_updated_at: "2026-07-22T10:20:00Z",
 };
 
+const idleSchedule: MarketAnalysisScheduleStatus = {
+  enabled: false,
+  interval_minutes: 15,
+  round_running: false,
+  next_run_at: null,
+  last_started_at: null,
+  last_finished_at: null,
+  last_error: null,
+  last_result: null,
+};
+
 function response(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -160,6 +171,7 @@ describe("MarketAnalysisPanel", () => {
   it("starts an analysis and renders the frozen three-timeframe plan", async () => {
     const request = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const path = String(input);
+      if (path === "/api/market-analyses/schedule") return response(idleSchedule);
       if (path === "/api/market-analyses?limit=30") return response([]);
       if (path === "/api/market-analyses" && init?.method === "POST") return response({ id: 7, status: "pending" }, 202);
       if (path === "/api/market-analyses/7") return response(record);
@@ -194,6 +206,7 @@ describe("MarketAnalysisPanel", () => {
   it("keeps a neutral range plan in its dedicated layout before scenarios", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const path = String(input);
+      if (path === "/api/market-analyses/schedule") return response(idleSchedule);
       if (path === "/api/market-analyses?limit=30") return response([rangeRecord]);
       if (path === "/api/market-analyses/8") return response(rangeRecord);
       throw new Error(`unexpected request: ${path}`);
@@ -211,6 +224,7 @@ describe("MarketAnalysisPanel", () => {
   it("filters analysis history by directional, long, short, and all results", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const path = String(input);
+      if (path === "/api/market-analyses/schedule") return response(idleSchedule);
       if (path === "/api/market-analyses?limit=30") return response([pendingRecord, rangeRecord, shortRecord, record]);
       if (path === "/api/market-analyses/8") return response(rangeRecord);
       throw new Error(`unexpected request: ${path}`);
@@ -244,6 +258,7 @@ describe("MarketAnalysisPanel", () => {
     const ethRecord = { ...record, id: 8, symbol: "ETHUSDT", status: "pending" as const, result: null };
     const request = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const path = String(input);
+      if (path === "/api/market-analyses/schedule") return response(idleSchedule);
       if (path === "/api/market-analyses?limit=30") return response([]);
       if (path === "/api/market-analyses/batch" && init?.method === "POST") {
         return response({
@@ -271,10 +286,43 @@ describe("MarketAnalysisPanel", () => {
     expect(screen.getByText("ETHUSDT · SOLUSDT")).toBeTruthy();
   });
 
+  it("enables the 15-minute automatic analysis schedule", async () => {
+    const enabledSchedule: MarketAnalysisScheduleStatus = {
+      ...idleSchedule,
+      enabled: true,
+      next_run_at: "2026-07-22T10:15:00Z",
+    };
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path === "/api/market-analyses?limit=30") return response([]);
+      if (path === "/api/market-analyses/schedule" && !init?.method) return response(idleSchedule);
+      if (path === "/api/market-analyses/schedule/start" && init?.method === "POST") {
+        return response(enabledSchedule);
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+    render(<MarketAnalysisPanel
+      engineRunning={false}
+      provider="codex-auth"
+      candidateSymbols={["BTCUSDT", "ETHUSDT"]}
+    />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "启动自动分析" }));
+
+    expect(await screen.findByText("等待下一轮")).toBeTruthy();
+    expect(screen.getByText(/下轮/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "停止自动分析" })).toBeTruthy();
+    expect(request).toHaveBeenCalledWith(
+      "/api/market-analyses/schedule/start",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
   it("batch refreshes outcomes and shows each result in analysis history", async () => {
     let updated = false;
     const request = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const path = String(input);
+      if (path === "/api/market-analyses/schedule") return response(idleSchedule);
       if (path === "/api/market-analyses?limit=30") {
         return response(updated ? [activeRecord, stoppedRecord] : [record, shortRecord]);
       }
@@ -301,6 +349,7 @@ describe("MarketAnalysisPanel", () => {
   it("shows pre-entry stop and T1 outcomes without implying an entry", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const path = String(input);
+      if (path === "/api/market-analyses/schedule") return response(idleSchedule);
       if (path === "/api/market-analyses?limit=30") {
         return response([stoppedBeforeEntryRecord, target1BeforeEntryRecord]);
       }
