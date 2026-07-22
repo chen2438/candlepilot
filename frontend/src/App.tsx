@@ -404,6 +404,41 @@ const STRUCTURE_CHECK_LABELS: Record<string, string> = {
   invalidation: "失效与止损",
 };
 
+const STRUCTURE_TRIGGER_DETAILS: Record<string, string> = {
+  "current mark crossed the declared trigger": "当前标记价已越过声明的触发价",
+  "two-bar breakout hold, pre-break boundary, and trigger must agree": "连续两根 K 线确认突破、突破前边界与触发价必须一致",
+  "pending limit entry is anchored to its declared trigger": "待触发限价入场必须锚定其声明的触发价",
+  "rejection requires a directional close beyond its trigger": "拒绝形态要求 K 线沿交易方向收在触发价外侧",
+};
+
+export function structureCheckDetail(check: { key: string; passed: boolean; detail: string }): string {
+  if (check.key === "metadata") {
+    return check.passed ? "结构化 structure-v1 交易计划字段完整" : "缺少结构化交易计划字段";
+  }
+  if (check.key === "anchor") {
+    const match = check.detail.match(/^anchor distance (.+) vs (\S+) ATR (.+)$/);
+    return match
+      ? `锚点距离 ${match[1]}；${match[2]} ATR 为 ${match[3]}，要求距离不超过 0.5 ATR`
+      : "结构锚点与当前标记价的距离必须不超过对应周期的 0.5 ATR";
+  }
+  if (check.key === "extension") {
+    const match = check.detail.match(/^(?:directional extension )?(.+) ATR must be below (.+)$/);
+    return match
+      ? `顺势延伸 ${match[1]} ATR，必须小于 ${match[2]} ATR`
+      : "顺势延伸必须低于当前开仓或加仓上限";
+  }
+  if (check.key === "alignment") {
+    return "5m 与 15m/30m 中至少一个周期必须同向";
+  }
+  if (check.key === "trigger") {
+    return STRUCTURE_TRIGGER_DETAILS[check.detail] ?? "当前入场触发必须符合声明的结构条件";
+  }
+  if (check.key === "invalidation") {
+    return "声明的失效位必须匹配输入结构，且止损必须位于失效位之外";
+  }
+  return check.detail;
+}
+
 const CANDIDATE_DEFINITIONS = {
   score: "候选综合评分：24h 成交额 35% + 价差流动性 30% + 24h 波动 20% + 趋势绝对强度 15%，均在入选成交额池内归一化。",
   volumeRank: "通过上市时间、数据完整性和价差过滤后，按 24h USDT 成交额排序的名次；评分池最多取前 50 名。",
@@ -4202,7 +4237,7 @@ export function DecisionPanel({
                       {decision.risk.decision.structure_assessment.checks.map((check) => (
                         <li className={check.passed ? "passed" : "failed"} key={check.key}>
                           <i>{check.passed ? "✓" : "×"}</i>
-                          <span><strong>{check.key}</strong><small>{check.detail}</small></span>
+                          <span><strong>{STRUCTURE_CHECK_LABELS[check.key] ?? check.key}</strong><small>{structureCheckDetail(check)}</small></span>
                         </li>
                       ))}
                     </ul>

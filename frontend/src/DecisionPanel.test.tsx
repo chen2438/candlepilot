@@ -14,6 +14,7 @@ import {
   LiveRunActionButtons,
   RunUsage,
   setupTypeLabel,
+  structureCheckDetail,
   StructureGateSummaryCard,
   StartupProbeCompletedSummary,
   StartupProbeRunningSummary,
@@ -33,6 +34,17 @@ it.each([
   ["REVERSAL", "反转"],
 ])("labels setup type %s as %s", (value, label) => {
   expect(setupTypeLabel(value)).toBe(label);
+});
+
+it.each([
+  ["metadata", true, "complete structure-v1 plan", "结构化 structure-v1 交易计划字段完整"],
+  ["anchor", false, "anchor distance 0.25 vs 5m ATR 0.4", "锚点距离 0.25；5m ATR 为 0.4，要求距离不超过 0.5 ATR"],
+  ["extension", true, "directional extension 0.8 ATR must be below 2", "顺势延伸 0.8 ATR，必须小于 2 ATR"],
+  ["alignment", true, "5m and at least one of 15m/30m must align", "5m 与 15m/30m 中至少一个周期必须同向"],
+  ["trigger", true, "current mark crossed the declared trigger", "当前标记价已越过声明的触发价"],
+  ["invalidation", true, "declared invalidation must match payload structure and the stop must sit beyond it", "声明的失效位必须匹配输入结构，且止损必须位于失效位之外"],
+])("localizes structure check %s", (key, passed, detail, expected) => {
+  expect(structureCheckDetail({ key, passed, detail })).toBe(expected);
 });
 
 const decision: DecisionEvent = {
@@ -632,7 +644,11 @@ describe("DecisionPanel", () => {
 
     expect(screen.getByText("结构入场门槛 · SHADOW")).toBeTruthy();
     expect(screen.getByText("存在未通过项")).toBeTruthy();
-    expect(screen.getByText("2.2 ATR must be below 2")).toBeTruthy();
+    expect(screen.getByText("周期同向")).toBeTruthy();
+    expect(screen.getByText("5m 与 15m/30m 中至少一个周期必须同向")).toBeTruthy();
+    expect(screen.getByText("追价距离")).toBeTruthy();
+    expect(screen.getByText("顺势延伸 2.2 ATR，必须小于 2 ATR")).toBeTruthy();
+    expect(screen.queryByText("2.2 ATR must be below 2")).toBeNull();
   });
 
   it("shows a local pending limit and its hard expiry", async () => {
