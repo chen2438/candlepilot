@@ -28,7 +28,7 @@
 | `CANDLEPILOT_TRAILING_STOP_MODE` | 确定性移动止损模式：`off` / `shadow` / `live`，默认 `shadow`；shadow 并行审计五组固定参数并冻结各组首次模拟成交，live 只执行 +2R 激活、距最有利标记价 1R，只有 live 修改交易所止损 |
 | `CANDLEPILOT_STRUCTURE_GATE_MODE` | 结构入场门槛：`off` / `shadow` / `enforce`，默认 `shadow`；shadow 只记录逐项检查而不改变订单，enforce 才拒绝不合格开仓/加仓 |
 | `CANDLEPILOT_DAILY_LOSS_PERCENT` | 滚动 24 小时亏损熔断百分比，范围 0.1–50，默认 5；前端设置页按百分数填写，保存后重启生效 |
-| `CANDLEPILOT_PROVIDER_CHAIN` | 启动时默认的逗号分隔有序 Provider 路由，例如 `local,codex,claude-code,custom:main`；只接受这四种面向 `.env` 的短名称，不允许重复，所有 Custom API ID 必须存在；状态/API 返回的 `local-rule`、`codex-auth`、`claude-code-auth`、`openai-compatible:<id>` 是内部注册名，不允许写回该变量 |
+| `CANDLEPILOT_PROVIDER_CHAIN` | 启动时唯一使用的 Provider，例如 `local`、`codex`、`claude-code` 或 `custom:main`；保留该变量名用于兼容现有部署，但值必须恰好一个，不得用逗号配置主备，Custom API ID 必须存在；状态/API 返回的 `local-rule`、`codex-auth`、`claude-code-auth`、`openai-compatible:<id>` 是内部注册名，不允许写回该变量 |
 | `CANDLEPILOT_CODEX_MODEL` / `CANDLEPILOT_CODEX_REASONING_EFFORT` | Codex 模型 / 推理强度（minimal/low/medium/high）|
 | `CANDLEPILOT_CLAUDE_MODEL` / `CANDLEPILOT_CLAUDE_EFFORT` | Claude 模型 / 强度（low/medium/high/xhigh/max）|
 | `CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON` | **全部** Custom API 端点的 JSON 数组（最多 8 个），每项需唯一 `id` 与 `base_url`，注册为 `openai-compatible:<id>` |
@@ -71,9 +71,9 @@
 `POST /api/engine/probe-and-start` 也接受同一请求体，并在一个启动锁内依次执行真实批量试跑和持续启动；
 只有试跑完整成功才会启动，成功后该试跑立即标记为已消费。
 
-`POST /api/providers/select` 的新格式为
-`{"providers":["codex-auth","claude-code-auth","openai-compatible:main"]}`；这是唯一请求结构，
-`name/backup` 旧结构返回 422。引擎运行时修改返回 409。
+`POST /api/providers/select` 的格式为 `{"providers":["codex-auth"]}`；为兼容既有客户端保留
+`providers` 数组，但数组必须恰好包含一个内部注册名，零个或多个均返回 422；`name/backup` 旧结构
+同样返回 422。引擎运行时修改返回 409。
 `GET /api/providers` 对 Codex 返回当前 `auth_source`、已安装的 `auth_source_options` 和通过认证后
 取得的 `account_email`；`POST /api/providers/config` 可附带
 `{"name":"codex-auth","auth_source":"chatgpt-app"}` 或 `codex-cli`。来源切换只影响当前服务进程，
@@ -88,14 +88,13 @@ Codex CLI 登录接口异步启动固定的 `codex login --device-auth`，sessio
 `Cache-Control: no-store`，只包含安全消息、检查时间，以及额度桶的套餐、名称和实际存在的窗口
 （类型、已用/剩余百分比、时长、重置时间）。不返回认证凭据或原始协议字段；CLI 不支持实验接口、
 未登录、超时或响应异常时仍返回 200、`available=false` 和空桶，使展示失败不影响 Provider。
-`GET /api/status` 通过 `provider_chain`、`active_provider` 和 `provider_routes` 返回顺序、当前承载、
-冷却截止时间、最近错误与最近成功/失败时间；不返回任何凭据。
+`GET /api/status` 为兼容既有客户端继续通过单元素 `provider_chain` / `provider_routes` 以及
+`active_provider` 返回所选 Provider、当前承载、重试冷却截止时间与最近成功/失败时间；不返回任何凭据。
 
-`POST /api/engine/probe` 接受 `{"timeout_seconds":60}`；外部 Provider 路由必须得到一个统一的
-本次绝对超时，省略时仅在所有选中外部 Provider 当前配置相同时继承该值。本地规则可传 `null`。
-接口同步完成上述 1 次真实批量试跑和容量校验，但不创建运行会话或启动调度。并行试跑中任一 Provider
-失败时，后端会取消并等待同组其他调用完整退出后再恢复超时并返回失败，不能遗留继续计费或占用
-单并发锁的后台调用。`POST /api/engine/start` 接受相同请求结构，只消费当前参数下尚未使用的成功
+`POST /api/engine/probe` 接受 `{"timeout_seconds":60}`；所选外部 Provider 使用该次绝对超时，
+省略时继承当前 Provider 配置，本地规则可传 `null`。接口同步完成上述 1 次真实批量试跑和容量校验，
+但不创建运行会话或启动调度；失败时等待调用完整退出后恢复超时，不能遗留继续计费或占用单并发锁的
+后台调用。`POST /api/engine/start` 接受相同请求结构，只消费当前参数下尚未使用的成功
 试跑并执行账户启动对账；缺少试跑、试跑已使用、试跑后修改参数或请求超时不匹配均返回 409。
 
 **行情与选币**：`GET /api/universe`、`POST /api/universe/refresh`、

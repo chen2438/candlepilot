@@ -99,15 +99,15 @@ ENV_SECTIONS: tuple[EnvSection, ...] = (
         ),
     ),
     EnvSection(
-        "Provider 路由",
+        "运行 Provider",
         (
             EnvField(
                 "CANDLEPILOT_PROVIDER_CHAIN",
-                "主备顺序",
-                placeholder="codex, claude-code, custom:groq",
+                "单一 Provider",
+                placeholder="codex",
                 description=(
-                    "按顺序用逗号分隔：本地规则填 local，Codex 填 codex，"
-                    "Claude Code 填 claude-code，自定义端点填 custom:<id>。"
+                    "一次运行只能填写一个：本地规则填 local，Codex 填 codex，"
+                    "Claude Code 填 claude-code，自定义端点填 custom:<id>；不得用逗号连接多个。"
                 ),
             ),
             EnvField("CANDLEPILOT_CODEX_MODEL", "Codex 模型"),

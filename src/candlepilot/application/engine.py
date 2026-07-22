@@ -141,12 +141,10 @@ class TradingEngine:
 
     def select_provider_chain(self, providers: tuple[str, ...] | list[str]) -> None:
         if self.running:
-            raise RuntimeError("cannot change provider route while running")
-        if not providers:
-            raise ValueError("provider route must contain at least one provider")
+            raise RuntimeError("cannot change provider while running")
+        if len(providers) != 1:
+            raise ValueError("exactly one provider must be selected")
         ordered = tuple(providers)
-        if len(set(ordered)) != len(ordered):
-            raise ValueError("provider route cannot contain duplicates")
         for name in ordered:
             self.providers.get(name)
         changed = ordered != self.provider_chain
@@ -157,7 +155,7 @@ class TradingEngine:
             for name in ordered
         }
         if changed:
-            self.invalidate_startup_probe("provider route changed")
+            self.invalidate_startup_probe("provider changed")
 
     def provider_route_status(
         self, *, now: datetime | None = None
@@ -1503,8 +1501,8 @@ class TradingEngine:
             }
         )
         rationale = (
-            f"provider attempt failed at route position {route_position}; "
-            f"{'continuing failover' if failover_continues else 'no provider succeeded'}: {error}"
+            f"provider attempt {decision_attempt} failed; "
+            f"{'retrying selected provider' if failover_continues else 'provider retries exhausted'}: {error}"
         )
         return ProviderResult(
             intent=TradeIntent.hold(

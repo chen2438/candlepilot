@@ -7,6 +7,7 @@ import {
   CadenceSelector,
   formatDailyLossPercent,
   LoginScreen,
+  ProviderChoiceButton,
   WebUpdatePanel,
 } from "./App";
 import type { BacktestDecisionPage } from "./types";
@@ -45,6 +46,28 @@ describe("CadenceSelector", () => {
     );
     expect(screen.getByRole("button", { name: "30m" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getAllByRole("button", { pressed: true })).toHaveLength(1);
+  });
+});
+
+describe("ProviderChoiceButton", () => {
+  it("selects one Provider and locks the current selection", () => {
+    const onSelect = vi.fn();
+    const { rerender } = render(
+      <ProviderChoiceButton name="codex-auth" selected={false} disabled={false} onSelect={onSelect}>
+        Codex Auth
+      </ProviderChoiceButton>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Codex Auth" }));
+    expect(onSelect).toHaveBeenCalledWith("codex-auth");
+
+    rerender(
+      <ProviderChoiceButton name="codex-auth" selected disabled={false} onSelect={onSelect}>
+        Codex Auth
+      </ProviderChoiceButton>,
+    );
+    expect(screen.getByRole("button", { name: "Codex Auth" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Codex Auth" }).hasAttribute("disabled")).toBe(true);
   });
 });
 

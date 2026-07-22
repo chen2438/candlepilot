@@ -191,12 +191,8 @@ def test_provider_chain_accepts_custom_endpoint_ids(monkeypatch) -> None:
             ]
         ),
     )
-    monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", "codex, custom:groq, custom:local")
-    assert Settings.from_env().provider_chain == (
-        "codex-auth",
-        "openai-compatible:groq",
-        "openai-compatible:local",
-    )
+    monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", "custom:groq")
+    assert Settings.from_env().provider_chain == ("openai-compatible:groq",)
     # Ids are matched case-insensitively.
     monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", "custom:GROQ")
     assert Settings.from_env().provider_chain == ("openai-compatible:groq",)
@@ -214,11 +210,11 @@ def test_provider_chain_accepts_custom_endpoint_ids(monkeypatch) -> None:
 
 
 def test_local_rule_is_a_first_class_provider_name(monkeypatch) -> None:
-    monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", "local, codex")
+    monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", "local")
 
     settings = Settings.from_env()
 
-    assert settings.provider_chain == ("local-rule", "codex-auth")
+    assert settings.provider_chain == ("local-rule",)
 
 
 def test_run_limits_default_to_unbounded_and_read_env(monkeypatch) -> None:
@@ -331,19 +327,21 @@ def test_removed_default_provider_env_is_rejected(monkeypatch) -> None:
         Settings.from_env()
 
 
-def test_provider_chain_accepts_current_names_and_preserves_order(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    (
+        ("codex", "codex-auth"),
+        ("claude-code", "claude-code-auth"),
+        ("custom:main", "openai-compatible:main"),
+    ),
+)
+def test_provider_selection_accepts_current_names(monkeypatch, configured, expected) -> None:
     monkeypatch.setenv(
         "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON",
         '[{"id":"main","base_url":"https://main.example/v1"}]',
     )
-    monkeypatch.setenv(
-        "CANDLEPILOT_PROVIDER_CHAIN", "codex,claude-code,custom:main"
-    )
-    assert Settings.from_env().provider_chain == (
-        "codex-auth",
-        "claude-code-auth",
-        "openai-compatible:main",
-    )
+    monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", configured)
+    assert Settings.from_env().provider_chain == (expected,)
 
 
 @pytest.mark.parametrize(
@@ -370,22 +368,28 @@ def test_provider_chain_rejects_duplicates(monkeypatch) -> None:
         Settings.from_env()
 
 
+def test_provider_chain_rejects_multiple_different_providers(monkeypatch) -> None:
+    monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", "codex,claude-code")
+    with pytest.raises(ValueError, match="exactly one"):
+        Settings.from_env()
+
+
 def test_provider_references_must_exist_in_the_same_candidate() -> None:
     custom = '[{"id":"main","base_url":"https://main.example/v1"}]'
 
     valid = Settings.from_mapping(
         {
             "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON": custom,
-            "CANDLEPILOT_PROVIDER_CHAIN": "custom:main,codex",
+            "CANDLEPILOT_PROVIDER_CHAIN": "custom:main",
         }
     )
-    assert valid.provider_chain == ("openai-compatible:main", "codex-auth")
+    assert valid.provider_chain == ("openai-compatible:main",)
 
     with pytest.raises(ValueError) as error:
         Settings.from_mapping(
             {
                 "CANDLEPILOT_CUSTOM_LLM_PROVIDERS_JSON": custom,
-                "CANDLEPILOT_PROVIDER_CHAIN": "custom:removed,codex",
+                "CANDLEPILOT_PROVIDER_CHAIN": "custom:removed",
             }
         )
     message = str(error.value)

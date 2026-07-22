@@ -130,11 +130,10 @@ def test_describe_settings_masks_secrets_and_exposes_plain_values(tmp_path: Path
     assert unset["configured"] is False
 
     route = fields["CANDLEPILOT_PROVIDER_CHAIN"]
-    assert "claude-code" in route["placeholder"]
-    assert "codex, claude," not in route["placeholder"]
+    assert route["placeholder"] == "codex"
     assert route["description"] == (
-        "按顺序用逗号分隔：本地规则填 local，Codex 填 codex，"
-        "Claude Code 填 claude-code，自定义端点填 custom:<id>。"
+        "一次运行只能填写一个：本地规则填 local，Codex 填 codex，"
+        "Claude Code 填 claude-code，自定义端点填 custom:<id>；不得用逗号连接多个。"
     )
     breaker = fields["CANDLEPILOT_DAILY_LOSS_PERCENT"]
     assert breaker["kind"] == "number"

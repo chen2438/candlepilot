@@ -236,8 +236,8 @@ def _parse_provider_chain(raw: str | None) -> tuple[str, ...]:
         if provider in providers:
             raise ValueError("CANDLEPILOT_PROVIDER_CHAIN cannot contain duplicates")
         providers.append(provider)
-    if not providers:
-        raise ValueError("CANDLEPILOT_PROVIDER_CHAIN must contain at least one provider")
+    if len(providers) != 1:
+        raise ValueError("CANDLEPILOT_PROVIDER_CHAIN must contain exactly one provider")
     return tuple(providers)
 
 

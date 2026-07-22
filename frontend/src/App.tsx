@@ -189,6 +189,28 @@ export function CadenceSelector({
   );
 }
 
+export function ProviderChoiceButton({
+  name,
+  selected,
+  disabled,
+  onSelect,
+  children,
+}: {
+  name: string;
+  selected: boolean;
+  disabled: boolean;
+  onSelect: (name: string) => void;
+  children: ReactNode;
+}) {
+  return <button
+    className="provider-card-main"
+    disabled={disabled || selected}
+    aria-pressed={selected}
+    onClick={() => onSelect(name)}
+    title={selected ? "当前运行 Provider" : "选择为唯一运行 Provider；当前不可用也可预先配置"}
+  >{children}</button>;
+}
+
 const emptyStatus: EngineStatus = {
   running: false,
   emergency_locked: false,
@@ -1033,20 +1055,8 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
     }
   }, []);
 
-  const toggleProviderRoute = useCallback((name: string) => {
-    const chain = status.provider_chain;
-    const next = chain.includes(name)
-      ? chain.filter((provider) => provider !== name)
-      : [...chain, name];
-    if (next.length) void changeProviderChain(next);
-  }, [status.provider_chain, changeProviderChain]);
-
-  const moveProviderRoute = useCallback((index: number, direction: -1 | 1) => {
-    const target = index + direction;
-    if (target < 0 || target >= status.provider_chain.length) return;
-    const next = [...status.provider_chain];
-    [next[index], next[target]] = [next[target], next[index]];
-    void changeProviderChain(next);
+  const selectProvider = useCallback((name: string) => {
+    if (status.provider_chain[0] !== name) void changeProviderChain([name]);
   }, [status.provider_chain, changeProviderChain]);
 
   const selectCadence = useCallback(async (cadence: string) => {
@@ -1636,7 +1646,7 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
               className="provider-panel"
               code="01"
               title="模型接入"
-              meta="手动路由"
+              meta="单一 Provider"
               expanded={overviewPanelExpanded.providers}
               onExpandedChange={(expanded) => setOverviewPanelExpanded((current) => ({
                 ...current,
@@ -1674,11 +1684,11 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
                   key={provider.provider}
                   className={`provider-card ${routeIndex >= 0 ? "selected" : ""}`}
                 >
-                  <button
-                    className="provider-card-main"
-                    disabled={status.running || busy !== null || (routeIndex === 0 && status.provider_chain.length === 1)}
-                    onClick={() => toggleProviderRoute(provider.provider)}
-                    title={routeIndex >= 0 ? "点击从路由中移除" : "点击加入路由末尾；当前不可用也可预先配置"}
+                  <ProviderChoiceButton
+                    name={provider.provider}
+                    selected={routeIndex === 0}
+                    disabled={status.running || busy !== null}
+                    onSelect={selectProvider}
                   >
                     <span className={`provider-icon ${provider.authenticated ? "ready" : ""}`}>
                       {providerIcon(provider.provider)}
@@ -1690,9 +1700,9 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
                         : provider.version ?? provider.detail}</small>
                     </span>
                     <span className={`status-pill ${provider.authenticated ? "ok" : "off"}`}>
-                      {routeIndex >= 0 ? `#${routeIndex + 1} · ` : ""}{provider.authenticated ? "READY" : provider.available ? "LOGIN" : "MISSING"}
+                      {routeIndex === 0 ? "已选择 · " : ""}{provider.authenticated ? "READY" : provider.available ? "LOGIN" : "MISSING"}
                     </span>
-                  </button>
+                  </ProviderChoiceButton>
                   {!configurable ? <div className="provider-card-config local-provider-config">
                     <div>
                       <strong>{provider.model}</strong>
@@ -1801,17 +1811,14 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
               })}
             </div>
             <div className="provider-route">
-              <div className="provider-config-title"><span>主备顺序</span><small>{status.running ? "运行时锁定" : "失败后 5s / 15s 同决策重试"}</small></div>
-              {status.provider_chain.map((name, index) => {
+              <div className="provider-config-title"><span>本次运行 Provider</span><small>{status.running ? "运行时锁定" : "失败后 5s / 15s 重试同一 Provider"}</small></div>
+              {status.provider_chain.map((name) => {
                 const route = status.provider_routes.find((item) => item.provider === name);
                 const health = providers.find((item) => item.provider === name);
-                const state = route?.state === "active" ? "承载中" : route?.state === "cooldown" ? "冷却" : health?.authenticated ? "待命" : "不可用";
+                const state = route?.state === "active" ? "承载中" : route?.state === "cooldown" ? "重试冷却" : health?.authenticated ? "已选择" : "不可用";
                 return <div className={`provider-route-row ${route?.state ?? "standby"}`} key={name}>
-                  <strong>{index + 1}</strong>
+                  <strong>1</strong>
                   <span>{providerLabel(name)}<small>{state}{route?.last_error ? ` · ${route.last_error}` : ""}</small></span>
-                  <button disabled={status.running || busy !== null || index === 0} onClick={() => moveProviderRoute(index, -1)} title="提高优先级">↑</button>
-                  <button disabled={status.running || busy !== null || index === status.provider_chain.length - 1} onClick={() => moveProviderRoute(index, 1)} title="降低优先级">↓</button>
-                  <button disabled={status.running || busy !== null || status.provider_chain.length === 1} onClick={() => toggleProviderRoute(name)} title="移出路由">×</button>
                 </div>;
               })}
             </div>
@@ -3772,7 +3779,7 @@ const OUTCOME_LABELS: Record<DecisionEvent["outcome"], string> = {
 
 function decisionOutcomeLabel(decision: DecisionEvent): string {
   if (decision.risk?.decision.pending_entry) return "等待触发";
-  return decision.failover ? "故障切换" : OUTCOME_LABELS[decision.outcome];
+  return decision.failover ? "Provider 调用失败" : OUTCOME_LABELS[decision.outcome];
 }
 
 function pendingExpiryLabel(decision: DecisionEvent): string {
@@ -4084,8 +4091,8 @@ export function DecisionPanel({
                 <strong>{decision.intent.symbol}</strong>
                 <small>{decision.intent.cadence} · {providerLabel(decision.provider)} · {inferenceConfigLabel(decision)}</small>
               </span>
-              {decision.failover ? <span className="signal-confidence residual" data-tooltip="该 Provider 调用失败时在有序路由中的位置。">
-                #{decision.failover.route_position}<small>{decision.failover.continues ? "继续切换" : "路由耗尽"}</small>
+              {decision.failover ? <span className="signal-confidence residual" data-tooltip="所选 Provider 的调用失败记录；系统只会重试同一 Provider。">
+                失败<small>{decision.failover.continues ? "继续重试" : "重试耗尽"}</small>
               </span> : <span
                 className={`signal-confidence ${decision.intent.action === "HOLD" ? "residual" : ""}`}
                 data-tooltip={decision.intent.action === "HOLD"
@@ -4145,7 +4152,7 @@ export function DecisionPanel({
                   </div>
                 )}
                 <div className={`decision-reason ${decision.risk?.decision.pending_entry ? "pending" : decision.outcome}`}>
-                  <strong>{decision.risk?.decision.pending_entry ? "本地待触发" : decision.failover ? "故障切换" : decision.risk?.accepted ? "风控放行" : OUTCOME_LABELS[decision.outcome]}</strong>
+                  <strong>{decision.risk?.decision.pending_entry ? "本地待触发" : decision.failover ? "Provider 调用失败" : decision.risk?.accepted ? "风控放行" : OUTCOME_LABELS[decision.outcome]}</strong>
                   <span>{decision.failover?.error ?? decision.risk?.reason ?? "该记录只有模型推理，未进入实时硬风控流程。"}</span>
                 </div>
                 {decision.execution && (

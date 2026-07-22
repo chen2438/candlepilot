@@ -540,50 +540,24 @@ def test_live_startup_probe_publishes_provider_progress(tmp_path: Path) -> None:
     asyncio.run(database.close())
 
 
-def test_live_startup_probe_cancels_sibling_providers_after_failure(tmp_path: Path) -> None:
-    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'live-probe-cancel.db'}")
+def test_provider_selection_api_rejects_multiple_providers(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'single-provider.db'}")
     market = ApiMarket()
-    hanging_started = threading.Event()
-    hanging_cancelled = threading.Event()
-
-    class Failing(ApiProvider):
-        name = "failing-startup"
-
-        async def generate_trade_intent(self, snapshot, portfolio):
-            await asyncio.to_thread(hanging_started.wait)
-            raise RuntimeError("startup fixture failed")
-
-    class Hanging(ApiProvider):
-        name = "hanging-startup"
-
-        async def generate_trade_intent(self, snapshot, portfolio):
-            hanging_started.set()
-            try:
-                await asyncio.Future()
-            except asyncio.CancelledError:
-                hanging_cancelled.set()
-                raise
-
     engine = TradingEngine(
         testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
-        providers=ProviderRegistry([Failing(), Hanging()]),
+        providers=ProviderRegistry([ApiProvider(), BrokenProvider()]),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
-        cadences=("15m",),
     )
     app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
 
     with TestClient(app) as client:
-        client.post(
+        response = client.post(
             "/api/providers/select",
-            json={"providers": ["failing-startup", "hanging-startup"]},
+            json={"providers": ["api-fixture", "broken-fixture"]},
         )
-        response = client.post("/api/engine/probe")
-        assert response.status_code == 409
-        assert "startup fixture failed" in response.json()["detail"]
-        assert hanging_cancelled.is_set()
-        assert engine.providers.get("failing-startup").timeout == 45
-        assert engine.providers.get("hanging-startup").timeout == 45
+        assert response.status_code == 422
+        assert engine.provider_chain == ()
     asyncio.run(database.close())
 
 
@@ -1693,7 +1667,7 @@ def test_startup_rejects_unknown_provider_references(
     with pytest.raises(ValueError) as error:
         create_app(
             settings=Settings(
-                provider_chain=("missing-custom", "api-fixture"),
+                provider_chain=("missing-custom",),
             ),
             database=database,
             market=market,  # type: ignore[arg-type]
@@ -2345,6 +2319,10 @@ def test_provider_route_api_exposes_order_and_locks_while_running(tmp_path: Path
             "/api/providers/select", json={"name": "api-fixture", "backup": None}
         )
         assert retired.status_code == 422
+        multiple = client.post(
+            "/api/providers/select", json={"providers": ["api-fixture", "api-fixture"]}
+        )
+        assert multiple.status_code == 422
         selected = client.post(
             "/api/providers/select", json={"providers": ["api-fixture"]}
         )

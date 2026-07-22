@@ -60,6 +60,10 @@ Git origin 必须和安装参数一致；只允许当前安装分支到 `origin/
 未跟踪和被忽略的 `.env`、数据库、`data/`、隔离
 Python 与缓存不由 Git 改写。
 
+从仍允许主备路由的旧版本升级前，必须先把 `.env` 的 `CANDLEPILOT_PROVIDER_CHAIN` 规范为当前
+要继续使用的单个 Provider；新版本会拒绝含逗号的多 Provider 值，更新器也不会擅自替用户决定
+保留哪一个。自动化更新本项目 VPS 时同样必须先完成这项迁移，且不得输出 `.env` 内容。
+
 确认更新后，脚本先在 `/var/backups/candlepilot/<UTC 时间>-<原提交>` 保存权限为 0600 的 `.env`、
 SQLite 在线一致性备份和原提交号，再停止原先处于 active 状态的服务，快进代码，按锁文件更新
 Python/前端依赖并重新构建前端。原服务此前 active 时，更新后必须重新启动并通过 loopback

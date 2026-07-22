@@ -3,6 +3,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from candlepilot.application.engine import TradingEngine
 from candlepilot.broker.user_stream import UserStreamEvent
 from candlepilot.domain.models import (
@@ -61,46 +63,6 @@ class UnexpectedFailedProvider(FailedProvider):
 
     async def generate_trade_intent(self, snapshot, portfolio) -> ProviderResult:
         raise ValueError("unexpected fixture failure")
-
-
-class FlakyProvider(FakeProvider):
-    name = "flaky-auth"
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def generate_trade_intent(self, snapshot, portfolio) -> ProviderResult:
-        self.calls += 1
-        if self.calls == 1:
-            raise ProviderError("temporary fixture failure")
-        result = await super().generate_trade_intent(snapshot, portfolio)
-        return ProviderResult(
-            result.intent,
-            self.name,
-            result.model,
-            result.duration,
-            result.raw_output,
-            result.usage,
-        )
-
-
-class UnavailableProvider(FailedProvider):
-    name = "unavailable-auth"
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def health_check(self) -> ProviderHealth:
-        return ProviderHealth(
-            provider=self.name,
-            available=False,
-            authenticated=False,
-            detail="fixture unavailable",
-        )
-
-    async def generate_trade_intent(self, snapshot, portfolio) -> ProviderResult:
-        self.calls += 1
-        raise AssertionError("startup health failure should put this provider in cooldown")
 
 
 class AuditedFailedProvider(DecisionProvider):
@@ -1371,141 +1333,17 @@ def test_batch_does_not_submit_after_internal_emergency_stop(tmp_path: Path) -> 
     assert "emergency lock" in outcomes[1].risk.reason
 
 
-def test_engine_fails_over_once_to_explicit_backup_provider(tmp_path: Path) -> None:
-    async def scenario():
-        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'fallback.db'}")
-        await database.initialize()
-        engine = TradingEngine(
-            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
-            providers=ProviderRegistry([FailedProvider(), FakeProvider()]),
-            audit=AuditRepository(database.sessions),
-            market=FakeMarket(),  # type: ignore[arg-type]
-            provider_retry_delays=(0, 0),
-        )
-        engine.select_provider_chain(["failed-primary", "fake-auth"])
-        await engine.start()
-        snapshot = MarketSnapshot(
-            symbol="BTCUSDT",
-            cadence="5m",
-            timestamp=datetime.now(UTC),
-            mark_price="100",
-            bid="99.9",
-            ask="100.1",
-            quote_volume_24h="1000000",
-        )
-        outcome = await engine.evaluate(
-            snapshot,
-            PortfolioState(equity="10000", available_balance="8000"),
-            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")),
-        )
-        await database.close()
-        return outcome
-
-    outcome = asyncio.run(scenario())
-    assert outcome.provider == "fake-auth"
-    assert outcome.execution is not None
-
-
-def test_ordered_provider_route_cools_down_and_recovers_primary(tmp_path: Path) -> None:
-    async def scenario():
-        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'route-recovery.db'}")
-        await database.initialize()
-        audit = AuditRepository(database.sessions)
-        flaky = FlakyProvider()
-        engine = TradingEngine(
-            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
-            providers=ProviderRegistry([flaky, FakeProvider()]),
-            audit=audit,
-            market=FakeMarket(),  # type: ignore[arg-type]
-        )
-        engine.select_provider_chain(["flaky-auth", "fake-auth"])
-        await engine.start()
-        snapshot = MarketSnapshot(
-            symbol="BTCUSDT",
-            cadence="5m",
-            timestamp=datetime.now(UTC),
-            mark_price="100",
-            bid="99.9",
-            ask="100.1",
-            quote_volume_24h="1000000",
-        )
-        portfolio = PortfolioState(equity="10000", available_balance="8000")
-        rules = SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01"))
-
-        first = await engine.evaluate(snapshot, portfolio, rules)
-        first_status = engine.provider_route_status()
-        second = await engine.evaluate(snapshot, portfolio, rules)
-        calls_during_cooldown = flaky.calls
-        engine._provider_route_states["flaky-auth"].cooldown_until = datetime.now(UTC) - timedelta(
-            seconds=1
-        )
-        third = await engine.evaluate(snapshot, portfolio, rules)
-        events = await audit.recent_decision_events(limit=10)
-        failed_event = next(
-            event
-            for event in events
-            if event["provider"] == "flaky-auth"
-            and "provider attempt failed" in event["intent"]["rationale"]
-        )
-        failed_detail = await audit.decision_detail(failed_event["id"])
-        await database.close()
-        return (
-            first,
-            second,
-            third,
-            first_status,
-            calls_during_cooldown,
-            flaky.calls,
-            failed_detail,
-        )
-
-    first, second, third, route_status, cooldown_calls, final_calls, failed_detail = (
-        asyncio.run(scenario())
+def test_engine_rejects_multiple_providers(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'single-provider.db'}")
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([FailedProvider(), FakeProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=FakeMarket(),  # type: ignore[arg-type]
     )
-    assert first.provider == "fake-auth"
-    assert second.provider == "fake-auth"
-    assert third.provider == "flaky-auth"
-    assert route_status[0]["state"] == "cooldown"
-    assert route_status[1]["state"] == "active"
-    assert cooldown_calls == 1
-    assert final_calls == 2
-    assert failed_detail["usage"]["failover_attempt"] is True
-    assert failed_detail["usage"]["failover_continues"] is True
 
-
-def test_engine_starts_on_ready_fallback_when_primary_is_unavailable(tmp_path: Path) -> None:
-    async def scenario():
-        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'startup-fallback.db'}")
-        await database.initialize()
-        unavailable = UnavailableProvider()
-        engine = TradingEngine(
-            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
-            providers=ProviderRegistry([unavailable, FakeProvider()]),
-            audit=AuditRepository(database.sessions),
-            market=FakeMarket(),  # type: ignore[arg-type]
-        )
-        engine.select_provider_chain(["unavailable-auth", "fake-auth"])
-        await engine.start()
-        outcome = await engine.evaluate(
-            MarketSnapshot(
-                symbol="BTCUSDT",
-                cadence="5m",
-                timestamp=datetime.now(UTC),
-                mark_price="100",
-                bid="99.9",
-                ask="100.1",
-                quote_volume_24h="1000000",
-            ),
-            PortfolioState(equity="10000", available_balance="8000"),
-            SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")),
-        )
-        await database.close()
-        return engine.active_provider, unavailable.calls, outcome.provider
-
-    active, unavailable_calls, outcome_provider = asyncio.run(scenario())
-    assert active == "fake-auth"
-    assert unavailable_calls == 0
-    assert outcome_provider == "fake-auth"
+    with pytest.raises(ValueError, match="exactly one provider"):
+        engine.select_provider_chain(["failed-primary", "fake-auth"])
 
 
 def test_engine_persists_failed_provider_audit_context(tmp_path: Path) -> None:

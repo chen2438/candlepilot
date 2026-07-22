@@ -296,7 +296,7 @@ class LoginRequest(ApiModel):
 
 
 class ProviderSelection(ApiModel):
-    providers: list[str] = Field(min_length=1, max_length=16)
+    providers: list[str] = Field(min_length=1, max_length=1)
 
 
 class ProviderConfig(ApiModel):
