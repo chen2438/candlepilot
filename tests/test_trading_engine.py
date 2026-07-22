@@ -1100,7 +1100,7 @@ def test_testnet_add_requests_protective_bracket_replacement(tmp_path: Path) -> 
                 cadence=snapshot.cadence,
                 action=TradeAction.ADD,
                 confidence=0.8,
-                leverage=3,
+                leverage=5,
                 risk_fraction="0.01",
                 stop_loss="98",
                 take_profit="104",
@@ -1171,7 +1171,9 @@ def test_testnet_add_requests_protective_bracket_replacement(tmp_path: Path) -> 
                 available_balance="8000",
                 open_positions=1,
                 positions={
-                    "BTCUSDT": PositionState(side="LONG", quantity="1", entry_price="99")
+                    "BTCUSDT": PositionState(
+                        side="LONG", quantity="1", entry_price="99", leverage=5
+                    )
                 },
             ),
             SymbolRules(Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")),

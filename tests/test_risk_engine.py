@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
 from candlepilot.domain.models import (
     MarketSnapshot,
     OrderType,
@@ -100,9 +102,10 @@ def _portfolio(**changes) -> PortfolioState:
 
 
 def _position(side: str, quantity: str = "1", **changes) -> dict[str, PositionState]:
+    values = {"leverage": 5, **changes}
     return {
         "BTCUSDT": PositionState(
-            side=side, quantity=quantity, entry_price="100", **changes
+            side=side, quantity=quantity, entry_price="100", **values
         )
     }
 
@@ -475,6 +478,39 @@ def test_add_uses_only_remaining_single_symbol_margin_capacity() -> None:
     assert result.order.quantity == Decimal("5.000")
     assert Decimal("900") + result.order.quantity * Decimal("100") / 5 == Decimal(
         "1000"
+    )
+
+
+@pytest.mark.parametrize("requested_leverage", [1, 10])
+def test_add_rejects_changing_the_existing_position_leverage(
+    requested_leverage: int,
+) -> None:
+    portfolio = _portfolio(
+        open_positions=1,
+        margin_used="500",
+        positions=_position(
+            "LONG",
+            "25",
+            leverage=5,
+            initial_margin="500",
+            stop_loss="98",
+            take_profit="104",
+        ),
+    )
+
+    result = AggressiveRiskPolicy().evaluate(
+        _intent(TradeAction.ADD).model_copy(
+            update={"leverage": requested_leverage, "stop_loss": Decimal("99.8")}
+        ),
+        _snapshot(),
+        portfolio,
+        RULES,
+    )
+
+    assert not result.decision.accepted
+    assert result.order is None
+    assert result.decision.reason == (
+        "ADD leverage must match the existing position leverage"
     )
 
 

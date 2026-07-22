@@ -187,6 +187,14 @@ class AggressiveRiskPolicy:
         )
         if intent.action == TradeAction.ADD and existing_side is None:
             return self._reject("cannot add without an existing position")
+        if (
+            intent.action == TradeAction.ADD
+            and existing is not None
+            and intent.leverage != existing.leverage
+        ):
+            return self._reject(
+                "ADD leverage must match the existing position leverage"
+            )
         if intent.action == TradeAction.OPEN_LONG and existing_side == "LONG":
             return self._reject("existing long position requires an explicit ADD intent")
         if intent.action == TradeAction.OPEN_SHORT and existing_side == "SHORT":
