@@ -656,6 +656,7 @@ class AuditRepository:
         "alerts": AlertEventRow,
         "trailing_stops": TrailingStopEventRow,
         "partial_take_profits": PartialTakeProfitEventRow,
+        "market_analyses": MarketAnalysisRow,
         # Model runs cascade from the run, so clearing the parent is enough.
         "backtests": BacktestRunRow,
         "book_captures": BookCaptureRow,

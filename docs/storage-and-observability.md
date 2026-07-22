@@ -14,7 +14,8 @@
 - 独立研究使用 `market_analyses`：保存状态、标的、Provider/模型/推理强度、Prompt/数据版本、冻结
   输入、实际 Prompt、原始输出、校验后的分析、Token/耗时和安全错误文本。它不关联 `inferences`、
   `risk_decisions` 或订单表，避免研究结果被误当成正式决策；列表默认只返回结果摘要，按 ID 详情才
-  返回完整本地审计输入。服务重启会把遗留 pending/running 记录标为 failed。
+  返回完整本地审计输入。服务重启会把遗留 pending/running 记录标为 failed；数据管理可用独立
+  `market_analyses` 类别删除整类研究历史。
 - 旧版 `book_captures` 表为现有数据库兼容而保留，但应用不再写入或把它用于回测；遗留行只能通过
   数据管理清理。含完整盘口的回放数据由正式引擎自动写入 `live_decision_snapshots`。
 - 溯源：SHA-256 数据版本、显式 Prompt 版本、模型标识、CLI Provider 版本。

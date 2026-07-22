@@ -35,6 +35,7 @@ import type {
   TestnetAccountStatus,
   TrailingStopEvent,
   PartialTakeProfitEvent,
+  MarketAnalysisRecord,
 } from "./types";
 
 const EXIT_REASON: Record<string, string> = {
@@ -355,6 +356,7 @@ const HISTORY_CATEGORIES: Array<{ key: string; label: string; hint: string }> = 
   { key: "alerts", label: "告警历史", hint: "" },
   { key: "trailing_stops", label: "移动止损记录", hint: "影子候选与实盘改单" },
   { key: "partial_take_profits", label: "部分止盈实验", hint: "1R 分批止盈与保本影子成交" },
+  { key: "market_analyses", label: "独立 AI 行情分析", hint: "冻结输入、计划与模型原始输出" },
   { key: "backtests", label: "回测记录", hint: "运行、逐模型结果与每条决策" },
   // Kept as a cleanup-only category for databases created by older versions.
   { key: "book_captures", label: "旧盘口采集数据", hint: "手动采集已停用；仅用于清理遗留记录" },
@@ -362,10 +364,11 @@ const HISTORY_CATEGORIES: Array<{ key: string; label: string; hint: string }> = 
   { key: "pricing_cache", label: "定价缓存", hint: "models.dev" },
 ];
 
-type TabKey = "overview" | "account" | "backtest" | "operations" | "data" | "settings";
+type TabKey = "overview" | "analysis" | "account" | "backtest" | "operations" | "data" | "settings";
 
 const TABS: Array<{ key: TabKey; label: string; meta: string }> = [
   { key: "overview", label: "总览", meta: "引擎 · 接入 · 候选 · 决策" },
+  { key: "analysis", label: "AI 分析", meta: "5m · 15m · 1h 研判" },
   { key: "account", label: "账户", meta: "持仓 · 订单" },
   { key: "backtest", label: "回测", meta: "历史模式 · 多模型对比" },
   { key: "operations", label: "运维", meta: "模型调用指标" },
@@ -1907,6 +1910,15 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
         </section>
         )}
 
+        {tab === "analysis" && (
+        <section className="grid">
+          <MarketAnalysisPanel
+            engineRunning={status.running}
+            provider={selectedExternalProvider?.provider ?? null}
+          />
+        </section>
+        )}
+
         {tab === "account" && (
         <section className="grid">
           <AccountPanel
@@ -2685,6 +2697,250 @@ function CustomProvidersPanel({
       </div>
     </div>
   );
+}
+
+function analysisStatusLabel(status: MarketAnalysisRecord["status"]): string {
+  return ({
+    pending: "准备数据",
+    running: "模型分析中",
+    succeeded: "已完成",
+    failed: "失败",
+    cancelled: "已取消",
+  } as Record<MarketAnalysisRecord["status"], string>)[status];
+}
+
+function analysisDirectionLabel(direction: NonNullable<MarketAnalysisRecord["result"]>["direction"]): string {
+  return ({ long: "偏多", short: "偏空", neutral: "观望" } as const)[direction];
+}
+
+function analysisPrice(value: number): string {
+  if (value >= 1000) return value.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+  if (value >= 1) return value.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+  return value.toPrecision(6);
+}
+
+function FrozenAnalysisChart({
+  record,
+  timeframe,
+}: {
+  record: MarketAnalysisRecord;
+  timeframe: "5m" | "15m" | "1h";
+}) {
+  const bars = record.input?.timeframes[timeframe]?.bars ?? [];
+  const plan = record.result?.entry_plan;
+  if (!bars.length) return <div className="analysis-chart-empty">冻结 K 线仅在分析详情中可用。</div>;
+  const levels = plan ? [plan.entry, plan.stop, plan.target1, plan.target2] : [];
+  const low = Math.min(...bars.map((bar) => bar.low), ...levels);
+  const high = Math.max(...bars.map((bar) => bar.high), ...levels);
+  const span = Math.max(high - low, Math.abs(high) * 0.001, 1e-9);
+  const width = 900;
+  const height = 300;
+  const left = 12;
+  const right = 92;
+  const top = 12;
+  const bottom = 25;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const x = (index: number) => left + ((index + 0.5) / bars.length) * plotWidth;
+  const y = (value: number) => top + ((high - value) / span) * plotHeight;
+  const candleWidth = Math.max(2, (plotWidth / bars.length) * 0.58);
+  const overlays = plan ? [
+    { label: "T2", value: plan.target2, tone: "target" },
+    { label: "T1", value: plan.target1, tone: "target" },
+    { label: "入场", value: plan.entry, tone: "entry" },
+    { label: "止损", value: plan.stop, tone: "stop" },
+  ] : record.result?.range_plan ? [
+    { label: "区间上沿", value: record.result.range_plan.high, tone: "range" },
+    { label: "区间下沿", value: record.result.range_plan.low, tone: "range" },
+  ] : [];
+  return <div className="analysis-chart-wrap">
+    <svg className="analysis-chart" role="img" aria-label={`${record.symbol} ${timeframe} 冻结 K 线`} viewBox={`0 0 ${width} ${height}`}>
+      {[0, 0.25, 0.5, 0.75, 1].map((fraction) => <line
+        key={fraction}
+        className="analysis-grid-line"
+        x1={left}
+        x2={width - right}
+        y1={top + fraction * plotHeight}
+        y2={top + fraction * plotHeight}
+      />)}
+      {bars.map((bar, index) => {
+        const rising = bar.close >= bar.open;
+        const bodyTop = y(Math.max(bar.open, bar.close));
+        const bodyHeight = Math.max(1, Math.abs(y(bar.open) - y(bar.close)));
+        return <g key={bar.time} className={rising ? "analysis-candle up" : "analysis-candle down"}>
+          <line x1={x(index)} x2={x(index)} y1={y(bar.high)} y2={y(bar.low)} />
+          <rect x={x(index) - candleWidth / 2} y={bodyTop} width={candleWidth} height={bodyHeight} />
+        </g>;
+      })}
+      {overlays.map((level) => <g key={level.label} className={`analysis-level ${level.tone}`}>
+        <line x1={left} x2={width - right} y1={y(level.value)} y2={y(level.value)} />
+        <text x={width - right + 8} y={y(level.value) + 4}>{level.label} {analysisPrice(level.value)}</text>
+      </g>)}
+      <text className="analysis-axis-label" x={left} y={height - 5}>
+        {new Date(bars[0].time).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })}
+      </text>
+      <text className="analysis-axis-label" textAnchor="end" x={width - right} y={height - 5}>
+        {new Date(bars[bars.length - 1].time).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })}
+      </text>
+    </svg>
+  </div>;
+}
+
+export function MarketAnalysisPanel({
+  engineRunning,
+  provider,
+}: {
+  engineRunning: boolean;
+  provider: string | null;
+}) {
+  const [symbol, setSymbol] = useState("BTCUSDT");
+  const [history, setHistory] = useState<MarketAnalysisRecord[]>([]);
+  const [selected, setSelected] = useState<MarketAnalysisRecord | null>(null);
+  const [timeframe, setTimeframe] = useState<"5m" | "15m" | "1h">("15m");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refreshHistory = useCallback(async () => {
+    setHistory(await api<MarketAnalysisRecord[]>("/api/market-analyses?limit=30"));
+  }, []);
+
+  const loadDetail = useCallback(async (identifier: number) => {
+    const detail = await api<MarketAnalysisRecord>(`/api/market-analyses/${identifier}`);
+    setSelected(detail);
+    return detail;
+  }, []);
+
+  useEffect(() => {
+    refreshHistory().catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+  }, [refreshHistory]);
+
+  useEffect(() => {
+    if (!selected || !["pending", "running"].includes(selected.status)) return;
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const detail = await loadDetail(selected.id);
+        if (!stopped && ["pending", "running"].includes(detail.status)) {
+          window.setTimeout(poll, 1200);
+        } else if (!stopped) {
+          await refreshHistory();
+        }
+      } catch (reason) {
+        if (!stopped) setError(reason instanceof Error ? reason.message : String(reason));
+      }
+    };
+    const timer = window.setTimeout(poll, 500);
+    return () => { stopped = true; window.clearTimeout(timer); };
+  }, [selected?.id, selected?.status, loadDetail, refreshHistory]);
+
+  const start = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const normalized = symbol.trim().toUpperCase();
+      const created = await api<{ id: number; status: string }>("/api/market-analyses", {
+        method: "POST",
+        body: JSON.stringify({ symbol: normalized }),
+      });
+      setSymbol(normalized);
+      await Promise.all([loadDetail(created.id), refreshHistory()]);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancel = async () => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      const detail = await api<MarketAnalysisRecord>(`/api/market-analyses/${selected.id}/cancel`, { method: "POST" });
+      setSelected(detail);
+      await refreshHistory();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const result = selected?.result;
+  const running = selected && ["pending", "running"].includes(selected.status);
+  return <article className="panel analysis-panel">
+    <PanelTitle code="10" title="独立 AI 行情分析" meta="研究计划 · 不自动交易" />
+    <div className="analysis-notice">
+      固定使用 5m / 15m / 1h 及 Kansoku 风格数据；与正式引擎特征、风控和下单完全隔离。
+    </div>
+    <form className="analysis-launch" onSubmit={start}>
+      <label><span>USDT 永续标的</span><input
+        value={symbol}
+        onChange={(event) => setSymbol(event.target.value.toUpperCase())}
+        pattern="[A-Z0-9]+USDT"
+        placeholder="BTCUSDT"
+        required
+      /></label>
+      <div><small>当前 Provider</small><strong>{provider ?? "未选择外部 Provider"}</strong></div>
+      <button className="primary" disabled={busy || engineRunning || !provider || Boolean(running)}>
+        {running ? "分析进行中…" : busy ? "正在创建…" : "开始分析"}
+      </button>
+      {running && <button type="button" className="danger" disabled={busy} onClick={cancel}>取消</button>}
+    </form>
+    {engineRunning && <div className="analysis-warning">正式引擎运行中；停止后才能发起独立分析。</div>}
+    {!provider && <div className="analysis-warning">请先在总览选择 Codex、Claude Code 或 Custom API。</div>}
+    {error && <div className="analysis-warning negative">{error}</div>}
+
+    <div className="analysis-layout">
+      <aside className="analysis-history">
+        <div className="analysis-subhead"><strong>分析历史</strong><button className="text-button" onClick={() => void refreshHistory()}>刷新</button></div>
+        {history.map((item) => <button
+          key={item.id}
+          className={selected?.id === item.id ? "selected" : ""}
+          onClick={() => void loadDetail(item.id)}
+        >
+          <span><strong>{item.symbol}</strong><small>#{item.id} · {new Date(item.created_at).toLocaleString("zh-CN", { hour12: false })}</small></span>
+          <em className={item.result?.direction ?? item.status}>{item.result ? analysisDirectionLabel(item.result.direction) : analysisStatusLabel(item.status)}</em>
+        </button>)}
+        {!history.length && <div className="empty">暂无分析记录</div>}
+      </aside>
+
+      <div className="analysis-detail">
+        {!selected && <div className="analysis-empty"><strong>选择一个标的开始</strong><span>模型会基于冻结数据给出情景、锚点、结构止损和显式 T1/T2。</span></div>}
+        {selected && <>
+          <header className="analysis-result-head">
+            <div><span className="eyebrow">#{selected.id} · {selected.symbol}</span><h2>{result ? analysisDirectionLabel(result.direction) : analysisStatusLabel(selected.status)}</h2></div>
+            <div><strong>{selected.model ?? selected.provider}</strong><small>{selected.reasoning_effort ? `推理 ${selected.reasoning_effort}` : "默认推理强度"} · {selected.duration_ms == null ? "—" : `${(selected.duration_ms / 1000).toFixed(1)}s`}</small></div>
+          </header>
+          {selected.error && <div className="analysis-warning negative">{selected.error}</div>}
+          {result && <>
+            <p className="analysis-summary">{result.summary}</p>
+            <div className="analysis-anchor"><strong>锚点 {result.anchor.timeframe} · {analysisPrice(result.anchor.price)}</strong><span>{new Date(result.anchor.time).toLocaleString("zh-CN", { hour12: false })} · {result.anchor.reason}</span></div>
+            <div className="analysis-timeframes">{(["5m", "15m", "1h"] as const).map((item) => <button key={item} className={timeframe === item ? "active" : ""} onClick={() => setTimeframe(item)}>{item}</button>)}</div>
+            <FrozenAnalysisChart record={selected} timeframe={timeframe} />
+            {result.entry_plan && <div className="analysis-level-grid">
+              <span><small>入场</small><strong>{analysisPrice(result.entry_plan.entry)}</strong></span>
+              <span><small>结构止损</small><strong>{analysisPrice(result.entry_plan.stop)}</strong></span>
+              <span><small>T1 · {result.reward_risk?.target1.toFixed(2)}R</small><strong>{analysisPrice(result.entry_plan.target1)}</strong></span>
+              <span><small>T2 · {result.reward_risk?.target2.toFixed(2)}R</small><strong>{analysisPrice(result.entry_plan.target2)}</strong></span>
+            </div>}
+            {result.range_plan && <div className="analysis-level-grid range"><span><small>观望区间</small><strong>{analysisPrice(result.range_plan.low)} — {analysisPrice(result.range_plan.high)}</strong></span><p>{result.range_plan.tactic}</p></div>}
+            {result.entry_plan && <div className="analysis-plan-copy">
+              <p><strong>触发</strong>{result.entry_plan.entry_trigger}</p>
+              <p><strong>止损依据</strong>{result.entry_plan.stop_structure}</p>
+              <p><strong>管理</strong>{result.entry_plan.management}</p>
+            </div>}
+            <div className="analysis-scenarios">{result.scenarios.map((scenario) => <article key={scenario.name}>
+              <header><strong>{scenario.name}</strong><b>{scenario.probability.toFixed(0)}%</b></header>
+              <p><span>触发</span>{scenario.trigger}</p><p><span>路径</span>{scenario.expected_path}</p><p><span>失效</span>{scenario.invalidation}</p>
+            </article>)}</div>
+            <div className="analysis-evidence"><div><strong>关键证据</strong>{result.key_evidence.map((item) => <span key={item}>{item}</span>)}</div><div><strong>缺失数据影响</strong>{result.missing_data_impact.map((item) => <span key={item}>{item}</span>)}</div></div>
+            <footer className="analysis-audit">冻结于 {selected.input?.as_of ? new Date(selected.input.as_of).toLocaleString("zh-CN", { hour12: false }) : "—"} · {selected.usage.total_tokens?.toLocaleString("zh-CN") ?? "—"} Token · {selected.data_version}</footer>
+          </>}
+        </>}
+      </div>
+    </div>
+  </article>;
 }
 
 function SettingsPanel({

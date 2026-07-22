@@ -90,6 +90,79 @@ export interface LogMaintenanceStatus {
   after_bytes: number | null;
 }
 
+export interface MarketAnalysisPlan {
+  entry: number;
+  stop: number;
+  target1: number;
+  target2: number;
+  stop_structure: string;
+  entry_trigger: string;
+  management: string;
+}
+
+export interface MarketAnalysisResult {
+  direction: "long" | "short" | "neutral";
+  summary: string;
+  anchor: {
+    timeframe: "5m" | "15m" | "1h";
+    time: string;
+    price: number;
+    reason: string;
+  };
+  scenarios: Array<{
+    name: string;
+    probability: number;
+    trigger: string;
+    expected_path: string;
+    invalidation: string;
+  }>;
+  range_plan: null | { low: number; high: number; tactic: string };
+  entry_plan: MarketAnalysisPlan | null;
+  reward_risk: null | { target1: number; target2: number };
+  key_evidence: string[];
+  missing_data_impact: string[];
+}
+
+export interface MarketAnalysisRecord {
+  id: number;
+  symbol: string;
+  status: "pending" | "running" | "succeeded" | "failed" | "cancelled";
+  provider: string;
+  model: string | null;
+  reasoning_effort: string | null;
+  prompt_version: string;
+  data_version: string;
+  result: MarketAnalysisResult | null;
+  usage: {
+    input_tokens?: number;
+    cached_input_tokens?: number;
+    output_tokens?: number;
+    total_tokens?: number;
+  };
+  duration_ms: number | null;
+  error: string | null;
+  created_at: string;
+  completed_at: string | null;
+  input?: null | {
+    as_of: string;
+    timeframes: Record<"5m" | "15m" | "1h", {
+      bars: Array<{
+        time: string;
+        open: number;
+        high: number;
+        low: number;
+        close: number;
+        volume: number;
+        quote_volume: number;
+      }>;
+      summary: Record<string, unknown>;
+    }>;
+    unavailable_inputs: Record<string, string>;
+  };
+  prompt?: string | null;
+  raw_output?: string | null;
+}
+
 export interface StartupProbeProviderResult {
   status: "pending" | "completed";
   model?: string | null;
