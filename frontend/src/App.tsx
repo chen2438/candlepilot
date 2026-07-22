@@ -404,7 +404,7 @@ const RISK_DEFINITIONS: Record<string, string> = {
   "24h亏损熔断": METRIC_DEFINITIONS["24h亏损熔断"],
   "单笔风险": "单次开仓或加仓在止损触发时允许承担的计划亏损上限，为当前权益的 1%，并在定量时计入手续费、盘口与保守滑点。",
   "组合止损风险": "全部未平仓头寸按当前交易所保护价计算的计划止损风险合计，不得超过当前权益的 4%；缺少可核验止损时拒绝新增风险。",
-  "最低盈亏比": "开仓与加仓按入场、止损和止盈的价格距离计算原始盈亏比，必须大于 1.3:1；手续费和滑点不参与该比例，减仓和平仓不受此限制。",
+  "最低盈亏比": "开仓与加仓按入场、止损和止盈的价格距离计算原始盈亏比，必须大于 1.15:1；手续费和滑点不参与该比例，减仓和平仓不受此限制。",
   "保证金占用": "全部仓位占用保证金不得超过账户权益的 80%。",
   "单标的保证金": "每个标的的初始保证金不得超过账户权益的 10%，增仓也计入同一上限。",
   "持仓模式": "每个标的使用逐仓保证金并维持单向净仓，不同时持有双向仓位。",
@@ -1830,7 +1830,7 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
               <RiskItem label="24h亏损熔断" value={formatDailyLossPercent(status.risk_limits.daily_loss_fraction)} detail="窗口起始权益" />
               <RiskItem label="单笔风险" value="1.0%" detail="权益上限" />
               <RiskItem label="组合止损风险" value="4.0%" detail="权益上限" />
-              <RiskItem label="最低盈亏比" value="> 1.3:1" detail="原始值" />
+              <RiskItem label="最低盈亏比" value="> 1.15:1" detail="原始值" />
               <RiskItem label="保证金占用" value="80%" detail="组合上限" />
               <RiskItem label="单标的保证金" value="10%" detail="权益上限" />
               <RiskItem label="持仓模式" value="逐仓" detail="单向净仓" />
@@ -4699,7 +4699,7 @@ export function DecisionPanel({
                   <span>止损<strong>{intentPrice(decision.intent.stop_loss)}</strong></span>
                   <span>止盈<strong>{intentPrice(decision.intent.take_profit)}</strong></span>
                   <span data-tooltip="仅按 AI 返回的入场价、止损和止盈计算，不含交易所 tick 对齐或最新行情。">AI 原始盈亏比<strong>{intentRewardRiskLabel(decision.intent)}</strong></span>
-                  <span data-tooltip="硬风控按下单前刷新行情得到的实际入场基准，以及对齐交易所精度后的止损和止盈计算；这是最低 1.3:1 边界真正校验的数值。">下单前盈亏比<strong>{preTradeRewardRiskLabel(decision)}</strong></span>
+                  <span data-tooltip="硬风控按下单前刷新行情得到的实际入场基准，以及对齐交易所精度后的止损和止盈计算；这是最低 1.15:1 边界真正校验的数值。">下单前盈亏比<strong>{preTradeRewardRiskLabel(decision)}</strong></span>
                   <span data-tooltip="后端硬风控根据止损风险、保证金上限和交易所数量规则计算的最终允许下单数量。">最终下单数量<strong>{decision.risk?.decision.max_quantity ?? "—"}</strong></span>
                   {decision.intent.decision_framework === "structure-v1" ? <>
                     <span>结构形态<strong>{decision.intent.setup_type ?? "—"}</strong></span>

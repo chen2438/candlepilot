@@ -92,7 +92,7 @@ class AggressiveRiskPolicy:
         max_margin_fraction: Decimal = Decimal("0.80"),
         max_symbol_margin_fraction: Decimal = Decimal("0.10"),
         daily_loss_fraction: Decimal = Decimal("0.05"),
-        minimum_reward_risk_ratio: Decimal = Decimal("1.3"),
+        minimum_reward_risk_ratio: Decimal = Decimal("1.15"),
         fee_fraction: Decimal = Decimal("0.0005"),
         slippage_fraction: Decimal = Decimal("0.001"),
         max_snapshot_age_seconds: int = 75,

@@ -654,27 +654,27 @@ def test_24h_loss_circuit_breaker_never_blocks_a_close() -> None:
 
 
 def test_rejects_raw_reward_risk_at_the_strict_threshold() -> None:
-    intent = _intent().model_copy(update={"take_profit": Decimal("102.6")})
+    intent = _intent().model_copy(update={"take_profit": Decimal("102.3")})
 
     result = AggressiveRiskPolicy().evaluate(intent, _snapshot(), _portfolio(), RULES)
 
     assert not result.decision.accepted
     assert result.decision.pre_trade_entry_price == Decimal("100")
-    assert result.decision.pre_trade_reward_risk_ratio == Decimal("1.3")
+    assert result.decision.pre_trade_reward_risk_ratio == Decimal("1.15")
     assert (
         result.decision.reason
-        == "pre-trade reward/risk ratio 1.3000:1 must be greater than 1.3:1"
+        == "pre-trade reward/risk ratio 1.1500:1 must be greater than 1.15:1"
     )
 
 
 def test_raw_reward_risk_above_threshold_ignores_fees_and_slippage() -> None:
-    intent = _intent().model_copy(update={"take_profit": Decimal("102.62")})
+    intent = _intent().model_copy(update={"take_profit": Decimal("102.32")})
 
     result = AggressiveRiskPolicy().evaluate(intent, _snapshot(), _portfolio(), RULES)
 
     assert result.decision.accepted
     assert result.decision.pre_trade_entry_price == Decimal("100")
-    assert result.decision.pre_trade_reward_risk_ratio == Decimal("1.31")
+    assert result.decision.pre_trade_reward_risk_ratio == Decimal("1.16")
 
 
 def test_rejects_raw_reward_risk_below_the_threshold() -> None:

@@ -58,11 +58,11 @@ const decision: DecisionEvent = {
   risk: {
     id: 1,
     accepted: false,
-    reason: "pre-trade reward/risk ratio 1.2800:1 must be greater than 1.3:1",
+    reason: "pre-trade reward/risk ratio 1.1400:1 must be greater than 1.15:1",
     decision: {
       max_quantity: null,
       pre_trade_entry_price: "1871.5000",
-      pre_trade_reward_risk_ratio: "1.2800",
+      pre_trade_reward_risk_ratio: "1.1400",
     },
     created_at: "2026-07-19T15:16:52Z",
   },
@@ -365,7 +365,7 @@ describe("DecisionPanel", () => {
     expect(screen.getByText("AI 原始盈亏比")).toBeTruthy();
     expect(screen.getByText("1.71 : 1")).toBeTruthy();
     expect(screen.getByText("下单前盈亏比")).toBeTruthy();
-    expect(screen.getByText("1.2800 : 1")).toBeTruthy();
+    expect(screen.getByText("1.1400 : 1")).toBeTruthy();
     expect(screen.getByText("最终下单数量")).toBeTruthy();
     expect(screen.queryByText("风控数量")).toBeNull();
     expect(screen.queryByText("成交额")).toBeNull();
