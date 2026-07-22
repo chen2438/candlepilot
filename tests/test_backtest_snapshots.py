@@ -7,7 +7,6 @@ from candlepilot.backtest.engine import Candle
 from candlepilot.backtest.snapshots import (
     INTERVAL_MILLISECONDS,
     HistoricalSnapshotBuilder,
-    coverage,
     required_history_start,
 )
 from candlepilot.market.features import DECISION_FEATURE_INTERVALS
@@ -160,78 +159,15 @@ def test_builder_refuses_a_series_missing_an_interval_the_rules_read() -> None:
         HistoricalSnapshotBuilder(series)
 
 
-def _capture(mark: str = "105", *, bid: str = "104.9", ask: str = "105.1") -> dict:
-    return {
-        "mark_price": Decimal(mark),
-        "bid": Decimal(bid),
-        "ask": Decimal(ask),
-        "funding_rate": Decimal("0.0002"),
-        "features": {
-            "book_imbalance": 0.42,
-            "recent_trade_imbalance": -0.1,
-            "recent_trade_seconds": 240.0,
-            "basis_bps": 5.0,
-            "open_interest": 1234.5,
-        },
-    }
+def test_historical_snapshot_declares_the_missing_order_book() -> None:
+    """Public history cannot silently pretend that a live book was present."""
 
-
-def test_a_recorded_book_makes_the_payload_identical_to_live() -> None:
-    """This is the whole point of collecting: no gap left to declare."""
-
-    when = _cutoff("5m", 5)
+    when = _cutoff("5m", 6)
     series = {interval: _series(interval, 260) for interval in DECISION_FEATURE_INTERVALS}
     series["1d"] = _series("1d", 40)
-    builder = HistoricalSnapshotBuilder(series, {when: _capture()})
+    builder = HistoricalSnapshotBuilder(series)
 
-    snapshot = builder.build("BTCUSDT", "5m", when)
-
-    for name in ("book_imbalance", "recent_trade_imbalance", "basis_bps", "open_interest"):
-        assert name in snapshot.features
-    # The real book, so a real spread rather than the mark quoted twice.
-    assert snapshot.bid == Decimal("104.9")
-    assert snapshot.ask == Decimal("105.1")
-    assert snapshot.mark_price == Decimal("105")
-    assert snapshot.funding_rate == Decimal("0.0002")
-    # The candle-derived ladder is untouched by the book.
-    assert "5m_ema_spread" in snapshot.features
-
-
-def test_an_instant_without_a_capture_still_declares_the_gap() -> None:
-    """A mixed window must not silently pretend the book was there."""
-
-    covered = _cutoff("5m", 5)
-    uncovered = _cutoff("5m", 6)
-    series = {interval: _series(interval, 260) for interval in DECISION_FEATURE_INTERVALS}
-    series["1d"] = _series("1d", 40)
-    builder = HistoricalSnapshotBuilder(series, {covered: _capture()})
-
-    gap = builder.build("BTCUSDT", "5m", uncovered)
+    gap = builder.build("BTCUSDT", "5m", when)
 
     assert "book_imbalance" not in gap.features
     assert gap.bid == gap.ask == gap.mark_price
-
-
-def test_coverage_names_the_instants_that_were_never_recorded() -> None:
-    """Half a window with flow and half without is two strategies in one number."""
-
-    required = [START - timedelta(minutes=5 * i) for i in range(4)]
-    recorded = {required[0], required[2]}
-
-    result = coverage(required, recorded)
-
-    assert result.required == 4
-    assert result.recorded == 2
-    assert result.fraction == 0.5
-    assert not result.complete
-    assert set(result.missing) == {required[1], required[3]}
-
-
-def test_full_coverage_is_complete() -> None:
-    required = [START - timedelta(minutes=5 * i) for i in range(3)]
-
-    result = coverage(required, set(required))
-
-    assert result.complete
-    assert result.fraction == 1.0
-    assert result.missing == ()

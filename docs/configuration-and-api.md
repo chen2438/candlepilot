@@ -157,11 +157,12 @@ reduce-only 成交按关联决策区分模型平仓/减仓，无法关联的 red
 
 **测试网**：`GET /api/testnet/events`、`GET /api/testnet/account-status`。
 
-**回测与采集**：`GET /api/backtests/probe`、`POST /api/backtests/probe`、
+**回测**：`GET /api/backtests/probe`、`POST /api/backtests/probe`、
 `POST /api/backtests/probe/cancel`、`POST /api/backtests/estimate`、`POST /api/backtests`（202）、
 `GET /api/backtests`、`GET /api/backtests/{id}`、`GET /api/backtests/{id}/decisions`、
-`POST /api/backtests/{id}/cancel`、`GET /api/collector`、`POST /api/collector/start`、
-`POST /api/collector/stop`。
+`POST /api/backtests/{id}/cancel`。自选历史窗口没有订单流；完整盘口输入只来自正式引擎自动保存的
+运行数据集并通过 `replay_live_run_id` 回放。采集器 API 与 `use_recorded_book` 请求字段已移除，
+旧客户端继续发送该字段会返回 422。
 
 **运维**：`GET /api/health/live`、`GET /api/health/ready`、`GET /api/metrics/runtime`、
 `GET /api/metrics/providers`、`GET /api/metrics/run-session`、`GET /api/alerts`、

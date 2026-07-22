@@ -2045,10 +2045,10 @@ class AuditRepository:
         }[outcome]
 
     async def store_book_captures(self, captures: list[dict[str, Any]]) -> int:
-        """Write a boundary's captures, ignoring any already recorded.
+        """Retain compatibility for legacy capture rows.
 
-        A restarted collector resumes on a boundary it may have already
-        written; the unique index makes that a no-op rather than a duplicate.
+        Manual collection is no longer exposed, but keeping the table and its
+        reader avoids destructive schema churn for installations with old data.
         """
 
         if not captures:

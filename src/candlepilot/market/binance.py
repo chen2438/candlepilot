@@ -275,9 +275,8 @@ class BinancePublicClient:
             cursor = next_cursor
         return events[:max_events]
 
-    # The microstructure endpoints, named. market_snapshot and the book
-    # collector both need exactly these, and a live capture and a recorded one
-    # have to come from the same place or the recording is of something else.
+    # The microstructure endpoints used by live market snapshots. Formal-run
+    # replay stores those exact snapshots instead of reconstructing the book.
     async def book_ticker(self, symbol: str) -> dict[str, Any]:
         return await self._get("/fapi/v1/ticker/bookTicker", symbol=symbol)
 

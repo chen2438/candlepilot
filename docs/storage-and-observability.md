@@ -11,6 +11,8 @@
   `user_stream_events`、`alert_events`、`trailing_stop_events`（影子候选、首次模拟成交、实盘替换与失败）、
   `partial_take_profit_events`（1R 部分止盈、剩余保本与实仓结束影子事件）、
   `runtime_state`、`schema_migrations`。
+- 旧版 `book_captures` 表为现有数据库兼容而保留，但应用不再写入或把它用于回测；遗留行只能通过
+  数据管理清理。含完整盘口的回放数据由正式引擎自动写入 `live_decision_snapshots`。
 - 溯源：SHA-256 数据版本、显式 Prompt 版本、模型标识、CLI Provider 版本。
 - 每次正式运行创建时把当前仓库 `HEAD` 的 7 位 Git 提交号写入 `live_runs.config_json` 的
   `software_version`，与该次唯一 Provider、周期和运行边界一起永久保留；软件更新不会用新版本
@@ -32,7 +34,7 @@
 
 ## 4.8 运维与可观测性
 
-- 应用关闭按“停止调度与引擎 → 停采集器 → 取消并等待探测/回测 → 关闭行情、Broker 与数据库”
+- 应用关闭按“停止调度与引擎 → 取消并等待探测/回测 → 关闭行情、Broker 与数据库”
   的顺序执行；回测会在数据库仍可用时落为 `cancelled`，Provider 有机会终止 CLI/HTTP 调用，
   不允许后台任务在资源关闭后继续运行。
 

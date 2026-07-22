@@ -10,7 +10,6 @@ import type {
   BacktestResult,
   BacktestRun,
   Candidate,
-  CollectorStatus,
   ProbeStatus,
   ReplayableFormalRun,
   DecisionEvent,
@@ -356,9 +355,8 @@ const HISTORY_CATEGORIES: Array<{ key: string; label: string; hint: string }> = 
   { key: "trailing_stops", label: "移动止损记录", hint: "影子候选与实盘改单" },
   { key: "partial_take_profits", label: "部分止盈实验", hint: "1R 分批止盈与保本影子成交" },
   { key: "backtests", label: "回测记录", hint: "运行、逐模型结果与每条决策" },
-  // Last, and worded plainly: the others are records of things that happened,
-  // this one is data that can never be obtained again.
-  { key: "book_captures", label: "盘口采集", hint: "币安不提供历史盘口，删掉无法重录" },
+  // Kept as a cleanup-only category for databases created by older versions.
+  { key: "book_captures", label: "旧盘口采集数据", hint: "手动采集已停用；仅用于清理遗留记录" },
   { key: "market_cache", label: "行情缓存", hint: "Parquet" },
   { key: "pricing_cache", label: "定价缓存", hint: "models.dev" },
 ];
@@ -2172,7 +2170,7 @@ export function WebUpdatePanel({
         ) : (
           <>
             <span className="history-warn">
-              确认更新？必须先停止引擎、回测、试跑和盘口采集。服务会短暂离线；更新失败将自动回滚。
+              确认更新？必须先停止引擎、回测和试跑。服务会短暂离线；更新失败将自动回滚。
             </span>
             <button className="compact" disabled={busy !== null} onClick={update}>
               {busy === "update" ? "更新中…" : "确认更新"}
@@ -2389,7 +2387,7 @@ function RestartPanel({
           </button>
         ) : (
           <>
-            <span className="history-warn">确认重启？引擎、回测、探测、采集器和调度任务必须已停止；重启期间页面会短暂断开。</span>
+            <span className="history-warn">确认重启？引擎、回测、探测和调度任务必须已停止；重启期间页面会短暂断开。</span>
             <button className="compact" disabled={busy !== null} onClick={restart}>
               {busy === "restart" ? "重启中…" : "确认重启"}
             </button>
@@ -2844,101 +2842,44 @@ export function RunUsage({ session }: { session: RunSessionMetrics }) {
   );
 }
 
-const BACKTEST_VS_LIVE: Array<{ aspect: string; live: string; real: string; plain: string }> = [
+const BACKTEST_VS_LIVE: Array<{ aspect: string; live: string; replay: string; plain: string }> = [
   {
     aspect: "下单",
     live: "真实签名下单到币安测试网，交易所撮合、交易所侧括号单",
-    real: "本地仿真：下一根 K 线开盘价成交 + 滑点，不发任何订单",
+    replay: "本地仿真：下一根 K 线开盘价成交 + 滑点，不发任何订单",
     plain: "同左",
   },
   {
     aspect: "订单流",
     live: "20 档盘口失衡、成交流水失衡、基差、持仓量",
-    real: "全部在场——采集器当时录下来的",
+    replay: "全部在场——正式引擎实际送入决策的完整快照",
     plain: "全部缺失。币安不提供历史盘口，无法重建。Prompt 已告知模型，不因缺流而否决形态",
   },
   {
     aspect: "价差",
     live: "真实买一卖一",
-    real: "采集时的真实买一卖一",
+    replay: "原正式决策快照中的真实买一卖一",
     plain: "无盘口即无价差（bid = ask = mark）。编一个价差会美化每笔成交",
   },
   {
     aspect: "标的",
     live: "全市场动态扫描，每分钟轮换",
-    real: "你指定标的池，且必须是采集器录过的",
+    replay: "原正式运行实际分析的动态候选与已有持仓",
     plain: "你指定标的池——历史上的价差/24h ticker 快照不存在，选币无法忠实重放",
   },
   {
     aspect: "K 线特征",
     live: "5m/15m/30m/1h/4h 全套 + 日线结构位",
-    real: "同一套 FeaturePipeline，同构",
+    replay: "直接复用正式运行保存的精确特征",
     plain: "同左",
   },
   {
     aspect: "风控",
     live: "AggressiveRiskPolicy",
-    real: "同一个——24h亏损熔断、止损风险与保证金上限、tick 对齐全部生效",
+    replay: "同一个——24h亏损熔断、止损风险与保证金上限、tick 对齐全部生效",
     plain: "同左",
   },
 ];
-
-function CollectorPanel({ status, onChange }: { status: CollectorStatus | null; onChange: () => void }) {
-  const [symbols, setSymbols] = useState("BTCUSDT");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const act = async (path: string, body?: object) => {
-    setBusy(true); setError(null);
-    try {
-      await api(path, { method: "POST", ...(body ? { body: JSON.stringify(body) } : {}) });
-      onChange();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally { setBusy(false); }
-  };
-
-  if (!status) return null;
-  return (
-    <div className="collector">
-      <div className="collector-head">
-        <span className="eyebrow">盘口采集</span>
-        <span className={`dot ${status.running ? "online" : ""}`} />
-        <strong>{status.running ? `采集中 · ${status.symbols.join(" ")}` : "未运行"}</strong>
-        <small>
-          币安不提供历史盘口，所以订单流只能在它发生时录下来。每 {status.interval_seconds / 60} 分钟采一次
-          （覆盖 5m/15m/30m/1h/4h 的全部决策时刻）。不调模型、不下单。
-        </small>
-      </div>
-      <div className="collector-actions">
-        <input
-          value={symbols}
-          placeholder={`逗号分隔，最多 ${status.max_symbols} 个`}
-          disabled={busy || status.running}
-          onChange={(e) => setSymbols(e.target.value)}
-        />
-        {status.running
-          ? <button className="ghost" disabled={busy} onClick={() => void act("/api/collector/stop")}>停止采集</button>
-          : <button disabled={busy} onClick={() => void act("/api/collector/start", {
-              symbols: symbols.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),
-            })}>开始采集</button>}
-        {status.error_count > 0 && <small className="negative">{status.error_count} 次采集失败</small>}
-      </div>
-      {error && <div className="error-text">{error}</div>}
-      {status.recorded.length > 0 && (
-        <div className="collector-recorded">
-          {status.recorded.map((item) => (
-            <span key={item.symbol}>
-              <strong>{item.symbol.replace("USDT", "")}</strong>
-              {item.capture_count} 条
-              <small>{formatLocalDateTime(new Date(item.first_capture_at))} 起</small>
-            </span>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth[]; engineRunning: boolean }) {
   const [form, setForm] = useState(() => {
@@ -2959,8 +2900,6 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
   });
   const [estimate, setEstimate] = useState<BacktestEstimate | null>(null);
   const [runs, setRuns] = useState<BacktestRun[]>([]);
-  const [collector, setCollector] = useState<CollectorStatus | null>(null);
-  const [useRecordedBook, setUseRecordedBook] = useState(false);
   const [formalRuns, setFormalRuns] = useState<ReplayableFormalRun[]>([]);
   const [replayLiveRunId, setReplayLiveRunId] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
@@ -3003,7 +2942,6 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
     start: parseLocalDateTime(form.start).toISOString(),
     end: parseLocalDateTime(form.end).toISOString(),
     providers: form.providers,
-    use_recorded_book: useRecordedBook,
     ...(replayLiveRunId ? { replay_live_run_id: Number(replayLiveRunId) } : {}),
     ...(timeout.trim() ? { timeout_seconds: Number(timeout) } : {}),
     config: {
@@ -3011,15 +2949,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
       fee_rate: form.feeRate,
       slippage_fraction: form.slippage,
     },
-  }), [form, useRecordedBook, replayLiveRunId, timeout]);
-
-  const refreshCollector = useCallback(async () => {
-    try {
-      setCollector(await api<CollectorStatus>("/api/collector"));
-    } catch { /* the collector panel is not worth an error banner */ }
-  }, []);
-
-  useEffect(() => { void refreshCollector(); }, [refreshCollector]);
+  }), [form, replayLiveRunId, timeout]);
 
   const refreshRuns = useCallback(async () => {
     try {
@@ -3047,7 +2977,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
   useEffect(() => {
     setEstimate(null);
     setAutoEstimatePending(false);
-  }, [form, useRecordedBook, replayLiveRunId]);
+  }, [form, replayLiveRunId]);
 
   const refreshProbe = useCallback(async () => {
     try {
@@ -3308,8 +3238,6 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
     <article className="panel backtest-panel">
       <PanelTitle code="05" title="回测" meta="历史模式 · 多模型对比" />
 
-      <CollectorPanel status={collector} onChange={() => void refreshCollector()} />
-
       <div className="backtest-note">
         <strong>回测不下单。</strong>它用历史行情重放同一套决策与风控，只有撮合是仿真的。
         <button className="text-button" onClick={() => setShowDiff((value) => !value)}>
@@ -3319,13 +3247,13 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
       {showDiff && (
         <div className="table-wrap backtest-diff">
           <table>
-            <thead><tr><th></th><th>实盘（测试网）</th><th>真实回测</th><th>普通回测</th></tr></thead>
+            <thead><tr><th></th><th>正式运行（测试网）</th><th>正式运行回放</th><th>普通历史回测</th></tr></thead>
             <tbody>
               {BACKTEST_VS_LIVE.map((row) => (
                 <tr key={row.aspect}>
                   <td><strong>{row.aspect}</strong></td>
                   <td>{row.live}</td>
-                  <td>{row.real}</td>
+                  <td>{row.replay}</td>
                   <td>{row.plain}</td>
                 </tr>
               ))}
@@ -3346,7 +3274,6 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
             disabled={busy !== null}
             onChange={(event) => {
               setReplayLiveRunId(event.target.value);
-              if (event.target.value) setUseRecordedBook(false);
             }}
           >
             <option value="">自选历史窗口</option>
@@ -3409,19 +3336,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
         </div>
       </section>
 
-      <div className="backtest-preflight-grid">
-        <label className="backtest-real">
-          <input type="checkbox" checked={useRecordedBook} disabled={busy !== null || Boolean(replayLiveRunId)}
-            onChange={(e) => setUseRecordedBook(e.target.checked)} />
-          <span>真实回测</span>
-          <small>
-            用采集器录下的盘口，payload 与实盘完全同构。要求窗口内<strong>每个</strong>决策时刻都有记录——
-            覆盖不全会被拒绝并告诉你缺多少，因为一半决策有订单流、一半没有，
-            等于把两个策略平均成一个不提及此事的数字。
-          </small>
-        </label>
-
-        <div className="probe">
+      <div className="probe">
         <div className="probe-head">
           <strong>{providersRequiringProbe.length
             ? `试跑 ${probe?.decisions ?? 5} 次决策`
@@ -3504,7 +3419,6 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
             onChange={(event) => setTimeoutSeconds(event.target.value)}
           />
         </label>}
-        </div>
       </div>
 
       {estimate && (
@@ -3581,7 +3495,7 @@ function BacktestPanel({ providers, engineRunning }: { providers: ProviderHealth
                   {run.spec.replay_live_run_id
                     ? <small className="run-real">正式运行回放 #{run.spec.replay_live_run_id} · 精确决策数据</small>
                     : run.spec.use_recorded_book
-                      ? <small className="run-real">真实回测 · 含订单流</small>
+                      ? <small className="run-real">旧真实回测记录 · 含订单流</small>
                       : <small>普通回测 · 无订单流</small>}
                   {run.spec.timeout_seconds
                     !== null

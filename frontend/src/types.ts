@@ -757,7 +757,7 @@ export interface BacktestRun {
     requested_end?: string;
     providers: string[];
     provider_configs: Record<string, { model: string | null; reasoning_effort: string | null }>;
-    use_recorded_book: boolean;
+    use_recorded_book?: boolean;
     replay_live_run_id: number | null;
     timeout_seconds: number | null;
     timeout_source: "explicit" | "provider_config" | "not_applicable";
@@ -776,23 +776,6 @@ export interface ReplayableFormalRun {
   snapshot_count: number;
   symbols: string[];
   cadences: string[];
-}
-
-export interface CollectorStatus {
-  running: boolean;
-  symbols: string[];
-  capture_count: number;
-  error_count: number;
-  last_capture_at: string | null;
-  last_error: string | null;
-  interval_seconds: number;
-  max_symbols: number;
-  recorded: Array<{
-    symbol: string;
-    capture_count: number;
-    first_capture_at: string;
-    last_capture_at: string;
-  }>;
 }
 
 export interface ProbeCall {

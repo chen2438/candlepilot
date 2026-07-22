@@ -59,13 +59,8 @@ class BacktestSpec:
     end: datetime
     providers: tuple[str, ...]
     config: BacktestConfig = field(default_factory=BacktestConfig)
-    #: Use the recorded order book, making the payload identical to live.
-    #:
-    #: Only possible where the collector was running, so the window is checked
-    #: for full coverage up front and refused if it has holes.
-    use_recorded_book: bool = False
-    #: Replay exact inputs captured by one formal run. Unlike recorded-book
-    #: mode this uses the original decision timestamps, feature values and
+    #: Replay exact inputs captured by one formal run. Unlike ordinary history,
+    #: this uses the original decision timestamps, feature values and
     #: starting account instead of reconstructing them from public history.
     replay_live_run_id: int | None = None
     replay_decision_count: int | None = None
@@ -336,7 +331,6 @@ class BacktestRunner:
         series: dict[str, dict[str, list[Candle]]],
         rules: dict[str, SymbolRules],
         risk: AggressiveRiskPolicy,
-        captures: dict[str, dict[datetime, dict[str, Any]]] | None = None,
         cost_for_result: Callable[[ProviderResult], float | None] | None = None,
         provider_retry_delays: tuple[float, ...] | None = None,
         retry_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -372,7 +366,7 @@ class BacktestRunner:
             for symbol, spans in series.items()
         }
         self._builders = {
-            symbol: HistoricalSnapshotBuilder(candles, (captures or {}).get(symbol))
+            symbol: HistoricalSnapshotBuilder(candles)
             for symbol, candles in series.items()
         }
 

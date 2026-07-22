@@ -431,9 +431,6 @@ def test_app_shutdown_cancels_background_work_before_closing_resources(
     app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
 
     with TestClient(app) as client:
-        assert client.post(
-            "/api/collector/start", json={"symbols": ["BTCUSDT"]}
-        ).status_code == 200
         payload = {"symbols": ["BTCUSDT"], "providers": ["api-fixture"], **_window(1)}
         created = _start_backtest(client, payload)
         assert created.status_code == 202
@@ -452,7 +449,6 @@ def test_app_shutdown_cancels_background_work_before_closing_resources(
         return run
 
     run = asyncio.run(state_after_shutdown())
-    assert app.state.collector.running is False
     assert engine.running is False
     assert run is not None and run["status"] == "cancelled"
 
@@ -539,198 +535,26 @@ def test_backtest_rejects_an_unknown_model_before_starting(tmp_path: Path) -> No
     asyncio.run(database.close())
 
 
-def _seed_captures(
-    database, engine, symbol: str, times: list[datetime], *, version: str | None = None
+def test_manual_book_collection_and_recorded_book_requests_are_removed(
+    tmp_path: Path,
 ) -> None:
-    from candlepilot.provenance import MICROSTRUCTURE_SCHEMA_VERSION
-
-    asyncio.run(database.initialize())
-    asyncio.run(
-        engine.audit.store_book_captures(
-            [
-                {
-                    "symbol": symbol,
-                    "captured_at": when,
-                    "schema_version": version or MICROSTRUCTURE_SCHEMA_VERSION,
-                    "payload": {
-                        "bid": "99.9", "ask": "100.1", "mark_price": "100",
-                        "index_price": "100", "funding_rate": "0.0001",
-                        "depth": {"bids": [["99", "3"]], "asks": [["101", "1"]]},
-                        "trade_imbalance": 0.25, "trade_seconds": 180.0,
-                        "open_interest": "1234.5",
-                    },
-                }
-                for when in times
-            ]
-        )
-    )
-
-
-def test_collector_records_without_touching_a_model(tmp_path: Path) -> None:
-    database, engine, app = _backtest_app(tmp_path, "collector.db")
+    database, _engine, app = _backtest_app(tmp_path, "bt-no-collector.db")
 
     with TestClient(app) as client:
-        assert client.get("/api/collector").json()["running"] is False
-        started = client.post("/api/collector/start", json={"symbols": ["BTCUSDT"]})
-        assert started.status_code == 200
-        assert started.json()["running"] is True
-        assert started.json()["symbols"] == ["BTCUSDT"]
-        # Starting twice is a mistake worth naming, not a silent restart.
-        assert client.post("/api/collector/start", json={"symbols": ["ETHUSDT"]}).status_code == 409
-        assert client.post("/api/collector/stop").json()["running"] is False
-    asyncio.run(database.close())
-
-
-def test_a_real_backtest_is_refused_when_the_book_was_not_recorded(tmp_path: Path) -> None:
-    """Half a window with flow is two strategies averaged into one number."""
-
-    database, engine, app = _backtest_app(tmp_path, "bt-partial.db")
-    window = _window(1)
-    start = datetime.fromisoformat(window["start"])
-
-    # Only two of the twelve 5-minute instants the window needs.
-    _seed_captures(database, engine, "BTCUSDT", [start, start + timedelta(minutes=5)])
-
-    with TestClient(app) as client:
+        paths = client.get("/openapi.json").json()["paths"]
+        assert not any(path.startswith("/api/collector") for path in paths)
         response = client.post(
             "/api/backtests",
             json={
-                "symbols": ["BTCUSDT"], "providers": ["api-fixture"],
-                "use_recorded_book": True, **window,
+                "symbols": ["BTCUSDT"],
+                "providers": ["api-fixture"],
+                "use_recorded_book": True,
+                **_window(1),
             },
         )
-        assert response.status_code == 409
-        detail = response.json()["detail"]
-        assert "decision instants" in detail
-        assert "plain backtest" in detail
-    asyncio.run(database.close())
 
-
-def test_a_real_backtest_runs_when_every_instant_was_recorded(tmp_path: Path) -> None:
-    database, engine, app = _backtest_app(tmp_path, "bt-real.db")
-    window = _window(1)
-    start = datetime.fromisoformat(window["start"])
-    end = datetime.fromisoformat(window["end"])
-
-    from candlepilot.market.collector import aligned_capture_times
-
-    _seed_captures(database, engine, "BTCUSDT", aligned_capture_times(start, end))
-
-    with TestClient(app) as client:
-        payload = {
-            "symbols": ["BTCUSDT"], "providers": ["api-fixture"],
-            "use_recorded_book": True, **window,
-        }
-        created = _start_backtest(client, payload)
-        assert created.status_code == 202
-        run_id = created.json()["id"]
-        for _ in range(200):
-            run = client.get(f"/api/backtests/{run_id}").json()
-            if run["status"] != "running":
-                break
-            time.sleep(0.05)
-        assert run["status"] == "completed", run.get("error")
-        assert run["spec"]["use_recorded_book"] is True
-    asyncio.run(database.close())
-
-
-def test_real_backtest_only_requires_selected_cadence_decision_instants(
-    tmp_path: Path,
-) -> None:
-    from candlepilot.backtest.runner import BacktestSpec, decision_times
-
-    database, engine, app = _backtest_app(tmp_path, "bt-hourly-book.db")
-    window = _window(1)
-    start = datetime.fromisoformat(window["start"])
-    end = datetime.fromisoformat(window["end"])
-    required = decision_times(
-        BacktestSpec(
-            symbols=("BTCUSDT",),
-            cadences=("1h",),
-            start=start,
-            end=end,
-            providers=("api-fixture",),
-        ),
-        "1h",
-    )
-    assert required == [end]
-    _seed_captures(database, engine, "BTCUSDT", required)
-
-    with TestClient(app) as client:
-        payload = {
-            "symbols": ["BTCUSDT"],
-            "cadences": ["1h"],
-            "providers": ["api-fixture"],
-            "use_recorded_book": True,
-            **window,
-        }
-        created = _start_backtest(client, payload)
-        assert created.status_code == 202, created.text
-        run = _await_run(client, created.json()["id"])
-
-    assert run["status"] == "completed", run.get("error")
-    assert run["models"][0]["decisions_total"] == 1
-    asyncio.run(database.close())
-
-
-def test_stale_capture_outside_selected_decision_instants_is_ignored(
-    tmp_path: Path,
-) -> None:
-    from candlepilot.provenance import MICROSTRUCTURE_SCHEMA_VERSION
-
-    database, engine, app = _backtest_app(tmp_path, "bt-irrelevant-stale-book.db")
-    window = _window(1)
-    start = datetime.fromisoformat(window["start"])
-    end = datetime.fromisoformat(window["end"])
-    _seed_captures(database, engine, "BTCUSDT", [start], version="microstructure-v0")
-    _seed_captures(
-        database,
-        engine,
-        "BTCUSDT",
-        [end],
-        version=MICROSTRUCTURE_SCHEMA_VERSION,
-    )
-
-    with TestClient(app) as client:
-        payload = {
-            "symbols": ["BTCUSDT"],
-            "cadences": ["1h"],
-            "providers": ["api-fixture"],
-            "use_recorded_book": True,
-            **window,
-        }
-        created = _start_backtest(client, payload)
-        assert created.status_code == 202, created.text
-        run = _await_run(client, created.json()["id"])
-
-    assert run["status"] == "completed", run.get("error")
-    asyncio.run(database.close())
-
-
-def test_captures_from_an_older_derivation_are_refused_not_replayed(tmp_path: Path) -> None:
-    """The tape summary cannot be recomputed, so a formula change invalidates it."""
-
-    database, engine, app = _backtest_app(tmp_path, "bt-stale.db")
-    window = _window(1)
-    start = datetime.fromisoformat(window["start"])
-    end = datetime.fromisoformat(window["end"])
-
-    from candlepilot.market.collector import aligned_capture_times
-
-    _seed_captures(
-        database, engine, "BTCUSDT", aligned_capture_times(start, end), version="microstructure-v0"
-    )
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/api/backtests",
-            json={
-                "symbols": ["BTCUSDT"], "providers": ["api-fixture"],
-                "use_recorded_book": True, **window,
-            },
-        )
-        assert response.status_code == 409
-        assert "no longer mean the same thing" in response.json()["detail"]
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["type"] == "extra_forbidden"
     asyncio.run(database.close())
 
 

@@ -65,7 +65,8 @@ USDⓈ-M USDT 永续合约。外部 LLM 或本地确定性策略生成结构化 
 7. 正式运行收益按价格已实现、未实现与可归属手续费拆分；资金费无法可靠归属时明确标为未知。
 
 回测复用正式运行的特征、Prompt 与风控代码，只模拟交易所负责的撮合、费用和资金费；所有决策只能
-看到当时已经收盘的数据。正式运行还会自动保存实际批量输入、起始组合和合约规则，供精确回放。
+看到当时已经收盘的数据。普通历史回测明确缺少盘口与订单流；完整微观结构输入只来自正式运行自动
+保存的实际批量输入、起始组合和合约规则，并按原批次精确回放，不再提供独立盘口采集器。
 
 ## 5. 关键默认值
 
@@ -97,7 +98,7 @@ USDⓈ-M USDT 永续合约。外部 LLM 或本地确定性策略生成结构化 
 | Provider、本地规则、Prompt、模型路由、重试、试跑、Token | [决策 Provider](docs/providers.md) | `src/candlepilot/providers/`、`application/engine.py`、Prompt 相关模块 |
 | 行情、K 线、特征、选币、周期调度、运行上限 | [行情、特征与运行调度](docs/market-and-runtime.md) | `market/`、`application/scheduler.py` |
 | TradeIntent、硬风控、移动止损、Broker、账户、订单、成交、正式数据集 | [决策、风控与测试网执行](docs/risk-and-execution.md) | `domain/`、`risk/`、`broker/`、`application/engine.py` |
-| 历史回测、真实盘口回测、正式运行回放、模拟撮合、回测 UI | [回测](docs/backtesting.md) | `backtest/`、回测 API 与前端回测组件 |
+| 普通历史回测、正式运行回放、模拟撮合、回测 UI | [回测](docs/backtesting.md) | `backtest/`、回测 API 与前端回测组件 |
 | 数据库、迁移、审计、日志、指标、告警、成本 | [存储、审计、可观测性与成本](docs/storage-and-observability.md) | `storage/`、`observability.py`、指标与告警模块 |
 | 前端页面、交互、设置、重启/更新入口、历史清理 | [前端、设置与数据管理](docs/frontend-settings-and-data.md) | `frontend/`、设置与历史管理 API |
 | 环境变量、CLI、HTTP API、WebSocket 协议 | [配置、CLI 与 API](docs/configuration-and-api.md) | `config.py`、`cli.py`、`api.py` |

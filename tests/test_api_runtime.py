@@ -2096,27 +2096,6 @@ def test_web_update_is_refused_while_the_engine_runs(
     asyncio.run(database.close())
 
 
-def test_restart_is_refused_while_the_collector_runs(tmp_path: Path) -> None:
-    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'restart-collector.db'}")
-    market = ApiMarket()
-    engine = TradingEngine(
-        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
-        providers=ProviderRegistry([ApiProvider()]),
-        audit=AuditRepository(database.sessions),
-        market=market,  # type: ignore[arg-type]
-    )
-    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
-    with TestClient(app) as client:
-        assert client.post(
-            "/api/collector/start", json={"symbols": ["BTCUSDT"]}
-        ).status_code == 200
-        refused = client.post("/api/restart")
-        assert refused.status_code == 409
-        assert "market collector" in refused.json()["detail"]
-        client.post("/api/collector/stop")
-    asyncio.run(database.close())
-
-
 def test_restart_is_refused_while_scheduler_tasks_survive_an_engine_stop(
     tmp_path: Path,
 ) -> None:

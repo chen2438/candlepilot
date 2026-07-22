@@ -187,4 +187,13 @@ def test_the_backtest_inputs_use_the_shared_field_style() -> None:
     ]
     parts = {part.strip() for selector in styled for part in selector.split(",")}
     assert ".backtest-form input" in parts
-    assert ".collector-actions input" in parts
+    assert ".probe-timeout input" in parts
+
+
+def test_backtest_ui_has_no_manual_order_book_collector() -> None:
+    source = (FRONTEND / "App.tsx").read_text(encoding="utf-8")
+
+    assert "/api/collector" not in source
+    assert "<CollectorPanel" not in source
+    assert "use_recorded_book: useRecordedBook" not in source
+    assert "正式运行回放" in source

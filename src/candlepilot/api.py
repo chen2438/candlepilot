@@ -58,7 +58,6 @@ from candlepilot.backtest.runner import (
     ModelRun,
     ReplayInput,
     compare,
-    decision_times,
     estimate,
     validate,
 )
@@ -67,7 +66,6 @@ from candlepilot.backtest.snapshots import (
 )
 from candlepilot.backtest.snapshots import HistoricalSnapshotBuilder
 from candlepilot.backtest.snapshots import (
-    coverage,
     required_history_start,
 )
 from candlepilot.broker.binance_testnet import (
@@ -96,10 +94,6 @@ from candlepilot.domain.models import (
 )
 from candlepilot.market.binance import BinancePublicClient
 from candlepilot.market.cache import HistoricalMarketCache
-from candlepilot.market.collector import (
-    MAX_COLLECTED_SYMBOLS,
-    BookCollector,
-)
 from candlepilot.market.history import build_backtest_candles
 from candlepilot.observability import AlertNotifier, OperationalMetrics, evaluate_alerts
 from candlepilot.providers.pricing import (
@@ -113,7 +107,7 @@ from candlepilot.providers.cli import sanitized_subprocess_env
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.runtime_lock import ServiceInstanceLock
 from candlepilot.providers.retry import DECISION_PROVIDER_MAX_ATTEMPTS
-from candlepilot.provenance import APPLICATION_GIT_COMMIT, MICROSTRUCTURE_SCHEMA_VERSION
+from candlepilot.provenance import APPLICATION_GIT_COMMIT
 from candlepilot.risk.engine import AggressiveRiskPolicy, SymbolRules
 from candlepilot.settings_file import (
     CUSTOM_PROVIDERS_ENV,
@@ -546,9 +540,6 @@ class BacktestRequest(ApiModel):
     end: datetime
     providers: list[str] = Field(min_length=1, max_length=MAX_BACKTEST_MODELS)
     config: BacktestConfigInput = Field(default_factory=BacktestConfigInput)
-    # Only possible over a window the collector covered; the coverage is
-    # checked up front rather than degrading decision by decision.
-    use_recorded_book: bool = False
     replay_live_run_id: int | None = Field(default=None, gt=0)
     # Set from a probe of these providers. None inherits the providers'
     # configured timeout when the run is created; that effective value is
@@ -556,38 +547,11 @@ class BacktestRequest(ApiModel):
     timeout_seconds: float | None = Field(default=None, gt=0, le=MAX_SUGGESTED_TIMEOUT)
 
 
-class CollectorStart(ApiModel):
-    symbols: list[str] = Field(min_length=1, max_length=MAX_COLLECTED_SYMBOLS)
-
-
 # CLI-accepted aliases that are not published as models.dev ids.
 _CURATED_MODEL_ALIASES: dict[str, tuple[str, ...]] = {
     "claude-code-auth": ("sonnet", "opus", "haiku", "fable"),
 }
 _MODEL_ID_PREFIX: dict[str, str] = {"openai": "gpt-5", "anthropic": "claude-"}
-
-
-def _capture_features(row: dict[str, Any]) -> dict[str, float]:
-    """Rebuild the microstructure block from a stored capture.
-
-    The book is recomputed from the raw depth that was kept, so a change to that
-    formula is picked up here for free. The tape summary can only be restored,
-    which is what MICROSTRUCTURE_SCHEMA_VERSION guards.
-    """
-
-    from candlepilot.market.features import FeaturePipeline
-
-    derived = FeaturePipeline.microstructure(
-        mark_price=Decimal(row["mark_price"]),
-        index_price=Decimal(row["index_price"]),
-        open_interest=Decimal(row["open_interest"]),
-        bids=row["depth"]["bids"],
-        asks=row["depth"]["asks"],
-        trades=[],
-    )
-    derived["recent_trade_imbalance"] = float(row["trade_imbalance"])
-    derived["recent_trade_seconds"] = float(row["trade_seconds"])
-    return derived
 
 
 def pricing_provider_ids(settings: Settings) -> dict[str, str]:
@@ -1022,7 +986,6 @@ def create_app(
                 await codex_auth_manager.close()
                 await scheduler.stop()
                 await engine.stop()
-                await collector.stop()
                 model_tasks = active_backtest_tasks()
                 if probe_task is not None and not probe_task.done():
                     probe_task.cancel()
@@ -1045,31 +1008,6 @@ def create_app(
         finally:
             instance_lock.release()
 
-    async def _store_captures(captures: list[Any]) -> None:
-        await engine.audit.store_book_captures(
-            [
-                {
-                    "symbol": item.symbol,
-                    "captured_at": item.captured_at,
-                    "schema_version": item.schema_version,
-                    "payload": {
-                        "bid": str(item.bid),
-                        "ask": str(item.ask),
-                        "mark_price": str(item.mark_price),
-                        "index_price": str(item.index_price),
-                        "funding_rate": str(item.funding_rate),
-                        "depth": item.depth,
-                        "trade_imbalance": item.trade_imbalance,
-                        "trade_seconds": item.trade_seconds,
-                        "open_interest": str(item.open_interest),
-                    },
-                }
-                for item in captures
-            ]
-        )
-
-    collector = BookCollector(market, store=_store_captures)
-
     app = FastAPI(
         title="CandlePilot API",
         version="0.1.0",
@@ -1078,7 +1016,6 @@ def create_app(
     )
     app.state.engine = engine
     app.state.database = database
-    app.state.collector = collector
     app.state.scheduler = scheduler
     app.state.history_cache = history_cache
     app.state.testnet_feed = testnet_feed
@@ -1652,8 +1589,6 @@ def create_app(
             active.append("the formal decision engine")
         if background_model_work():
             active.append("a backtest or probe")
-        if collector.running:
-            active.append("the market collector")
         if active:
             raise HTTPException(
                 status_code=409,
@@ -1943,8 +1878,6 @@ def create_app(
             active.append("the trading scheduler")
         if background_model_work():
             active.append("a provider probe or backtest")
-        if collector.running:
-            active.append("the market collector")
         if active:
             raise HTTPException(
                 status_code=409,
@@ -2006,8 +1939,6 @@ def create_app(
             active.append("the trading scheduler")
         if background_model_work():
             active.append("a provider probe or backtest")
-        if collector.running:
-            active.append("the market collector")
         if active:
             raise HTTPException(
                 status_code=409,
@@ -2029,7 +1960,6 @@ def create_app(
             await asyncio.sleep(0.25)
             await scheduler.stop()
             await engine.stop()
-            await collector.stop()
             if owns_market:
                 await market.close()
             if testnet_broker is not None:
@@ -3091,7 +3021,6 @@ def create_app(
             end=request.end,
             providers=tuple(request.providers),
             config=BacktestConfig(**request.config.model_dump()),
-            use_recorded_book=request.use_recorded_book,
             replay_live_run_id=request.replay_live_run_id,
             timeout_seconds=request.timeout_seconds,
         )
@@ -3099,11 +3028,6 @@ def create_app(
     async def _checked_spec(request: BacktestRequest) -> BacktestSpec:
         spec = _spec_from(request)
         if spec.replay_live_run_id is not None:
-            if spec.use_recorded_book:
-                raise HTTPException(
-                    status_code=422,
-                    detail="formal-run replay and recorded-book mode are mutually exclusive",
-                )
             live_run = await engine.audit.live_run(spec.replay_live_run_id)
             rows = await engine.audit.live_decision_snapshots(spec.replay_live_run_id)
             if live_run is None:
@@ -3243,7 +3167,6 @@ def create_app(
             spec.config.initial_equity,
             spec.config.fee_rate,
             spec.config.slippage_fraction,
-            spec.use_recorded_book,
             spec.replay_live_run_id,
             provider.model,
             provider.reasoning_effort,
@@ -3371,7 +3294,6 @@ def create_app(
     async def _run_backtest(
         run_id: int,
         spec: BacktestSpec,
-        captures: dict[str, dict[datetime, dict[str, Any]]],
     ) -> None:
         try:
             series, rules = await _load_series(spec)
@@ -3430,7 +3352,6 @@ def create_app(
                         series=series,
                         rules=rules,
                         risk=engine.risk,
-                        captures=captures,
                         replay_snapshots=replay_snapshots,
                         initial_portfolio=initial_portfolio,
                         cost_for_result=lambda result: _provider_result_cost_usd(
@@ -3490,7 +3411,6 @@ def create_app(
 
         try:
             series, _rules = await _load_series(spec)
-            captures = await _recorded_book(spec) if spec.use_recorded_book else {}
             replay_snapshots, initial_portfolio = await _live_replay_inputs(spec)
         except asyncio.CancelledError:
             fail_all("cancelled")
@@ -3500,7 +3420,7 @@ def create_app(
             return
 
         symbol = spec.symbols[0]
-        builder = HistoricalSnapshotBuilder(series[symbol], captures.get(symbol))
+        builder = HistoricalSnapshotBuilder(series[symbol])
         portfolio = initial_portfolio or SimulatedExchange(spec.config).portfolio_state(
             {}
         )
@@ -3645,10 +3565,6 @@ def create_app(
         if active_backtest_tasks():
             raise HTTPException(status_code=409, detail="a backtest is already running")
         spec = await _checked_spec(request)
-        # Coverage errors are facts about the requested historical window, so
-        # report them before asking for a probe that could never reproduce the
-        # requested real payload.
-        captures = await _recorded_book(spec) if spec.use_recorded_book else {}
         projected, estimate_payload = _probe_estimate(spec)
         if projected.estimated_seconds > MAX_ESTIMATED_HOURS * 3600:
             raise HTTPException(
@@ -3659,8 +3575,6 @@ def create_app(
                 f"{MAX_ESTIMATED_HOURS:g}h. Shorten the window, drop a symbol, or use "
                 "one cadence.",
             )
-        # Coverage is checked before the run is created: a real backtest that
-        # cannot be real should fail the request, not fail an hour in.
         run_id = await engine.audit.create_backtest_run(
             {
                 "symbols": list(spec.symbols),
@@ -3675,7 +3589,6 @@ def create_app(
                     }
                     for name in spec.providers
                 },
-                "use_recorded_book": spec.use_recorded_book,
                 "replay_live_run_id": spec.replay_live_run_id,
                 # Recorded because the failure count is meaningless without it:
                 # otherwise nothing says whether a run that lost decisions ran
@@ -3693,7 +3606,7 @@ def create_app(
             list(spec.providers),
         )
         backtest_tasks[run_id] = asyncio.create_task(
-            _run_backtest(run_id, spec, captures), name=f"candlepilot-backtest-{run_id}"
+            _run_backtest(run_id, spec), name=f"candlepilot-backtest-{run_id}"
         )
         return {"id": run_id, "status": "running", "estimate": estimate_payload}
 
@@ -3758,88 +3671,6 @@ def create_app(
             raise HTTPException(status_code=409, detail="backtest is not running")
         task.cancel()
         return {"id": run_id, "status": "cancelling"}
-
-    @app.get("/api/collector")
-    async def collector_status() -> dict[str, Any]:
-        return {
-            **collector.status(),
-            "max_symbols": MAX_COLLECTED_SYMBOLS,
-            "recorded": _json_value(await engine.audit.book_capture_summary()),
-        }
-
-    @app.post("/api/collector/start")
-    async def start_collector(request: CollectorStart) -> dict[str, Any]:
-        # No provider, no orders: this can run while the engine trades, and it
-        # is worth running when nothing does.
-        try:
-            collector.start(request.symbols)
-        except (RuntimeError, ValueError) as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return collector.status()
-
-    @app.post("/api/collector/stop")
-    async def stop_collector() -> dict[str, Any]:
-        await collector.stop()
-        return collector.status()
-
-    async def _recorded_book(
-        spec: BacktestSpec,
-    ) -> dict[str, dict[datetime, dict[str, Any]]]:
-        """Load the captures a real backtest needs, refusing a holed window.
-
-        A partly covered window is the trap: some decisions would see order flow
-        and some would not, averaging two different strategies into one number
-        that never mentions it.
-        """
-
-        required = sorted(
-            {
-                when
-                for cadence in spec.cadences
-                for when in decision_times(spec, cadence)
-            }
-        )
-        required_set = set(required)
-        captures: dict[str, dict[datetime, dict[str, Any]]] = {}
-        for symbol in spec.symbols:
-            rows = await engine.audit.book_captures(symbol, spec.start, spec.end)
-            by_time = {
-                row["captured_at"]: row
-                for row in rows
-                if row["captured_at"] in required_set
-            }
-            stale = {
-                row["schema_version"]
-                for row in by_time.values()
-                if row["schema_version"] != MICROSTRUCTURE_SCHEMA_VERSION
-            }
-            if stale:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"{symbol} has captures recorded as {', '.join(sorted(stale))} "
-                    f"but this build derives {MICROSTRUCTURE_SCHEMA_VERSION}; those numbers "
-                    "no longer mean the same thing and cannot be replayed",
-                )
-            gaps = coverage(required, set(by_time))
-            if not gaps.complete:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"{symbol} has order-book captures for {gaps.recorded} of "
-                    f"{gaps.required} decision instants ({gaps.fraction:.0%}). A real "
-                    "backtest needs every instant, or half the decisions would see flow "
-                    "and half would not. Record the window first, or run a plain backtest.",
-                )
-            captures[symbol] = {
-                when: {
-                    "mark_price": Decimal(row["mark_price"]),
-                    "bid": Decimal(row["bid"]),
-                    "ask": Decimal(row["ask"]),
-                    "funding_rate": Decimal(row["funding_rate"]),
-                    "features": _capture_features(row),
-                }
-                for when, row in by_time.items()
-            }
-        return captures
 
     @app.websocket("/ws/events")
     async def event_stream(websocket: WebSocket) -> None:
