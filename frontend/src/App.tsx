@@ -2531,6 +2531,12 @@ export function MarketAnalysisPanel({
       </form>
       <div className="analysis-performance-cards">
         <article>
+          <small>全部方向计划</small>
+          <strong>{performance?.all_plans.win_rate_percent == null ? "—" : `${performance.all_plans.win_rate_percent.toFixed(1)}%`}</strong>
+          <span>{performance ? `${performance.all_plans.resolved_plans} 个已完成 · ${performance.all_plans.wins} 胜 / ${performance.all_plans.losses} 负` : "读取中…"}</span>
+          <em>{performance ? `已入场 ${performance.all_plans.entered_plans} · 未入场 ${performance.all_plans.unentered_plans}` : "排除观望、进行中和顺序不确定"}</em>
+        </article>
+        <article>
           <small>固定名义金额</small>
           <strong className={(performance?.fixed_notional.total_pnl_usdt ?? 0) >= 0 ? "positive" : "negative"}>{performance ? signedUsdt(performance.fixed_notional.total_pnl_usdt) : "—"}</strong>
           <span>胜率 {performance?.fixed_notional.win_rate_percent == null ? "—" : `${performance.fixed_notional.win_rate_percent.toFixed(1)}%`}</span>
@@ -2543,7 +2549,7 @@ export function MarketAnalysisPanel({
           <em>累计 {performance ? `${performance.fixed_risk.total_r > 0 ? "+" : ""}${performance.fixed_risk.total_r.toFixed(2)}R` : "—"} · 平均 {performance?.fixed_risk.average_r == null ? "—" : `${performance.fixed_risk.average_r > 0 ? "+" : ""}${performance.fixed_risk.average_r.toFixed(2)}R`}</em>
         </article>
       </div>
-      <footer>未入场、观望、进行中及顺序不确定不计入交易；T1 后按一半仓位结算。未计手续费、滑点和资金费。</footer>
+      <footer>全部方向计划包含已入场和未入场的明确结果，排除观望、进行中及顺序不确定；金额和 R 仍只统计已入场且明确结算的计划。T1 后按一半仓位结算，未计手续费、滑点和资金费。</footer>
     </section>
     {engineRunning && <div className="analysis-warning">正式引擎运行中；停止后才能发起独立分析。</div>}
     {!provider && <div className="analysis-warning">请先在总览选择 Codex、Claude Code 或 Custom API。</div>}

@@ -171,6 +171,8 @@ def test_analysis_performance_compares_fixed_notional_and_fixed_risk() -> None:
             record("long", "stopped"),
             record("long", "target2"),
             record("short", "breakeven_after_target1"),
+            record("long", "target1_before_entry"),
+            record("short", "stopped_before_entry"),
             record("long", "ambiguous"),
             record("short", "active"),
             {"result": {"direction": "neutral"}, "outcome": {"status": "neutral_observation"}},
@@ -179,12 +181,20 @@ def test_analysis_performance_compares_fixed_notional_and_fixed_risk() -> None:
         fixed_risk_usdt=10,
     )
 
-    assert performance["directional_analyses"] == 5
+    assert performance["directional_analyses"] == 7
     assert performance["settled_trades"] == 3
     assert performance["open_trades"] == 1
     assert performance["ambiguous_results"] == 1
     assert performance["wins"] == 2
     assert performance["losses"] == 1
+    assert performance["all_plans"] == {
+        "resolved_plans": 5,
+        "entered_plans": 3,
+        "unentered_plans": 2,
+        "wins": 3,
+        "losses": 2,
+        "win_rate_percent": pytest.approx(60),
+    }
     assert performance["fixed_notional"]["total_pnl_usdt"] == pytest.approx(10)
     assert performance["fixed_notional"]["win_rate_percent"] == pytest.approx(200 / 3)
     assert performance["fixed_risk"]["total_pnl_usdt"] == pytest.approx(10)
@@ -1050,6 +1060,14 @@ def test_market_analysis_api_runs_selected_provider_and_returns_audit(tmp_path: 
         assert performance.status_code == 200
         assert performance.json()["settled_trades"] == 1
         assert performance.json()["wins"] == 1
+        assert performance.json()["all_plans"] == {
+            "resolved_plans": 1,
+            "entered_plans": 1,
+            "unentered_plans": 0,
+            "wins": 1,
+            "losses": 0,
+            "win_rate_percent": 100.0,
+        }
         assert performance.json()["fixed_notional"]["total_pnl_usdt"] == pytest.approx(
             500 / 101
         )

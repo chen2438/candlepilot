@@ -204,6 +204,14 @@ export interface MarketAnalysisPerformance {
   wins: number;
   losses: number;
   breakevens: number;
+  all_plans: {
+    resolved_plans: number;
+    entered_plans: number;
+    unentered_plans: number;
+    wins: number;
+    losses: number;
+    win_rate_percent: number | null;
+  };
   fixed_notional: {
     amount_per_trade_usdt: number;
     total_pnl_usdt: number;

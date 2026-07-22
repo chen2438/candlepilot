@@ -8,6 +8,13 @@ from typing import Any
 PRICED_OUTCOME_STATUSES = frozenset(
     {"stopped", "target2", "breakeven_after_target1"}
 )
+RESOLVED_PLAN_WIN_STATUSES = frozenset(
+    {"target1_before_entry", "target2", "breakeven_after_target1"}
+)
+RESOLVED_PLAN_LOSS_STATUSES = frozenset({"stopped_before_entry", "stopped"})
+UNENTERED_PLAN_STATUSES = frozenset(
+    {"target1_before_entry", "stopped_before_entry"}
+)
 
 
 def _decimal(value: object) -> Decimal:
@@ -60,6 +67,9 @@ def calculate_analysis_performance(
     directional_analyses = 0
     ambiguous_results = 0
     open_trades = 0
+    resolved_plan_wins = 0
+    resolved_plan_losses = 0
+    resolved_unentered_plans = 0
 
     for record in records:
         result = record.get("result")
@@ -71,10 +81,17 @@ def calculate_analysis_performance(
             continue
         directional_analyses += 1
         if isinstance(outcome, Mapping):
-            if outcome.get("status") == "ambiguous":
+            outcome_status = outcome.get("status")
+            if outcome_status == "ambiguous":
                 ambiguous_results += 1
-            elif outcome.get("status") in {"active", "target1_partial"}:
+            elif outcome_status in {"active", "target1_partial"}:
                 open_trades += 1
+            if outcome_status in RESOLVED_PLAN_WIN_STATUSES:
+                resolved_plan_wins += 1
+            elif outcome_status in RESOLVED_PLAN_LOSS_STATUSES:
+                resolved_plan_losses += 1
+            if outcome_status in UNENTERED_PLAN_STATUSES:
+                resolved_unentered_plans += 1
         multiples = _trade_multiples(record)
         if multiples is not None:
             return_fraction, r_multiple = multiples
@@ -92,6 +109,12 @@ def calculate_analysis_performance(
     )
     total_return = sum(returns, Decimal(0))
     total_r = sum(r_multiples, Decimal(0))
+    resolved_plans = resolved_plan_wins + resolved_plan_losses
+    resolved_plan_win_rate = (
+        Decimal(resolved_plan_wins) / Decimal(resolved_plans) * Decimal(100)
+        if resolved_plans
+        else None
+    )
 
     def number(value: Decimal | None) -> float | None:
         return None if value is None else float(value)
@@ -104,6 +127,14 @@ def calculate_analysis_performance(
         "wins": wins,
         "losses": losses,
         "breakevens": breakevens,
+        "all_plans": {
+            "resolved_plans": resolved_plans,
+            "entered_plans": resolved_plans - resolved_unentered_plans,
+            "unentered_plans": resolved_unentered_plans,
+            "wins": resolved_plan_wins,
+            "losses": resolved_plan_losses,
+            "win_rate_percent": number(resolved_plan_win_rate),
+        },
         "fixed_notional": {
             "amount_per_trade_usdt": number(notional),
             "total_pnl_usdt": number(total_return * notional),
