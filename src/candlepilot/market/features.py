@@ -17,19 +17,17 @@ from candlepilot.domain.models import MarketSnapshot
 #: call. 1m was dropped for exactly that reason: no setup rule names it.
 DECISION_FEATURE_INTERVALS = ("5m", "15m", "30m", "1h", "4h")
 
-# Collected into formal snapshots for deterministic shadow experiments, but
-# deliberately withheld from the standard external-Provider payload until a
-# replayed experiment establishes how each field changes decisions.
-EXPERIMENTAL_POSITIONING_FEATURES = frozenset(
-    {
-        "open_interest_change_5m",
-        "global_long_short_ratio",
-        "global_long_short_ratio_change_5m",
-        "top_long_short_position_ratio",
-        "top_long_short_position_ratio_change_5m",
-        "taker_buy_sell_ratio",
-        "taker_buy_sell_ratio_change_5m",
-    }
+# Optional Binance derivatives statistics supplied to external LLMs as
+# contextual evidence. Keep a stable order so payloads, missing-field reports,
+# and tests remain deterministic.
+DERIVATIVES_POSITIONING_FEATURES = (
+    "open_interest_change_5m",
+    "global_long_short_ratio",
+    "global_long_short_ratio_change_5m",
+    "top_long_short_position_ratio",
+    "top_long_short_position_ratio_change_5m",
+    "taker_buy_sell_ratio",
+    "taker_buy_sell_ratio_change_5m",
 )
 
 #: Interval supplying daily structure levels, and only those.

@@ -9,13 +9,13 @@ from typing import Any
 from candlepilot.analysis.indicators import closed_klines, raw_bar, summarize
 from candlepilot.analysis.options import OptionsContextSource
 from candlepilot.market.binance import BinancePublicClient
-from candlepilot.market.features import Kline
+from candlepilot.market.features import DERIVATIVES_POSITIONING_FEATURES, Kline
 
 
 TIMEFRAMES = ("5m", "15m", "1h")
 RAW_BAR_LIMIT = 60
 INDICATOR_BAR_LIMIT = 150
-DATA_VERSION = "kansoku-compatible-crypto-v2"
+DATA_VERSION = "kansoku-compatible-crypto-v3"
 
 
 def _relative_volume(rows: list[Kline]) -> dict[str, Any] | None:
@@ -113,6 +113,7 @@ class AnalysisDataPackBuilder:
             ticker,
             btc,
             eth,
+            positioning,
             options_context,
         ) = await asyncio.gather(
             self.market.klines(symbol, "5m", INDICATOR_BAR_LIMIT),
@@ -126,6 +127,7 @@ class AnalysisDataPackBuilder:
             self.market.ticker_24h(symbol),
             self.market.premium_index("BTCUSDT"),
             self.market.premium_index("ETHUSDT"),
+            self.market.derivatives_positioning(symbol),
             (
                 self.options.context(symbol)
                 if self.options is not None
@@ -204,6 +206,22 @@ class AnalysisDataPackBuilder:
                     int(premium["nextFundingTime"]) / 1000, tz=UTC
                 ).isoformat(),
                 "open_interest_contracts": float(interest["openInterest"]),
+                "positioning_statistics_5m": {
+                    "source": "Binance public Futures Data API",
+                    "availability": (
+                        "complete"
+                        if len(positioning) == len(DERIVATIVES_POSITIONING_FEATURES)
+                        else "partial"
+                        if positioning
+                        else "unavailable"
+                    ),
+                    "values": positioning,
+                    "missing_fields": [
+                        name
+                        for name in DERIVATIVES_POSITIONING_FEATURES
+                        if name not in positioning
+                    ],
+                },
                 **_depth_flow(depth, trades),
             },
             "market_benchmarks": {

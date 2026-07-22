@@ -244,11 +244,12 @@ def test_analysis_output_schema_requires_every_object_property() -> None:
 def test_analysis_prompt_requires_chinese_user_facing_text() -> None:
     prompt = build_analysis_prompt({"symbol": "BTCUSDT"})
 
-    assert PROMPT_VERSION == "market-analysis-v3"
+    assert PROMPT_VERSION == "market-analysis-v4"
     assert "Write every user-facing natural-language value in Simplified Chinese" in prompt
     assert "Keep JSON keys, enum values" in prompt
     assert "Previous analysis may be in another language" in prompt
     assert "benchmark snapshots describe broad BTC/ETH market regime" in prompt
+    assert "Do not use universal ratio thresholds" in prompt
 
 
 def test_assisted_analysis_maps_t1_to_fixed_one_times_intent_and_keeps_t2_shadow() -> None:
@@ -696,6 +697,17 @@ class AnalysisMarket:
     async def ticker_24h(self, symbol: str):
         return {"priceChangePercent": "2", "quoteVolume": "1000000"}
 
+    async def derivatives_positioning(self, symbol: str):
+        return {
+            "open_interest_change_5m": 0.02,
+            "global_long_short_ratio": 1.1,
+            "global_long_short_ratio_change_5m": -0.03,
+            "top_long_short_position_ratio": 1.2,
+            "top_long_short_position_ratio_change_5m": 0.01,
+            "taker_buy_sell_ratio": 1.05,
+            "taker_buy_sell_ratio_change_5m": 0.04,
+        }
+
     async def historical_klines(self, symbol, interval, start, end, *, max_candles=100_000):
         return []
 
@@ -735,6 +747,10 @@ def test_data_pack_uses_only_kansoku_timeframes_and_frozen_raw_bars() -> None:
     assert "news" in result["unavailable_inputs"]
     assert "options_levels" not in result["unavailable_inputs"]
     assert result["options_context"]["source"] == "fixture"
+    positioning = result["derivatives"]["positioning_statistics_5m"]
+    assert positioning["availability"] == "complete"
+    assert positioning["missing_fields"] == []
+    assert positioning["values"]["open_interest_change_5m"] == 0.02
 
 
 class StaticBuilder:
@@ -864,7 +880,7 @@ def test_analysis_service_persists_frozen_input_and_validated_result(tmp_path: P
     assert row["result"]["reward_risk"]["target1"] == 1
     assert row["input"] == {"data_version": "test", "symbol": "BTCUSDT"}
     assert row["usage"]["total_tokens"] == 30
-    assert row["prompt_version"] == "market-analysis-v3"
+    assert row["prompt_version"] == "market-analysis-v4"
     assert row["result"]["summary"] == "15 分钟结构偏强，但仍需 1 小时周期确认。"
 
 

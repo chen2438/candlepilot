@@ -24,7 +24,7 @@ from candlepilot.domain.models import (
     ProviderHealth,
     TradeIntent,
 )
-from candlepilot.market.features import EXPERIMENTAL_POSITIONING_FEATURES
+from candlepilot.market.features import DERIVATIVES_POSITIONING_FEATURES
 from candlepilot.providers.base import (
     DecisionProvider,
     ProviderCapabilities,
@@ -238,11 +238,8 @@ def _decision_payload(
     snapshot: MarketSnapshot, portfolio: PortfolioState
 ) -> dict[str, Any]:
     market = snapshot.model_dump(mode="json")
-    market["features"] = {
-        name: value
-        for name, value in market["features"].items()
-        if name not in EXPERIMENTAL_POSITIONING_FEATURES
-    }
+    market["derivatives_context"] = _derivatives_context(market["features"])
+    market["features"] = _without_derivatives_context(market["features"])
     return {
         "market": market,
         "portfolio": portfolio.model_dump(mode="json"),
@@ -255,15 +252,45 @@ def _batch_decision_payload(
     markets = []
     for snapshot in snapshots:
         market = snapshot.model_dump(mode="json")
-        market["features"] = {
-            name: value
-            for name, value in market["features"].items()
-            if name not in EXPERIMENTAL_POSITIONING_FEATURES
-        }
+        market["derivatives_context"] = _derivatives_context(market["features"])
+        market["features"] = _without_derivatives_context(market["features"])
         markets.append(market)
     return {
         "markets": markets,
         "portfolio": portfolio.model_dump(mode="json"),
+    }
+
+
+def _without_derivatives_context(features: dict[str, float]) -> dict[str, float]:
+    return {
+        name: value
+        for name, value in features.items()
+        if name not in DERIVATIVES_POSITIONING_FEATURES
+    }
+
+
+def _derivatives_context(features: dict[str, float]) -> dict[str, Any]:
+    values = {
+        name: features[name]
+        for name in DERIVATIVES_POSITIONING_FEATURES
+        if name in features
+    }
+    missing = [
+        name for name in DERIVATIVES_POSITIONING_FEATURES if name not in features
+    ]
+    return {
+        "source": "Binance public Futures Data API",
+        "interval": "5m closed statistics",
+        "availability": (
+            "complete" if not missing else "partial" if values else "unavailable"
+        ),
+        "values": values,
+        "missing_fields": missing,
+        "interpretation_limits": [
+            "ratios describe account or position crowding, not trader identity",
+            "open interest is unsigned and does not identify long or short direction",
+            "taker buy/sell ratio is supporting flow evidence, not a standalone signal",
+        ],
     }
 
 
@@ -344,6 +371,12 @@ def _decision_prompt(
         "that range (0 at the low, 1 at the high); participation is quote_volume_ratio, book_imbalance and "
         "recent_trade_imbalance, the last of which covers only recent_trade_seconds of tape -- "
         "treat a short window as noise rather than flow. "
+        "derivatives_context contains optional closed 5m Binance positioning statistics with "
+        "an explicit availability state and missing-field list. Interpret price, OI change, "
+        "account/position long-short ratios and taker buy/sell ratio together and against the "
+        "multi-timeframe price structure. Do not apply universal ratio thresholds, infer trader "
+        "identity, treat unsigned OI as directional, or let any one field become a standalone "
+        "signal. A missing field is unknown rather than neutral or zero. "
         "ema20_distance_atr is how far price has run from its own 20-bar mean in units of its "
         "own ATR, signed. This -- and only this -- is what extended means: about 2.5 or beyond "
         "in the direction you would trade is chasing a move that has already travelled. Do not "

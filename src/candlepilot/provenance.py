@@ -16,8 +16,8 @@ from typing import Any
 from pydantic import BaseModel
 
 
-DECISION_PROMPT_VERSION = "trade-intent-v17"
-MARKET_SNAPSHOT_SCHEMA_VERSION = "market-snapshot-v4"
+DECISION_PROMPT_VERSION = "trade-intent-v18"
+MARKET_SNAPSHOT_SCHEMA_VERSION = "market-snapshot-v5"
 BACKTEST_DATA_SCHEMA_VERSION = "backtest-candles-v2"
 GIT_COMMIT_PATTERN = re.compile(r"^[0-9a-f]{7,40}$")
 

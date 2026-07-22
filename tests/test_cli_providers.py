@@ -60,7 +60,7 @@ def _portfolio() -> PortfolioState:
     return PortfolioState(equity="10000", available_balance="8000")
 
 
-def test_standard_provider_payload_hides_unvalidated_positioning_features() -> None:
+def test_standard_provider_payload_exposes_positioning_as_context() -> None:
     market = _market().model_copy(
         update={
             "features": {
@@ -74,6 +74,14 @@ def test_standard_provider_payload_hides_unvalidated_positioning_features() -> N
     payload = cli_module._decision_payload(market, _portfolio())
 
     assert payload["market"]["features"] == {"5m_ema_spread": 0.1}
+    context = payload["market"]["derivatives_context"]
+    assert context["availability"] == "partial"
+    assert context["values"] == {
+        "open_interest_change_5m": 0.03,
+        "global_long_short_ratio": 1.2,
+    }
+    assert "taker_buy_sell_ratio" in context["missing_fields"]
+    assert context["interpretation_limits"]
 
 
 def test_sensitive_environment_is_removed() -> None:
@@ -329,15 +337,16 @@ def test_codex_provider_parses_schema_output(tmp_path: Path) -> None:
     assert result.usage["input_tokens"] == 1200
     assert result.usage["cached_input_tokens"] == 800
     assert result.usage["total_tokens"] == 1250
-    assert result.prompt_version == "trade-intent-v17"
+    assert result.prompt_version == "trade-intent-v18"
     assert result.data_version is not None
-    assert result.data_version.startswith("market-snapshot-v4:sha256:")
+    assert result.data_version.startswith("market-snapshot-v5:sha256:")
     assert result.input_payload is not None
     assert result.input_payload["market"]["symbol"] == "BTCUSDT"
     assert result.prompt is not None and '"symbol":"BTCUSDT"' in result.prompt
     assert "total initial margin for any single symbol to 10% of equity" in result.prompt
     assert "risk 0.01" in result.prompt
     assert "aggregate open stop risk to 4% of equity" in result.prompt
+    assert "Do not apply universal ratio thresholds" in result.prompt
     assert "use exactly the existing position's leverage" in result.prompt
     assert "breakout_hold_above_20" in result.prompt
     assert "stop_loss_cooldown_until" in result.prompt
@@ -418,8 +427,8 @@ def test_claude_validation_failure_preserves_complete_audit_context(
     assert error.duration.total_seconds() > 0
     assert error.raw_output == envelope + "\n"
     assert error.usage["input_tokens"] == 25
-    assert error.prompt_version == "trade-intent-v17"
-    assert error.data_version.startswith("market-snapshot-v4:sha256:")
+    assert error.prompt_version == "trade-intent-v18"
+    assert error.data_version.startswith("market-snapshot-v5:sha256:")
     assert error.input_payload["market"]["symbol"] == "BTCUSDT"
     assert '"portfolio"' in error.prompt
 
