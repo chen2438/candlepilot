@@ -180,7 +180,7 @@ def test_assisted_analysis_maps_t1_to_fixed_one_times_intent_and_keeps_t2_shadow
     assert result.intent.leverage == 1
     assert result.intent.take_profit == Decimal("104")
     assert result.usage["shadow_target2"] == 108
-    assert result.prompt_version == "analysis-assisted-decision-v2"
+    assert result.prompt_version == "analysis-assisted-decision-v3"
 
 
 def test_assisted_schema_is_strict_and_prompt_declares_shadow_boundaries() -> None:
@@ -205,6 +205,7 @@ def test_assisted_schema_is_strict_and_prompt_declares_shadow_boundaries() -> No
     assert "T2 is retained only for shadow outcome comparison" in prompt
     assert "fixes assisted decisions at 1x leverage" in prompt
     assert "use 45, 30 and 25, never 0.45, 0.30 and 0.25" in prompt
+    assert "range_plan must contain anchor.price" in prompt
 
 
 def test_neutral_analysis_requires_range_containing_anchor() -> None:
@@ -212,9 +213,21 @@ def test_neutral_analysis_requires_range_containing_anchor() -> None:
     payload["entry_plan"] = None
     payload["range_plan"] = {"low": 98, "high": 102, "tactic": "等待区间边缘确认"}
     assert MarketAnalysis.model_validate(payload).direction == "neutral"
-    payload["range_plan"] = {"low": 90, "high": 95, "tactic": "无效区间"}
+    payload["range_plan"] = {"low": 90, "high": 94, "tactic": "无效区间"}
     with pytest.raises(ValidationError, match="contain the anchor"):
         MarketAnalysis.model_validate(payload)
+
+
+def test_neutral_analysis_expands_nearby_range_boundary_to_anchor() -> None:
+    payload = _analysis_payload("neutral")
+    payload["entry_plan"] = None
+    payload["range_plan"] = {"low": 98, "high": 99, "tactic": "等待区间边缘确认"}
+
+    analysis = MarketAnalysis.model_validate(payload)
+
+    assert analysis.range_plan is not None
+    assert analysis.range_plan.low == 98
+    assert analysis.range_plan.high == 100
 
 
 def _bar(minutes: int, low: str, high: str, *, opened: str = "101") -> Kline:

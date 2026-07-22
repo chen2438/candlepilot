@@ -23,7 +23,7 @@ from candlepilot.providers.cli import ProviderError, ProviderInvocationError
 from candlepilot.storage.database import MarketAnalysisRepository
 
 
-PROMPT_VERSION = "analysis-assisted-decision-v2"
+PROMPT_VERSION = "analysis-assisted-decision-v3"
 MINIMUM_CONFIDENCE = 0.55
 
 
@@ -105,7 +105,7 @@ Use only DATA_PACKS below. Do not use tools, files, network access, remembered p
 For every data pack, return exactly one decision in the same order and with the same symbol.
 1. Reproduce the independent market-study method: 1h trend context, 15m structure and anchor, 5m timing; use the supplied Kansoku-style price, volume, derivatives, benchmark, account and previous-analysis data.
 2. Produce the complete MarketAnalysis contract. User-facing natural language must be Simplified Chinese. Keep JSON keys, enum values, symbols, timeframes, numbers and abbreviations unchanged. Scenario probability values are percentage points from 0 to 100 and must total about 100; use 45, 30 and 25, never 0.45, 0.30 and 0.25.
-3. Neutral analysis has no entry plan and all execution hints except confidence are null.
+3. Neutral analysis has no entry plan and all execution hints except confidence are null. Its numeric range_plan must contain anchor.price; use the current structure surrounding the anchor, not a detached future target range.
 4. Directional analysis has explicit entry, structure-based stop, T1 and T2. T1 must be at least 1R. The application, not you, decides whether it passes the current hard minimum reward/risk.
 5. T1 is the fixed formal take-profit field. T2 is retained only for shadow outcome comparison and must never replace T1.
 6. Use MARKET only when the entry trigger is already confirmed by completed supplied 5m bars. Otherwise use LIMIT and set a 5-900 second TTL. Never infer an intrabar confirmation from an unfinished candle.

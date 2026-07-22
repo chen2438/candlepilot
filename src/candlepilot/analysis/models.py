@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from math import isfinite
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -43,8 +44,12 @@ class AnalysisScenario(AnalysisModel):
 
 
 class RangePlan(AnalysisModel):
-    low: Price
-    high: Price
+    low: Price = Field(
+        description="For neutral analysis, the range must contain the anchor price."
+    )
+    high: Price = Field(
+        description="For neutral analysis, the range must contain the anchor price."
+    )
     tactic: str = Field(min_length=1, max_length=800, description=CHINESE_TEXT)
 
     @model_validator(mode="after")
@@ -81,6 +86,36 @@ class MarketAnalysis(AnalysisModel):
         max_length=8,
         description=f"Every item: {CHINESE_TEXT}",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def include_nearby_anchor_in_neutral_range(cls, value: Any) -> Any:
+        """Repair a nearby neutral-range boundary without accepting detached ranges."""
+
+        if not isinstance(value, dict) or value.get("direction") != "neutral":
+            return value
+        anchor = value.get("anchor")
+        range_plan = value.get("range_plan")
+        if not isinstance(anchor, dict) or not isinstance(range_plan, dict):
+            return value
+        numbers = (anchor.get("price"), range_plan.get("low"), range_plan.get("high"))
+        if any(isinstance(item, bool) or not isinstance(item, (int, float)) for item in numbers):
+            return value
+        anchor_price, low, high = (float(item) for item in numbers)
+        if not all(isfinite(item) and item > 0 for item in (anchor_price, low, high)):
+            return value
+        width = high - low
+        if width <= 0 or low <= anchor_price <= high:
+            return value
+        distance = low - anchor_price if anchor_price < low else anchor_price - high
+        if distance > width:
+            return value
+        normalized_range = {
+            **range_plan,
+            "low": min(low, anchor_price),
+            "high": max(high, anchor_price),
+        }
+        return {**value, "range_plan": normalized_range}
 
     @field_validator("scenarios", mode="before")
     @classmethod
