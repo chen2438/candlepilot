@@ -19,7 +19,7 @@ from candlepilot.domain.models import (
     TradeIntent,
 )
 from candlepilot.market.scanner import MarketCandidateInput
-from candlepilot.providers.base import DecisionProvider, ProviderResult
+from candlepilot.providers.base import DecisionProvider, ProviderCapabilities, ProviderResult
 from candlepilot.providers.cli import ProviderError, ProviderInvocationError
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.risk.engine import RiskEvaluation, SymbolRules
@@ -261,6 +261,61 @@ def test_analysis_assisted_shadow_runs_hard_risk_without_submitting_order(
         engine.select_provider_chain(["fake-auth"])
         engine.configure_analysis_decision_bridge(ShadowBridge())  # type: ignore[arg-type]
         engine.select_analysis_decision_mode("shadow")
+        await engine.start()
+        outcome = await engine.evaluate(
+            MarketSnapshot(
+                symbol="BTCUSDT",
+                cadence="5m",
+                timestamp=datetime.now(UTC),
+                mark_price="100",
+                bid="99.9",
+                ask="100.1",
+                quote_volume_24h="1000000",
+            ),
+            PortfolioState(equity="10000", available_balance="8000"),
+            SymbolRules(
+                Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")
+            ),
+        )
+        await engine.stop()
+        await database.close()
+        return outcome, broker.orders
+
+    outcome, orders = asyncio.run(scenario())
+    assert outcome.risk.accepted
+    assert outcome.risk.shadow_only
+    assert outcome.execution is None
+    assert orders == []
+
+
+def test_experimental_provider_capability_forces_live_shadow_only(
+    tmp_path: Path,
+) -> None:
+    class ExperimentalProvider(FakeProvider):
+        name = "local-experiment-shadow"
+
+        @property
+        def capabilities(self) -> ProviderCapabilities:
+            return ProviderCapabilities(
+                external_inference=False,
+                configurable_model=False,
+                requires_backtest_probe=False,
+                retryable=False,
+                live_shadow_only=True,
+            )
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'provider-shadow.db'}")
+        await database.initialize()
+        broker = FakeTestnetBroker()
+        provider = ExperimentalProvider()
+        engine = TradingEngine(
+            testnet_broker=broker,  # type: ignore[arg-type]
+            providers=ProviderRegistry([provider]),
+            audit=AuditRepository(database.sessions),
+            market=FakeMarket(),  # type: ignore[arg-type]
+        )
+        engine.select_provider_chain([provider.name])
         await engine.start()
         outcome = await engine.evaluate(
             MarketSnapshot(

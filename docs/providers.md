@@ -19,6 +19,18 @@
   v2 只收紧双周期 5m 动量确认：现有正式运行回放的小样本中，四笔短长动量分歧的入场全部亏损；
   其他成交量、趋势分数、延伸、止损与止盈参数保持 v1，不把同一小样本内的额外筛选直接固化。
 
+- **本地实验 Provider**：`local-structure-shadow` / `trend-structure-v3`、
+  `local-flow-shadow` / `trend-flow-v3` 与 `local-structure-flow-shadow` /
+  `trend-structure-flow-v3` 都先复用未改动的 `trend-v2` 趋势入口，再分别增加结构、资金流或两者。
+  结构版只接受连续两根 5m 突破保持，或距 EMA20 顺向 0–0.5 ATR 且最新 K 线收位不弱于
+  0.65（空头不高于 0.35）的回踩收复；止损放在区间/EMA20 失效位外 0.25 个 5m ATR，止盈选择
+  最近的 15m/30m/1h/4h 区间、确认摆动点或日线结构位，最近目标不大于 1.15R 时 HOLD，找不到
+  结构目标才退回 1.5R。资金流版要求 OI、全市场多空比、大户持仓多空比与 taker 比均存在，
+  按 OI 变化与主动买卖归类为新增多/空、空头回补、长仓清算或混合；只有 OI 不下降且 taker 明确
+  反向时拒绝，不把多空比身份叙事或固定拥挤阈值当作交易规则。三个 Provider 的 usage 会记录
+  `strategy_variant` 与 `live_shadow_only=true`；它们可用于回测，但正式运行始终只经过风控和审计，
+  永不提交 Broker。标准 `local-rule` 的版本、输入与执行资格不变。
+
 - **Codex Auth**：分别检测当前 ChatGPT App 的内置二进制
   （`/Applications/ChatGPT.app/...`）和 `PATH`/`~/.local/bin` 中的独立 `codex` CLI；默认优先
   ChatGPT App，但前端可在所有已安装来源之间明确切换，后续健康检查、测试和正式推理都只调用

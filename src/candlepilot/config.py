@@ -27,6 +27,9 @@ ENV_FILE_VARIABLE = "CANDLEPILOT_ENV_FILE"
 DOTENV_INJECTED_KEYS: set[str] = set()
 DEFAULT_PROVIDER_ALIASES = {
     "local": "local-rule",
+    "local-structure": "local-structure-shadow",
+    "local-flow": "local-flow-shadow",
+    "local-structure-flow": "local-structure-flow-shadow",
     "codex": "codex-auth",
     "claude-code": "claude-code-auth",
 }

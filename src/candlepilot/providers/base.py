@@ -48,6 +48,7 @@ class ProviderCapabilities:
     requires_backtest_probe: bool = True
     retryable: bool = True
     estimated_seconds_per_decision: float | None = None
+    live_shadow_only: bool = False
 
 
 class DecisionProvider(ABC):

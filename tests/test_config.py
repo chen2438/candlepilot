@@ -217,6 +217,24 @@ def test_local_rule_is_a_first_class_provider_name(monkeypatch) -> None:
     assert settings.provider_chain == ("local-rule",)
 
 
+@pytest.mark.parametrize(
+    ("alias", "registered_name"),
+    [
+        ("local-structure", "local-structure-shadow"),
+        ("local-flow", "local-flow-shadow"),
+        ("local-structure-flow", "local-structure-flow-shadow"),
+    ],
+)
+def test_local_shadow_variants_are_first_class_provider_names(
+    monkeypatch, alias: str, registered_name: str
+) -> None:
+    monkeypatch.setenv("CANDLEPILOT_PROVIDER_CHAIN", alias)
+
+    settings = Settings.from_env()
+
+    assert settings.provider_chain == (registered_name,)
+
+
 def test_run_limits_default_to_unbounded_and_read_env(monkeypatch) -> None:
     monkeypatch.delenv("CANDLEPILOT_MAX_RUN_SECONDS", raising=False)
     monkeypatch.delenv("CANDLEPILOT_MAX_RUN_COST_USD", raising=False)

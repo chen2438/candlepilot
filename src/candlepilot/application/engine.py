@@ -1189,7 +1189,10 @@ class TradingEngine:
                 decision=RiskDecision(accepted=False, reason=reason),
                 order=None,
             )
-        if self.analysis_decision_mode == "shadow":
+        if (
+            self.analysis_decision_mode == "shadow"
+            or self.providers.get(result.provider).capabilities.live_shadow_only
+        ):
             evaluation = RiskEvaluation(
                 decision=evaluation.decision.model_copy(
                     update={"shadow_only": True}
@@ -1483,7 +1486,10 @@ class TradingEngine:
                 decision=RiskDecision(accepted=False, reason=reason),
                 order=None,
             )
-        if self.analysis_decision_mode == "shadow":
+        if (
+            self.analysis_decision_mode == "shadow"
+            or self.providers.get(result.provider).capabilities.live_shadow_only
+        ):
             evaluation = RiskEvaluation(
                 decision=evaluation.decision.model_copy(
                     update={"shadow_only": True}

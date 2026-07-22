@@ -444,6 +444,9 @@ function customProviderId(name: string): string | null {
 
 function providerLabel(name: string): string {
   if (name === "local-rule") return "本地规则";
+  if (name === "local-structure-shadow") return "结构确认 · SHADOW";
+  if (name === "local-flow-shadow") return "资金流 · SHADOW";
+  if (name === "local-structure-flow-shadow") return "结构 + 资金流 · SHADOW";
   if (name === "codex-auth") return "Codex Auth";
   if (name === "claude-code-auth") return "Claude Code Auth";
   const id = customProviderId(name);
@@ -595,7 +598,7 @@ function modelConfigSummary(model: string | null, effort: string | null): string
 }
 
 function providerIcon(name: string): string {
-  if (name === "local-rule") return "FX";
+  if (name.startsWith("local-")) return "FX";
   if (name === "codex-auth") return "CX";
   if (name === "claude-code-auth") return "CC";
   if (customProviderId(name)) return "API";
@@ -1742,7 +1745,9 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
                   {!configurable ? <div className="provider-card-config local-provider-config">
                     <div>
                       <strong>{provider.model}</strong>
-                      <small>只使用现有多周期 K 线特征 · 本地确定性计算 · 0 Token / 0 成本</small>
+                      <small>{provider.capabilities.live_shadow_only
+                        ? "实验策略 · 正式运行只记录不下单 · 回测可模拟 · 0 Token / 0 成本"
+                        : "只使用现有多周期 K 线特征 · 本地确定性计算 · 0 Token / 0 成本"}</small>
                     </div>
                     <button className="text-button" disabled={status.running || busy !== null}
                       onClick={() => testProvider(provider.provider)}>

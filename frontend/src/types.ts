@@ -445,6 +445,7 @@ export interface ProviderHealth {
     requires_backtest_probe: boolean;
     retryable: boolean;
     estimated_seconds_per_decision: number | null;
+    live_shadow_only?: boolean;
   };
 }
 

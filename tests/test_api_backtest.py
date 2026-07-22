@@ -280,17 +280,30 @@ def test_backtest_requires_a_probe_for_the_current_settings(tmp_path: Path) -> N
     asyncio.run(database.close())
 
 
-def test_local_rule_backtest_estimates_and_starts_without_a_probe(tmp_path: Path) -> None:
+def test_local_rule_variants_backtest_without_a_probe(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'bt-local-rule.db'}")
     market = BacktestMarket()
     engine = TradingEngine(
         testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
-        providers=ProviderRegistry([LocalRuleProvider()]),
+        providers=ProviderRegistry(
+            [
+                LocalRuleProvider(),
+                LocalRuleProvider("structure"),
+                LocalRuleProvider("flow"),
+                LocalRuleProvider("structure-flow"),
+            ]
+        ),
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
     )
     app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
-    payload = {"symbols": ["BTCUSDT"], "providers": ["local-rule"], **_window()}
+    provider_names = [
+        "local-rule",
+        "local-structure-shadow",
+        "local-flow-shadow",
+        "local-structure-flow-shadow",
+    ]
+    payload = {"symbols": ["BTCUSDT"], "providers": provider_names, **_window()}
 
     with TestClient(app) as client:
         probe = client.post("/api/backtests/probe", json=payload)
@@ -301,15 +314,18 @@ def test_local_rule_backtest_estimates_and_starts_without_a_probe(tmp_path: Path
         assert estimate_response.status_code == 200
         estimate_body = estimate_response.json()
         assert estimate_body["latency_source"] == "local_deterministic"
-        assert estimate_body["slowest_provider"] == "local-rule"
+        assert estimate_body["slowest_provider"] in provider_names
 
         created = client.post("/api/backtests", json=payload)
         assert created.status_code == 202
         run = _await_run(client)
         assert run["status"] == "completed"
         assert run["spec"]["timeout_source"] == "not_applicable"
-        assert run["models"][0]["usage"]["total_tokens"] == 0
-        assert run["models"][0]["usage"]["equivalent_cost_usd"] == 0
+        assert {model["provider"] for model in run["models"]} == set(provider_names)
+        assert all(model["usage"]["total_tokens"] == 0 for model in run["models"])
+        assert all(
+            model["usage"]["equivalent_cost_usd"] == 0 for model in run["models"]
+        )
     asyncio.run(database.close())
 
 
