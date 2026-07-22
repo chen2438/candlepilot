@@ -47,6 +47,9 @@
   可接收上述强度，但显式启停思考仍由端点默认行为或厂商侧配置决定。
   外部地址必须 HTTPS，仅 `localhost`/`127.0.0.1`/`::1` 可用 HTTP；禁止 URL 内嵌凭据、query、
   fragment 和 HTTP 重定向。该 Provider 不主动探测 `/models`，连通性由前端「测试」验证。
+- 统一交易 Prompt 明确说明 `PortfolioState.stop_loss_cooldown_until` 是最近 90 分钟发生手续费后
+  净亏保护退出的兼容字段，而不再误写成仅包含固定止损；模型对映射内标的必须保持 `HOLD`，硬风控
+  仍会独立复核。该语义变更对应 Prompt 版本 `trade-intent-v16`。
 - **隔离与安全**：LLM 子进程运行在独立空临时目录，环境变量白名单
   （含 `USER`/`LOGNAME` 以支持 macOS 钥匙串读取 Claude 登录态），移除所有币安/API Key
   变量；禁用工具、MCP、网络；单 Provider 并发 1、统一取消。外部 Provider 的代码默认超时为

@@ -525,13 +525,15 @@ class TradingEngine:
             levels,
             realized_24h,
             pending_entry_symbols,
-            recent_stop_losses,
+            recent_loss_exits,
         ) = await asyncio.gather(
             account_loader(),
             broker.protective_levels(),
             income_24h,
             pending_entries,
-            self.audit.recent_stop_loss_times(now - STOP_LOSS_REENTRY_COOLDOWN),
+            self.audit.recent_loss_protection_exit_times(
+                now - STOP_LOSS_REENTRY_COOLDOWN
+            ),
         )
         raw_positions = {
             str(item["symbol"]): item
@@ -593,7 +595,7 @@ class TradingEngine:
             ),
             stop_loss_cooldown_until={
                 symbol: stopped_at + STOP_LOSS_REENTRY_COOLDOWN
-                for symbol, stopped_at in recent_stop_losses.items()
+                for symbol, stopped_at in recent_loss_exits.items()
                 if stopped_at + STOP_LOSS_REENTRY_COOLDOWN > now
             },
         )

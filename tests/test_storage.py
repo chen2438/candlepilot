@@ -83,7 +83,9 @@ def test_inference_audit_round_trip(tmp_path: Path) -> None:
     assert detail["usage"]["input_tokens"] == 10
 
 
-def test_recent_stop_loss_times_returns_latest_candlepilot_fill(tmp_path: Path) -> None:
+def test_recent_loss_exit_times_include_only_net_loss_protection_fills(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> dict[str, datetime]:
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'stops.db'}")
         await database.initialize()
@@ -111,13 +113,37 @@ def test_recent_stop_loss_times_returns_latest_candlepilot_fill(tmp_path: Path) 
                     },
                 )
             )
-        result = await repository.recent_stop_loss_times(now)
+        for minutes, client_id, symbol, realized, commission in (
+            (4, "cp-target-tp", "SOLUSDT", "-1", "0.1"),
+            (5, "cp-win-tp", "XRPUSDT", "2", "0.1"),
+            (6, "cp-trailed-sl", "ADAUSDT", "1", "0.1"),
+        ):
+            event_time = now + timedelta(minutes=minutes)
+            await repository.record_user_event(
+                UserStreamEvent(
+                    "ORDER_TRADE_UPDATE",
+                    event_time,
+                    event_time,
+                    symbol,
+                    {
+                        "o": {
+                            "c": client_id,
+                            "s": symbol,
+                            "x": "TRADE",
+                            "X": "FILLED",
+                            "rp": realized,
+                            "n": commission,
+                        }
+                    },
+                )
+            )
+        result = await repository.recent_loss_protection_exit_times(now)
         await database.close()
         return result
 
     result = asyncio.run(scenario())
 
-    assert set(result) == {"BTCUSDT"}
+    assert set(result) == {"BTCUSDT", "SOLUSDT"}
     assert result["BTCUSDT"].tzinfo is not None
 
 

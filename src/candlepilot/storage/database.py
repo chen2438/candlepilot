@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     and_,
+    cast,
     delete,
     event,
     func,
@@ -1193,8 +1194,19 @@ class AuditRepository:
             for row in rows
         ]
 
-    async def recent_stop_loss_times(self, since: datetime) -> dict[str, datetime]:
-        """Return the latest filled CandlePilot stop-loss time per symbol."""
+    async def recent_loss_protection_exit_times(
+        self, since: datetime
+    ) -> dict[str, datetime]:
+        """Return latest net-loss stop/target protection exits per symbol.
+
+        Older stop events may not contain realized PnL. Preserve their prior
+        fail-safe cooldown, while take-profit events require explicit net loss.
+        """
+
+        client_id = func.json_extract(UserStreamEventRow.payload_json, "$.o.c")
+        realized = func.json_extract(UserStreamEventRow.payload_json, "$.o.rp")
+        commission = func.json_extract(UserStreamEventRow.payload_json, "$.o.n")
+        net_loss = cast(realized, Float) - cast(func.coalesce(commission, 0), Float) < 0
 
         query = (
             select(UserStreamEventRow.symbol, UserStreamEventRow.event_time)
@@ -1204,9 +1216,11 @@ class AuditRepository:
                 UserStreamEventRow.event_time >= since,
                 func.json_extract(UserStreamEventRow.payload_json, "$.o.X") == "FILLED",
                 func.json_extract(UserStreamEventRow.payload_json, "$.o.x") == "TRADE",
-                func.json_extract(UserStreamEventRow.payload_json, "$.o.c").like(
-                    "cp-%-sl"
-                ),
+                (
+                    client_id.like("cp-%-sl")
+                    & (realized.is_(None) | net_loss)
+                )
+                | (client_id.like("cp-%-tp") & realized.is_not(None) & net_loss),
             )
             .order_by(UserStreamEventRow.event_time)
         )
@@ -1217,6 +1231,11 @@ class AuditRepository:
             for symbol, event_time in rows
             if symbol is not None
         }
+
+    async def recent_stop_loss_times(self, since: datetime) -> dict[str, datetime]:
+        """Backward-compatible alias for loss-making protection exits."""
+
+        return await self.recent_loss_protection_exit_times(since)
 
     async def recent_trade_fills(self, limit: int = 100) -> list[dict[str, Any]]:
         """Return one row per completed exchange trade, including bracket exits.

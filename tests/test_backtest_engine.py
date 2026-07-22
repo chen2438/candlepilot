@@ -92,6 +92,23 @@ def test_stop_loss_adds_and_expires_reentry_cooldown_in_portfolio() -> None:
     assert "BTCUSDT" not in expired.stop_loss_cooldown_until
 
 
+def test_fee_induced_take_profit_loss_adds_reentry_cooldown() -> None:
+    exchange = SimulatedExchange(
+        BacktestConfig(slippage_fraction=Decimal("0"), fee_rate=Decimal("0.1"))
+    )
+    order = _order(take="100.1")
+    exchange.execute(order, _candle(0), leverage=1)
+    exited_at = _candle(1, high=101).timestamp
+
+    exchange.settle_candle("BTCUSDT", _candle(1, high=101))
+
+    assert exchange.trades[0].exit_reason == "take_profit"
+    assert exchange.trades[0].net_pnl < 0
+    assert exchange.portfolio_state({}, as_of=exited_at).stop_loss_cooldown_until[
+        "BTCUSDT"
+    ] == exited_at + timedelta(minutes=90)
+
+
 def test_entries_fill_on_the_next_candle_not_the_decided_one() -> None:
     """The model reasoned on a closed bar, so filling inside it reads the future."""
 

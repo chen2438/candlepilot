@@ -426,22 +426,21 @@ class SimulatedExchange:
         # carried position therefore credits its lifetime PnL, while the trade
         # result only reports movement inside the replay window.
         self.cash += lifetime_gross - funding
-        self.trades.append(
-            BacktestTrade(
-                symbol=symbol,
-                side=position.side,
-                quantity=quantity,
-                entry_time=position.entry_time,
-                entry_price=position.entry_price,
-                exit_time=when,
-                exit_price=exit_price,
-                net_pnl=gross - entry_fees - fee - funding,
-                fees=entry_fees + fee,
-                funding=funding,
-                exit_reason=reason,
-            )
+        trade = BacktestTrade(
+            symbol=symbol,
+            side=position.side,
+            quantity=quantity,
+            entry_time=position.entry_time,
+            entry_price=position.entry_price,
+            exit_time=when,
+            exit_price=exit_price,
+            net_pnl=gross - entry_fees - fee - funding,
+            fees=entry_fees + fee,
+            funding=funding,
+            exit_reason=reason,
         )
-        if reason == "stop_loss":
+        self.trades.append(trade)
+        if reason in {"stop_loss", "take_profit"} and trade.net_pnl < 0:
             self._stop_loss_cooldown_until[symbol] = (
                 when + STOP_LOSS_REENTRY_COOLDOWN
             )
