@@ -137,6 +137,9 @@ reduce-only 成交按关联决策区分模型平仓/减仓，无法关联的 red
 目标价、首次观察价、模拟成交价和未扣费价格毛利。`GET /api/status` 的
 `scheduler.partial_take_profit` 返回两组固定参数与当前活动生命周期计数；该实验没有实盘开关，
 不会修改真实订单。
+`GET /api/live-runs/performance` 对每次正式运行返回 `gross_price_pnl`、`unrealized_pnl`、
+`commissions`、`commission_complete`、`funding_pnl`、`funding_complete`、`net_trading_pnl` 与
+兼容字段 `total_pnl`；无法可靠归属的资金费返回未知，不计入交易净盈亏。
 
 **测试网**：`GET /api/testnet/events`、`GET /api/testnet/account-status`。
 

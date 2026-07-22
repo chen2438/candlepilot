@@ -426,7 +426,13 @@ export interface LiveRunPerformance {
   live_run_id: number;
   total_pnl: string | null;
   realized_pnl: string;
+  gross_price_pnl: string;
   unrealized_pnl: string;
+  commissions: string;
+  commission_complete: boolean;
+  funding_pnl: string | null;
+  funding_complete: boolean;
+  net_trading_pnl: string;
   wins: number;
   closed_trades: number;
   open_position_count?: number;

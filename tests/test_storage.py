@@ -561,6 +561,8 @@ def test_trade_fills_include_protective_and_manual_exits_without_duplicate_entri
                         "ap": "0.11188",
                         "R": False,
                         "rp": "0",
+                        "n": "0.01",
+                        "N": "USDT",
                     }
                 },
             ),
@@ -580,6 +582,8 @@ def test_trade_fills_include_protective_and_manual_exits_without_duplicate_entri
                         "ap": "0.10716",
                         "R": True,
                         "rp": "-1.33576",
+                        "n": "0.02",
+                        "N": "USDT",
                     }
                 },
             ),
@@ -599,6 +603,8 @@ def test_trade_fills_include_protective_and_manual_exits_without_duplicate_entri
                         "ap": "0.10948",
                         "R": False,
                         "rp": "0",
+                        "n": "0.01",
+                        "N": "USDT",
                     }
                 },
             ),
@@ -618,6 +624,8 @@ def test_trade_fills_include_protective_and_manual_exits_without_duplicate_entri
                         "ap": "0.11000",
                         "R": True,
                         "rp": "0.15756",
+                        "n": "0.02",
+                        "N": "USDT",
                     }
                 },
             ),
@@ -668,8 +676,14 @@ def test_trade_fills_include_protective_and_manual_exits_without_duplicate_entri
     assert performance[0]["wins"] == 1
     assert performance[0]["win_rate"] == "0.5"
     assert Decimal(performance[0]["realized_pnl"]) == Decimal("-1.17820")
+    assert Decimal(performance[0]["gross_price_pnl"]) == Decimal("-1.17820")
     assert Decimal(performance[0]["unrealized_pnl"]) == 0
-    assert Decimal(performance[0]["total_pnl"]) == Decimal("-1.17820")
+    assert Decimal(performance[0]["commissions"]) == Decimal("0.06")
+    assert performance[0]["commission_complete"] is True
+    assert performance[0]["funding_pnl"] is None
+    assert performance[0]["funding_complete"] is False
+    assert Decimal(performance[0]["net_trading_pnl"]) == Decimal("-1.23820")
+    assert Decimal(performance[0]["total_pnl"]) == Decimal("-1.23820")
 
 
 def test_trade_fills_deduplicate_live_and_rest_reconciliation(tmp_path: Path) -> None:

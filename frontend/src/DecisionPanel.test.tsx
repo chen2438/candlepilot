@@ -607,9 +607,15 @@ describe("DecisionPanel", () => {
         decisions={[runningDecision, stoppedDecision]}
         liveRunPerformance={[{
           live_run_id: 2,
-          total_pnl: "12.5",
+          total_pnl: "12.1",
           realized_pnl: "10",
+          gross_price_pnl: "10",
           unrealized_pnl: "2.5",
+          commissions: "0.4",
+          commission_complete: true,
+          funding_pnl: null,
+          funding_complete: false,
+          net_trading_pnl: "12.1",
           wins: 2,
           closed_trades: 3,
           open_position_count: 2,
@@ -631,7 +637,9 @@ describe("DecisionPanel", () => {
     expect(runningGroup?.open).toBe(true);
     expect(stoppedGroup?.open).toBe(false);
     expect(screen.getAllByText(/1 条决策/)).toHaveLength(2);
-    expect(screen.getByText("+12.50 USDT")).toBeTruthy();
+    expect(screen.getByText("+12.10 USDT")).toBeTruthy();
+    expect(screen.getAllByText("交易净盈亏")).toHaveLength(2);
+    expect(screen.getByText("价格 10.00 · 未实现 2.50 · 手续费 0.40 · 资金费 未知")).toBeTruthy();
     expect(screen.getAllByText("已平仓胜率")).toHaveLength(2);
     for (const label of screen.getAllByText("已平仓胜率")) {
       expect(label.getAttribute("data-tooltip")).toContain("已完成的平仓笔数");

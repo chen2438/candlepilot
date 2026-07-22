@@ -696,6 +696,8 @@ class AuditRepository:
             order_contexts[client_order_id] = (run_id, symbol, side)
 
         realized: defaultdict[int, Decimal] = defaultdict(Decimal)
+        commissions: defaultdict[int, Decimal] = defaultdict(Decimal)
+        commission_complete: defaultdict[int, bool] = defaultdict(lambda: True)
         unrealized: defaultdict[int, Decimal] = defaultdict(Decimal)
         open_symbols: defaultdict[int, set[str]] = defaultdict(set)
         closed: Counter[int] = Counter()
@@ -723,6 +725,12 @@ class AuditRepository:
                     "remaining": quantity,
                 }
                 lots_by_symbol[symbol].append(lot)
+                commission_raw = fill.get("commission")
+                commission_asset = fill.get("commission_asset")
+                if commission_raw is None or commission_asset not in {None, "USDT"}:
+                    commission_complete[run_id] = False
+                else:
+                    commissions[run_id] += Decimal(str(commission_raw))
                 continue
 
             if fill["realized_pnl"] is None:
@@ -803,6 +811,18 @@ class AuditRepository:
                 closed[run_id] += 1
                 if allocated_pnl > 0:
                     wins[run_id] += 1
+            exit_commission_raw = fill.get("commission")
+            exit_commission_asset = fill.get("commission_asset")
+            if exit_commission_raw is None or exit_commission_asset not in {
+                None,
+                "USDT",
+            }:
+                for lot, _ in consumptions:
+                    commission_complete[lot["run_id"]] = False
+            elif quantity > 0:
+                exit_commission = Decimal(str(exit_commission_raw))
+                for lot, consumed in consumptions:
+                    commissions[lot["run_id"]] += exit_commission * consumed / quantity
 
         for symbol, position in (current_positions or {}).items():
             active_lots = [
@@ -829,14 +849,21 @@ class AuditRepository:
         for run in runs:
             realized_pnl = realized[run.id]
             unrealized_pnl = unrealized[run.id]
-            total_pnl = realized_pnl + unrealized_pnl
+            commission = commissions[run.id]
+            net_trading_pnl = realized_pnl + unrealized_pnl - commission
             closed_trades = closed[run.id]
             result.append(
                 {
                     "live_run_id": run.id,
                     "realized_pnl": str(realized_pnl),
+                    "gross_price_pnl": str(realized_pnl),
                     "unrealized_pnl": str(unrealized_pnl),
-                    "total_pnl": str(total_pnl),
+                    "commissions": str(commission),
+                    "commission_complete": commission_complete[run.id],
+                    "funding_pnl": None,
+                    "funding_complete": False,
+                    "net_trading_pnl": str(net_trading_pnl),
+                    "total_pnl": str(net_trading_pnl),
                     "wins": wins[run.id],
                     "closed_trades": closed_trades,
                     "open_position_count": len(open_symbols[run.id]),
@@ -1375,6 +1402,8 @@ class AuditRepository:
                         "purpose": purpose,
                         "reduce_only": reduce_only,
                         "realized_pnl": str(order.get("rp", "0")),
+                        "commission": str(order["n"]) if "n" in order else None,
+                        "commission_asset": order.get("N"),
                         "status": "FILLED",
                         "report": {
                             "client_order_id": client_order_id,
@@ -1409,6 +1438,8 @@ class AuditRepository:
                     "purpose": purpose,
                     "reduce_only": purpose != "entry",
                     "realized_pnl": None,
+                    "commission": None,
+                    "commission_asset": None,
                     "status": row.status,
                     "report": report,
                     "created_at": self._utc(row.created_at),

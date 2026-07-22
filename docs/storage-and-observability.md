@@ -14,6 +14,12 @@
 - 溯源：SHA-256 数据版本、显式 Prompt 版本、模型标识、CLI Provider 版本。
 - 实时风控记录可选保存止盈后重入 shadow 评估：最近止盈时间、已过秒数及会命中的 15/30/60 分钟
   候选窗口；它是审计证据，不是拒单条件。
+- 正式运行表现把交易所 `rp` 作为价格已实现毛利，按持仓 lot 归属入场与退出的 USDT 手续费，并与
+  当前未实现盈亏分列；`net_trading_pnl = gross_price_pnl + unrealized_pnl - commissions`。
+  旧事件缺手续费或手续费资产不是 USDT 时 `commission_complete=false`；资金费当前不能从账户级
+  事件可靠归属到单次运行，因此 `funding_pnl=null`、`funding_complete=false`，绝不混入
+  `total_pnl` 冒充策略收益。兼容字段 `realized_pnl` 继续返回价格已实现毛利，`total_pnl` 现在等于
+  可核对的交易净盈亏。
 - 数据库基线：历史迁移链已在历史数据清空后压缩，当前 schema v16 在 v15 上新增部分止盈影子审计表；
   v15 在 v14 上新增正式决策快照表；
   v14 在 v13 上新增移动止损审计表；

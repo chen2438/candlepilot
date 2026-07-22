@@ -3704,12 +3704,17 @@ function DecisionRunHeader({
     </span>
     <span className="decision-run-summary">
       <span className="decision-run-performance">
-        <span data-tooltip="该运行仓位的已实现盈亏加当前剩余仓位的未实现盈亏；运行停止后手动平仓也会把对应部分转为已实现并刷新总额。">
-          总盈亏<strong className={performance?.total_pnl !== null && Number(performance?.total_pnl) < 0 ? "negative" : "positive"}>
+        <span data-tooltip="价格已实现 + 未实现 - 可归属手续费；资金费无法可靠归属到单次运行时不混入总额。">
+          交易净盈亏<strong className={performance?.total_pnl !== null && Number(performance?.total_pnl) < 0 ? "negative" : "positive"}>
             {performance?.total_pnl === null || performance === undefined
               ? "—"
               : `${Number(performance.total_pnl) > 0 ? "+" : ""}${money(performance.total_pnl)} USDT`}
           </strong>
+        </span>
+        <span data-tooltip="价格毛利是交易所已实现盈亏；手续费只汇总 USDT 且可归属的入场/退出成交；资金费未知时明确显示未知。">
+          拆分<strong>{performance === undefined
+            ? "—"
+            : `价格 ${money(performance.gross_price_pnl)} · 未实现 ${money(performance.unrealized_pnl)} · 手续费 ${performance.commission_complete ? money(performance.commissions) : `${money(performance.commissions)}+未知`} · 资金费 ${performance.funding_complete && performance.funding_pnl !== null ? money(performance.funding_pnl) : "未知"}`}</strong>
         </span>
         <span data-tooltip="盈利平仓笔数除以该运行已完成的平仓笔数；运行停止后的手动平仓仍按仓位归属计入，没有平仓时显示 —。">
           已平仓胜率<strong>{performance?.win_rate === null || performance === undefined
