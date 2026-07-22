@@ -92,7 +92,13 @@ sudo tail -n 100 /var/log/candlepilot-update.log
 `CANDLEPILOT_PUBLIC_IP`、`CANDLEPILOT_PUBLIC_PORT`、`CANDLEPILOT_BACKEND_PORT`、`CANDLEPILOT_ADMIN_USERNAME`、
 `CANDLEPILOT_ADMIN_PASSWORD`、`BINANCE_TESTNET_API_KEY`、`BINANCE_TESTNET_API_SECRET`，用于可信的
 自动化安装。脚本拒绝覆盖已有 `/opt/candlepilot`，不会把密码或密钥打印到日志；生成的 `.env`
-权限为 0600。默认路由为 `local`，保证未登录外部模型时服务仍可启动；使用 Codex Auth 前执行：
+权限为 0600。默认路由为 `local`，保证未登录外部模型时服务仍可启动。使用 Codex Auth 时，登录
+控制台后在「总览 → 模型接入」把来源切换并应用为「Codex CLI」，再点击「登录」；网页会显示
+OpenAI 授权网址和一次性代码，授权完成后自动刷新登录状态。登出同样在该卡片二次确认即可完成。
+整个流程由 systemd 的 `candlepilot` 服务用户执行，因此凭据会写入正确的用户 home，无需进入 VPS
+终端，也无需重启服务。
+
+网页不可用时仍可使用以下终端回退流程：
 
 ```bash
 sudo -iu candlepilot codex login --device-auth
@@ -100,7 +106,7 @@ sudo -iu candlepilot codex login status
 sudo systemctl restart candlepilot
 ```
 
-VPS 是无图形界面的远程设备，`--device-auth` 会在 SSH 终端显示登录网址和一次性
+VPS 是无图形界面的远程设备，回退流程的 `--device-auth` 会在 SSH 终端显示登录网址和一次性
 设备码。用户在自己电脑的浏览器中打开该网址，登录要供 CandlePilot 使用的 ChatGPT
 账号并输入设备码，然后回到 SSH 终端等待命令完成。必须通过 `sudo -iu candlepilot`
 登录，不得以 root 身份直接运行 `codex login`；否则凭据会保存到 root 的 home，

@@ -274,6 +274,16 @@ export interface ProviderHealth {
   };
 }
 
+export interface CodexAuthSession {
+  available: boolean;
+  state: "idle" | "starting" | "pending" | "succeeded" | "failed" | "cancelled";
+  verification_uri: string | null;
+  user_code: string | null;
+  message: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
 export interface ProviderTestResult {
   ok: boolean;
   provider: string;

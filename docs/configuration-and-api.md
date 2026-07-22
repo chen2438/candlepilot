@@ -50,6 +50,8 @@
 
 **引擎与 Provider**：`GET /api/status`、`GET /api/providers`、
 `POST /api/providers/select`、`POST /api/providers/config`、`POST /api/providers/test`、
+`GET /api/providers/codex-auth/session`、`POST /api/providers/codex-auth/login`、
+`POST /api/providers/codex-auth/login/cancel`、`POST /api/providers/codex-auth/logout`、
 `POST /api/cadences`、
 `POST /api/candidates-per-cycle`、`POST /api/run-limits`、
 `GET /api/settings`、`POST /api/settings`、`POST /api/engine/probe`、
@@ -75,6 +77,11 @@
 取得的 `account_email`；`POST /api/providers/config` 可附带
 `{"name":"codex-auth","auth_source":"chatgpt-app"}` 或 `codex-cli`。来源切换只影响当前服务进程，
 与模型或推理强度修改一样会使已有正式运行试跑失效；运行中、试跑中或回测中禁止切换。
+Codex CLI 登录接口异步启动固定的 `codex login --device-auth`，session 接口返回
+`starting/pending/succeeded/failed/cancelled/idle` 状态、经域名校验的 OpenAI/ChatGPT HTTPS
+授权地址、一次性代码和安全摘要；不返回命令原始输出、token 或 `auth.json`。取消接口终止当前
+进程组；登出接口固定执行 `codex logout`，前端要求二次确认。登录态改变会使已有正式运行试跑
+失效；引擎、试跑、回测或另一登录任务活动时返回 409。四个接口都受控制台会话与同源写请求保护。
 `GET /api/status` 通过 `provider_chain`、`active_provider` 和 `provider_routes` 返回顺序、当前承载、
 冷却截止时间、最近错误与最近成功/失败时间；不返回任何凭据。
 

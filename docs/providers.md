@@ -23,6 +23,10 @@
   当前选中的二进制。两者均用 `codex exec --json --output-schema` 复用 ChatGPT/Codex 登录态。
   `codex login status` 只负责验证认证有效；登录邮箱从 `~/.codex/auth.json` 的本地 ID token 中仅
   解码 `email` 声明后返回，access token、refresh token、原始 ID token 和其他声明均不进入 API。
+  独立 CLI 来源还可由控制台启动 `codex login --device-auth`、取消等待或二次确认后执行
+  `codex logout`；命令始终由 CandlePilot 服务用户以固定参数、白名单环境和隔离临时目录执行，
+  不经过 Shell。登录 API 仅从输出提取 OpenAI/ChatGPT HTTPS 授权地址和一次性代码，绝不返回
+  原始输出或凭据；引擎、试跑、回测或其他登录流程活动期间禁止改变登录态。
 - **Claude Code Auth**：依次检测 `PATH` 与 `~/.local/bin` 中的独立 `claude` CLI，
   复用 Claude.ai Pro/Max 登录态（`claude -p --output-format json --permission-mode default
   --max-turns 4 --disallowedTools …`，Prompt 走 stdin）。**不使用 plan 模式**（plan 模式会让

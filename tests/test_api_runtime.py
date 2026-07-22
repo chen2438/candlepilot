@@ -78,6 +78,7 @@ def test_remote_console_authentication_protects_http_and_websocket(tmp_path: Pat
     with TestClient(application) as client:
         assert client.get("/api/health/live").status_code == 200
         assert client.get("/api/status").status_code == 401
+        assert client.get("/api/providers/codex-auth/session").status_code == 401
         assert client.get("/api/auth/status").json()["authenticated"] is False
         with pytest.raises(WebSocketDisconnect) as closed:
             with client.websocket_connect("/ws/events"):
@@ -96,6 +97,7 @@ def test_remote_console_authentication_protects_http_and_websocket(tmp_path: Pat
         assert "HttpOnly" in logged_in.headers["set-cookie"]
         assert "SameSite=strict" in logged_in.headers["set-cookie"]
         assert client.get("/api/status").status_code == 200
+        assert client.get("/api/providers/codex-auth/session").status_code == 200
         with client.websocket_connect("/ws/events") as socket:
             assert socket.receive_json()["type"] == "status"
             decisions = socket.receive_json()
@@ -1239,6 +1241,7 @@ def test_codex_provider_config_selects_auth_source_and_reports_email(
     monkeypatch, tmp_path: Path
 ) -> None:
     from candlepilot.providers import cli as cli_module
+    from candlepilot.codex_auth import CodexAuthManager
     from candlepilot.providers.cli import CodexAuthProvider
 
     def write_cli(path: Path, version: str) -> Path:
@@ -1246,6 +1249,8 @@ def test_codex_provider_config_selects_auth_source_and_reports_email(
         path.write_text(
             "#!/bin/sh\n"
             f'if [ "$1" = "--version" ]; then echo "{version}"; '
+            'elif [ "$1" = "login" ] && [ "$2" = "--device-auth" ]; then '
+            'echo "https://auth.openai.com/codex/device"; echo "ABCD-EFGH"; '
             'else echo "Logged in using ChatGPT"; fi\n',
             encoding="utf-8",
         )
@@ -1270,7 +1275,12 @@ def test_codex_provider_config_selects_auth_source_and_reports_email(
         audit=AuditRepository(database.sessions),
         market=market,  # type: ignore[arg-type]
     )
-    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    app = create_app(
+        database=database,
+        market=market,
+        engine=engine,
+        codex_auth_manager=CodexAuthManager(executable=cli_binary),
+    )  # type: ignore[arg-type]
 
     with TestClient(app) as client:
         listed = client.get("/api/providers").json()[0]
@@ -1294,6 +1304,20 @@ def test_codex_provider_config_selects_auth_source_and_reports_email(
             json={"name": "codex-auth", "auth_source": "automatic"},
         )
         assert invalid.status_code == 422
+
+        started = client.post("/api/providers/codex-auth/login")
+        assert started.status_code == 200
+        for _ in range(20):
+            session = client.get("/api/providers/codex-auth/session").json()
+            if session["state"] == "succeeded":
+                break
+            threading.Event().wait(0.01)
+        assert session["verification_uri"] == "https://auth.openai.com/codex/device"
+        assert session["user_code"] == "ABCD-EFGH"
+
+        logged_out = client.post("/api/providers/codex-auth/logout")
+        assert logged_out.status_code == 200
+        assert logged_out.json()["state"] == "idle"
 
     asyncio.run(database.close())
 

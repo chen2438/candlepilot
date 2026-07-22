@@ -18,6 +18,7 @@ import type {
   EngineStatus,
   TradeFillRecord,
   ProviderHealth,
+  CodexAuthSession,
   ProviderTestResult,
   ProviderMetric,
   ProviderMetricsResponse,
@@ -461,6 +462,62 @@ export function CodexAuthSourceSelect({
   </select>;
 }
 
+export function CodexCliAuthControls({
+  authenticated,
+  busy,
+  disabled,
+  onCancel,
+  onLogin,
+  onLogout,
+  session,
+}: {
+  authenticated: boolean;
+  busy: boolean;
+  disabled: boolean;
+  onCancel: () => void;
+  onLogin: () => void;
+  onLogout: () => void;
+  session: CodexAuthSession | null;
+}) {
+  const [confirmLogout, setConfirmLogout] = useState(false);
+  const active = session?.state === "starting" || session?.state === "pending";
+  const message = !authenticated && session?.state === "succeeded"
+    ? "登录已失效，请重新登录"
+    : session?.message ?? (authenticated ? "当前登录有效" : "当前未登录");
+  useEffect(() => {
+    if (!authenticated) setConfirmLogout(false);
+  }, [authenticated]);
+  return <div className="codex-cli-auth">
+    <div className="codex-cli-auth-head">
+      <span>
+        <strong>Codex CLI 登录</strong>
+        <small>{message}</small>
+      </span>
+      <div>
+        {active
+          ? <button className="text-button" disabled={busy || disabled} onClick={onCancel}>取消登录</button>
+          : authenticated
+            ? confirmLogout
+              ? <>
+                <button className="text-button danger" disabled={busy || disabled} onClick={onLogout}>确认登出</button>
+                <button className="text-button" disabled={busy} onClick={() => setConfirmLogout(false)}>保留登录</button>
+              </>
+              : <button className="text-button" disabled={busy || disabled} onClick={() => setConfirmLogout(true)}>登出</button>
+            : <button className="text-button" disabled={busy || disabled || session?.available === false} onClick={onLogin}>
+              {busy ? "处理中…" : "登录"}
+            </button>}
+      </div>
+    </div>
+    {active && <div className="codex-device-auth" role="status">
+      {session?.verification_uri && <a href={session.verification_uri} target="_blank" rel="noreferrer">
+        打开 Codex 授权页面
+      </a>}
+      {session?.user_code && <code aria-label="Codex 一次性代码">{session.user_code}</code>}
+      <small>在授权页面输入一次性代码；代码仅用于本次登录。</small>
+    </div>}
+  </div>;
+}
+
 function modelConfigSummary(model: string | null, effort: string | null): string {
   return `${model ?? "Provider 默认模型"} · ${effort ? `推理 ${effort}` : "默认推理强度"}`;
 }
@@ -709,6 +766,7 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
   const [tab, setTab] = useState<TabKey>("overview");
   const [status, setStatus] = useState<EngineStatus>(emptyStatus);
   const [providers, setProviders] = useState<ProviderHealth[]>([]);
+  const [codexAuthSession, setCodexAuthSession] = useState<CodexAuthSession | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [decisions, setDecisions] = useState<DecisionEvent[]>([]);
   const [liveRunPerformance, setLiveRunPerformance] = useState<LiveRunPerformance[]>([]);
@@ -751,6 +809,55 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
     risk: true,
     universe: true,
   });
+
+  const refreshProviders = useCallback(async () => {
+    setProviders(await api<ProviderHealth[]>("/api/providers"));
+  }, []);
+
+  const runCodexAuthAction = useCallback(async (
+    action: "login" | "cancel" | "logout",
+  ) => {
+    setBusy(`codex-auth-${action}`);
+    setError(null);
+    const endpoint = action === "login"
+      ? "/api/providers/codex-auth/login"
+      : action === "cancel"
+        ? "/api/providers/codex-auth/login/cancel"
+        : "/api/providers/codex-auth/logout";
+    try {
+      const session = await api<CodexAuthSession>(endpoint, { method: "POST" });
+      setCodexAuthSession(session);
+      if (action !== "login") await refreshProviders();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }, [refreshProviders]);
+
+  useEffect(() => {
+    let stopped = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const session = await api<CodexAuthSession>("/api/providers/codex-auth/session");
+        if (stopped) return;
+        setCodexAuthSession(session);
+        if (session.state === "starting" || session.state === "pending") {
+          timer = window.setTimeout(poll, 1000);
+        } else if (session.state === "succeeded") {
+          await refreshProviders();
+        }
+      } catch {
+        // The normal console error handling covers authenticated API failures.
+      }
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [codexAuthSession?.state, refreshProviders]);
 
   const applyProviderConfig = useCallback(async (
     name: string,
@@ -1609,6 +1716,15 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
                       {testResult[provider.provider].text}
                     </span>}
                   </div>}
+                  {codexProvider && authSource === "codex-cli" && !authSourceDirty && <CodexCliAuthControls
+                    authenticated={provider.authenticated}
+                    busy={busy?.startsWith("codex-auth-") ?? false}
+                    disabled={status.running || busy !== null}
+                    session={codexAuthSession}
+                    onLogin={() => void runCodexAuthAction("login")}
+                    onCancel={() => void runCodexAuthAction("cancel")}
+                    onLogout={() => void runCodexAuthAction("logout")}
+                  />}
                 </div>;
               })}
             </div>

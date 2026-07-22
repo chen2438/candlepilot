@@ -84,6 +84,7 @@ from candlepilot.config import (
     Settings,
     validate_provider_references,
 )
+from candlepilot.codex_auth import CodexAuthError, CodexAuthManager
 from candlepilot.domain.models import (
     SUPPORTED_CADENCES,
     ExecutionReport,
@@ -523,6 +524,7 @@ def create_app(
     engine: TradingEngine | None = None,
     pricing_loader: Callable[[Path], Awaitable[ModelPricingCatalog | None]]
     | None = None,
+    codex_auth_manager: CodexAuthManager | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     provider_pricing_ids = pricing_provider_ids(settings)
@@ -567,6 +569,7 @@ def create_app(
         testnet_broker=testnet_broker,
         cadences=settings.cadences,
     )
+    codex_auth_manager = codex_auth_manager or CodexAuthManager()
     validate_provider_references(settings, engine.providers.names)
     if settings.provider_chain and not engine.provider_chain:
         engine.select_provider_chain(settings.provider_chain)
@@ -741,6 +744,7 @@ def create_app(
             finally:
                 warm_pricing.cancel()
                 await asyncio.gather(warm_pricing, return_exceptions=True)
+                await codex_auth_manager.close()
                 await scheduler.stop()
                 await engine.stop()
                 await collector.stop()
@@ -805,6 +809,7 @@ def create_app(
     app.state.testnet_feed = testnet_feed
     app.state.operational_metrics = operational_metrics
     app.state.auth = auth
+    app.state.codex_auth_manager = codex_auth_manager
 
     public_api_paths = {
         "/api/auth/status",
@@ -1045,6 +1050,51 @@ def create_app(
                     ),
                 }
             )
+        return result
+
+    def ensure_codex_auth_change_allowed() -> None:
+        if engine.running:
+            raise HTTPException(
+                status_code=409,
+                detail="cannot change Codex CLI authentication while the engine runs",
+            )
+        if background_model_work():
+            raise HTTPException(
+                status_code=409,
+                detail="cannot change Codex CLI authentication while a probe, backtest, or login runs",
+            )
+
+    @app.get("/api/providers/codex-auth/session")
+    async def get_codex_auth_session() -> dict[str, Any]:
+        return codex_auth_manager.status()
+
+    @app.post("/api/providers/codex-auth/login")
+    async def start_codex_auth_login() -> dict[str, Any]:
+        ensure_codex_auth_change_allowed()
+        try:
+            result = await codex_auth_manager.start_login()
+        except CodexAuthError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        engine.invalidate_startup_probe("Codex CLI authentication changed")
+        return result
+
+    @app.post("/api/providers/codex-auth/login/cancel")
+    async def cancel_codex_auth_login() -> dict[str, Any]:
+        if engine.running:
+            raise HTTPException(
+                status_code=409,
+                detail="cannot cancel Codex CLI login while the engine runs",
+            )
+        return await codex_auth_manager.cancel_login()
+
+    @app.post("/api/providers/codex-auth/logout")
+    async def logout_codex_auth() -> dict[str, Any]:
+        ensure_codex_auth_change_allowed()
+        try:
+            result = await codex_auth_manager.logout()
+        except CodexAuthError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        engine.invalidate_startup_probe("Codex CLI authentication changed")
         return result
 
     @app.post("/api/providers/config")
@@ -2662,6 +2712,7 @@ def create_app(
             engine_start_lock.locked()
             or active_backtest_tasks()
             or (probe_task and not probe_task.done())
+            or codex_auth_manager.active
         )
 
     def _set_probe_task(task: asyncio.Task[None]) -> None:
