@@ -86,7 +86,7 @@
   1000 字符；若模型只违反该长度限制，Provider 会确定性截断到 1000 字符并在 usage 中写入
   `rationale_truncated=true`，同时完整原始输出仍留在本地审计。方向、杠杆、风险、价格与保护单
   等交易关键字段不做自动修正，任何不合规仍安全降级。
-- **独立分析结构化调用**：Codex、Claude Code 和 Custom API 还实现只供独立行情分析使用的
+- **行情分析结构化调用**：Codex、Claude Code 和 Custom API 还实现供独立研究与分析辅助 SHADOW 使用的
   `generate_structured_output`。它与正式 `TradeIntent` 调用共享同一个 Provider 并发锁、取消和绝对
   超时；Codex 继续使用隔离临时目录、只读 sandbox 与 `--output-schema`，Claude 继续禁用
   Bash/Read/Edit/Write/Web/Task 等工具，Custom API 不发送工具定义。输出必须通过独立
@@ -103,6 +103,11 @@
 - 独立分析的批量入口是多个单标的分析组成的受控串行队列，不把不同标的塞入一个超大 Prompt，也不
   复用正式交易的批量 `TradeIntent` Schema。这样每项仍有独立数据时点、上一份同标的分析、Token、
   原始输出和失败状态；同一个外部 Provider 在整批期间持续占用唯一模型任务槽。
+- **AI 分析辅助正式决策（`analysis-assisted-decision-v1`）**：仅支持外部 Provider，并只开放
+  `shadow`。正式周期把候选与已有持仓的 Kansoku 风格数据包组成一个严格结构化批次，一次物理调用
+  同时返回完整 `MarketAnalysis` 与执行提示；数量、顺序、标的不匹配视为整批失败。程序而非模型
+  固定 1 倍杠杆和风险申请，将 T1 映射为 `TradeIntent.take_profit`、T2 写入审计 usage 供影子结果
+  比较。启动试跑走完全相同的生成路径但不落分析记录；正式周期逐标的保存分析与推理审计。
 - **单一运行 Provider**：前端使用互斥选择；为兼容现有部署保留变量名
   `CANDLEPILOT_PROVIDER_CHAIN`，但它只能填写一个 Provider，例如 `local`、`codex` 或
   `custom:main`。启动时只检查并使用该 Provider；零个、多个或失效引用会在 API、保存或启动时

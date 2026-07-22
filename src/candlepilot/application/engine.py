@@ -5,8 +5,10 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
+from typing import Literal, cast
 from uuid import uuid4
 
+from candlepilot.analysis.decision import AnalysisDecisionBridge
 from candlepilot.broker.binance_testnet import (
     AccountReconciliationError,
     BinanceApiError,
@@ -34,7 +36,7 @@ from candlepilot.domain.models import (
 )
 from candlepilot.market.binance import BinancePublicClient
 from candlepilot.market.scanner import Candidate, MarketScanner
-from candlepilot.providers.base import ProviderResult
+from candlepilot.providers.base import DecisionProvider, ProviderResult
 from candlepilot.providers.cli import ProviderError, ProviderInvocationError
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.providers.retry import (
@@ -127,6 +129,56 @@ class TradingEngine:
         self.decision_timeout_seconds: float | None = None
         self.startup_probe: dict[str, object] | None = None
         self._provider_timeout_restore: dict[str, float] = {}
+        self.analysis_decision_mode: Literal["off", "shadow"] = "off"
+        self.analysis_decision_bridge: AnalysisDecisionBridge | None = None
+
+    def configure_analysis_decision_bridge(
+        self, bridge: AnalysisDecisionBridge
+    ) -> None:
+        self.analysis_decision_bridge = bridge
+
+    def select_analysis_decision_mode(self, mode: str) -> None:
+        if self.running:
+            raise RuntimeError("cannot change analysis decision mode while running")
+        if mode not in {"off", "shadow"}:
+            raise ValueError("analysis decision mode must be off or shadow")
+        if mode == "shadow":
+            if self.analysis_decision_bridge is None:
+                raise RuntimeError("analysis decision bridge is not configured")
+            if not self.provider_chain:
+                raise ValueError(
+                    "select one external provider before enabling analysis-assisted decisions"
+                )
+            provider = self.providers.get(self.provider_chain[0])
+            if not (
+                provider.capabilities.external_inference
+                and provider.capabilities.structured_output
+            ):
+                raise ValueError(
+                    "analysis-assisted decisions require an external structured-output provider"
+                )
+        if mode != self.analysis_decision_mode:
+            self.analysis_decision_mode = cast(Literal["off", "shadow"], mode)
+            self.invalidate_startup_probe("analysis decision mode changed")
+
+    async def generate_decision_batch(
+        self,
+        provider: DecisionProvider,
+        snapshots: list[MarketSnapshot],
+        portfolio: PortfolioState,
+        *,
+        persist: bool,
+    ) -> list[ProviderResult]:
+        if self.analysis_decision_mode == "shadow":
+            if self.analysis_decision_bridge is None:
+                raise RuntimeError("analysis decision bridge is not configured")
+            return await self.analysis_decision_bridge.generate(
+                provider=provider,
+                snapshots=snapshots,
+                portfolio=portfolio,
+                persist=persist,
+            )
+        return await provider.generate_trade_intents(snapshots, portfolio)
 
     def invalidate_startup_probe(self, reason: str) -> None:
         """Keep the last result visible, but prevent it from starting a changed run."""
@@ -146,7 +198,17 @@ class TradingEngine:
             raise ValueError("exactly one provider must be selected")
         ordered = tuple(providers)
         for name in ordered:
-            self.providers.get(name)
+            provider = self.providers.get(name)
+            if (
+                self.analysis_decision_mode == "shadow"
+                and not (
+                    provider.capabilities.external_inference
+                    and provider.capabilities.structured_output
+                )
+            ):
+                raise ValueError(
+                    "analysis-assisted decisions require an external structured-output provider"
+                )
         changed = ordered != self.provider_chain
         self.provider_chain = ordered
         self.active_provider = None
@@ -353,6 +415,7 @@ class TradingEngine:
         config: dict[str, object] = {
             "provider_chain": list(self.provider_chain),
             "cadences": list(self.active_cadences),
+            "analysis_decision_mode": self.analysis_decision_mode,
             "decision_timeout_seconds": self.decision_timeout_seconds,
             "max_run_seconds": self.max_run_seconds,
             "max_run_cost_usd": self.max_run_cost_usd,
@@ -950,9 +1013,14 @@ class TradingEngine:
                     provider = self.providers.get(name)
                     try:
                         async with asyncio.timeout(provider.timeout):
-                            result = await provider.generate_trade_intent(
-                                analysis_snapshot, analysis_portfolio
-                            )
+                            result = (
+                                await self.generate_decision_batch(
+                                    provider,
+                                    [analysis_snapshot],
+                                    analysis_portfolio,
+                                    persist=True,
+                                )
+                            )[0]
                     except TimeoutError:
                         timeout_error = ProviderError(
                             f"decision provider exceeded absolute {provider.timeout:g}s timeout"
@@ -1121,6 +1189,13 @@ class TradingEngine:
                 decision=RiskDecision(accepted=False, reason=reason),
                 order=None,
             )
+        if self.analysis_decision_mode == "shadow":
+            evaluation = RiskEvaluation(
+                decision=evaluation.decision.model_copy(
+                    update={"shadow_only": True}
+                ),
+                order=evaluation.order,
+            )
         await self.audit.record_risk(
             analysis_snapshot.symbol, evaluation.decision, inference_id=inference_id
         )
@@ -1129,6 +1204,7 @@ class TradingEngine:
             evaluation.order is not None
             and evaluation.decision.accepted
             and not evaluation.decision.pending_entry
+            and not evaluation.decision.shadow_only
         ):
             execution = await self._execute_order(
                 analysis_snapshot.symbol,
@@ -1210,8 +1286,11 @@ class TradingEngine:
                     provider = self.providers.get(name)
                     try:
                         async with asyncio.timeout(provider.timeout):
-                            results = await provider.generate_trade_intents(
-                                analysis_snapshots, analysis_portfolio
+                            results = await self.generate_decision_batch(
+                                provider,
+                                analysis_snapshots,
+                                analysis_portfolio,
+                                persist=True,
                             )
                         if len(results) != len(analysis_snapshots):
                             raise ProviderError(
@@ -1404,6 +1483,13 @@ class TradingEngine:
                 decision=RiskDecision(accepted=False, reason=reason),
                 order=None,
             )
+        if self.analysis_decision_mode == "shadow":
+            evaluation = RiskEvaluation(
+                decision=evaluation.decision.model_copy(
+                    update={"shadow_only": True}
+                ),
+                order=evaluation.order,
+            )
         await self.audit.record_risk(
             analysis_snapshot.symbol, evaluation.decision, inference_id=inference_id
         )
@@ -1412,6 +1498,7 @@ class TradingEngine:
             evaluation.order is not None
             and evaluation.decision.accepted
             and not evaluation.decision.pending_entry
+            and not evaluation.decision.shadow_only
         ):
             execution = await self._execute_order(
                 analysis_snapshot.symbol,

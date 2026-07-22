@@ -218,6 +218,7 @@ class TakeProfitReentryAssessment(StrictModel):
 class RiskDecision(StrictModel):
     accepted: bool
     reason: str
+    shadow_only: bool = False
     max_quantity: Decimal | None = Field(default=None, ge=0)
     pre_trade_entry_price: Decimal | None = Field(default=None, gt=0)
     pre_trade_reward_risk_ratio: Decimal | None = Field(default=None, ge=0)

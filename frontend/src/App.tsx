@@ -219,6 +219,7 @@ const emptyStatus: EngineStatus = {
   emergency_locked_until: null,
   provider_chain: [],
   active_provider: null,
+  analysis_decision_mode: "off",
   live_run_id: null,
   provider_routes: [],
   active_cadences: ["15m"],
@@ -1075,6 +1076,22 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
     }
   }, [status.active_cadences]);
 
+  const selectAnalysisDecisionMode = useCallback(async (mode: "off" | "shadow") => {
+    if (status.analysis_decision_mode === mode) return;
+    setBusy("analysis-decision-mode");
+    setError(null);
+    try {
+      setStatus(await api<EngineStatus>("/api/analysis-decision-mode", {
+        method: "POST",
+        body: JSON.stringify({ mode }),
+      }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }, [status.analysis_decision_mode]);
+
   const changeCandidatesPerCycle = useCallback(async (value: number, max: number) => {
     const clamped = Math.max(1, Math.min(max, Math.round(value)));
     setBusy("candidates-per-cycle");
@@ -1482,6 +1499,24 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
               disabled={busy !== null || status.running}
               onSelect={(cadence) => void selectCadence(cadence)}
             />
+            <div className="cadence-select" title={status.running ? "运行时锁定" : "选择正式决策输入；AI 分析辅助当前只提供不会下单的 SHADOW 评估"}>
+              <span>正式决策输入</span>
+              <div className="cadence-chips">
+                <button
+                  className={`cadence-chip ${status.analysis_decision_mode === "off" ? "on" : ""}`}
+                  aria-pressed={status.analysis_decision_mode === "off"}
+                  disabled={busy !== null || status.running}
+                  onClick={() => void selectAnalysisDecisionMode("off")}
+                >标准决策</button>
+                <button
+                  className={`cadence-chip ${status.analysis_decision_mode === "shadow" ? "on" : ""}`}
+                  aria-pressed={status.analysis_decision_mode === "shadow"}
+                  disabled={busy !== null || status.running || !selectedExternalProvider}
+                  onClick={() => void selectAnalysisDecisionMode("shadow")}
+                >AI 分析辅助 · SHADOW</button>
+              </div>
+              <small>固定 1×；T1 写入正式止盈，T2 仅作影子评估；SHADOW 不提交订单。</small>
+            </div>
             <div className="cadence-select" title={status.running ? "运行时锁定" : "设置动态候选池前 N 名；已有持仓会去重后额外加入分析"}>
               <span className="range-head">
                 每周期候选标的数
@@ -3087,7 +3122,7 @@ export function MarketAnalysisPanel({
           className={selected?.id === item.id ? "selected" : ""}
           onClick={() => void loadDetail(item.id)}
         >
-          <span><strong>{item.symbol}</strong><small>#{item.id} · {new Date(item.created_at).toLocaleString("zh-CN", { hour12: false })}</small></span>
+          <span><strong>{item.symbol}</strong><small>#{item.id} · {new Date(item.created_at).toLocaleString("zh-CN", { hour12: false })}{item.usage.analysis_decision_mode === "shadow" ? " · 正式 SHADOW" : ""}</small></span>
           <span className="analysis-history-results">
             <em className={item.result?.direction ?? item.status}>{item.result ? analysisDirectionLabel(item.result.direction) : analysisStatusLabel(item.status)}</em>
             {item.status === "succeeded" && <em className={`outcome ${item.outcome?.status ?? "unassessed"}`}>
@@ -3123,8 +3158,8 @@ export function MarketAnalysisPanel({
             {result.entry_plan && <div className="analysis-level-grid">
               <span><small>入场</small><strong>{analysisPrice(result.entry_plan.entry)}</strong></span>
               <span><small>结构止损</small><strong>{analysisPrice(result.entry_plan.stop)}</strong></span>
-              <span><small>T1 · {result.reward_risk?.target1.toFixed(2)}R</small><strong>{analysisPrice(result.entry_plan.target1)}</strong></span>
-              <span><small>T2 · {result.reward_risk?.target2.toFixed(2)}R</small><strong>{analysisPrice(result.entry_plan.target2)}</strong></span>
+              <span><small>T1{selected.usage.analysis_decision_mode === "shadow" ? " · 固定止盈" : ""} · {result.reward_risk?.target1.toFixed(2)}R</small><strong>{analysisPrice(result.entry_plan.target1)}</strong></span>
+              <span><small>T2{selected.usage.analysis_decision_mode === "shadow" ? " · SHADOW" : ""} · {result.reward_risk?.target2.toFixed(2)}R</small><strong>{analysisPrice(result.entry_plan.target2)}</strong></span>
             </div>}
             {result.range_plan && <div className="analysis-level-grid analysis-range-plan"><span><small>观望区间</small><strong>{analysisPrice(result.range_plan.low)} — {analysisPrice(result.range_plan.high)}</strong></span><p>{result.range_plan.tactic}</p></div>}
             {result.entry_plan && <div className="analysis-plan-copy">
@@ -4355,6 +4390,7 @@ const OUTCOME_LABELS: Record<DecisionEvent["outcome"], string> = {
 
 function decisionOutcomeLabel(decision: DecisionEvent): string {
   if (decision.risk?.decision.pending_entry) return "等待触发";
+  if (decision.risk?.decision.shadow_only && decision.risk.accepted) return "影子放行";
   return decision.failover ? "Provider 调用失败" : OUTCOME_LABELS[decision.outcome];
 }
 
@@ -4501,6 +4537,7 @@ function DecisionRunHeader({
   const config = [
     run.config.cadences?.join(" / "),
     run.config.provider_chain?.map(providerLabel).join(" → "),
+    run.config.analysis_decision_mode === "shadow" ? "AI 分析辅助 · SHADOW" : null,
   ].filter(Boolean).join(" · ");
   return <summary className={`decision-run-header ${run.status}`}>
     <span className="decision-run-primary">
@@ -4728,7 +4765,7 @@ export function DecisionPanel({
                   </div>
                 )}
                 <div className={`decision-reason ${decision.risk?.decision.pending_entry ? "pending" : decision.outcome}`}>
-                  <strong>{decision.risk?.decision.pending_entry ? "本地待触发" : decision.failover ? "Provider 调用失败" : decision.risk?.accepted ? "风控放行" : OUTCOME_LABELS[decision.outcome]}</strong>
+                  <strong>{decision.risk?.decision.pending_entry ? "本地待触发" : decision.failover ? "Provider 调用失败" : decision.risk?.decision.shadow_only && decision.risk.accepted ? "影子放行 · 未提交订单" : decision.risk?.accepted ? "风控放行" : OUTCOME_LABELS[decision.outcome]}</strong>
                   <span>{decision.failover?.error ?? decision.risk?.reason ?? "该记录只有模型推理，未进入实时硬风控流程。"}</span>
                 </div>
                 {decision.execution && (

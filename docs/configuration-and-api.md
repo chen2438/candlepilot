@@ -53,7 +53,7 @@
 `GET /api/providers/codex-auth/session`、`POST /api/providers/codex-auth/login`、
 `GET /api/providers/codex-auth/usage`、
 `POST /api/providers/codex-auth/login/cancel`、`POST /api/providers/codex-auth/logout`、
-`POST /api/cadences`、
+`POST /api/cadences`、`POST /api/analysis-decision-mode`、
 `POST /api/candidates-per-cycle`、`POST /api/run-limits`、
 `GET /api/settings`、`POST /api/settings`、`POST /api/engine/probe`、
 `POST /api/engine/start`、`POST /api/engine/probe-and-start`、`POST /api/engine/run-once`、
@@ -61,6 +61,12 @@
 `run_limit`/`before_run_id` 游标；两种模式均支持 `symbol`/`cadence`/`provider`/`outcome` 筛选）、
 `POST /api/engine/stop`、`POST /api/engine/emergency-stop`、
 `POST /api/engine/clear-emergency-lock`。
+
+`POST /api/analysis-decision-mode` 接受 `{"mode":"off"}` 或 `{"mode":"shadow"}`，仅允许停机时
+切换；`shadow` 要求当前唯一 Provider 是外部模型，选择本地规则返回 422。状态接口返回
+`analysis_decision_mode`；切换模式会使现有启动试跑失效。`shadow` 的启动试跑与正式周期使用相同
+分析辅助批量路径，正式周期落库分析及决策审计、执行全部硬风控，但不会提交订单。进程启动默认
+回到 `off`，不会因重启自动恢复实验模式。
 
 **独立 AI 行情分析**：`POST /api/market-analyses` 接受唯一字段
 `{"symbol":"BTCUSDT"}` 并返回 202 与记录 ID；`POST /api/market-analyses/batch` 无请求体，读取正式

@@ -40,6 +40,7 @@ from candlepilot.application.scheduler import (
 )
 from candlepilot.application.testnet_feed import TestnetUserFeed
 from candlepilot.analysis.datapack import AnalysisDataPackBuilder
+from candlepilot.analysis.decision import AnalysisDecisionBridge
 from candlepilot.analysis.models import MarketAnalysis
 from candlepilot.analysis.outcomes import (
     evaluate_outcome_from_market,
@@ -599,6 +600,10 @@ class CadenceSelection(ApiModel):
     cadences: list[str] = Field(min_length=1, max_length=1)
 
 
+class AnalysisDecisionModeSelection(ApiModel):
+    mode: Literal["off", "shadow"]
+
+
 class CandidatesPerCycleSelection(ApiModel):
     candidates_per_cycle: int = Field(ge=1, le=MAX_CANDIDATES_PER_CYCLE)
 
@@ -757,6 +762,7 @@ def _status(
         else None,
         "provider_chain": list(engine.provider_chain),
         "active_provider": engine.active_provider,
+        "analysis_decision_mode": engine.analysis_decision_mode,
         "live_run_id": engine.live_run_id,
         "provider_routes": engine.provider_route_status(),
         "active_cadences": list(engine.active_cadences),
@@ -1048,10 +1054,17 @@ def create_app(
             return None
         return await testnet_account()
 
+    analysis_builder = AnalysisDataPackBuilder(market)
     analysis_service = MarketAnalysisService(
-        builder=AnalysisDataPackBuilder(market),
+        builder=analysis_builder,
         repository=analysis_repository,
         account_loader=analysis_account,
+    )
+    engine.configure_analysis_decision_bridge(
+        AnalysisDecisionBridge(
+            builder=analysis_builder,
+            repository=analysis_repository,
+        )
     )
 
     @asynccontextmanager
@@ -1735,6 +1748,18 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _status(engine, scheduler)
 
+    @app.post("/api/analysis-decision-mode")
+    async def select_analysis_decision_mode(
+        selection: AnalysisDecisionModeSelection,
+    ) -> dict[str, Any]:
+        try:
+            engine.select_analysis_decision_mode(selection.mode)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _status(engine, scheduler)
+
     @app.post("/api/candidates-per-cycle")
     async def select_candidates_per_cycle(
         selection: CandidatesPerCycleSelection,
@@ -2244,8 +2269,11 @@ def create_app(
             started = time.perf_counter()
             try:
                 async with asyncio.timeout(provider.timeout):
-                    results = await provider.generate_trade_intents(
-                        snapshots, portfolio
+                    results = await engine.generate_decision_batch(
+                        provider,
+                        snapshots,
+                        portfolio,
+                        persist=False,
                     )
             except TimeoutError as exc:
                 raise RuntimeError(

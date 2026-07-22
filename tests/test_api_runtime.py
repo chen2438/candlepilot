@@ -2445,6 +2445,41 @@ def test_cadence_selection_endpoint(tmp_path: Path) -> None:
     asyncio.run(database.close())
 
 
+def test_analysis_decision_mode_endpoint_updates_status(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'analysis-mode-api.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        missing_provider = client.post(
+            "/api/analysis-decision-mode", json={"mode": "shadow"}
+        )
+        assert missing_provider.status_code == 422
+
+        client.post("/api/providers/select", json={"providers": ["api-fixture"]})
+        status = client.get("/api/status").json()
+        assert status["analysis_decision_mode"] == "off"
+
+        enabled = client.post("/api/analysis-decision-mode", json={"mode": "shadow"})
+        assert enabled.status_code == 200, enabled.text
+        assert enabled.json()["analysis_decision_mode"] == "shadow"
+
+        engine.running = True
+        locked = client.post("/api/analysis-decision-mode", json={"mode": "off"})
+        assert locked.status_code == 409
+        engine.running = False
+
+        disabled = client.post("/api/analysis-decision-mode", json={"mode": "off"})
+        assert disabled.status_code == 200, disabled.text
+        assert disabled.json()["analysis_decision_mode"] == "off"
+    asyncio.run(database.close())
+
+
 def test_candidates_per_cycle_endpoint(tmp_path: Path) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'per-cycle-api.db'}")
     market = ApiMarket()

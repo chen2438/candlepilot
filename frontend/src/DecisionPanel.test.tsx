@@ -407,6 +407,39 @@ describe("DecisionPanel", () => {
     expect(screen.getByText("5 分钟 · 会被 15/30/60 分钟窗口拦截")).toBeTruthy();
   });
 
+  it("labels an accepted assisted decision as shadow-only and not submitted", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false,
+      text: async () => "detail unavailable",
+    })));
+    const user = userEvent.setup();
+    const shadow = {
+      ...decision,
+      outcome: "approved" as const,
+      risk: decision.risk && {
+        ...decision.risk,
+        accepted: true,
+        reason: "risk checks passed",
+        decision: {
+          ...decision.risk.decision,
+          shadow_only: true,
+        },
+      },
+    };
+    render(<DecisionPanel
+      decisions={[shadow]}
+      liveRunPerformance={[]}
+      filter="all"
+      onFilter={vi.fn()}
+      onLoadOlder={vi.fn(async () => undefined)}
+      exhausted
+    />);
+
+    expect(screen.getByText("影子放行")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /OPEN_LONG/ }));
+    expect(screen.getByText("影子放行 · 未提交订单")).toBeTruthy();
+  });
+
   it("shows fill notional and estimated initial margin after a successful order", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: false,

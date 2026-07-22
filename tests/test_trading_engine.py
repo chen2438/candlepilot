@@ -220,6 +220,74 @@ def test_engine_requires_provider_and_audits_paper_fill(tmp_path: Path) -> None:
     assert events[0]["live_run"]["stop_reason"] == "stopped by user"
 
 
+def test_analysis_assisted_shadow_runs_hard_risk_without_submitting_order(
+    tmp_path: Path,
+) -> None:
+    class ShadowBridge:
+        async def generate(self, *, provider, snapshots, portfolio, persist):
+            snapshot = snapshots[0]
+            intent = TradeIntent(
+                symbol=snapshot.symbol,
+                cadence=snapshot.cadence,
+                action=TradeAction.OPEN_LONG,
+                confidence=0.8,
+                leverage=1,
+                risk_fraction="0.01",
+                stop_loss="98",
+                take_profit="104",
+                rationale="AI 分析辅助影子意图",
+            )
+            return [
+                ProviderResult(
+                    intent,
+                    provider.name,
+                    "fixture",
+                    timedelta(milliseconds=1),
+                    "{}",
+                    {"analysis_decision_mode": "shadow", "shadow_target2": 108},
+                )
+            ]
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'shadow.db'}")
+        await database.initialize()
+        broker = FakeTestnetBroker()
+        engine = TradingEngine(
+            testnet_broker=broker,  # type: ignore[arg-type]
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=AuditRepository(database.sessions),
+            market=FakeMarket(),  # type: ignore[arg-type]
+        )
+        engine.select_provider_chain(["fake-auth"])
+        engine.configure_analysis_decision_bridge(ShadowBridge())  # type: ignore[arg-type]
+        engine.select_analysis_decision_mode("shadow")
+        await engine.start()
+        outcome = await engine.evaluate(
+            MarketSnapshot(
+                symbol="BTCUSDT",
+                cadence="5m",
+                timestamp=datetime.now(UTC),
+                mark_price="100",
+                bid="99.9",
+                ask="100.1",
+                quote_volume_24h="1000000",
+            ),
+            PortfolioState(equity="10000", available_balance="8000"),
+            SymbolRules(
+                Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")
+            ),
+        )
+        await engine.stop()
+        await database.close()
+        return outcome, broker.orders
+
+    outcome, orders = asyncio.run(scenario())
+    assert outcome.risk.accepted
+    assert outcome.risk.shadow_only
+    assert outcome.execution is None
+    assert orders == []
+
+
 def test_universe_excludes_symbols_not_tradable_on_the_execution_venue(
     tmp_path: Path,
 ) -> None:

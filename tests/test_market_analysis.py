@@ -10,6 +10,12 @@ from pydantic import ValidationError
 from candlepilot.api import create_app
 from candlepilot.application.engine import TradingEngine
 from candlepilot.analysis.datapack import AnalysisDataPackBuilder
+from candlepilot.analysis.decision import (
+    AnalysisAssistedDecision,
+    AnalysisDecisionBridge,
+    analysis_assisted_output_schema,
+    build_analysis_assisted_prompt,
+)
 from candlepilot.analysis.models import MarketAnalysis, market_analysis_output_schema
 from candlepilot.analysis.outcomes import (
     evaluate_outcome,
@@ -18,7 +24,7 @@ from candlepilot.analysis.outcomes import (
 )
 from candlepilot.analysis.prompt import PROMPT_VERSION, build_analysis_prompt
 from candlepilot.analysis.service import MarketAnalysisService
-from candlepilot.domain.models import ProviderHealth, TradeIntent
+from candlepilot.domain.models import MarketSnapshot, PortfolioState, ProviderHealth, TradeIntent
 from candlepilot.market.features import Kline
 from candlepilot.market.scanner import Candidate
 from candlepilot.providers.base import DecisionProvider, ProviderResult, StructuredOutputResult
@@ -107,6 +113,77 @@ def test_analysis_prompt_requires_chinese_user_facing_text() -> None:
     assert "Write every user-facing natural-language value in Simplified Chinese" in prompt
     assert "Keep JSON keys, enum values" in prompt
     assert "Previous analysis may be in another language" in prompt
+
+
+def test_assisted_analysis_maps_t1_to_fixed_one_times_intent_and_keeps_t2_shadow() -> None:
+    decision = AnalysisAssistedDecision.model_validate(
+        {
+            "symbol": "BTCUSDT",
+            "analysis": _analysis_payload(),
+            "execution": {
+                "confidence": 0.8,
+                "order_type": "LIMIT",
+                "ttl_seconds": 120,
+                "setup_type": "BREAKOUT_RETEST",
+                "trigger_type": "RECLAIM",
+                "invalidation_type": "SWING",
+                "invalidation_level": 98,
+                "target_type": "SWING",
+            },
+        }
+    )
+    snapshot = MarketSnapshot(
+        symbol="BTCUSDT",
+        cadence="15m",
+        timestamp=datetime.now(UTC),
+        mark_price="100",
+        bid="99.9",
+        ask="100.1",
+        quote_volume_24h="1000000",
+    )
+    result = AnalysisDecisionBridge._provider_result(
+        decision=decision,
+        snapshot=snapshot,
+        portfolio=PortfolioState(equity="10000", available_balance="8000"),
+        provider="fixture",
+        model="fixture-model",
+        duration=timedelta(seconds=1),
+        raw_output="{}",
+        usage={"analysis_decision_mode": "shadow"},
+        provider_version="fixture-1",
+        reasoning_effort="medium",
+        input_payload={},
+        prompt="fixture",
+    )
+
+    assert result.intent.action.value == "OPEN_LONG"
+    assert result.intent.leverage == 1
+    assert result.intent.take_profit == Decimal("104")
+    assert result.usage["shadow_target2"] == 108
+    assert result.prompt_version == "analysis-assisted-decision-v1"
+
+
+def test_assisted_schema_is_strict_and_prompt_declares_shadow_boundaries() -> None:
+    schema = analysis_assisted_output_schema()
+
+    def assert_strict(node: object) -> None:
+        if isinstance(node, dict):
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                assert node.get("required") == list(properties)
+                assert node.get("additionalProperties") is False
+            assert "default" not in node
+            for value in node.values():
+                assert_strict(value)
+        elif isinstance(node, list):
+            for value in node:
+                assert_strict(value)
+
+    assert_strict(schema)
+    prompt = build_analysis_assisted_prompt([{"symbol": "BTCUSDT"}])
+    assert "T1 is the fixed formal take-profit field" in prompt
+    assert "T2 is retained only for shadow outcome comparison" in prompt
+    assert "fixes assisted decisions at 1x leverage" in prompt
 
 
 def test_neutral_analysis_requires_range_containing_anchor() -> None:
@@ -404,6 +481,40 @@ class SlowAnalysisProvider(AnalysisProvider):
         )
 
 
+class AssistedAnalysisProvider(AnalysisProvider):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def generate_structured_output(self, *, prompt, output_schema):
+        self.calls += 1
+        decisions = []
+        for symbol in ("BTCUSDT", "ETHUSDT"):
+            decisions.append(
+                {
+                    "symbol": symbol,
+                    "analysis": _analysis_payload(),
+                    "execution": {
+                        "confidence": 0.8,
+                        "order_type": "LIMIT",
+                        "ttl_seconds": 120,
+                        "setup_type": "BREAKOUT_RETEST",
+                        "trigger_type": "RECLAIM",
+                        "invalidation_type": "SWING",
+                        "invalidation_level": 98,
+                        "target_type": "SWING",
+                    },
+                }
+            )
+        return StructuredOutputResult(
+            provider=self.name,
+            model=self.model,
+            duration=timedelta(milliseconds=20),
+            raw_output=__import__("json").dumps({"decisions": decisions}),
+            usage={"input_tokens": 11, "output_tokens": 7, "total_tokens": 18},
+            reasoning_effort=self.reasoning_effort,
+        )
+
+
 def test_analysis_service_persists_frozen_input_and_validated_result(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'analysis.db'}")
@@ -433,6 +544,51 @@ def test_analysis_service_persists_frozen_input_and_validated_result(tmp_path: P
     assert row["usage"]["total_tokens"] == 30
     assert row["prompt_version"] == "market-analysis-v2"
     assert row["result"]["summary"] == "15 分钟结构偏强，但仍需 1 小时周期确认。"
+
+
+def test_assisted_bridge_uses_one_batch_call_and_persists_split_shadow_rows(
+    tmp_path: Path,
+) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'assisted.db'}")
+        await database.initialize()
+        repository = MarketAnalysisRepository(database.sessions)
+        bridge = AnalysisDecisionBridge(
+            builder=StaticBuilder(),  # type: ignore[arg-type]
+            repository=repository,
+        )
+        provider = AssistedAnalysisProvider()
+        snapshots = [
+            MarketSnapshot(
+                symbol=symbol,
+                cadence="15m",
+                timestamp=datetime.now(UTC),
+                mark_price="100",
+                bid="99.9",
+                ask="100.1",
+                quote_volume_24h="1000000",
+            )
+            for symbol in ("BTCUSDT", "ETHUSDT")
+        ]
+        results = await bridge.generate(
+            provider=provider,
+            snapshots=snapshots,
+            portfolio=PortfolioState(equity="10000", available_balance="8000"),
+            persist=True,
+        )
+        rows = await repository.recent(limit=10)
+        await database.close()
+        return provider.calls, results, rows
+
+    calls, results, rows = asyncio.run(scenario())
+    assert calls == 1
+    assert [item.intent.symbol for item in results] == ["BTCUSDT", "ETHUSDT"]
+    assert all(item.intent.leverage == 1 for item in results)
+    assert all(item.intent.take_profit == Decimal("104") for item in results)
+    assert {row["usage"]["batch_index"] for row in rows} == {1, 2}
+    assert all(row["usage"]["analysis_decision_mode"] == "shadow" for row in rows)
+    assert all(row["usage"]["shadow_target2"] == 108 for row in rows)
+    assert sum(row["usage"]["total_tokens"] for row in rows) == 18
 
 
 def test_market_analysis_api_runs_selected_provider_and_returns_audit(tmp_path: Path) -> None:

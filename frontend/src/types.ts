@@ -138,6 +138,8 @@ export interface MarketAnalysisRecord {
     cached_input_tokens?: number;
     output_tokens?: number;
     total_tokens?: number;
+    analysis_decision_mode?: "shadow";
+    shadow_target2?: number | null;
   };
   duration_ms: number | null;
   error: string | null;
@@ -192,6 +194,7 @@ export interface EngineStatus {
   emergency_locked_until: string | null;
   provider_chain: string[];
   active_provider: string | null;
+  analysis_decision_mode: "off" | "shadow";
   live_run_id: number | null;
   provider_routes: ProviderRouteStatus[];
   active_cadences: string[];
@@ -465,6 +468,7 @@ export interface DecisionEvent {
       cadences?: string[];
       candidates_per_cycle?: number;
       software_version?: string;
+      analysis_decision_mode?: "off" | "shadow";
       [key: string]: unknown;
     };
     stop_reason: string | null;
@@ -513,6 +517,7 @@ export interface DecisionEvent {
     accepted: boolean;
     reason: string;
     decision: {
+      shadow_only?: boolean;
       max_quantity: string | null;
       pre_trade_entry_price?: string | null;
       pre_trade_reward_risk_ratio?: string | null;
