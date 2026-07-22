@@ -585,6 +585,12 @@ class MarketAnalysisRequest(ApiModel):
     symbol: str = Field(pattern=r"^[A-Z0-9]+USDT$")
 
 
+class MarketAnalysisOutcomeBatchRequest(ApiModel):
+    analysis_ids: list[Annotated[int, Field(gt=0)]] = Field(
+        min_length=1, max_length=30
+    )
+
+
 class HistoryClearRequest(ApiModel):
     categories: list[str] = Field(min_length=1, max_length=16)
 
@@ -3284,6 +3290,70 @@ def create_app(
             raise HTTPException(status_code=422, detail="invalid symbol")
         return await analysis_repository.recent(limit=limit, symbol=normalized)
 
+    async def _refresh_market_analysis_outcome(
+        analysis_id: int, *, include_audit: bool
+    ) -> dict[str, Any]:
+        row = await analysis_repository.get(analysis_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="market analysis not found")
+        if row["status"] != "succeeded" or row["result"] is None:
+            raise HTTPException(status_code=409, detail="market analysis is not complete")
+        completed_at = row["completed_at"]
+        assert isinstance(completed_at, datetime)
+        analysis_payload = {
+            key: value for key, value in row["result"].items() if key != "reward_risk"
+        }
+        analysis = MarketAnalysis.model_validate(analysis_payload)
+        outcome = await evaluate_outcome_from_market(
+            market,
+            symbol=row["symbol"],
+            analysis=analysis,
+            completed_at=completed_at,
+        )
+        await analysis_repository.save_outcome(
+            analysis_id, outcome.model_dump(mode="json")
+        )
+        refreshed = await analysis_repository.get(
+            analysis_id, include_audit=include_audit
+        )
+        assert refreshed is not None
+        return refreshed
+
+    @app.post("/api/market-analyses/outcomes")
+    async def refresh_market_analysis_outcomes(
+        request: MarketAnalysisOutcomeBatchRequest,
+    ) -> dict[str, Any]:
+        updated_ids: list[int] = []
+        errors: list[dict[str, Any]] = []
+        for analysis_id in dict.fromkeys(request.analysis_ids):
+            try:
+                await _refresh_market_analysis_outcome(
+                    analysis_id, include_audit=False
+                )
+            except HTTPException as exc:
+                errors.append(
+                    {
+                        "id": analysis_id,
+                        "status_code": exc.status_code,
+                        "detail": str(exc.detail),
+                    }
+                )
+            except Exception:
+                logging.getLogger("candlepilot").exception(
+                    "batch market analysis outcome refresh failed for id %s",
+                    analysis_id,
+                )
+                errors.append(
+                    {
+                        "id": analysis_id,
+                        "status_code": 502,
+                        "detail": "outcome refresh failed",
+                    }
+                )
+            else:
+                updated_ids.append(analysis_id)
+        return {"updated_ids": updated_ids, "errors": errors}
+
     @app.get("/api/market-analyses/{analysis_id}")
     async def get_market_analysis(analysis_id: int) -> dict[str, Any]:
         row = await analysis_repository.get(analysis_id, include_audit=True)
@@ -3310,29 +3380,9 @@ def create_app(
 
     @app.post("/api/market-analyses/{analysis_id}/outcome")
     async def refresh_market_analysis_outcome(analysis_id: int) -> dict[str, Any]:
-        row = await analysis_repository.get(analysis_id)
-        if row is None:
-            raise HTTPException(status_code=404, detail="market analysis not found")
-        if row["status"] != "succeeded" or row["result"] is None:
-            raise HTTPException(status_code=409, detail="market analysis is not complete")
-        completed_at = row["completed_at"]
-        assert isinstance(completed_at, datetime)
-        analysis_payload = {
-            key: value for key, value in row["result"].items() if key != "reward_risk"
-        }
-        analysis = MarketAnalysis.model_validate(analysis_payload)
-        outcome = await evaluate_outcome_from_market(
-            market,
-            symbol=row["symbol"],
-            analysis=analysis,
-            completed_at=completed_at,
+        return await _refresh_market_analysis_outcome(
+            analysis_id, include_audit=True
         )
-        await analysis_repository.save_outcome(
-            analysis_id, outcome.model_dump(mode="json")
-        )
-        refreshed = await analysis_repository.get(analysis_id, include_audit=True)
-        assert refreshed is not None
-        return refreshed
 
     def _set_probe_task(task: asyncio.Task[None]) -> None:
         nonlocal probe_task

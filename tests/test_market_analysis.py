@@ -476,6 +476,21 @@ def test_market_analysis_api_runs_selected_provider_and_returns_audit(tmp_path: 
         outcome = client.post(f"/api/market-analyses/{identifier}/outcome")
         assert outcome.status_code == 200
         assert outcome.json()["outcome"]["status"] == "waiting_entry"
+        batch_outcomes = client.post(
+            "/api/market-analyses/outcomes",
+            json={"analysis_ids": [identifier, identifier, 999_999]},
+        )
+        assert batch_outcomes.status_code == 200
+        assert batch_outcomes.json()["updated_ids"] == [identifier]
+        assert batch_outcomes.json()["errors"] == [
+            {
+                "id": 999_999,
+                "status_code": 404,
+                "detail": "market analysis not found",
+            }
+        ]
+        refreshed_history = client.get("/api/market-analyses").json()
+        assert refreshed_history[0]["outcome"]["status"] == "waiting_entry"
 
         selection = client.post(
             "/api/candidates-per-cycle", json={"candidates_per_cycle": 2}

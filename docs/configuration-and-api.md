@@ -78,6 +78,9 @@
 重放同一结果状态机。缺少任一分钟或冲突仍在同一根 1m 内时保持 `ambiguous`。1m 只用于确定性事后
 判定，不发送给 Provider；接口不调用模型或 Broker，未完成记录返回 409。详情与列表均返回
 `outcome` 和更新时间。
+`POST /api/market-analyses/outcomes` 接受 `{"analysis_ids":[1,2]}`，一次最多 30 个正整数 ID，按首次
+出现顺序去重并串行执行同一结果判定；响应分别返回 `updated_ids` 与逐项 `errors`。单条不存在、
+未完成或行情读取失败不会阻断其余项目，也不会把失败记录冒充已更新。
 
 `POST /api/engine/clear-emergency-lock` 会先执行交易所账户对账；仅停止状态且无持仓、无普通或 Algo
 挂单时删除紧急锁，否则返回 409 并保留锁定。

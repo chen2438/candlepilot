@@ -97,6 +97,32 @@ const pendingRecord: MarketAnalysisRecord = {
   completed_at: null,
 };
 
+const activeRecord: MarketAnalysisRecord = {
+  ...record,
+  outcome: {
+    status: "active",
+    bars_observed: 3,
+    entry_at: "2026-07-22T10:10:00Z",
+    target1_at: null,
+    resolved_at: null,
+    detail: "计划已入场，尚未触及结构止损或 T1",
+  },
+  outcome_updated_at: "2026-07-22T10:20:00Z",
+};
+
+const stoppedRecord: MarketAnalysisRecord = {
+  ...shortRecord,
+  outcome: {
+    status: "stopped",
+    bars_observed: 4,
+    entry_at: "2026-07-22T10:10:00Z",
+    target1_at: null,
+    resolved_at: "2026-07-22T10:25:00Z",
+    detail: "计划已入场，随后触及结构止损",
+  },
+  outcome_updated_at: "2026-07-22T10:25:00Z",
+};
+
 function response(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -217,5 +243,32 @@ describe("MarketAnalysisPanel", () => {
       expect.objectContaining({ method: "POST" }),
     ));
     expect(screen.getByText("ETHUSDT · SOLUSDT")).toBeTruthy();
+  });
+
+  it("batch refreshes outcomes and shows each result in analysis history", async () => {
+    let updated = false;
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path === "/api/market-analyses?limit=30") {
+        return response(updated ? [activeRecord, stoppedRecord] : [record, shortRecord]);
+      }
+      if (path === "/api/market-analyses/outcomes" && init?.method === "POST") {
+        expect(JSON.parse(String(init.body))).toEqual({ analysis_ids: [7, 9] });
+        updated = true;
+        return response({ updated_ids: [7, 9], errors: [] });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+    render(<MarketAnalysisPanel engineRunning={false} provider="codex-auth" />);
+
+    expect((await screen.findAllByText("尚未评估")).length).toBe(2);
+    fireEvent.click(screen.getByRole("button", { name: "批量更新结果（2）" }));
+
+    await screen.findByText("入场已触发");
+    expect(screen.getByText("结构止损")).toBeTruthy();
+    expect(request).toHaveBeenCalledWith(
+      "/api/market-analyses/outcomes",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 });

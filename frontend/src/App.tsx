@@ -2816,6 +2816,7 @@ export function MarketAnalysisPanel({
   const [selected, setSelected] = useState<MarketAnalysisRecord | null>(null);
   const [timeframe, setTimeframe] = useState<"5m" | "15m" | "1h">("15m");
   const [busy, setBusy] = useState(false);
+  const [outcomeBusy, setOutcomeBusy] = useState<"single" | "batch" | null>(null);
   const [batchIds, setBatchIds] = useState<number[]>([]);
   const [lastQueuedSymbols, setLastQueuedSymbols] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -2946,7 +2947,7 @@ export function MarketAnalysisPanel({
 
   const refreshOutcome = async () => {
     if (!selected) return;
-    setBusy(true);
+    setOutcomeBusy("single");
     setError(null);
     try {
       const detail = await api<MarketAnalysisRecord>(`/api/market-analyses/${selected.id}/outcome`, { method: "POST" });
@@ -2955,7 +2956,36 @@ export function MarketAnalysisPanel({
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setBusy(false);
+      setOutcomeBusy(null);
+    }
+  };
+
+  const refreshOutcomes = async () => {
+    const analysisIds = history
+      .filter((item) => item.status === "succeeded" && item.result)
+      .map((item) => item.id);
+    if (!analysisIds.length) return;
+    setOutcomeBusy("batch");
+    setError(null);
+    try {
+      const response = await api<{
+        updated_ids: number[];
+        errors: Array<{ id: number; status_code: number; detail: string }>;
+      }>("/api/market-analyses/outcomes", {
+        method: "POST",
+        body: JSON.stringify({ analysis_ids: analysisIds }),
+      });
+      await refreshHistory();
+      if (selected && response.updated_ids.includes(selected.id)) {
+        await loadDetail(selected.id);
+      }
+      if (response.errors.length) {
+        setError(`已更新 ${response.updated_ids.length} 项，${response.errors.length} 项更新失败。`);
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setOutcomeBusy(null);
     }
   };
 
@@ -2977,6 +3007,9 @@ export function MarketAnalysisPanel({
     return direction === filter;
   };
   const filteredHistory = history.filter((item) => matchesHistoryFilter(item));
+  const refreshableOutcomeCount = history.filter(
+    (item) => item.status === "succeeded" && item.result,
+  ).length;
   const applyHistoryFilter = (filter: typeof historyFilter) => {
     setHistoryFilter(filter);
     if (selected && !matchesHistoryFilter(selected, filter)) setSelected(null);
@@ -2995,13 +3028,13 @@ export function MarketAnalysisPanel({
         required
       /></label>
       <div><small>当前 Provider</small><strong>{provider ?? "未选择外部 Provider"}</strong></div>
-      <button className="primary" disabled={busy || engineRunning || !provider || Boolean(running)}>
+      <button className="primary" disabled={busy || outcomeBusy !== null || engineRunning || !provider || Boolean(running)}>
         {running ? "分析进行中…" : busy ? "正在创建…" : "开始分析"}
       </button>
       <button
         type="button"
         className="batch"
-        disabled={busy || engineRunning || !provider || Boolean(running)}
+        disabled={busy || outcomeBusy !== null || engineRunning || !provider || Boolean(running)}
         title={displayedCandidateSymbols.join(", ")}
         onClick={() => void startBatch()}
       >
@@ -3023,7 +3056,23 @@ export function MarketAnalysisPanel({
 
     <div className="analysis-layout">
       <aside className="analysis-history">
-        <div className="analysis-subhead"><strong>分析历史</strong><button className="text-button" onClick={() => void refreshHistory()}>刷新</button></div>
+        <div className="analysis-subhead">
+          <strong>分析历史</strong>
+          <span className="analysis-history-actions">
+            <button
+              className="text-button"
+              type="button"
+              disabled={busy || outcomeBusy !== null || refreshableOutcomeCount === 0}
+              onClick={() => void refreshOutcomes()}
+            >{outcomeBusy === "batch" ? "更新中…" : `批量更新结果（${refreshableOutcomeCount}）`}</button>
+            <button
+              className="text-button"
+              type="button"
+              disabled={outcomeBusy !== null}
+              onClick={() => void refreshHistory()}
+            >刷新</button>
+          </span>
+        </div>
         <div className="analysis-history-filters" role="group" aria-label="分析方向筛选">
           {([["directional", "方向"], ["long", "偏多"], ["short", "偏空"], ["all", "全部"]] as const).map(([value, label]) => <button
             key={value}
@@ -3039,7 +3088,12 @@ export function MarketAnalysisPanel({
           onClick={() => void loadDetail(item.id)}
         >
           <span><strong>{item.symbol}</strong><small>#{item.id} · {new Date(item.created_at).toLocaleString("zh-CN", { hour12: false })}</small></span>
-          <em className={item.result?.direction ?? item.status}>{item.result ? analysisDirectionLabel(item.result.direction) : analysisStatusLabel(item.status)}</em>
+          <span className="analysis-history-results">
+            <em className={item.result?.direction ?? item.status}>{item.result ? analysisDirectionLabel(item.result.direction) : analysisStatusLabel(item.status)}</em>
+            {item.status === "succeeded" && <em className={`outcome ${item.outcome?.status ?? "unassessed"}`}>
+              {item.outcome ? analysisOutcomeLabel(item.outcome.status) : "尚未评估"}
+            </em>}
+          </span>
         </button>)}
         {!history.length && <div className="empty">暂无分析记录</div>}
         {Boolean(history.length && !filteredHistory.length) && <div className="empty">当前筛选无记录</div>}
@@ -3058,7 +3112,7 @@ export function MarketAnalysisPanel({
               <strong className={selected.outcome?.status ?? "waiting"}>{selected.outcome ? analysisOutcomeLabel(selected.outcome.status) : "尚未评估"}</strong>
               <span>{selected.outcome?.detail ?? "先确认入场，再判断止损、T1/T2；同一根 K 线无法确认顺序时不会猜测。"}</span>
             </div>
-            <button disabled={busy} onClick={() => void refreshOutcome()}>{busy ? "更新中…" : "更新结果"}</button>
+            <button disabled={busy || outcomeBusy !== null} onClick={() => void refreshOutcome()}>{outcomeBusy === "single" ? "更新中…" : "更新结果"}</button>
           </div>}
           {selected.error && <div className="analysis-warning negative">{selected.error}</div>}
           {result && <>
