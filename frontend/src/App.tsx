@@ -3049,7 +3049,7 @@ export function MarketAnalysisPanel({
               <span><small>T1 · {result.reward_risk?.target1.toFixed(2)}R</small><strong>{analysisPrice(result.entry_plan.target1)}</strong></span>
               <span><small>T2 · {result.reward_risk?.target2.toFixed(2)}R</small><strong>{analysisPrice(result.entry_plan.target2)}</strong></span>
             </div>}
-            {result.range_plan && <div className="analysis-level-grid range"><span><small>观望区间</small><strong>{analysisPrice(result.range_plan.low)} — {analysisPrice(result.range_plan.high)}</strong></span><p>{result.range_plan.tactic}</p></div>}
+            {result.range_plan && <div className="analysis-level-grid analysis-range-plan"><span><small>观望区间</small><strong>{analysisPrice(result.range_plan.low)} — {analysisPrice(result.range_plan.high)}</strong></span><p>{result.range_plan.tactic}</p></div>}
             {result.entry_plan && <div className="analysis-plan-copy">
               <p><strong>触发</strong>{result.entry_plan.entry_trigger}</p>
               <p><strong>止损依据</strong>{result.entry_plan.stop_structure}</p>

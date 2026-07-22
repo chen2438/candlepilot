@@ -60,6 +60,22 @@ const record: MarketAnalysisRecord = {
   },
 };
 
+const rangeRecord: MarketAnalysisRecord = {
+  ...record,
+  id: 8,
+  result: {
+    ...record.result!,
+    direction: "neutral",
+    range_plan: {
+      low: 98,
+      high: 102,
+      tactic: "Wait for a confirmed 15m close outside the range before reassessing.",
+    },
+    entry_plan: null,
+    reward_risk: null,
+  },
+};
+
 function response(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -100,6 +116,22 @@ describe("MarketAnalysisPanel", () => {
     render(<MarketAnalysisPanel engineRunning provider="codex-auth" />);
     expect(screen.getByRole("button", { name: "开始分析" }).hasAttribute("disabled")).toBe(true);
     expect(screen.getByText(/正式引擎运行中/)).toBeTruthy();
+  });
+
+  it("keeps a neutral range plan in its dedicated layout before scenarios", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const path = String(input);
+      if (path === "/api/market-analyses?limit=30") return response([rangeRecord]);
+      if (path === "/api/market-analyses/8") return response(rangeRecord);
+      throw new Error(`unexpected request: ${path}`);
+    });
+    render(<MarketAnalysisPanel engineRunning={false} provider="codex-auth" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /BTCUSDT/ }));
+    const rangePlan = await screen.findByText("观望区间");
+    expect(rangePlan.closest(".analysis-range-plan")).toBeTruthy();
+    expect(rangePlan.closest(".range")).toBeNull();
+    expect(screen.getByText("continuation")).toBeTruthy();
   });
 
   it("queues the formal engine candidate batch", async () => {
