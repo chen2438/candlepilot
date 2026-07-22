@@ -936,6 +936,7 @@ def create_app(
     trade_fill_failure_count: dict[str, int] = {}
     analysis_repository = MarketAnalysisRepository(database.sessions)
     analysis_task: asyncio.Task[None] | None = None
+    analysis_task_ids: set[int] = set()
     analysis_start_lock = asyncio.Lock()
     restart_pending = False
     update_pending = False
@@ -3164,8 +3165,37 @@ def create_app(
             or codex_auth_manager.active
         )
 
-    @app.post("/api/market-analyses", status_code=202)
-    async def start_market_analysis(request: MarketAnalysisRequest) -> dict[str, Any]:
+    def selected_analysis_provider() -> DecisionProvider:
+        if len(engine.provider_chain) != 1:
+            raise HTTPException(status_code=409, detail="select exactly one provider first")
+        provider = engine.providers.get(engine.provider_chain[0])
+        if not provider.capabilities.external_inference:
+            raise HTTPException(
+                status_code=422,
+                detail="the selected local rule provider cannot produce AI analysis",
+            )
+        return provider
+
+    async def run_market_analysis_queue(
+        analyses: list[tuple[int, str]], provider: DecisionProvider
+    ) -> None:
+        try:
+            for analysis_id, symbol in analyses:
+                await analysis_service.run(
+                    analysis_id, symbol=symbol, provider=provider
+                )
+        except asyncio.CancelledError:
+            for analysis_id, _ in analyses:
+                row = await analysis_repository.get(analysis_id)
+                if row is not None and row["status"] in {"pending", "running"}:
+                    await analysis_repository.fail(
+                        analysis_id, "analysis cancelled by user", cancelled=True
+                    )
+            raise
+        finally:
+            analysis_task_ids.clear()
+
+    async def queue_market_analyses(symbols: list[str]) -> dict[str, Any]:
         nonlocal analysis_task
         if engine.running:
             raise HTTPException(
@@ -3187,21 +3217,63 @@ def create_app(
                 )
             if analysis_task and not analysis_task.done():
                 raise HTTPException(status_code=409, detail="market analysis is already running")
-            if len(engine.provider_chain) != 1:
-                raise HTTPException(status_code=409, detail="select exactly one provider first")
-            provider = engine.providers.get(engine.provider_chain[0])
-            if not provider.capabilities.external_inference:
-                raise HTTPException(
-                    status_code=422,
-                    detail="the selected local rule provider cannot produce AI analysis",
+            provider = selected_analysis_provider()
+            analyses = [
+                (
+                    await analysis_service.create(symbol=symbol, provider=provider),
+                    symbol,
                 )
-            symbol = request.symbol.upper()
-            analysis_id = await analysis_service.create(symbol=symbol, provider=provider)
+                for symbol in symbols
+            ]
+            analysis_task_ids.update(analysis_id for analysis_id, _ in analyses)
             analysis_task = asyncio.create_task(
-                analysis_service.run(analysis_id, symbol=symbol, provider=provider),
-                name=f"candlepilot-market-analysis-{analysis_id}",
+                run_market_analysis_queue(analyses, provider),
+                name=f"candlepilot-market-analysis-{analyses[0][0]}",
             )
-        return {"id": analysis_id, "status": "pending"}
+        return {
+            "status": "pending",
+            "analyses": [
+                {"id": analysis_id, "symbol": symbol}
+                for analysis_id, symbol in analyses
+            ],
+        }
+
+    @app.post("/api/market-analyses", status_code=202)
+    async def start_market_analysis(request: MarketAnalysisRequest) -> dict[str, Any]:
+        queued = await queue_market_analyses([request.symbol.upper()])
+        analysis = queued["analyses"][0]
+        return {**analysis, "status": queued["status"]}
+
+    @app.post("/api/market-analyses/batch", status_code=202)
+    async def start_market_analysis_batch() -> dict[str, Any]:
+        if engine.running:
+            raise HTTPException(
+                status_code=409,
+                detail="cannot run advisory analysis while the formal engine runs",
+            )
+        if background_model_work():
+            raise HTTPException(
+                status_code=409,
+                detail="another provider task is already running",
+            )
+        if not engine.candidates:
+            try:
+                await engine.refresh_universe()
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=502, detail=f"market refresh failed: {exc}"
+                ) from exc
+        symbols = list(
+            dict.fromkeys(
+                candidate.symbol
+                for candidate in engine.candidates[: scheduler.candidates_per_cycle]
+            )
+        )
+        if not symbols:
+            raise HTTPException(
+                status_code=422, detail="the live universe has no eligible candidate symbols"
+            )
+        return await queue_market_analyses(symbols)
 
     @app.get("/api/market-analyses")
     async def list_market_analyses(
@@ -3227,10 +3299,12 @@ def create_app(
         row = await analysis_repository.get(analysis_id)
         if row is None:
             raise HTTPException(status_code=404, detail="market analysis not found")
-        if analysis_task is None or analysis_task.done() or row["status"] not in {
-            "pending",
-            "running",
-        }:
+        if (
+            analysis_id not in analysis_task_ids
+            or analysis_task is None
+            or analysis_task.done()
+            or row["status"] not in {"pending", "running"}
+        ):
             raise HTTPException(status_code=409, detail="market analysis is not running")
         analysis_task.cancel()
         await asyncio.gather(analysis_task, return_exceptions=True)

@@ -15,6 +15,7 @@ from candlepilot.analysis.outcomes import evaluate_outcome, next_complete_5m_sta
 from candlepilot.analysis.service import MarketAnalysisService
 from candlepilot.domain.models import ProviderHealth, TradeIntent
 from candlepilot.market.features import Kline
+from candlepilot.market.scanner import Candidate
 from candlepilot.providers.base import DecisionProvider, ProviderResult, StructuredOutputResult
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.storage.database import AuditRepository, Database, MarketAnalysisRepository
@@ -256,6 +257,14 @@ class AnalysisProvider(DecisionProvider):
         )
 
 
+class SlowAnalysisProvider(AnalysisProvider):
+    async def generate_structured_output(self, *, prompt, output_schema):
+        await asyncio.sleep(60)
+        return await super().generate_structured_output(
+            prompt=prompt, output_schema=output_schema
+        )
+
+
 def test_analysis_service_persists_frozen_input_and_validated_result(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'analysis.db'}")
@@ -296,6 +305,17 @@ def test_market_analysis_api_runs_selected_provider_and_returns_audit(tmp_path: 
         market=market,  # type: ignore[arg-type]
     )
     engine.select_provider_chain([provider.name])
+    engine.candidates = [
+        Candidate(
+            symbol=symbol,
+            score=Decimal(str(1 - index / 10)),
+            volume_rank=index + 1,
+            spread_bps=Decimal("1"),
+            volatility=Decimal("0.02"),
+            trend_strength=Decimal("0.01"),
+        )
+        for index, symbol in enumerate(("BTCUSDT", "ETHUSDT", "SOLUSDT"))
+    ]
     app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
     with TestClient(app) as client:
         response = client.post("/api/market-analyses", json={"symbol": "BTCUSDT"})
@@ -315,3 +335,54 @@ def test_market_analysis_api_runs_selected_provider_and_returns_audit(tmp_path: 
         outcome = client.post(f"/api/market-analyses/{identifier}/outcome")
         assert outcome.status_code == 200
         assert outcome.json()["outcome"]["status"] == "waiting_entry"
+
+        selection = client.post(
+            "/api/candidates-per-cycle", json={"candidates_per_cycle": 2}
+        )
+        assert selection.status_code == 200
+        batch = client.post("/api/market-analyses/batch")
+        assert batch.status_code == 202
+        queued = batch.json()["analyses"]
+        assert [item["symbol"] for item in queued] == ["BTCUSDT", "ETHUSDT"]
+        for item in queued:
+            for _ in range(50):
+                detail = client.get(f"/api/market-analyses/{item['id']}").json()
+                if detail["status"] not in {"pending", "running"}:
+                    break
+                __import__("time").sleep(0.01)
+            assert detail["status"] == "succeeded", detail
+
+
+def test_cancelling_one_batch_item_cancels_the_whole_queue(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'analysis-cancel.db'}")
+    market = AnalysisMarket()
+    provider = SlowAnalysisProvider()
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([provider]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    engine.select_provider_chain([provider.name])
+    engine.candidates = [
+        Candidate(
+            symbol=symbol,
+            score=Decimal("1"),
+            volume_rank=index + 1,
+            spread_bps=Decimal("1"),
+            volatility=Decimal("0.02"),
+            trend_strength=Decimal("0.01"),
+        )
+        for index, symbol in enumerate(("BTCUSDT", "ETHUSDT"))
+    ]
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        queued = client.post("/api/market-analyses/batch").json()["analyses"]
+        cancellation = client.post(
+            f"/api/market-analyses/{queued[1]['id']}/cancel"
+        )
+        assert cancellation.status_code == 200
+        assert [
+            client.get(f"/api/market-analyses/{item['id']}").json()["status"]
+            for item in queued
+        ] == ["cancelled", "cancelled"]

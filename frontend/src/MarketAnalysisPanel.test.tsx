@@ -82,6 +82,7 @@ describe("MarketAnalysisPanel", () => {
       "/api/market-analyses?limit=30",
       expect.any(Object),
     ));
+    expect(screen.getByRole("button", { name: "扫描并分析候选" }).hasAttribute("disabled")).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "开始分析" }));
 
     await screen.findByText("偏多");
@@ -99,5 +100,36 @@ describe("MarketAnalysisPanel", () => {
     render(<MarketAnalysisPanel engineRunning provider="codex-auth" />);
     expect(screen.getByRole("button", { name: "开始分析" }).hasAttribute("disabled")).toBe(true);
     expect(screen.getByText(/正式引擎运行中/)).toBeTruthy();
+  });
+
+  it("queues the formal engine candidate batch", async () => {
+    const ethRecord = { ...record, id: 8, symbol: "ETHUSDT", status: "pending" as const, result: null };
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path === "/api/market-analyses?limit=30") return response([]);
+      if (path === "/api/market-analyses/batch" && init?.method === "POST") {
+        return response({
+          status: "pending",
+          analyses: [
+            { id: 8, symbol: "ETHUSDT" },
+            { id: 9, symbol: "SOLUSDT" },
+          ],
+        }, 202);
+      }
+      if (path === "/api/market-analyses/8") return response(ethRecord);
+      throw new Error(`unexpected request: ${path}`);
+    });
+    render(<MarketAnalysisPanel
+      engineRunning={false}
+      provider="codex-auth"
+      candidateSymbols={["ETHUSDT", "SOLUSDT"]}
+    />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "分析候选（2）" }));
+    await waitFor(() => expect(request).toHaveBeenCalledWith(
+      "/api/market-analyses/batch",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    expect(screen.getByText("ETHUSDT · SOLUSDT")).toBeTruthy();
   });
 });

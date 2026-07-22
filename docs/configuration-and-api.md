@@ -63,12 +63,16 @@
 `POST /api/engine/clear-emergency-lock`。
 
 **独立 AI 行情分析**：`POST /api/market-analyses` 接受唯一字段
-`{"symbol":"BTCUSDT"}` 并返回 202 与记录 ID；`GET /api/market-analyses?limit=30&symbol=BTCUSDT`
+`{"symbol":"BTCUSDT"}` 并返回 202 与记录 ID；`POST /api/market-analyses/batch` 无请求体，读取正式
+引擎当前候选池前 `candidates_per_cycle` 个标的，按排名返回 `analyses: [{id, symbol}]` 并排队串行
+分析；候选池为空时先刷新，批量不追加已有持仓。`GET /api/market-analyses?limit=30&symbol=BTCUSDT`
 返回最近摘要，`GET /api/market-analyses/{id}` 返回包含冻结输入、Prompt 和原始输出的本地审计详情，
-`POST /api/market-analyses/{id}/cancel` 取消当前任务。一次只允许一项分析；正式引擎、启动试跑、
+`POST /api/market-analyses/{id}/cancel` 取消当前单项或其所属的整个活动批次。一次只允许一个单项或
+批量分析队列；正式引擎、启动试跑、
 回测、登录或其他 Provider 任务活动时返回 409，分析活动也反向阻止这些操作。必须已经唯一选择一个
 外部 Provider；选中 `local-rule` 返回 422。创建接口仅排队，前端按 ID 轮询终态
-`succeeded/failed/cancelled`。分析不调用 Broker 执行接口，也不改变紧急锁、亏损熔断或运行状态。
+`succeeded/failed/cancelled`；批量中单项失败不阻断后续标的，批次取消会把尚未开始的记录一并标为
+`cancelled`。分析不调用 Broker 执行接口，也不改变紧急锁、亏损熔断或运行状态。
 `POST /api/market-analyses/{id}/outcome` 对已完成记录按需拉取分析后的 5m K 线并保存最新计划结果；
 它不调用模型或 Broker，未完成记录返回 409。详情与列表均返回 `outcome` 和更新时间。
 

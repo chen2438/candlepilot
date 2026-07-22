@@ -1915,6 +1915,9 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
           <MarketAnalysisPanel
             engineRunning={status.running}
             provider={selectedExternalProvider?.provider ?? null}
+            candidateSymbols={candidates
+              .slice(0, status.candidates_per_cycle ?? 0)
+              .map((candidate) => candidate.symbol)}
           />
         </section>
         )}
@@ -2802,19 +2805,25 @@ function FrozenAnalysisChart({
 export function MarketAnalysisPanel({
   engineRunning,
   provider,
+  candidateSymbols = [],
 }: {
   engineRunning: boolean;
   provider: string | null;
+  candidateSymbols?: string[];
 }) {
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [history, setHistory] = useState<MarketAnalysisRecord[]>([]);
   const [selected, setSelected] = useState<MarketAnalysisRecord | null>(null);
   const [timeframe, setTimeframe] = useState<"5m" | "15m" | "1h">("15m");
   const [busy, setBusy] = useState(false);
+  const [batchIds, setBatchIds] = useState<number[]>([]);
+  const [lastQueuedSymbols, setLastQueuedSymbols] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const refreshHistory = useCallback(async () => {
-    setHistory(await api<MarketAnalysisRecord[]>("/api/market-analyses?limit=30"));
+    const records = await api<MarketAnalysisRecord[]>("/api/market-analyses?limit=30");
+    setHistory(records);
+    return records;
   }, []);
 
   const loadDetail = useCallback(async (identifier: number) => {
@@ -2846,6 +2855,34 @@ export function MarketAnalysisPanel({
     return () => { stopped = true; window.clearTimeout(timer); };
   }, [selected?.id, selected?.status, loadDetail, refreshHistory]);
 
+  useEffect(() => {
+    if (!batchIds.length) return;
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const records = await refreshHistory();
+        if (stopped) return;
+        const queued = records.filter((item) => batchIds.includes(item.id));
+        const stillRunning = queued.some((item) => ["pending", "running"].includes(item.status));
+        const selectedSummary = selected
+          ? queued.find((item) => item.id === selected.id)
+          : null;
+        if (selectedSummary && selectedSummary.status !== selected?.status) {
+          await loadDetail(selectedSummary.id);
+        }
+        if (stillRunning) {
+          window.setTimeout(poll, 1200);
+        } else {
+          setBatchIds([]);
+        }
+      } catch (reason) {
+        if (!stopped) setError(reason instanceof Error ? reason.message : String(reason));
+      }
+    };
+    const timer = window.setTimeout(poll, 500);
+    return () => { stopped = true; window.clearTimeout(timer); };
+  }, [batchIds, selected?.id, selected?.status, loadDetail, refreshHistory]);
+
   const start = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true);
@@ -2865,13 +2902,40 @@ export function MarketAnalysisPanel({
     }
   };
 
+  const startBatch = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const created = await api<{
+        status: string;
+        analyses: Array<{ id: number; symbol: string }>;
+      }>("/api/market-analyses/batch", { method: "POST" });
+      const identifiers = created.analyses.map((item) => item.id);
+      setLastQueuedSymbols(created.analyses.map((item) => item.symbol));
+      setBatchIds(identifiers);
+      await Promise.all([
+        loadDetail(identifiers[0]),
+        refreshHistory(),
+      ]);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const cancel = async () => {
-    if (!selected) return;
+    const targetId = batchIds.find((identifier) => history.some(
+      (item) => item.id === identifier && ["pending", "running"].includes(item.status),
+    )) ?? selected?.id;
+    if (targetId == null) return;
     setBusy(true);
     try {
-      const detail = await api<MarketAnalysisRecord>(`/api/market-analyses/${selected.id}/cancel`, { method: "POST" });
-      setSelected(detail);
+      const detail = await api<MarketAnalysisRecord>(`/api/market-analyses/${targetId}/cancel`, { method: "POST" });
+      if (selected?.id === targetId) setSelected(detail);
+      setBatchIds([]);
       await refreshHistory();
+      if (selected && selected.id !== targetId) await loadDetail(selected.id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -2895,7 +2959,15 @@ export function MarketAnalysisPanel({
   };
 
   const result = selected?.result;
-  const running = selected && ["pending", "running"].includes(selected.status);
+  const running = batchIds.length > 0 || Boolean(selected && ["pending", "running"].includes(selected.status));
+  const batchCompleted = history.filter(
+    (item) => batchIds.includes(item.id) && !["pending", "running"].includes(item.status),
+  ).length;
+  const displayedCandidateSymbols = batchIds.length
+    ? lastQueuedSymbols
+    : candidateSymbols.length
+      ? candidateSymbols
+      : lastQueuedSymbols;
   return <article className="panel analysis-panel">
     <PanelTitle code="10" title="独立 AI 行情分析" meta="研究计划 · 不自动交易" />
     <div className="analysis-notice">
@@ -2913,8 +2985,25 @@ export function MarketAnalysisPanel({
       <button className="primary" disabled={busy || engineRunning || !provider || Boolean(running)}>
         {running ? "分析进行中…" : busy ? "正在创建…" : "开始分析"}
       </button>
+      <button
+        type="button"
+        className="batch"
+        disabled={busy || engineRunning || !provider || Boolean(running)}
+        title={displayedCandidateSymbols.join(", ")}
+        onClick={() => void startBatch()}
+      >
+        {batchIds.length
+          ? `批量 ${batchCompleted}/${batchIds.length}`
+          : candidateSymbols.length
+            ? `分析候选（${candidateSymbols.length}）`
+            : "扫描并分析候选"}
+      </button>
       {running && <button type="button" className="danger" disabled={busy} onClick={cancel}>取消</button>}
     </form>
+    <div className="analysis-candidates">
+      <small>正式引擎同批候选</small>
+      <span>{displayedCandidateSymbols.length ? displayedCandidateSymbols.join(" · ") : "候选池尚未就绪；批量分析时将先扫描"}</span>
+    </div>
     {engineRunning && <div className="analysis-warning">正式引擎运行中；停止后才能发起独立分析。</div>}
     {!provider && <div className="analysis-warning">请先在总览选择 Codex、Claude Code 或 Custom API。</div>}
     {error && <div className="analysis-warning negative">{error}</div>}
