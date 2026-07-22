@@ -221,6 +221,8 @@ class RiskDecision(StrictModel):
     shadow_only: bool = False
     max_quantity: Decimal | None = Field(default=None, ge=0)
     pre_trade_entry_price: Decimal | None = Field(default=None, gt=0)
+    pre_trade_stop_price: Decimal | None = Field(default=None, gt=0)
+    pre_trade_take_profit_price: Decimal | None = Field(default=None, gt=0)
     pre_trade_reward_risk_ratio: Decimal | None = Field(default=None, ge=0)
     pending_entry: bool = False
     pending_expires_at: datetime | None = None

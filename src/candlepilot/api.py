@@ -46,6 +46,10 @@ from candlepilot.analysis.outcomes import (
     TERMINAL_OUTCOME_STATUSES,
     evaluate_outcome_from_market,
 )
+from candlepilot.analysis.rejected_outcomes import (
+    RejectedDecisionPlan,
+    evaluate_rejected_decision_from_market,
+)
 from candlepilot.analysis.scheduler import MarketAnalysisScheduler
 from candlepilot.analysis.service import MarketAnalysisService
 from candlepilot.api_models import (
@@ -114,7 +118,9 @@ from candlepilot.domain.models import (
     SUPPORTED_CADENCES,
     ExecutionReport,
     MarketSnapshot,
+    OrderType,
     PortfolioState,
+    TradeAction,
 )
 from candlepilot.market.binance import BinancePublicClient
 from candlepilot.market.cache import HistoricalMarketCache
@@ -2368,6 +2374,86 @@ def create_app(
         if detail is None:
             raise HTTPException(status_code=404, detail="inference not found")
         return detail
+
+    @app.post("/api/decision-events/{inference_id}/counterfactual-outcome")
+    async def refresh_rejected_decision_outcome(
+        inference_id: int,
+    ) -> dict[str, Any]:
+        if inference_id < 1:
+            raise HTTPException(status_code=422, detail="inference id must be positive")
+        context = await engine.audit.rejected_decision_context(inference_id)
+        if context is None:
+            raise HTTPException(status_code=404, detail="inference not found")
+        intent = context["intent"]
+        risk = context["risk"]
+        evaluated_at = context["evaluated_at"]
+        if risk is None or context["risk_accepted"] is not False or evaluated_at is None:
+            raise HTTPException(
+                status_code=409, detail="decision was not rejected by hard risk"
+            )
+        if intent.action not in {
+            TradeAction.OPEN_LONG,
+            TradeAction.OPEN_SHORT,
+            TradeAction.ADD,
+        }:
+            raise HTTPException(
+                status_code=409,
+                detail="only rejected opening and add decisions have a counterfactual outcome",
+            )
+        stop = risk.pre_trade_stop_price or intent.stop_loss
+        take_profit = risk.pre_trade_take_profit_price or intent.take_profit
+        entry = risk.pre_trade_entry_price or intent.entry_price or intent.trigger_price
+        if stop is None or take_profit is None:
+            raise HTTPException(
+                status_code=409,
+                detail="rejected decision has no complete stop and take-profit plan",
+            )
+        if intent.action == TradeAction.OPEN_LONG:
+            direction = "LONG"
+        elif intent.action == TradeAction.OPEN_SHORT:
+            direction = "SHORT"
+        elif entry is not None and stop < entry < take_profit:
+            direction = "LONG"
+        elif entry is not None and take_profit < entry < stop:
+            direction = "SHORT"
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail="cannot infer rejected ADD direction from its price geometry",
+            )
+        price_source = (
+            "pre_trade"
+            if risk.pre_trade_stop_price is not None
+            and risk.pre_trade_take_profit_price is not None
+            else "intent"
+        )
+        try:
+            plan = RejectedDecisionPlan(
+                direction=direction,
+                order_type=OrderType(intent.order_type),
+                entry_price=entry,
+                stop_loss=stop,
+                take_profit=take_profit,
+                price_source=price_source,
+                evaluated_at=evaluated_at,
+                ttl_seconds=intent.ttl_seconds,
+            )
+            outcome = await evaluate_rejected_decision_from_market(
+                market,
+                symbol=intent.symbol,
+                plan=plan,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"counterfactual market history failed: {exc}",
+            ) from exc
+        updated_at = await engine.audit.save_rejected_decision_outcome(
+            inference_id, outcome.model_dump(mode="json")
+        )
+        return {**outcome.model_dump(mode="json"), "updated_at": updated_at}
 
     @app.get("/api/live-runs/performance")
     async def get_live_run_performance(limit: int = 100) -> list[dict[str, Any]]:

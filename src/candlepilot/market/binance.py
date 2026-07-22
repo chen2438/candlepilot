@@ -229,6 +229,49 @@ class BinancePublicClient:
             cursor = next_cursor
         return rows[:max_candles]
 
+    async def historical_mark_price_klines(
+        self,
+        symbol: str,
+        interval: str,
+        start: datetime,
+        end: datetime,
+        *,
+        max_candles: int = 10_000,
+    ) -> list[list[Any]]:
+        """Return closed-history input for exchange ``MARK_PRICE`` triggers."""
+
+        if interval not in {"1m", "5m"}:
+            raise ValueError("mark price history supports only 1m and 5m intervals")
+        if start.tzinfo is None or end.tzinfo is None:
+            raise ValueError("historical range must be timezone-aware")
+        if end <= start:
+            raise ValueError("historical range end must be after start")
+        if not 1 <= max_candles <= 100_000:
+            raise ValueError("max_candles must be between 1 and 100000")
+
+        interval_ms = {"1m": 60_000, "5m": 300_000}[interval]
+        cursor = int(start.timestamp() * 1000)
+        end_ms = int(end.timestamp() * 1000)
+        rows: list[list[Any]] = []
+        while cursor < end_ms and len(rows) < max_candles:
+            page_limit = min(1500, max_candles - len(rows))
+            page = await self._get(
+                "/fapi/v1/markPriceKlines",
+                symbol=symbol,
+                interval=interval,
+                startTime=cursor,
+                endTime=end_ms - 1,
+                limit=page_limit,
+            )
+            if not page:
+                break
+            rows.extend(row for row in page if cursor <= int(row[0]) < end_ms)
+            next_cursor = int(page[-1][0]) + interval_ms
+            if next_cursor <= cursor or len(page) < page_limit:
+                break
+            cursor = next_cursor
+        return rows[:max_candles]
+
     async def historical_funding_rates(
         self,
         symbol: str,

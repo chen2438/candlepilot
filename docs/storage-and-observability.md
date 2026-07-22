@@ -11,6 +11,7 @@
 - SQLite 表：`live_runs`（正式运行边界、配置快照与停止原因）、`inferences`（模型推理， nullable
   `live_run_id` 归属正式运行）、`inference_details`（逐次输入与 Prompt）、
   `risk_decisions`、`executions`（实际订单报告）、`execution_attempts`（推理对应的执行结论、失败阶段与损失）、
+  `rejected_decision_outcomes`（被风控否决计划的一对一按需反事实结果）、
   `user_stream_events`、`alert_events`、`trailing_stop_events`（影子候选、首次模拟成交、实盘替换与失败）、
   `partial_take_profit_events`（1R 部分止盈、剩余保本与实仓结束影子事件）、
   `runtime_state`、`schema_migrations`。
@@ -46,7 +47,10 @@
 - 独立分析历史表现不新增或回写收益表；读取时联结 `market_analyses` 与最新
   `market_analysis_outcomes`，再按冻结计划价位和结果状态确定性聚合。调整前端固定名义金额或固定
   止损金额只改变本次响应的仓位假设，不修改历史分析、结果或数据库。
-- 数据库基线：历史迁移链已在历史数据清空后压缩，当前 schema v18 在 v17 上新增独立分析结果表；
+- `rejected_decision_outcomes` 以推理 ID 一对一保存最近一次否决计划反事实结果和更新时间，并通过
+  级联外键随对应推理删除；它不进入真实执行、运行收益或亏损熔断统计。
+- 数据库基线：历史迁移链已在历史数据清空后压缩，当前 schema v19 在 v18 上新增否决决策反事实结果表；
+  v18 在 v17 上新增独立分析结果表；
   v17 在 v16 上新增独立 AI 行情分析审计表；
   v16 在 v15 上新增部分止盈影子审计表；
   v15 在 v14 上新增正式决策快照表；

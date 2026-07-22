@@ -416,6 +416,8 @@ class AggressiveRiskPolicy:
                             f"{self.minimum_reward_risk_ratio}:1"
                         ),
                         pre_trade_entry_price=reward_risk_entry,
+                        pre_trade_stop_price=stop,
+                        pre_trade_take_profit_price=take_profit,
                         pre_trade_reward_risk_ratio=reward_risk_ratio,
                         structure_assessment=structure_assessment,
                     )
@@ -454,6 +456,8 @@ class AggressiveRiskPolicy:
                 reason="; ".join(accepted_reasons),
                 max_quantity=quantity,
                 pre_trade_entry_price=reward_risk_entry,
+                pre_trade_stop_price=stop,
+                pre_trade_take_profit_price=take_profit,
                 pre_trade_reward_risk_ratio=reward_risk_ratio
                 if take_profit is not None
                 else None,

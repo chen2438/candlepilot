@@ -696,6 +696,8 @@ def test_rejects_raw_reward_risk_at_the_strict_threshold() -> None:
 
     assert not result.decision.accepted
     assert result.decision.pre_trade_entry_price == Decimal("100")
+    assert result.decision.pre_trade_stop_price == Decimal("98")
+    assert result.decision.pre_trade_take_profit_price == Decimal("102.3")
     assert result.decision.pre_trade_reward_risk_ratio == Decimal("1.15")
     assert (
         result.decision.reason
@@ -710,6 +712,8 @@ def test_raw_reward_risk_above_threshold_ignores_fees_and_slippage() -> None:
 
     assert result.decision.accepted
     assert result.decision.pre_trade_entry_price == Decimal("100")
+    assert result.decision.pre_trade_stop_price == Decimal("98")
+    assert result.decision.pre_trade_take_profit_price == Decimal("102.32")
     assert result.decision.pre_trade_reward_risk_ratio == Decimal("1.16")
 
 

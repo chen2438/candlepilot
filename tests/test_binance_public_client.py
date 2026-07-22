@@ -138,6 +138,34 @@ def test_historical_klines_paginate_without_duplicates() -> None:
     assert len(requests) == 1
 
 
+def test_historical_mark_price_klines_use_the_trigger_price_endpoint() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        opened = int(request.url.params["startTime"])
+        return httpx.Response(
+            200,
+            json=[[opened, "1", "2", "0.5", "1.5", "0", opened + 59_999, "0"]],
+        )
+
+    async def scenario():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="https://example.test"
+        )
+        adapter = BinancePublicClient(client=client)
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        result = await adapter.historical_mark_price_klines(
+            "BTCUSDT", "1m", start, start.replace(minute=1)
+        )
+        await client.aclose()
+        return result
+
+    rows = asyncio.run(scenario())
+    assert len(rows) == 1
+    assert requests[0].url.path == "/fapi/v1/markPriceKlines"
+
+
 def test_historical_funding_rates_are_typed_and_paginated() -> None:
     requests: list[httpx.Request] = []
 

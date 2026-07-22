@@ -319,6 +319,16 @@ class MarketAnalysisOutcomeRow(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class RejectedDecisionOutcomeRow(Base):
+    __tablename__ = "rejected_decision_outcomes"
+
+    inference_id: Mapped[int] = mapped_column(
+        ForeignKey("inferences.id", ondelete="CASCADE"), primary_key=True
+    )
+    outcome_json: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class SchemaMigrationRow(Base):
     __tablename__ = "schema_migrations"
 
@@ -331,7 +341,7 @@ class SchemaMigrationRow(Base):
 # replaying upgrade logic, while fresh databases are created directly from the
 # ORM metadata at the current shape.
 MINIMUM_SUPPORTED_SCHEMA_VERSION = 12
-CURRENT_SCHEMA_VERSION = 18
+CURRENT_SCHEMA_VERSION = 19
 MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
     (13, ()),
     (
@@ -412,5 +422,12 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             "outcome_json TEXT NOT NULL, updated_at DATETIME NOT NULL)",
         ),
     ),
+    (
+        19,
+        (
+            "CREATE TABLE IF NOT EXISTS rejected_decision_outcomes ("
+            "inference_id INTEGER NOT NULL PRIMARY KEY REFERENCES inferences(id) ON DELETE CASCADE, "
+            "outcome_json TEXT NOT NULL, updated_at DATETIME NOT NULL)",
+        ),
+    ),
 )
-

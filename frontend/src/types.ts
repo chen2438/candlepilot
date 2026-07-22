@@ -567,6 +567,8 @@ export interface DecisionEvent {
       shadow_only?: boolean;
       max_quantity: string | null;
       pre_trade_entry_price?: string | null;
+      pre_trade_stop_price?: string | null;
+      pre_trade_take_profit_price?: string | null;
       pre_trade_reward_risk_ratio?: string | null;
       pending_entry?: boolean;
       pending_expires_at?: string | null;
@@ -608,6 +610,23 @@ export interface DecisionEvent {
       message: string;
     };
     created_at: string;
+  };
+  counterfactual_outcome?: null | {
+    status: "waiting_entry" | "active" | "take_profit" | "stop_loss" | "expired_unfilled" | "invalidated_before_entry" | "target_before_entry" | "ambiguous";
+    direction: "LONG" | "SHORT";
+    order_type: "MARKET" | "LIMIT";
+    entry_price: string | null;
+    stop_loss: string;
+    take_profit: string;
+    price_source: "pre_trade" | "intent";
+    price_basis: "mark_price" | "contract_price";
+    bars_observed: number;
+    observation_started_at: string;
+    observed_until: string | null;
+    entry_at: string | null;
+    resolved_at: string | null;
+    detail: string;
+    updated_at: string;
   };
   created_at: string;
 }

@@ -3716,6 +3716,20 @@ const OUTCOME_LABELS: Record<DecisionEvent["outcome"], string> = {
   analysis_only: "仅推理",
 };
 
+const COUNTERFACTUAL_LABELS: Record<
+  NonNullable<DecisionEvent["counterfactual_outcome"]>["status"],
+  string
+> = {
+  waiting_entry: "等待入场",
+  active: "已入场 · 观察中",
+  take_profit: "触及止盈",
+  stop_loss: "触及止损",
+  expired_unfilled: "限价未成交",
+  invalidated_before_entry: "未入场先止损",
+  target_before_entry: "未入场先到止盈",
+  ambiguous: "触发顺序不确定",
+};
+
 function decisionOutcomeLabel(decision: DecisionEvent): string {
   if (decision.risk?.decision.pending_entry) return "等待触发";
   if (decision.risk?.decision.shadow_only && decision.risk.accepted) return "影子放行";
@@ -3770,6 +3784,53 @@ function preTradeRewardRiskLabel(decision: DecisionEvent): string {
   if (rawValue == null) return "—";
   const value = Number(rawValue);
   return Number.isFinite(value) ? `${value.toFixed(4)} : 1` : "—";
+}
+
+function CounterfactualOutcomeCard({ decision }: { decision: DecisionEvent }) {
+  const [outcome, setOutcome] = useState(decision.counterfactual_outcome ?? null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const eligible = decision.outcome === "rejected"
+    && ["OPEN_LONG", "OPEN_SHORT", "ADD"].includes(decision.intent.action)
+    && decision.intent.stop_loss !== null
+    && decision.intent.take_profit !== null;
+  if (!eligible) return null;
+
+  const refresh = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      setOutcome(await api<NonNullable<DecisionEvent["counterfactual_outcome"]>>(
+        `/api/decision-events/${decision.id}/counterfactual-outcome`,
+        { method: "POST" },
+      ));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <div className={`counterfactual-outcome ${outcome?.status ?? "pending"}`}>
+    <div className="counterfactual-outcome-heading">
+      <span>
+        <strong>风控否决后的反事实表现</strong>
+        <small>假设当时放行；按后续完整标记价格 K 线观察，不代表真实成交。</small>
+      </span>
+      <button disabled={busy} onClick={() => void refresh()}>
+        {busy ? "评估中…" : outcome ? "更新表现" : "评估后续表现"}
+      </button>
+    </div>
+    {error && <p className="counterfactual-error">评估失败：{error}</p>}
+    {outcome && <div className="counterfactual-outcome-body">
+      <span>结果<strong>{COUNTERFACTUAL_LABELS[outcome.status]}</strong></span>
+      <span>反事实入场<strong>{decisionPrice(outcome.entry_price)}</strong></span>
+      <span>固定止损 / 止盈<strong>{decisionPrice(outcome.stop_loss)} / {decisionPrice(outcome.take_profit)}</strong></span>
+      <span>观察至<strong>{outcome.observed_until ? formatLocalDateTimeSeconds(new Date(outcome.observed_until)) : "尚无完整 K 线"}</strong></span>
+      <p>{outcome.detail}</p>
+      {outcome.price_basis === "contract_price" && <p className="counterfactual-warning">当前行情适配器没有历史标记价格，结果已降级为合约成交价 K 线。</p>}
+    </div>}
+  </div>;
 }
 
 function executionPrice(value: string | null | undefined): string {
@@ -4129,6 +4190,7 @@ export function DecisionPanel({
                     </div>
                   </div>
                 )}
+                <CounterfactualOutcomeCard decision={decision} />
                 <AnalysisDetail
                   copied={copied}
                   detail={details[decision.id]}

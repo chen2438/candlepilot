@@ -59,6 +59,7 @@ from candlepilot.storage.models import (
     LiveRunRow,
     MarketAnalysisRow,
     PartialTakeProfitEventRow,
+    RejectedDecisionOutcomeRow,
     RiskRow,
     RuntimeStateRow,
     SchemaMigrationRow,
@@ -2052,6 +2053,7 @@ class AuditRepository:
                 ExecutionAttemptRow,
                 ExecutionRow,
                 LiveRunRow,
+                RejectedDecisionOutcomeRow,
             )
             .outerjoin(RiskRow, RiskRow.inference_id == InferenceRow.id)
             .outerjoin(
@@ -2063,6 +2065,10 @@ class AuditRepository:
                 ExecutionRow.client_order_id == ExecutionAttemptRow.client_order_id,
             )
             .outerjoin(LiveRunRow, LiveRunRow.id == InferenceRow.live_run_id)
+            .outerjoin(
+                RejectedDecisionOutcomeRow,
+                RejectedDecisionOutcomeRow.inference_id == InferenceRow.id,
+            )
             .where(*conditions)
         )
         async with self.sessions() as session:
@@ -2113,7 +2119,7 @@ class AuditRepository:
                     )
                 ).all()
         events = []
-        for inference, risk, attempt, execution, live_run in rows:
+        for inference, risk, attempt, execution, live_run, rejected_outcome in rows:
             usage = json.loads(inference.usage_json)
             intent = TradeIntent.model_validate_json(inference.intent_json)
             outcome = self._decision_outcome(intent, risk, attempt)
@@ -2150,10 +2156,58 @@ class AuditRepository:
                     if risk is not None
                     else None,
                     "execution": self._execution_attempt_dict(attempt, execution),
+                    "counterfactual_outcome": {
+                        **json.loads(rejected_outcome.outcome_json),
+                        "updated_at": self._utc(rejected_outcome.updated_at),
+                    }
+                    if rejected_outcome is not None
+                    else None,
                     "created_at": self._utc(inference.created_at),
                 }
             )
         return events
+
+    async def rejected_decision_context(
+        self, inference_id: int
+    ) -> dict[str, Any] | None:
+        query = (
+            select(InferenceRow, RiskRow)
+            .outerjoin(RiskRow, RiskRow.inference_id == InferenceRow.id)
+            .where(InferenceRow.id == inference_id)
+        )
+        async with self.sessions() as session:
+            row = (await session.execute(query)).one_or_none()
+        if row is None:
+            return None
+        inference, risk = row
+        return {
+            "intent": TradeIntent.model_validate_json(inference.intent_json),
+            "risk": RiskDecision.model_validate_json(risk.decision_json)
+            if risk is not None
+            else None,
+            "risk_accepted": bool(risk.accepted) if risk is not None else None,
+            "evaluated_at": self._utc(risk.created_at) if risk is not None else None,
+        }
+
+    async def save_rejected_decision_outcome(
+        self, inference_id: int, outcome: Mapping[str, Any]
+    ) -> datetime:
+        payload = json.dumps(dict(outcome), separators=(",", ":"), ensure_ascii=False)
+        updated_at = datetime.now(UTC)
+        async with self.sessions.begin() as session:
+            row = await session.get(RejectedDecisionOutcomeRow, inference_id)
+            if row is None:
+                session.add(
+                    RejectedDecisionOutcomeRow(
+                        inference_id=inference_id,
+                        outcome_json=payload,
+                        updated_at=updated_at,
+                    )
+                )
+            else:
+                row.outcome_json = payload
+                row.updated_at = updated_at
+        return updated_at
 
     @staticmethod
     def _decision_outcome(

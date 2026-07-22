@@ -22,6 +22,7 @@ from conftest import FakeTestnetBroker, StatefulTestnetBroker
 from candlepilot.broker.binance_testnet import ReconciliationReport
 from candlepilot.config import Settings
 from candlepilot.domain.models import (
+    RiskDecision,
     TradeIntent,
 )
 from candlepilot.market.binance import ContractInfo
@@ -484,6 +485,70 @@ def test_run_once_executes_one_trading_batch_then_stops(tmp_path: Path) -> None:
         assert decisions[0]["live_run"]["config"]["daily_loss_fraction"] == "0.05"
         assert decisions[0]["live_run"]["stop_reason"] == "single analysis completed"
         assert client.post("/api/engine/start").status_code == 409
+
+    asyncio.run(database.close())
+
+
+def test_rejected_decision_counterfactual_outcome_is_persisted(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'rejected-outcome.db'}")
+    market = ApiMarket()
+    engine = TradingEngine(
+        testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=market,  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=market, engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        intent = TradeIntent(
+            symbol="BTCUSDT",
+            cadence="15m",
+            action="OPEN_LONG",
+            confidence=0.7,
+            leverage=3,
+            risk_fraction="0.004",
+            entry_price="100",
+            stop_loss="98",
+            take_profit="104",
+            rationale="fixture rejected plan",
+        )
+        inference_id = asyncio.run(
+            engine.audit.record_inference(
+                ProviderResult(
+                    intent,
+                    "api-fixture",
+                    "fixture-model",
+                    timedelta(milliseconds=10),
+                    intent.model_dump_json(),
+                    {},
+                )
+            )
+        )
+        asyncio.run(
+            engine.audit.record_risk(
+                "BTCUSDT",
+                RiskDecision(
+                    accepted=False,
+                    reason="fixture veto",
+                    pre_trade_entry_price="100",
+                    pre_trade_stop_price="98",
+                    pre_trade_take_profit_price="104",
+                    pre_trade_reward_risk_ratio="2",
+                ),
+                inference_id=inference_id,
+            )
+        )
+
+        response = client.post(
+            f"/api/decision-events/{inference_id}/counterfactual-outcome"
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "active"
+        assert response.json()["price_basis"] == "mark_price"
+        event = client.get("/api/decision-events").json()[0]
+        assert event["counterfactual_outcome"]["status"] == "active"
+        assert event["counterfactual_outcome"]["updated_at"] is not None
 
     asyncio.run(database.close())
 

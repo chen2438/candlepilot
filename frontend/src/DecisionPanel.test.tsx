@@ -373,6 +373,52 @@ describe("DecisionPanel", () => {
     expect(screen.queryByText("保证金")).toBeNull();
   });
 
+  it("evaluates and displays a rejected decision's later outcome", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({
+            status: "take_profit",
+            direction: "LONG",
+            order_type: "MARKET",
+            entry_price: "1871.5",
+            stop_loss: "1863",
+            take_profit: "1888",
+            price_source: "pre_trade",
+            price_basis: "mark_price",
+            bars_observed: 3,
+            observation_started_at: "2026-07-19T15:17:00Z",
+            observed_until: "2026-07-19T15:35:00Z",
+            entry_at: "2026-07-19T15:16:52Z",
+            resolved_at: "2026-07-19T15:30:00Z",
+            detail: "假设风控放行并入场，随后标记价格触及固定止盈",
+            updated_at: "2026-07-19T15:36:00Z",
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ detail: "detail unavailable" }) };
+    }));
+    const user = userEvent.setup();
+    render(
+      <DecisionPanel
+        decisions={[decision]}
+        liveRunPerformance={[]}
+        filter="all"
+        onFilter={vi.fn()}
+        onLoadOlder={vi.fn(async () => undefined)}
+        exhausted
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /OPEN_LONG/ }));
+    await user.click(screen.getByRole("button", { name: "评估后续表现" }));
+
+    expect(await screen.findByText("触及止盈")).toBeTruthy();
+    expect(screen.getByText("假设风控放行并入场，随后标记价格触及固定止盈")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "更新表现" })).toBeTruthy();
+  });
+
   it("keeps meaningful precision for low-priced decision levels", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: false,

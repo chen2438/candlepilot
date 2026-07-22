@@ -94,6 +94,13 @@ class ApiMarket:
             for offset in range(min(2, max_candles))
         ]
 
+    async def historical_mark_price_klines(
+        self, symbol, interval, start, end, *, max_candles=10_000
+    ):
+        return await self.historical_klines(
+            symbol, interval, start, end, max_candles=max_candles
+        )
+
     async def historical_funding_rates(self, symbol, start, end, *, max_events=10_000):
         return []
 
