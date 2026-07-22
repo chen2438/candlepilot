@@ -1392,10 +1392,6 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
     }
   }, [historySelected, refresh, refreshAccount]);
 
-  const activeProvider = useMemo(
-    () => providers.find((provider) => provider.provider === status.active_provider),
-    [providers, status.active_provider],
-  );
   const venueExcludedSymbols = status.venue_excluded_symbols;
   const selectedExternalProvider = useMemo(
     () => status.provider_chain
@@ -1809,21 +1805,6 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
                   />}
                 </div>;
               })}
-            </div>
-            <div className="provider-route">
-              <div className="provider-config-title"><span>本次运行 Provider</span><small>{status.running ? "运行时锁定" : "失败后 5s / 15s 重试同一 Provider"}</small></div>
-              {status.provider_chain.map((name) => {
-                const route = status.provider_routes.find((item) => item.provider === name);
-                const health = providers.find((item) => item.provider === name);
-                const state = route?.state === "active" ? "承载中" : route?.state === "cooldown" ? "重试冷却" : health?.authenticated ? "已选择" : "不可用";
-                return <div className={`provider-route-row ${route?.state ?? "standby"}`} key={name}>
-                  <strong>1</strong>
-                  <span>{providerLabel(name)}<small>{state}{route?.last_error ? ` · ${route.last_error}` : ""}</small></span>
-                </div>;
-              })}
-            </div>
-            <div className="provider-foot">
-              <span>实际承载</span><strong>{activeProvider ? providerLabel(activeProvider.provider) : status.running ? "等待可用 Provider" : "引擎未运行"}</strong>
             </div>
             </CollapsiblePanel>
           </div>
