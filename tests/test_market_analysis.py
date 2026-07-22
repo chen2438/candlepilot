@@ -995,7 +995,9 @@ def test_market_analysis_api_runs_selected_provider_and_returns_audit(tmp_path: 
             assert detail["status"] == "succeeded", detail
 
 
-def test_automatic_analysis_skips_symbols_with_unresolved_plans(tmp_path: Path) -> None:
+def test_automatic_analysis_skips_unresolved_and_allows_ambiguous(
+    tmp_path: Path,
+) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'analysis-schedule.db'}")
     market = AnalysisMarket()
     provider = AnalysisProvider()
@@ -1066,12 +1068,12 @@ def test_automatic_analysis_skips_symbols_with_unresolved_plans(tmp_path: Path) 
             repository.save_outcome,
             identifier,
             {
-                "status": "stopped",
+                "status": "ambiguous",
                 "bars_observed": 3,
                 "entry_at": "2026-07-22T10:05:00Z",
                 "target1_at": None,
                 "resolved_at": "2026-07-22T10:15:00Z",
-                "detail": "计划已入场，随后触及结构止损",
+                "detail": "同一根 K 线内无法确定计划价位触发顺序",
             },
         )
         client.portal.call(app.state.analysis_scheduler.run_now)

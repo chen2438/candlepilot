@@ -18,6 +18,7 @@ TERMINAL_OUTCOME_STATUSES = frozenset(
         "target2",
         "stopped",
         "breakeven_after_target1",
+        "ambiguous",
     }
 )
 
