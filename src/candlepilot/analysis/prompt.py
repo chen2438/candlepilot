@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 
-PROMPT_VERSION = "market-analysis-v1"
+PROMPT_VERSION = "market-analysis-v2"
 
 
 def build_analysis_prompt(data_pack: dict[str, Any]) -> str:
@@ -22,6 +22,7 @@ Analysis method:
 7. Management should state: only activate the plan after the entry trigger; at T1 reduce roughly half and move the remainder stop toward breakeven when market structure permits; treat roughly six 15m anchor bars without progress as a reason to reassess. This is a plan, not automatic execution.
 8. Missing inputs are unknown, not benign. Explain their impact in missing_data_impact. In particular, unavailable news, event and options inputs must not be described as quiet or absent risk.
 9. The anchor time must be timezone-aware and point to a supplied bar. Keep evidence factual and tied to supplied fields.
+10. Write every user-facing natural-language value in Simplified Chinese: summary; anchor.reason; every scenario name, trigger, expected_path and invalidation; range_plan.tactic; entry_plan.stop_structure, entry_trigger and management; and every key_evidence and missing_data_impact item. Keep JSON keys, enum values, symbols, timeframes, numbers and standard abbreviations such as EMA, MACD, VWAP, T1 and T2 unchanged. Previous analysis may be in another language; the new result must still follow this Chinese output requirement.
 
 Return only the required JSON object.
 

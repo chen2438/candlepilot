@@ -50,7 +50,7 @@ def evaluate_outcome(
         return AnalysisOutcome(
             status="neutral_observation",
             bars_observed=len(bars),
-            detail="neutral analysis has no entry, stop, or target outcome",
+            detail="观望分析没有入场、止损或目标位结果",
         )
     assert analysis.entry_plan is not None
     plan = analysis.entry_plan
@@ -73,7 +73,7 @@ def evaluate_outcome(
                     bars_observed=index,
                     entry_at=entry_at,
                     resolved_at=bar.open_time,
-                    detail="entry and an exit level were touched in the same 5m bar; order is unknowable",
+                    detail="入场价和退出价位在同一根完整 5 分钟 K 线内被触及，无法确定先后顺序",
                 )
             state = "active"
             continue
@@ -84,7 +84,7 @@ def evaluate_outcome(
                     bars_observed=index,
                     entry_at=entry_at,
                     resolved_at=bar.open_time,
-                    detail="multiple exit levels were touched in the same 5m bar; order is unknowable",
+                    detail="多个退出价位在同一根完整 5 分钟 K 线内被触及，无法确定先后顺序",
                 )
             if stop:
                 return AnalysisOutcome(
@@ -92,7 +92,7 @@ def evaluate_outcome(
                     bars_observed=index,
                     entry_at=entry_at,
                     resolved_at=bar.open_time,
-                    detail="entry was active before the structural stop was touched",
+                    detail="计划已入场，随后触及结构止损",
                 )
             if target2:
                 return AnalysisOutcome(
@@ -101,7 +101,7 @@ def evaluate_outcome(
                     entry_at=entry_at,
                     target1_at=bar.open_time,
                     resolved_at=bar.open_time,
-                    detail="T2 was touched after entry; T1 lies on the same price path",
+                    detail="入场后触及 T2；价格路径同时经过 T1",
                 )
             if target1:
                 if entry:
@@ -111,7 +111,7 @@ def evaluate_outcome(
                         entry_at=entry_at,
                         target1_at=bar.open_time,
                         resolved_at=bar.open_time,
-                        detail="T1 and the breakeven price were touched in the same 5m bar; order is unknowable",
+                        detail="T1 与保本价在同一根完整 5 分钟 K 线内被触及，无法确定先后顺序",
                     )
                 target1_at = bar.open_time
                 state = "partial"
@@ -126,7 +126,7 @@ def evaluate_outcome(
                 entry_at=entry_at,
                 target1_at=target1_at,
                 resolved_at=bar.open_time,
-                detail="breakeven and T2 were touched in the same 5m bar; order is unknowable",
+                detail="保本价与 T2 在同一根完整 5 分钟 K 线内被触及，无法确定先后顺序",
             )
         if target2:
             return AnalysisOutcome(
@@ -135,7 +135,7 @@ def evaluate_outcome(
                 entry_at=entry_at,
                 target1_at=target1_at,
                 resolved_at=bar.open_time,
-                detail="T1 partial was followed by T2 on the remainder",
+                detail="T1 部分止盈后，剩余仓位触及 T2",
             )
         if breakeven:
             return AnalysisOutcome(
@@ -144,17 +144,17 @@ def evaluate_outcome(
                 entry_at=entry_at,
                 target1_at=target1_at,
                 resolved_at=bar.open_time,
-                detail="T1 partial was followed by a return to the entry price",
+                detail="T1 部分止盈后，剩余仓位回到入场价",
             )
     if state == "waiting":
         status = "waiting_entry"
-        detail = "entry has not been touched in fully post-analysis 5m bars"
+        detail = "分析完成后的完整 5 分钟 K 线尚未触及入场价"
     elif state == "active":
         status = "active"
-        detail = "entry is active; neither structural stop nor T1 has been touched"
+        detail = "计划已入场，尚未触及结构止损或 T1"
     else:
         status = "target1_partial"
-        detail = "T1 partial is recorded; the remainder has touched neither breakeven nor T2"
+        detail = "已记录 T1 部分止盈，剩余仓位尚未触及保本价或 T2"
     return AnalysisOutcome(
         status=status,
         bars_observed=len(bars),

@@ -7,6 +7,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 Price = Annotated[float, Field(gt=0)]
+CHINESE_TEXT = (
+    "Use Simplified Chinese for this user-facing text. Keep symbols, timeframes, "
+    "numbers, and standard market abbreviations unchanged."
+)
 
 
 class AnalysisModel(BaseModel):
@@ -17,7 +21,7 @@ class AnalysisAnchor(AnalysisModel):
     timeframe: Literal["5m", "15m", "1h"]
     time: datetime
     price: Price
-    reason: str = Field(min_length=1, max_length=500)
+    reason: str = Field(min_length=1, max_length=500, description=CHINESE_TEXT)
 
     @model_validator(mode="after")
     def require_timezone(self) -> AnalysisAnchor:
@@ -27,17 +31,17 @@ class AnalysisAnchor(AnalysisModel):
 
 
 class AnalysisScenario(AnalysisModel):
-    name: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=80, description=CHINESE_TEXT)
     probability: float = Field(ge=0, le=100)
-    trigger: str = Field(min_length=1, max_length=500)
-    expected_path: str = Field(min_length=1, max_length=800)
-    invalidation: str = Field(min_length=1, max_length=500)
+    trigger: str = Field(min_length=1, max_length=500, description=CHINESE_TEXT)
+    expected_path: str = Field(min_length=1, max_length=800, description=CHINESE_TEXT)
+    invalidation: str = Field(min_length=1, max_length=500, description=CHINESE_TEXT)
 
 
 class RangePlan(AnalysisModel):
     low: Price
     high: Price
-    tactic: str = Field(min_length=1, max_length=800)
+    tactic: str = Field(min_length=1, max_length=800, description=CHINESE_TEXT)
 
     @model_validator(mode="after")
     def ordered(self) -> RangePlan:
@@ -51,20 +55,28 @@ class EntryPlan(AnalysisModel):
     stop: Price
     target1: Price
     target2: Price
-    stop_structure: str = Field(min_length=1, max_length=500)
-    entry_trigger: str = Field(min_length=1, max_length=500)
-    management: str = Field(min_length=1, max_length=800)
+    stop_structure: str = Field(min_length=1, max_length=500, description=CHINESE_TEXT)
+    entry_trigger: str = Field(min_length=1, max_length=500, description=CHINESE_TEXT)
+    management: str = Field(min_length=1, max_length=800, description=CHINESE_TEXT)
 
 
 class MarketAnalysis(AnalysisModel):
     direction: Literal["long", "short", "neutral"]
-    summary: str = Field(min_length=1, max_length=1200)
+    summary: str = Field(min_length=1, max_length=1200, description=CHINESE_TEXT)
     anchor: AnalysisAnchor
     scenarios: list[AnalysisScenario] = Field(min_length=2, max_length=4)
     range_plan: RangePlan | None
     entry_plan: EntryPlan | None
-    key_evidence: list[str] = Field(min_length=2, max_length=8)
-    missing_data_impact: list[str] = Field(default_factory=list, max_length=8)
+    key_evidence: list[str] = Field(
+        min_length=2,
+        max_length=8,
+        description=f"Every item: {CHINESE_TEXT}",
+    )
+    missing_data_impact: list[str] = Field(
+        default_factory=list,
+        max_length=8,
+        description=f"Every item: {CHINESE_TEXT}",
+    )
 
     @model_validator(mode="after")
     def semantic_contract(self) -> MarketAnalysis:

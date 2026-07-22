@@ -16,15 +16,15 @@ const record: MarketAnalysisRecord = {
   provider: "codex-auth",
   model: "gpt-5.6-sol",
   reasoning_effort: "medium",
-  prompt_version: "market-analysis-v1",
+  prompt_version: "market-analysis-v2",
   data_version: "kansoku-compatible-crypto-v1",
   result: {
     direction: "long",
-    summary: "15m structure holds above the latest swing.",
-    anchor: { timeframe: "15m", time: "2026-07-22T10:00:00Z", price: 100, reason: "confirmed swing" },
+    summary: "15 分钟结构保持在最近摆动点上方。",
+    anchor: { timeframe: "15m", time: "2026-07-22T10:00:00Z", price: 100, reason: "已确认摆动点" },
     scenarios: [
-      { name: "continuation", probability: 60, trigger: "close above 101", expected_path: "test T1", invalidation: "close below 98" },
-      { name: "range", probability: 40, trigger: "remain below 101", expected_path: "rotate", invalidation: "break range" },
+      { name: "延续上涨", probability: 60, trigger: "收盘站上 101", expected_path: "测试 T1", invalidation: "收盘跌破 98" },
+      { name: "区间整理", probability: 40, trigger: "保持在 101 下方", expected_path: "区间轮动", invalidation: "离开区间" },
     ],
     range_plan: null,
     entry_plan: {
@@ -32,13 +32,13 @@ const record: MarketAnalysisRecord = {
       stop: 98,
       target1: 104,
       target2: 108,
-      stop_structure: "below 15m swing",
-      entry_trigger: "15m close then 5m retest",
-      management: "T1 reduce half; remainder toward breakeven.",
+      stop_structure: "15 分钟摆动低点下方",
+      entry_trigger: "15 分钟收盘确认后等待 5 分钟回踩",
+      management: "T1 减仓一半，剩余仓位止损移向保本价。",
     },
     reward_risk: { target1: 1, target2: 2.3333 },
-    key_evidence: ["EMA alignment", "flow confirms"],
-    missing_data_impact: ["news risk is unknown"],
+    key_evidence: ["EMA 排列一致", "资金流确认"],
+    missing_data_impact: ["新闻风险未知"],
   },
   usage: { total_tokens: 1234 },
   duration_ms: 12000,
@@ -69,7 +69,7 @@ const rangeRecord: MarketAnalysisRecord = {
     range_plan: {
       low: 98,
       high: 102,
-      tactic: "Wait for a confirmed 15m close outside the range before reassessing.",
+      tactic: "等待 15 分钟收盘确认离开区间后再重新评估。",
     },
     entry_plan: null,
     reward_risk: null,
@@ -105,7 +105,7 @@ describe("MarketAnalysisPanel", () => {
     expect(screen.getByText("101")).toBeTruthy();
     expect(screen.getByText("104")).toBeTruthy();
     expect(screen.getByText("108")).toBeTruthy();
-    expect(screen.getByText("news risk is unknown")).toBeTruthy();
+    expect(screen.getByText("新闻风险未知")).toBeTruthy();
     expect(screen.getByRole("img", { name: "BTCUSDT 15m 冻结 K 线" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "1h" }));
     expect(screen.getByRole("img", { name: "BTCUSDT 1h 冻结 K 线" })).toBeTruthy();
@@ -131,7 +131,7 @@ describe("MarketAnalysisPanel", () => {
     const rangePlan = await screen.findByText("观望区间");
     expect(rangePlan.closest(".analysis-range-plan")).toBeTruthy();
     expect(rangePlan.closest(".range")).toBeNull();
-    expect(screen.getByText("continuation")).toBeTruthy();
+    expect(screen.getByText("延续上涨")).toBeTruthy();
   });
 
   it("queues the formal engine candidate batch", async () => {

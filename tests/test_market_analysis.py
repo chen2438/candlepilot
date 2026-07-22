@@ -12,6 +12,7 @@ from candlepilot.application.engine import TradingEngine
 from candlepilot.analysis.datapack import AnalysisDataPackBuilder
 from candlepilot.analysis.models import MarketAnalysis, market_analysis_output_schema
 from candlepilot.analysis.outcomes import evaluate_outcome, next_complete_5m_start
+from candlepilot.analysis.prompt import PROMPT_VERSION, build_analysis_prompt
 from candlepilot.analysis.service import MarketAnalysisService
 from candlepilot.domain.models import ProviderHealth, TradeIntent
 from candlepilot.market.features import Kline
@@ -25,27 +26,27 @@ from conftest import FakeTestnetBroker
 def _analysis_payload(direction: str = "long") -> dict[str, object]:
     base: dict[str, object] = {
         "direction": direction,
-        "summary": "15m structure is constructive, with 1h confirmation still required.",
+        "summary": "15 分钟结构偏强，但仍需 1 小时周期确认。",
         "anchor": {
             "timeframe": "15m",
             "time": "2026-07-22T10:00:00+00:00",
             "price": 100,
-            "reason": "latest confirmed 15m structure bar",
+            "reason": "最新确认的 15 分钟结构 K 线",
         },
         "scenarios": [
             {
-                "name": "continuation",
+                "name": "延续上涨",
                 "probability": 60,
-                "trigger": "15m closes above 101",
-                "expected_path": "price tests 103 then 106",
-                "invalidation": "15m closes below 98",
+                "trigger": "15 分钟收盘站上 101",
+                "expected_path": "价格先测试 103，再测试 106",
+                "invalidation": "15 分钟收盘跌破 98",
             },
             {
-                "name": "range",
+                "name": "区间整理",
                 "probability": 40,
-                "trigger": "price remains below 101",
-                "expected_path": "rotation between 98 and 101",
-                "invalidation": "close outside the range",
+                "trigger": "价格持续处于 101 下方",
+                "expected_path": "价格在 98 至 101 之间轮动",
+                "invalidation": "收盘离开区间",
             },
         ],
         "range_plan": None,
@@ -54,12 +55,12 @@ def _analysis_payload(direction: str = "long") -> dict[str, object]:
             "stop": 98,
             "target1": 104,
             "target2": 108,
-            "stop_structure": "below the confirmed 15m swing low",
-            "entry_trigger": "15m close and 5m retest above 101",
-            "management": "At T1 reduce half; move stop toward breakeven if structure holds.",
+            "stop_structure": "确认的 15 分钟摆动低点下方",
+            "entry_trigger": "15 分钟收盘站上 101，随后 5 分钟回踩确认",
+            "management": "T1 减仓约一半；结构保持时将剩余仓位止损移向保本价。",
         },
-        "key_evidence": ["15m EMA alignment", "1h MACD histogram improving"],
-        "missing_data_impact": ["news and event risk are unknown"],
+        "key_evidence": ["15 分钟 EMA 排列一致", "1 小时 MACD 柱状图改善"],
+        "missing_data_impact": ["新闻与事件风险未知"],
     }
     return base
 
@@ -92,14 +93,24 @@ def test_analysis_output_schema_requires_every_object_property() -> None:
 
     assert_strict(schema)
     assert "missing_data_impact" in schema["required"]
+    assert "Simplified Chinese" in schema["properties"]["summary"]["description"]
+
+
+def test_analysis_prompt_requires_chinese_user_facing_text() -> None:
+    prompt = build_analysis_prompt({"symbol": "BTCUSDT"})
+
+    assert PROMPT_VERSION == "market-analysis-v2"
+    assert "Write every user-facing natural-language value in Simplified Chinese" in prompt
+    assert "Keep JSON keys, enum values" in prompt
+    assert "Previous analysis may be in another language" in prompt
 
 
 def test_neutral_analysis_requires_range_containing_anchor() -> None:
     payload = _analysis_payload("neutral")
     payload["entry_plan"] = None
-    payload["range_plan"] = {"low": 98, "high": 102, "tactic": "wait at the edges"}
+    payload["range_plan"] = {"low": 98, "high": 102, "tactic": "等待区间边缘确认"}
     assert MarketAnalysis.model_validate(payload).direction == "neutral"
-    payload["range_plan"] = {"low": 90, "high": 95, "tactic": "invalid range"}
+    payload["range_plan"] = {"low": 90, "high": 95, "tactic": "无效区间"}
     with pytest.raises(ValidationError, match="contain the anchor"):
         MarketAnalysis.model_validate(payload)
 
@@ -130,12 +141,14 @@ def test_outcome_ignores_levels_before_entry_and_tracks_t1_then_breakeven() -> N
     assert outcome.status == "breakeven_after_target1"
     assert outcome.entry_at == datetime(2026, 7, 22, 10, 5, tzinfo=UTC)
     assert outcome.target1_at == datetime(2026, 7, 22, 10, 10, tzinfo=UTC)
+    assert outcome.detail == "T1 部分止盈后，剩余仓位回到入场价"
 
 
 def test_outcome_marks_unknowable_intrabar_order_and_starts_after_completion_bar() -> None:
     analysis = MarketAnalysis.model_validate(_analysis_payload())
     outcome = evaluate_outcome(analysis, [_bar(0, "97", "102")])
     assert outcome.status == "ambiguous"
+    assert "无法确定先后顺序" in outcome.detail
     assert next_complete_5m_start(datetime(2026, 7, 22, 10, 0, 1, tzinfo=UTC)) == datetime(
         2026, 7, 22, 10, 5, tzinfo=UTC
     )
@@ -292,6 +305,8 @@ def test_analysis_service_persists_frozen_input_and_validated_result(tmp_path: P
     assert row["result"]["reward_risk"]["target1"] == 1
     assert row["input"] == {"data_version": "test", "symbol": "BTCUSDT"}
     assert row["usage"]["total_tokens"] == 30
+    assert row["prompt_version"] == "market-analysis-v2"
+    assert row["result"]["summary"] == "15 分钟结构偏强，但仍需 1 小时周期确认。"
 
 
 def test_market_analysis_api_runs_selected_provider_and_returns_audit(tmp_path: Path) -> None:
