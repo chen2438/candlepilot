@@ -3727,8 +3727,19 @@ function pendingExpiryLabel(decision: DecisionEvent): string {
   return expiresAt ? formatLocalDateTimeSeconds(new Date(expiresAt)) : "—";
 }
 
+function decisionPrice(value: string | null | undefined): string {
+  if (value == null) return "—";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  return number.toLocaleString("en-US", {
+    useGrouping: false,
+    minimumFractionDigits: 4,
+    maximumFractionDigits: 8,
+  });
+}
+
 function intentPrice(value: string | null): string {
-  return value === null ? "—" : Number(value).toFixed(4);
+  return decisionPrice(value);
 }
 
 export function intentRewardRiskRatio(intent: DecisionEvent["intent"]): number | null {
@@ -3751,7 +3762,7 @@ export function intentRewardRiskRatio(intent: DecisionEvent["intent"]): number |
 
 function intentRewardRiskLabel(intent: DecisionEvent["intent"]): string {
   const ratio = intentRewardRiskRatio(intent);
-  return ratio === null ? "—" : `${ratio.toFixed(2)} : 1`;
+  return ratio === null ? "—" : `${ratio.toFixed(4)} : 1`;
 }
 
 function preTradeRewardRiskLabel(decision: DecisionEvent): string {
@@ -3762,7 +3773,7 @@ function preTradeRewardRiskLabel(decision: DecisionEvent): string {
 }
 
 function executionPrice(value: string | null | undefined): string {
-  return value == null ? "—" : Number(value).toFixed(4);
+  return decisionPrice(value);
 }
 
 function executionLoss(value: string | null | undefined): string {

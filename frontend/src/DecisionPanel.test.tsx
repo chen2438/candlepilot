@@ -363,13 +363,52 @@ describe("DecisionPanel", () => {
     await user.click(screen.getByRole("button", { name: /OPEN_LONG/ }));
 
     expect(screen.getByText("AI 原始盈亏比")).toBeTruthy();
-    expect(screen.getByText("1.71 : 1")).toBeTruthy();
+    expect(screen.getByText("1872.2400")).toBeTruthy();
+    expect(screen.getByText("1.7056 : 1")).toBeTruthy();
     expect(screen.getByText("下单前盈亏比")).toBeTruthy();
     expect(screen.getByText("1.1400 : 1")).toBeTruthy();
     expect(screen.getByText("最终下单数量")).toBeTruthy();
     expect(screen.queryByText("风控数量")).toBeNull();
     expect(screen.queryByText("成交额")).toBeNull();
     expect(screen.queryByText("保证金")).toBeNull();
+  });
+
+  it("keeps meaningful precision for low-priced decision levels", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false,
+      text: async () => "detail unavailable",
+    })));
+    const user = userEvent.setup();
+    const lowPriced = {
+      ...decision,
+      intent: {
+        ...decision.intent,
+        symbol: "DODOXUSDT",
+        entry_price: "0.01906455",
+        stop_loss: "0.01881234",
+        take_profit: "0.01960123",
+        anchor_price: "0.01906455",
+        trigger_price: "0.01906455",
+        invalidation_level: "0.01881234",
+      },
+    } satisfies DecisionEvent;
+
+    render(
+      <DecisionPanel
+        decisions={[lowPriced]}
+        liveRunPerformance={[]}
+        filter="all"
+        onFilter={vi.fn()}
+        onLoadOlder={vi.fn(async () => undefined)}
+        exhausted
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /OPEN_LONG/ }));
+
+    expect(screen.getAllByText("0.01906455").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("0.01881234").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("0.01960123")).toBeTruthy();
   });
 
   it("shows take-profit reentry windows as shadow-only evidence", async () => {
