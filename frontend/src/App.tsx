@@ -3,6 +3,7 @@ import type {
   AccountPortfolio,
   AccountPosition,
   ManualCloseResult,
+  ManualCloseAllResult,
   LiveRunPerformance,
   BacktestDecision,
   BacktestDecisionPage,
@@ -1216,6 +1217,30 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
     }
   }, [refreshAccount]);
 
+  const closeAllAccountPositions = useCallback(async (): Promise<boolean> => {
+    setBusy("position-close-all");
+    setError(null);
+    try {
+      const result = await api<ManualCloseAllResult>("/api/account/positions/close-all", {
+        method: "POST",
+      });
+      await refreshAccount();
+      if (result.complete) return true;
+      setError(`全部平仓部分完成：${result.errors.map((item) => `${item.symbol}: ${item.detail}`).join("；")}`);
+      return false;
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      try {
+        await refreshAccount();
+      } catch {
+        // Preserve the action error; the normal account poll will retry shortly.
+      }
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  }, [refreshAccount]);
+
   // The live tail is merged, not replaced: paging older decisions in would
   // otherwise be wiped by the next push two seconds later. The audit log is
   // append-only, but an event does change after it is written -- risk and
@@ -1952,6 +1977,7 @@ function ConsoleApp({ auth, onLogout }: { auth: AuthStatus; onLogout: () => void
             engineRunning={status.running}
             busy={busy}
             onClosePosition={closeAccountPosition}
+            onCloseAllPositions={closeAllAccountPositions}
           />
           <TrailingStopPanel
             status={status.scheduler.trailing_stop ?? null}
@@ -4477,6 +4503,7 @@ export function AccountPanel({
   engineRunning,
   busy,
   onClosePosition,
+  onCloseAllPositions,
 }: {
   portfolio: AccountPortfolio | null;
   positions: AccountPosition[];
@@ -4485,8 +4512,10 @@ export function AccountPanel({
   engineRunning: boolean;
   busy: string | null;
   onClosePosition: (symbol: string) => Promise<boolean>;
+  onCloseAllPositions: () => Promise<boolean>;
 }) {
   const [confirmCloseSymbol, setConfirmCloseSymbol] = useState<string | null>(null);
+  const [confirmCloseAll, setConfirmCloseAll] = useState(false);
   const displayedPnl = portfolio?.pnl_24h ?? null;
   const reconciliation = testnetStatus?.reconciliation;
   const testnetSafe = reconciliation !== null
@@ -4527,7 +4556,34 @@ export function AccountPanel({
         <Metric label="持仓数" value={portfolio ? String(portfolio.open_positions) : "—"} suffix="" />
       </div>
 
-      <h4 className="account-subhead">持仓</h4>
+      <div className="account-subhead-row">
+        <h4 className="account-subhead">持仓</h4>
+        {positions.length > 0 && (confirmCloseAll
+          ? <span className="position-close-confirm position-close-all-confirm">
+              <small>确认市价平掉全部 {positions.length} 个持仓？</small>
+              <button
+                className="position-close-danger"
+                disabled={busy !== null || engineRunning}
+                onClick={async () => {
+                  if (await onCloseAllPositions()) setConfirmCloseAll(false);
+                }}
+              >{busy === "position-close-all" ? "全部平仓中…" : "确认全部平仓"}</button>
+              <button
+                className="text-button"
+                disabled={busy !== null}
+                onClick={() => setConfirmCloseAll(false)}
+              >取消</button>
+            </span>
+          : <button
+              className="position-close-button position-close-all-button"
+              disabled={busy !== null || engineRunning}
+              title={engineRunning ? "请先停止交易引擎" : `市价平掉全部 ${positions.length} 个持仓`}
+              onClick={() => {
+                setConfirmCloseSymbol(null);
+                setConfirmCloseAll(true);
+              }}
+            >全部市价平仓</button>)}
+      </div>
       <p className="position-close-note">
         市价平仓按交易所当前数量提交 reduce-only 委托；成交并确认仓位归零后，仅撤销 CandlePilot 的保护单。运行中请先停止引擎。
       </p>
@@ -4581,7 +4637,10 @@ export function AccountPanel({
                         className="position-close-button"
                         disabled={busy !== null || engineRunning}
                         title={engineRunning ? "请先停止交易引擎" : `市价平掉全部 ${position.symbol} 持仓`}
-                        onClick={() => setConfirmCloseSymbol(position.symbol)}
+                        onClick={() => {
+                          setConfirmCloseAll(false);
+                          setConfirmCloseSymbol(position.symbol);
+                        }}
                       >市价平仓</button>}
                 </td>
               </tr>;

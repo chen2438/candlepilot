@@ -563,6 +563,39 @@ def create_app(
             testnet_account_memo["expires_at"] = time.monotonic() + 1.0
             return account
 
+    def invalidate_testnet_position_state() -> None:
+        testnet_account_memo["account"] = None
+        testnet_account_memo["expires_at"] = 0.0
+        testnet_levels_memo["levels"] = None
+        testnet_levels_memo["expires_at"] = 0.0
+        engine.testnet_reconciliation = None
+
+    async def manually_close_position(
+        broker: BinanceTestnetBroker, symbol: str
+    ) -> ExecutionReport:
+        report: ExecutionReport | None = None
+        try:
+            report = await broker.close_position_market(symbol)
+        except ManualCloseError as exc:
+            await engine.audit.record_execution(symbol, exc.report)
+            raise
+        finally:
+            invalidate_testnet_position_state()
+        await engine.audit.record_execution(symbol, report)
+        return report
+
+    def manual_close_payload(symbol: str, report: ExecutionReport) -> dict[str, Any]:
+        return _json_value(
+            {
+                "symbol": symbol,
+                "client_order_id": report.client_order_id,
+                "status": report.status,
+                "filled_quantity": report.filled_quantity,
+                "average_price": report.average_price,
+                "timestamp": report.timestamp,
+            }
+        )
+
     async def testnet_protective_levels() -> dict[str, ProtectiveLevels]:
         broker = engine.testnet_broker
         if broker is None:
@@ -2658,14 +2691,11 @@ def create_app(
                     status_code=409,
                     detail="stop the trading engine before manually closing a position",
                 )
-            report: ExecutionReport | None = None
             try:
-                report = await broker.close_position_market(request.symbol)
+                report = await manually_close_position(broker, request.symbol)
             except AccountReconciliationError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             except ManualCloseError as exc:
-                report = exc.report
-                await engine.audit.record_execution(request.symbol, report)
                 raise HTTPException(
                     status_code=502,
                     detail=f"manual close failed during {exc.stage.lower()}: {exc}",
@@ -2675,23 +2705,66 @@ def create_app(
                     status_code=502,
                     detail=f"manual market close failed: {exc}",
                 ) from exc
-            finally:
-                testnet_account_memo["account"] = None
-                testnet_account_memo["expires_at"] = 0.0
-                testnet_levels_memo["levels"] = None
-                testnet_levels_memo["expires_at"] = 0.0
-                engine.testnet_reconciliation = None
-            await engine.audit.record_execution(request.symbol, report)
-            return _json_value(
-                {
-                    "symbol": request.symbol,
-                    "client_order_id": report.client_order_id,
-                    "status": report.status,
-                    "filled_quantity": report.filled_quantity,
-                    "average_price": report.average_price,
-                    "timestamp": report.timestamp,
-                }
+            return manual_close_payload(request.symbol, report)
+
+    @app.post("/api/account/positions/close-all")
+    async def close_all_account_positions() -> dict[str, Any]:
+        broker = engine.testnet_broker
+        if broker is None:
+            raise HTTPException(
+                status_code=409, detail="testnet broker is not configured"
             )
+        async with engine_start_lock, manual_close_lock:
+            if engine.running:
+                raise HTTPException(
+                    status_code=409,
+                    detail="stop the trading engine before manually closing positions",
+                )
+            invalidate_testnet_position_state()
+            try:
+                account = await testnet_account()
+                symbols = list(
+                    dict.fromkeys(
+                        str(item.get("symbol", ""))
+                        for item in account.get("positions", [])
+                        if Decimal(str(item.get("positionAmt", "0"))) != 0
+                        and str(item.get("symbol", ""))
+                    )
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=502, detail=f"testnet account query failed: {exc}"
+                ) from exc
+
+            closed: list[dict[str, Any]] = []
+            errors: list[dict[str, str]] = []
+            for symbol in symbols:
+                try:
+                    report = await manually_close_position(broker, symbol)
+                except AccountReconciliationError as exc:
+                    errors.append({"symbol": symbol, "detail": str(exc)})
+                except ManualCloseError as exc:
+                    errors.append(
+                        {
+                            "symbol": symbol,
+                            "detail": (
+                                f"manual close failed during {exc.stage.lower()}: {exc}"
+                            ),
+                        }
+                    )
+                except Exception as exc:
+                    errors.append(
+                        {"symbol": symbol, "detail": f"manual market close failed: {exc}"}
+                    )
+                else:
+                    closed.append(manual_close_payload(symbol, report))
+
+            return {
+                "requested_symbols": symbols,
+                "closed": closed,
+                "errors": errors,
+                "complete": not errors,
+            }
 
     @app.get("/api/orders")
     async def get_orders(

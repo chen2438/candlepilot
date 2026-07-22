@@ -996,6 +996,106 @@ def test_manual_position_close_requires_stopped_engine_and_is_audited(
     asyncio.run(database.close())
 
 
+def test_close_all_positions_continues_after_per_symbol_failure_and_is_audited(
+    tmp_path: Path,
+) -> None:
+    from candlepilot.broker.binance_testnet import AccountReconciliationError
+    from candlepilot.domain.models import ExecutionReport
+
+    class CloseAllBroker(StatefulTestnetBroker):
+        def __init__(self) -> None:
+            super().__init__(
+                {
+                    "BTCUSDT": ("LONG", Decimal("0.1"), Decimal("60000")),
+                    "ETHUSDT": ("SHORT", Decimal("1"), Decimal("3000")),
+                    "SOLUSDT": ("LONG", Decimal("2"), Decimal("150")),
+                }
+            )
+            self.closed_symbols: list[str] = []
+
+        async def close_position_market(self, symbol: str) -> ExecutionReport:
+            self.closed_symbols.append(symbol)
+            if symbol == "ETHUSDT":
+                raise AccountReconciliationError("position changed before close")
+            side, quantity, entry = self.positions.pop(symbol)
+            return ExecutionReport(
+                client_order_id=f"cp-manual-{symbol.lower()}",
+                status="FILLED",
+                filled_quantity=quantity,
+                average_price=entry,
+                message=f"manual market close for {side.lower()} position",
+            )
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'close-all-api.db'}")
+    broker = CloseAllBroker()
+    engine = TradingEngine(
+        testnet_broker=broker,  # type: ignore[arg-type]
+        providers=ProviderRegistry([ApiProvider()]),
+        audit=AuditRepository(database.sessions),
+        market=ApiMarket(),  # type: ignore[arg-type]
+    )
+    app = create_app(database=database, market=ApiMarket(), engine=engine)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        engine.running = True
+        blocked = client.post("/api/account/positions/close-all")
+        assert blocked.status_code == 409
+        assert broker.closed_symbols == []
+
+        engine.running = False
+        response = client.post("/api/account/positions/close-all")
+        assert response.status_code == 200
+        assert response.json() == {
+            "requested_symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+            "closed": [
+                {
+                    "symbol": "BTCUSDT",
+                    "client_order_id": "cp-manual-btcusdt",
+                    "status": "FILLED",
+                    "filled_quantity": "0.1",
+                    "average_price": "60000",
+                    "timestamp": response.json()["closed"][0]["timestamp"],
+                },
+                {
+                    "symbol": "SOLUSDT",
+                    "client_order_id": "cp-manual-solusdt",
+                    "status": "FILLED",
+                    "filled_quantity": "2",
+                    "average_price": "150",
+                    "timestamp": response.json()["closed"][1]["timestamp"],
+                },
+            ],
+            "errors": [
+                {"symbol": "ETHUSDT", "detail": "position changed before close"}
+            ],
+            "complete": False,
+        }
+        assert broker.closed_symbols == ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+        assert {item["symbol"] for item in client.get("/api/orders").json()} == {
+            "BTCUSDT",
+            "SOLUSDT",
+        }
+        assert [item["symbol"] for item in client.get("/api/account/positions").json()] == [
+            "ETHUSDT"
+        ]
+
+        second = client.post("/api/account/positions/close-all")
+        assert second.status_code == 200
+        assert second.json()["requested_symbols"] == ["ETHUSDT"]
+        assert second.json()["complete"] is False
+
+        broker.positions.clear()
+        empty = client.post("/api/account/positions/close-all")
+        assert empty.status_code == 200
+        assert empty.json() == {
+            "requested_symbols": [],
+            "closed": [],
+            "errors": [],
+            "complete": True,
+        }
+    asyncio.run(database.close())
+
+
 def test_missing_manual_fill_reconciliation_uses_retry_backoff(tmp_path: Path) -> None:
     from candlepilot.domain.models import ExecutionReport
 

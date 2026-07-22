@@ -166,7 +166,7 @@ Codex CLI 登录接口异步启动固定的 `codex login --device-auth`，sessio
 `signals` 保留为原始推理查询，不推断订单是否成交。
 
 **账户与风险**：`GET /api/account/portfolio`、`GET /api/account/positions`、
-`POST /api/account/positions/close`、
+`POST /api/account/positions/close`、`POST /api/account/positions/close-all`、
 `GET /api/orders`、`GET /api/fills`、`GET /api/risk-events`。前两个账户接口读取币安测试网钱包、
 保证金和非零持仓；系统将过去 24 小时交易流水与当前未实现盈亏合并为 `pnl_24h`，不再按 UTC 日期切换
 清零。Broker 的统一账户快照把账户摘要与
@@ -195,6 +195,11 @@ reduce-only 成交按关联决策区分模型平仓/减仓，无法关联的 red
 `POST /api/account/positions/close` 接受 `{"symbol":"BTCUSDT"}`，仅在引擎停止时执行该标的
 全部当前仓位的 reduce-only 市价平仓。成功返回交易所成交状态、成交数量、均价、客户端订单号与
 时间；无持仓/引擎运行返回 409，成交、归零验证或 CandlePilot 保护单清理不完整返回 502。
+`POST /api/account/positions/close-all` 不接收请求体；它在同一停机与互斥边界内重新读取当前全部
+非零持仓，再逐标的顺序执行相同的安全平仓流程。响应返回 `requested_symbols`、成功的 `closed`、
+逐标的 `errors` 和 `complete`；已经无持仓时返回空列表且 `complete=true`。单个标的失败不会阻断
+其余标的尝试，因此 HTTP 200 只表示批次已完成，调用方必须检查 `complete`，不能把部分成功显示为
+全部成功。账户快照读取失败返回 502，引擎运行返回 409。
 `GET /api/trailing-stops/history` 返回最近 1–500 条移动止损影子候选、首次模拟成交、实盘应用、错过与失败审计，
 每条事件包含参数组 ID、激活 R 与回撤 R；首次模拟成交还返回候选触发价及 5 秒看护观察到的穿越价。
 账户页自动读取最近 100 条并每 5 秒刷新，无需手工打开 API。

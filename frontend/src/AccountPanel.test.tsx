@@ -56,6 +56,7 @@ describe("AccountPanel manual close", () => {
         engineRunning={false}
         busy={null}
         onClosePosition={vi.fn(async () => true)}
+        onCloseAllPositions={vi.fn(async () => true)}
       />,
     );
 
@@ -94,6 +95,7 @@ describe("AccountPanel manual close", () => {
         engineRunning={false}
         busy={null}
         onClosePosition={vi.fn(async () => true)}
+        onCloseAllPositions={vi.fn(async () => true)}
       />,
     );
 
@@ -126,6 +128,7 @@ describe("AccountPanel manual close", () => {
         engineRunning={false}
         busy={null}
         onClosePosition={closePosition}
+        onCloseAllPositions={vi.fn(async () => true)}
       />,
     );
 
@@ -149,12 +152,43 @@ describe("AccountPanel manual close", () => {
         engineRunning
         busy={null}
         onClosePosition={vi.fn(async () => true)}
+        onCloseAllPositions={vi.fn(async () => true)}
       />,
     );
 
     const button = screen.getByRole("button", { name: "市价平仓" }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     expect(button.title).toBe("请先停止交易引擎");
+    const closeAllButton = screen.getByRole("button", { name: "全部市价平仓" }) as HTMLButtonElement;
+    expect(closeAllButton.disabled).toBe(true);
+    expect(closeAllButton.title).toBe("请先停止交易引擎");
+  });
+
+  it("requires a separate confirmation before closing every position", async () => {
+    const user = userEvent.setup();
+    const closeAllPositions = vi.fn(async () => true);
+    const secondPosition = { ...position, symbol: "ETHUSDT", side: "SHORT" };
+
+    render(
+      <AccountPanel
+        portfolio={null}
+        positions={[position, secondPosition]}
+        fills={[]}
+        testnetStatus={null}
+        engineRunning={false}
+        busy={null}
+        onClosePosition={vi.fn(async () => true)}
+        onCloseAllPositions={closeAllPositions}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "全部市价平仓" }));
+    expect(screen.getByText("确认市价平掉全部 2 个持仓？")).toBeTruthy();
+    expect(closeAllPositions).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "确认全部平仓" }));
+    expect(closeAllPositions).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "全部市价平仓" })).toBeTruthy();
   });
 });
 

@@ -730,6 +730,13 @@ export interface ManualCloseResult {
   timestamp: string;
 }
 
+export interface ManualCloseAllResult {
+  requested_symbols: string[];
+  closed: ManualCloseResult[];
+  errors: Array<{ symbol: string; detail: string }>;
+  complete: boolean;
+}
+
 export interface TradeFillRecord {
   id: number;
   source: "exchange_user_stream" | "exchange_rest_reconciliation" | "execution_audit";
