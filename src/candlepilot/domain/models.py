@@ -208,6 +208,13 @@ class StructureAssessment(StrictModel):
     checks: tuple[StructureCheck, ...]
 
 
+class TakeProfitReentryAssessment(StrictModel):
+    mode: Literal["shadow"] = "shadow"
+    last_take_profit_at: datetime
+    elapsed_seconds: int = Field(ge=0)
+    would_block_minutes: tuple[Literal[15, 30, 60], ...]
+
+
 class RiskDecision(StrictModel):
     accepted: bool
     reason: str
@@ -217,6 +224,7 @@ class RiskDecision(StrictModel):
     pending_entry: bool = False
     pending_expires_at: datetime | None = None
     structure_assessment: StructureAssessment | None = None
+    take_profit_reentry_assessment: TakeProfitReentryAssessment | None = None
     evaluated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

@@ -1237,6 +1237,31 @@ class AuditRepository:
 
         return await self.recent_loss_protection_exit_times(since)
 
+    async def recent_take_profit_times(self, since: datetime) -> dict[str, datetime]:
+        """Return latest filled CandlePilot take-profit time per symbol."""
+
+        query = (
+            select(UserStreamEventRow.symbol, UserStreamEventRow.event_time)
+            .where(
+                UserStreamEventRow.event_type == "ORDER_TRADE_UPDATE",
+                UserStreamEventRow.symbol.is_not(None),
+                UserStreamEventRow.event_time >= since,
+                func.json_extract(UserStreamEventRow.payload_json, "$.o.X") == "FILLED",
+                func.json_extract(UserStreamEventRow.payload_json, "$.o.x") == "TRADE",
+                func.json_extract(UserStreamEventRow.payload_json, "$.o.c").like(
+                    "cp-%-tp"
+                ),
+            )
+            .order_by(UserStreamEventRow.event_time)
+        )
+        async with self.sessions() as session:
+            rows = (await session.execute(query)).all()
+        return {
+            str(symbol): self._utc(event_time)
+            for symbol, event_time in rows
+            if symbol is not None
+        }
+
     async def recent_trade_fills(self, limit: int = 100) -> list[dict[str, Any]]:
         """Return one row per completed exchange trade, including bracket exits.
 

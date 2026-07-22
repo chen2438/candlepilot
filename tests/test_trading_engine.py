@@ -12,6 +12,7 @@ from candlepilot.domain.models import (
     PortfolioState,
     PositionState,
     ProviderHealth,
+    RiskDecision,
     TradeAction,
     TradeIntent,
 )
@@ -19,7 +20,7 @@ from candlepilot.market.scanner import MarketCandidateInput
 from candlepilot.providers.base import DecisionProvider, ProviderResult
 from candlepilot.providers.cli import ProviderError, ProviderInvocationError
 from candlepilot.providers.registry import ProviderRegistry
-from candlepilot.risk.engine import SymbolRules
+from candlepilot.risk.engine import RiskEvaluation, SymbolRules
 from candlepilot.storage.database import AuditRepository, Database
 from conftest import FakeTestnetBroker
 
@@ -1847,3 +1848,56 @@ def test_testnet_portfolio_reports_missing_position_risk_entry_price(tmp_path: P
         await database.close()
 
     asyncio.run(scenario())
+
+
+def test_take_profit_reentry_windows_are_audit_only(tmp_path: Path) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'tp-reentry.db'}")
+        await database.initialize()
+        audit = AuditRepository(database.sessions)
+        exited_at = datetime.now(UTC) - timedelta(minutes=5)
+        await audit.record_user_event(
+            UserStreamEvent(
+                "ORDER_TRADE_UPDATE",
+                exited_at,
+                exited_at,
+                "BTCUSDT",
+                {
+                    "o": {
+                        "c": "cp-entry-tp",
+                        "s": "BTCUSDT",
+                        "x": "TRADE",
+                        "X": "FILLED",
+                    }
+                },
+            )
+        )
+        engine = TradingEngine(
+            providers=ProviderRegistry([FakeProvider()]),
+            audit=audit,
+            market=FakeMarket(),  # type: ignore[arg-type]
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+        )
+        intent = TradeIntent(
+            symbol="BTCUSDT",
+            cadence="5m",
+            action=TradeAction.OPEN_LONG,
+            confidence=0.8,
+            leverage=2,
+            risk_fraction="0.01",
+            stop_loss="98",
+            take_profit="104",
+            rationale="reentry sample",
+        )
+        evaluation = await engine._with_take_profit_reentry_shadow(
+            intent, RiskEvaluation(decision=RiskDecision(accepted=True, reason="ok"))
+        )
+        await database.close()
+        return evaluation
+
+    evaluation = asyncio.run(scenario())
+    assessment = evaluation.decision.take_profit_reentry_assessment
+    assert evaluation.decision.accepted is True
+    assert assessment is not None
+    assert assessment.mode == "shadow"
+    assert assessment.would_block_minutes == (15, 30, 60)

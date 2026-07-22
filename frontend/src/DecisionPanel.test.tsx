@@ -358,6 +358,41 @@ describe("DecisionPanel", () => {
     expect(screen.queryByText("保证金")).toBeNull();
   });
 
+  it("shows take-profit reentry windows as shadow-only evidence", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false,
+      text: async () => "detail unavailable",
+    })));
+    const user = userEvent.setup();
+    const assessed = {
+      ...decision,
+      risk: decision.risk && {
+        ...decision.risk,
+        decision: {
+          ...decision.risk.decision,
+          take_profit_reentry_assessment: {
+            mode: "shadow" as const,
+            last_take_profit_at: "2026-07-22T07:00:00Z",
+            elapsed_seconds: 300,
+            would_block_minutes: [15, 30, 60] as Array<15 | 30 | 60>,
+          },
+        },
+      },
+    };
+    render(<DecisionPanel
+      decisions={[assessed]}
+      liveRunPerformance={[]}
+      filter="all"
+      onFilter={vi.fn()}
+      onLoadOlder={vi.fn(async () => undefined)}
+      exhausted
+    />);
+
+    await user.click(screen.getByRole("button", { name: /OPEN_LONG/ }));
+    expect(screen.getByText("止盈后重入 · SHADOW")).toBeTruthy();
+    expect(screen.getByText("5 分钟 · 会被 15/30/60 分钟窗口拦截")).toBeTruthy();
+  });
+
   it("shows fill notional and estimated initial margin after a successful order", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: false,

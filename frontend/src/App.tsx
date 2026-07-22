@@ -3896,6 +3896,7 @@ export function DecisionPanel({
                     <span>目标依据<strong>{decision.intent.target_type ?? "—"}</strong></span>
                   </> : null}
                   {decision.risk?.decision.pending_expires_at ? <span data-tooltip="本地待触发意图不会预先提交到交易所；截止前每次检查都会重新获取行情与账户并完整复跑硬风控。过期后该时间仍保留用于审计。">意图有效至<strong>{pendingExpiryLabel(decision)}</strong></span> : null}
+                  {decision.risk?.decision.take_profit_reentry_assessment ? <span data-tooltip="纯影子评估，不会否决或修改订单；用于比较止盈后等待 15、30、60 分钟是否改善后续净收益。">止盈后重入 · SHADOW<strong>{Math.floor(decision.risk.decision.take_profit_reentry_assessment.elapsed_seconds / 60)} 分钟 · 会被 {decision.risk.decision.take_profit_reentry_assessment.would_block_minutes.join("/")} 分钟窗口拦截</strong></span> : null}
                 </div>
                 {decision.risk?.decision.structure_assessment && (
                   <div className={`structure-assessment ${decision.risk.decision.structure_assessment.passed ? "passed" : "failed"}`}>

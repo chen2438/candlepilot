@@ -369,6 +369,12 @@ export interface DecisionEvent {
         passed: boolean;
         checks: Array<{ key: string; passed: boolean; detail: string }>;
       };
+      take_profit_reentry_assessment?: null | {
+        mode: "shadow";
+        last_take_profit_at: string;
+        elapsed_seconds: number;
+        would_block_minutes: Array<15 | 30 | 60>;
+      };
     };
     created_at: string;
   };

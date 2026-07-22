@@ -28,6 +28,7 @@ from candlepilot.domain.models import (
     PositionState,
     ProviderHealth,
     RiskDecision,
+    TakeProfitReentryAssessment,
     TradeAction,
     TradeIntent,
 )
@@ -856,6 +857,36 @@ class TradingEngine:
         )
         return RiskEvaluation(decision=decision, order=evaluation.order)
 
+    async def _with_take_profit_reentry_shadow(
+        self, intent: TradeIntent, evaluation: RiskEvaluation
+    ) -> RiskEvaluation:
+        if intent.action not in {
+            TradeAction.OPEN_LONG,
+            TradeAction.OPEN_SHORT,
+            TradeAction.ADD,
+        }:
+            return evaluation
+        now = datetime.now(UTC)
+        latest = (
+            await self.audit.recent_take_profit_times(now - timedelta(minutes=60))
+        ).get(intent.symbol)
+        if latest is None:
+            return evaluation
+        elapsed = max(0, int((now - latest).total_seconds()))
+        windows = tuple(
+            minutes for minutes in (15, 30, 60) if elapsed < minutes * 60
+        )
+        decision = evaluation.decision.model_copy(
+            update={
+                "take_profit_reentry_assessment": TakeProfitReentryAssessment(
+                    last_take_profit_at=latest,
+                    elapsed_seconds=elapsed,
+                    would_block_minutes=windows,
+                )
+            }
+        )
+        return RiskEvaluation(decision=decision, order=evaluation.order)
+
     async def evaluate(
         self,
         snapshot: MarketSnapshot,
@@ -1079,6 +1110,9 @@ class TradingEngine:
                 evaluation_portfolio,
                 rules,
             ),
+        )
+        evaluation = await self._with_take_profit_reentry_shadow(
+            result.intent, evaluation
         )
         if (
             evaluation.order is not None
@@ -1359,6 +1393,9 @@ class TradingEngine:
                 evaluation_portfolio,
                 rules,
             ),
+        )
+        evaluation = await self._with_take_profit_reentry_shadow(
+            result.intent, evaluation
         )
         if (
             evaluation.order is not None
