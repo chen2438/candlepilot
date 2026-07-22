@@ -90,7 +90,9 @@
   `generate_structured_output`。它与正式 `TradeIntent` 调用共享同一个 Provider 并发锁、取消和绝对
   超时；Codex 继续使用隔离临时目录、只读 sandbox 与 `--output-schema`，Claude 继续禁用
   Bash/Read/Edit/Write/Web/Task 等工具，Custom API 不发送工具定义。输出必须通过独立
-  `MarketAnalysis` 校验：方向只能 long/short/neutral，锚点必须带时区，情景概率总和允许 ±10%，
+  `MarketAnalysis` 校验：方向只能 long/short/neutral，锚点必须带时区，情景概率以 0–100 百分点表示且
+  总和允许 ±10%；若 Provider 把整组概率写成 0–1 小数且总和约为 1，程序只对这个非交易关键字段
+  确定性乘以 100，任意其他错误总和仍拒绝，不猜测或补齐概率。
   neutral 必须给包含锚价的数字区间且不得有入场，方向性计划必须显式给 entry/stop/T1/T2、满足
   方向几何且 T1 原始盈亏比至少 1。提供给 Codex/OpenAI 严格结构化输出的整棵 Schema 会递归把
   每个对象的全部属性列入 `required` 并禁止额外字段；即使 `missing_data_impact` 为空也必须显式
@@ -103,11 +105,12 @@
 - 独立分析的批量入口是多个单标的分析组成的受控串行队列，不把不同标的塞入一个超大 Prompt，也不
   复用正式交易的批量 `TradeIntent` Schema。这样每项仍有独立数据时点、上一份同标的分析、Token、
   原始输出和失败状态；同一个外部 Provider 在整批期间持续占用唯一模型任务槽。
-- **AI 分析辅助正式决策（`analysis-assisted-decision-v1`）**：仅支持外部 Provider，并只开放
+- **AI 分析辅助正式决策（`analysis-assisted-decision-v2`）**：仅支持外部 Provider，并只开放
   `shadow`。正式周期把候选与已有持仓的 Kansoku 风格数据包组成一个严格结构化批次，一次物理调用
   同时返回完整 `MarketAnalysis` 与执行提示；数量、顺序、标的不匹配视为整批失败。程序而非模型
   固定 1 倍杠杆和风险申请，将 T1 映射为 `TradeIntent.take_profit`、T2 写入审计 usage 供影子结果
-  比较。启动试跑走完全相同的生成路径但不落分析记录；正式周期逐标的保存分析与推理审计。
+  比较。Prompt 明确要求情景概率使用 45 而不是 0.45；兼容归一化仍作为结构化输出防线。启动试跑走
+  完全相同的生成路径但不落分析记录；正式周期逐标的保存分析与推理审计。
 - **单一运行 Provider**：前端使用互斥选择；为兼容现有部署保留变量名
   `CANDLEPILOT_PROVIDER_CHAIN`，但它只能填写一个 Provider，例如 `local`、`codex` 或
   `custom:main`。启动时只检查并使用该 Provider；零个、多个或失效引用会在 API、保存或启动时

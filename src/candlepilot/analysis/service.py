@@ -8,7 +8,11 @@ from typing import Any
 from pydantic import ValidationError
 
 from candlepilot.analysis.datapack import AnalysisDataPackBuilder, DATA_VERSION
-from candlepilot.analysis.models import MarketAnalysis, market_analysis_output_schema
+from candlepilot.analysis.models import (
+    MarketAnalysis,
+    compact_validation_error,
+    market_analysis_output_schema,
+)
 from candlepilot.analysis.prompt import PROMPT_VERSION, build_analysis_prompt
 from candlepilot.providers.base import DecisionProvider
 from candlepilot.storage.database import MarketAnalysisRepository
@@ -82,8 +86,11 @@ class MarketAnalysisService:
             )
             raise
         except (json.JSONDecodeError, ValidationError) as exc:
-            await self.repository.fail(
-                analysis_id, f"provider returned invalid analysis: {exc}"
+            error = (
+                compact_validation_error("provider returned invalid analysis", exc)
+                if isinstance(exc, ValidationError)
+                else "provider returned invalid analysis: malformed JSON"
             )
+            await self.repository.fail(analysis_id, error)
         except Exception as exc:
             await self.repository.fail(analysis_id, str(exc))

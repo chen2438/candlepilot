@@ -10,7 +10,7 @@ from uuid import uuid4
 from pydantic import Field, ValidationError, model_validator
 
 from candlepilot.analysis.datapack import AnalysisDataPackBuilder, DATA_VERSION
-from candlepilot.analysis.models import AnalysisModel, MarketAnalysis
+from candlepilot.analysis.models import AnalysisModel, MarketAnalysis, compact_validation_error
 from candlepilot.domain.models import (
     MarketSnapshot,
     OrderType,
@@ -19,11 +19,11 @@ from candlepilot.domain.models import (
     TradeIntent,
 )
 from candlepilot.providers.base import DecisionProvider, ProviderResult
-from candlepilot.providers.cli import ProviderError
+from candlepilot.providers.cli import ProviderError, ProviderInvocationError
 from candlepilot.storage.database import MarketAnalysisRepository
 
 
-PROMPT_VERSION = "analysis-assisted-decision-v1"
+PROMPT_VERSION = "analysis-assisted-decision-v2"
 MINIMUM_CONFIDENCE = 0.55
 
 
@@ -104,7 +104,7 @@ Use only DATA_PACKS below. Do not use tools, files, network access, remembered p
 
 For every data pack, return exactly one decision in the same order and with the same symbol.
 1. Reproduce the independent market-study method: 1h trend context, 15m structure and anchor, 5m timing; use the supplied Kansoku-style price, volume, derivatives, benchmark, account and previous-analysis data.
-2. Produce the complete MarketAnalysis contract. User-facing natural language must be Simplified Chinese. Keep JSON keys, enum values, symbols, timeframes, numbers and abbreviations unchanged.
+2. Produce the complete MarketAnalysis contract. User-facing natural language must be Simplified Chinese. Keep JSON keys, enum values, symbols, timeframes, numbers and abbreviations unchanged. Scenario probability values are percentage points from 0 to 100 and must total about 100; use 45, 30 and 25, never 0.45, 0.30 and 0.25.
 3. Neutral analysis has no entry plan and all execution hints except confidence are null.
 4. Directional analysis has explicit entry, structure-based stop, T1 and T2. T1 must be at least 1R. The application, not you, decides whether it passes the current hard minimum reward/risk.
 5. T1 is the fixed formal take-profit field. T2 is retained only for shadow outcome comparison and must never replace T1.
@@ -192,6 +192,7 @@ class AnalysisDecisionBridge:
                     for analysis_id in analysis_ids
                 )
             )
+        response = None
         try:
             response = await provider.generate_structured_output(
                 prompt=prompt,
@@ -264,14 +265,32 @@ class AnalysisDecisionBridge:
                 )
             raise
         except Exception as exc:
+            error = (
+                compact_validation_error("provider returned invalid assisted analysis", exc)
+                if isinstance(exc, ValidationError)
+                else str(exc)
+            )
             if persist:
                 await asyncio.gather(
-                    *(self.repository.fail(analysis_id, str(exc)) for analysis_id in analysis_ids)
+                    *(self.repository.fail(analysis_id, error) for analysis_id in analysis_ids)
                 )
+            if response is not None and isinstance(exc, ValidationError):
+                raise ProviderInvocationError(
+                    error,
+                    model=response.model,
+                    duration=response.duration,
+                    raw_output=response.raw_output,
+                    usage=response.usage,
+                    prompt_version=PROMPT_VERSION,
+                    data_version=DATA_VERSION,
+                    provider_version=response.provider_version,
+                    input_payload={"data_packs": data_packs},
+                    prompt=prompt,
+                ) from exc
             if isinstance(exc, ProviderError):
                 raise
             if isinstance(exc, (json.JSONDecodeError, ValidationError)):
-                raise ProviderError(f"provider returned invalid assisted analysis: {exc}") from exc
+                raise ProviderError(error) from exc
             raise
 
     @staticmethod

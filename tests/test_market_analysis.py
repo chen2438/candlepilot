@@ -28,6 +28,7 @@ from candlepilot.domain.models import MarketSnapshot, PortfolioState, ProviderHe
 from candlepilot.market.features import Kline
 from candlepilot.market.scanner import Candidate
 from candlepilot.providers.base import DecisionProvider, ProviderResult, StructuredOutputResult
+from candlepilot.providers.cli import ProviderInvocationError
 from candlepilot.providers.registry import ProviderRegistry
 from candlepilot.storage.database import AuditRepository, Database, MarketAnalysisRepository
 from conftest import FakeTestnetBroker
@@ -83,6 +84,25 @@ def test_analysis_contract_requires_explicit_directional_levels() -> None:
     invalid["entry_plan"] = None
     with pytest.raises(ValidationError, match="requires an entry plan"):
         MarketAnalysis.model_validate(invalid)
+
+
+def test_analysis_contract_normalizes_fractional_scenario_probabilities() -> None:
+    payload = _analysis_payload()
+    payload["scenarios"][0]["probability"] = 0.6  # type: ignore[index]
+    payload["scenarios"][1]["probability"] = 0.4  # type: ignore[index]
+
+    analysis = MarketAnalysis.model_validate(payload)
+
+    assert [item.probability for item in analysis.scenarios] == [60, 40]
+
+
+def test_analysis_contract_does_not_rescale_invalid_fractional_totals() -> None:
+    payload = _analysis_payload()
+    payload["scenarios"][0]["probability"] = 0.2  # type: ignore[index]
+    payload["scenarios"][1]["probability"] = 0.2  # type: ignore[index]
+
+    with pytest.raises(ValidationError, match="must total 100%"):
+        MarketAnalysis.model_validate(payload)
 
 
 def test_analysis_output_schema_requires_every_object_property() -> None:
@@ -160,7 +180,7 @@ def test_assisted_analysis_maps_t1_to_fixed_one_times_intent_and_keeps_t2_shadow
     assert result.intent.leverage == 1
     assert result.intent.take_profit == Decimal("104")
     assert result.usage["shadow_target2"] == 108
-    assert result.prompt_version == "analysis-assisted-decision-v1"
+    assert result.prompt_version == "analysis-assisted-decision-v2"
 
 
 def test_assisted_schema_is_strict_and_prompt_declares_shadow_boundaries() -> None:
@@ -184,6 +204,7 @@ def test_assisted_schema_is_strict_and_prompt_declares_shadow_boundaries() -> No
     assert "T1 is the fixed formal take-profit field" in prompt
     assert "T2 is retained only for shadow outcome comparison" in prompt
     assert "fixes assisted decisions at 1x leverage" in prompt
+    assert "use 45, 30 and 25, never 0.45, 0.30 and 0.25" in prompt
 
 
 def test_neutral_analysis_requires_range_containing_anchor() -> None:
@@ -489,10 +510,13 @@ class AssistedAnalysisProvider(AnalysisProvider):
         self.calls += 1
         decisions = []
         for symbol in ("BTCUSDT", "ETHUSDT"):
+            analysis = _analysis_payload()
+            analysis["scenarios"][0]["probability"] = 0.6  # type: ignore[index]
+            analysis["scenarios"][1]["probability"] = 0.4  # type: ignore[index]
             decisions.append(
                 {
                     "symbol": symbol,
-                    "analysis": _analysis_payload(),
+                    "analysis": analysis,
                     "execution": {
                         "confidence": 0.8,
                         "order_type": "LIMIT",
@@ -512,6 +536,26 @@ class AssistedAnalysisProvider(AnalysisProvider):
             raw_output=__import__("json").dumps({"decisions": decisions}),
             usage={"input_tokens": 11, "output_tokens": 7, "total_tokens": 18},
             reasoning_effort=self.reasoning_effort,
+        )
+
+
+class InvalidAssistedAnalysisProvider(AssistedAnalysisProvider):
+    async def generate_structured_output(self, *, prompt, output_schema):
+        response = await super().generate_structured_output(
+            prompt=prompt, output_schema=output_schema
+        )
+        payload = __import__("json").loads(response.raw_output)
+        for decision in payload["decisions"]:
+            decision["analysis"]["scenarios"][0]["probability"] = 0.2
+            decision["analysis"]["scenarios"][1]["probability"] = 0.2
+        return StructuredOutputResult(
+            provider=response.provider,
+            model=response.model,
+            duration=response.duration,
+            raw_output=__import__("json").dumps(payload),
+            usage=response.usage,
+            provider_version=response.provider_version,
+            reasoning_effort=response.reasoning_effort,
         )
 
 
@@ -589,6 +633,47 @@ def test_assisted_bridge_uses_one_batch_call_and_persists_split_shadow_rows(
     assert all(row["usage"]["analysis_decision_mode"] == "shadow" for row in rows)
     assert all(row["usage"]["shadow_target2"] == 108 for row in rows)
     assert sum(row["usage"]["total_tokens"] for row in rows) == 18
+
+
+def test_assisted_bridge_keeps_raw_audit_but_exposes_compact_validation_error(
+    tmp_path: Path,
+) -> None:
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'invalid-assisted.db'}")
+        await database.initialize()
+        repository = MarketAnalysisRepository(database.sessions)
+        bridge = AnalysisDecisionBridge(
+            builder=StaticBuilder(),  # type: ignore[arg-type]
+            repository=repository,
+        )
+        snapshots = [
+            MarketSnapshot(
+                symbol=symbol,
+                cadence="15m",
+                timestamp=datetime.now(UTC),
+                mark_price="100",
+                bid="99.9",
+                ask="100.1",
+                quote_volume_24h="1000000",
+            )
+            for symbol in ("BTCUSDT", "ETHUSDT")
+        ]
+        with pytest.raises(ProviderInvocationError) as caught:
+            await bridge.generate(
+                provider=InvalidAssistedAnalysisProvider(),
+                snapshots=snapshots,
+                portfolio=PortfolioState(equity="10000", available_balance="8000"),
+                persist=False,
+            )
+        await database.close()
+        return caught.value
+
+    error = asyncio.run(scenario())
+    assert "2 validation errors" in str(error)
+    assert "scenario probabilities must total 100%" in str(error)
+    assert "input_value" not in str(error)
+    assert "errors.pydantic.dev" not in str(error)
+    assert error.raw_output.startswith('{"decisions"')
 
 
 def test_market_analysis_api_runs_selected_provider_and_returns_audit(tmp_path: Path) -> None:

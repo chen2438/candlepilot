@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 
 Price = Annotated[float, Field(gt=0)]
@@ -32,7 +32,11 @@ class AnalysisAnchor(AnalysisModel):
 
 class AnalysisScenario(AnalysisModel):
     name: str = Field(min_length=1, max_length=80, description=CHINESE_TEXT)
-    probability: float = Field(ge=0, le=100)
+    probability: float = Field(
+        ge=0,
+        le=100,
+        description="Probability in percentage points from 0 to 100; use 45, not 0.45.",
+    )
     trigger: str = Field(min_length=1, max_length=500, description=CHINESE_TEXT)
     expected_path: str = Field(min_length=1, max_length=800, description=CHINESE_TEXT)
     invalidation: str = Field(min_length=1, max_length=500, description=CHINESE_TEXT)
@@ -78,6 +82,31 @@ class MarketAnalysis(AnalysisModel):
         description=f"Every item: {CHINESE_TEXT}",
     )
 
+    @field_validator("scenarios", mode="before")
+    @classmethod
+    def normalize_fractional_probabilities(cls, value: Any) -> Any:
+        """Accept the common 0-1 convention only when the whole set totals about one."""
+
+        if not isinstance(value, list) or not value:
+            return value
+        probabilities: list[float] = []
+        for scenario in value:
+            if not isinstance(scenario, dict):
+                return value
+            probability = scenario.get("probability")
+            if isinstance(probability, bool) or not isinstance(probability, (int, float)):
+                return value
+            probabilities.append(float(probability))
+        total = sum(probabilities)
+        if not all(0 <= probability <= 1 for probability in probabilities):
+            return value
+        if not 0.9 <= total <= 1.1:
+            return value
+        normalized: list[dict[str, Any]] = []
+        for scenario, probability in zip(value, probabilities, strict=True):
+            normalized.append({**scenario, "probability": probability * 100})
+        return normalized
+
     @model_validator(mode="after")
     def semantic_contract(self) -> MarketAnalysis:
         total = sum(item.probability for item in self.scenarios)
@@ -117,6 +146,23 @@ class MarketAnalysis(AnalysisModel):
             "target1": abs(plan.target1 - plan.entry) / risk,
             "target2": abs(plan.target2 - plan.entry) / risk,
         }
+
+
+def compact_validation_error(prefix: str, exc: ValidationError) -> str:
+    """Return a bounded user-safe summary without model payloads or Pydantic URLs."""
+
+    errors = exc.errors(include_url=False, include_input=False)
+    messages: list[str] = []
+    for error in errors:
+        message = str(error.get("msg") or "invalid structured output")
+        if message not in messages:
+            messages.append(message)
+    detail = "; ".join(messages[:3])
+    if len(messages) > 3:
+        detail += f"; and {len(messages) - 3} other error types"
+    count = len(errors)
+    noun = "error" if count == 1 else "errors"
+    return f"{prefix} ({count} validation {noun}): {detail}"
 
 
 def market_analysis_output_schema() -> dict[str, object]:
