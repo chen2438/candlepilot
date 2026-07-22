@@ -2819,6 +2819,7 @@ export function MarketAnalysisPanel({
   const [batchIds, setBatchIds] = useState<number[]>([]);
   const [lastQueuedSymbols, setLastQueuedSymbols] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [historyFilter, setHistoryFilter] = useState<"directional" | "long" | "short" | "all">("directional");
 
   const refreshHistory = useCallback(async () => {
     const records = await api<MarketAnalysisRecord[]>("/api/market-analyses?limit=30");
@@ -2968,6 +2969,18 @@ export function MarketAnalysisPanel({
     : candidateSymbols.length
       ? candidateSymbols
       : lastQueuedSymbols;
+  const matchesHistoryFilter = (item: MarketAnalysisRecord, filter = historyFilter) => {
+    const direction = item.result?.direction;
+    if (!direction) return filter === "directional" || filter === "all";
+    if (filter === "all") return true;
+    if (filter === "directional") return direction !== "neutral";
+    return direction === filter;
+  };
+  const filteredHistory = history.filter((item) => matchesHistoryFilter(item));
+  const applyHistoryFilter = (filter: typeof historyFilter) => {
+    setHistoryFilter(filter);
+    if (selected && !matchesHistoryFilter(selected, filter)) setSelected(null);
+  };
   return <article className="panel analysis-panel">
     <PanelTitle code="10" title="独立 AI 行情分析" meta="研究计划 · 不自动交易" />
     <div className="analysis-notice">
@@ -3011,7 +3024,16 @@ export function MarketAnalysisPanel({
     <div className="analysis-layout">
       <aside className="analysis-history">
         <div className="analysis-subhead"><strong>分析历史</strong><button className="text-button" onClick={() => void refreshHistory()}>刷新</button></div>
-        {history.map((item) => <button
+        <div className="analysis-history-filters" role="group" aria-label="分析方向筛选">
+          {([["directional", "方向"], ["long", "偏多"], ["short", "偏空"], ["all", "全部"]] as const).map(([value, label]) => <button
+            key={value}
+            type="button"
+            className={historyFilter === value ? "active" : ""}
+            aria-pressed={historyFilter === value}
+            onClick={() => applyHistoryFilter(value)}
+          >{label}</button>)}
+        </div>
+        {filteredHistory.map((item) => <button
           key={item.id}
           className={selected?.id === item.id ? "selected" : ""}
           onClick={() => void loadDetail(item.id)}
@@ -3020,6 +3042,7 @@ export function MarketAnalysisPanel({
           <em className={item.result?.direction ?? item.status}>{item.result ? analysisDirectionLabel(item.result.direction) : analysisStatusLabel(item.status)}</em>
         </button>)}
         {!history.length && <div className="empty">暂无分析记录</div>}
+        {Boolean(history.length && !filteredHistory.length) && <div className="empty">当前筛选无记录</div>}
       </aside>
 
       <div className="analysis-detail">

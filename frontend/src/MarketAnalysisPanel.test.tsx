@@ -63,6 +63,7 @@ const record: MarketAnalysisRecord = {
 const rangeRecord: MarketAnalysisRecord = {
   ...record,
   id: 8,
+  symbol: "ETHUSDT",
   result: {
     ...record.result!,
     direction: "neutral",
@@ -74,6 +75,26 @@ const rangeRecord: MarketAnalysisRecord = {
     entry_plan: null,
     reward_risk: null,
   },
+};
+
+const shortRecord: MarketAnalysisRecord = {
+  ...record,
+  id: 9,
+  symbol: "HYPEUSDT",
+  result: {
+    ...record.result!,
+    direction: "short",
+    summary: "15 分钟与 1 小时结构偏空。",
+  },
+};
+
+const pendingRecord: MarketAnalysisRecord = {
+  ...record,
+  id: 10,
+  symbol: "SOLUSDT",
+  status: "pending",
+  result: null,
+  completed_at: null,
 };
 
 function response(body: unknown, status = 200) {
@@ -101,7 +122,7 @@ describe("MarketAnalysisPanel", () => {
     expect(screen.getByRole("button", { name: "扫描并分析候选" }).hasAttribute("disabled")).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "开始分析" }));
 
-    await screen.findByText("偏多");
+    await screen.findByRole("heading", { name: "偏多" });
     expect(screen.getByText("101")).toBeTruthy();
     expect(screen.getByText("104")).toBeTruthy();
     expect(screen.getByText("108")).toBeTruthy();
@@ -127,11 +148,44 @@ describe("MarketAnalysisPanel", () => {
     });
     render(<MarketAnalysisPanel engineRunning={false} provider="codex-auth" />);
 
-    fireEvent.click(await screen.findByRole("button", { name: /BTCUSDT/ }));
+    fireEvent.click(screen.getByRole("button", { name: "全部" }));
+    fireEvent.click(await screen.findByRole("button", { name: /ETHUSDT/ }));
     const rangePlan = await screen.findByText("观望区间");
     expect(rangePlan.closest(".analysis-range-plan")).toBeTruthy();
     expect(rangePlan.closest(".range")).toBeNull();
     expect(screen.getByText("延续上涨")).toBeTruthy();
+  });
+
+  it("filters analysis history by directional, long, short, and all results", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const path = String(input);
+      if (path === "/api/market-analyses?limit=30") return response([pendingRecord, rangeRecord, shortRecord, record]);
+      if (path === "/api/market-analyses/8") return response(rangeRecord);
+      throw new Error(`unexpected request: ${path}`);
+    });
+    render(<MarketAnalysisPanel engineRunning={false} provider="codex-auth" />);
+
+    await screen.findByText("HYPEUSDT");
+    expect(screen.getByText("BTCUSDT")).toBeTruthy();
+    expect(screen.getByText("SOLUSDT")).toBeTruthy();
+    expect(screen.queryByText("ETHUSDT")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "偏多" }));
+    expect(screen.getByText("BTCUSDT")).toBeTruthy();
+    expect(screen.queryByText("HYPEUSDT")).toBeNull();
+    expect(screen.queryByText("SOLUSDT")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "偏空" }));
+    expect(screen.getByText("HYPEUSDT")).toBeTruthy();
+    expect(screen.queryByText("BTCUSDT")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "全部" }));
+    expect(screen.getByText("ETHUSDT")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /ETHUSDT/ }));
+    await screen.findByRole("heading", { name: "观望" });
+    fireEvent.click(screen.getByRole("button", { name: "方向" }));
+    expect(screen.queryByRole("heading", { name: "观望" })).toBeNull();
+    expect(screen.getByText("选择一个标的开始")).toBeTruthy();
   });
 
   it("queues the formal engine candidate batch", async () => {
