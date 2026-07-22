@@ -45,6 +45,10 @@ fallback 路由。留空表示启动后在前端选择，不表示自动遍历 P
 
 ## 7. HTTP / WebSocket API 参考
 
+API 实现按职责拆分：`api.py` 只保留应用生命周期、依赖编排和路由闭包；严格请求 Schema 集中在
+`api_models.py`；网页更新、备份、日志状态解析及 Git 快进检查集中在 `web_maintenance.py`。
+拆分不改变路径、请求或响应协议，`candlepilot.api` 继续重导出既有维护辅助入口供兼容调用。
+
 **认证**：`GET /api/auth/status`、`POST /api/auth/login`、`POST /api/auth/logout`。启用鉴权时，
 登录与状态接口强制 `Cache-Control: no-store`；登录成功签发有期限的 HttpOnly 会话，退出会立即
 清除浏览器 Cookie。健康检查保持匿名可用，供本机进程看护使用；不返回账户、配置或交易信息。

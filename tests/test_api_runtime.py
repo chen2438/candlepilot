@@ -13,6 +13,7 @@ from pydantic import SecretStr
 from starlette.websockets import WebSocketDisconnect
 
 import candlepilot.api as api_module
+import candlepilot.web_maintenance as web_maintenance_module
 from candlepilot.api import check_web_update, create_app, read_web_update_status
 from candlepilot.auth import hash_password
 from candlepilot.application.engine import TradingEngine
@@ -1999,7 +2000,7 @@ def test_web_update_check_reports_only_fast_forward_github_updates(
         }
         return outputs[args]
 
-    monkeypatch.setattr(api_module, "_run_web_update_git", run_git)
+    monkeypatch.setattr(web_maintenance_module, "_run_web_update_git", run_git)
 
     result = asyncio.run(check_web_update(tmp_path))
 
@@ -2021,7 +2022,7 @@ def test_web_update_check_rejects_non_github_origin(
         }
         return outputs[args]
 
-    monkeypatch.setattr(api_module, "_run_web_update_git", run_git)
+    monkeypatch.setattr(web_maintenance_module, "_run_web_update_git", run_git)
 
     with pytest.raises(api_module.WebUpdateCheckError, match="GitHub HTTPS"):
         asyncio.run(check_web_update(tmp_path))
