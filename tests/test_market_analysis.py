@@ -180,7 +180,8 @@ def test_assisted_analysis_maps_t1_to_fixed_one_times_intent_and_keeps_t2_shadow
     assert result.intent.leverage == 1
     assert result.intent.take_profit == Decimal("104")
     assert result.usage["shadow_target2"] == 108
-    assert result.prompt_version == "analysis-assisted-decision-v3"
+    assert result.usage["assisted_execution_ready"] is True
+    assert result.prompt_version == "analysis-assisted-decision-v4"
 
 
 def test_assisted_schema_is_strict_and_prompt_declares_shadow_boundaries() -> None:
@@ -206,6 +207,96 @@ def test_assisted_schema_is_strict_and_prompt_declares_shadow_boundaries() -> No
     assert "fixes assisted decisions at 1x leverage" in prompt
     assert "use 45, 30 and 25, never 0.45, 0.30 and 0.25" in prompt
     assert "range_plan must contain anchor.price" in prompt
+    assert "A LIMIT requires ttl_seconds from 5 to 900" in prompt
+    assert "CandlePilot will safely HOLD that symbol" in prompt
+
+
+def test_assisted_directional_market_allows_null_ttl() -> None:
+    payload = {
+        "symbol": "BTCUSDT",
+        "analysis": _analysis_payload(),
+        "execution": {
+            "confidence": 0.8,
+            "order_type": "MARKET",
+            "ttl_seconds": None,
+            "setup_type": "TREND_CONTINUATION",
+            "trigger_type": "MARKET_CONFIRMED",
+            "invalidation_type": "SWING",
+            "invalidation_level": 98,
+            "target_type": "SWING",
+        },
+    }
+
+    assert AnalysisAssistedDecision.model_validate(payload).has_complete_execution_hints()
+
+
+def test_assisted_neutral_ignores_accidental_execution_hints() -> None:
+    analysis = _analysis_payload("neutral")
+    analysis["entry_plan"] = None
+    analysis["range_plan"] = {"low": 98, "high": 102, "tactic": "保持观望"}
+    decision = AnalysisAssistedDecision.model_validate(
+        {
+            "symbol": "BTCUSDT",
+            "analysis": analysis,
+            "execution": {
+                "confidence": 0.2,
+                "order_type": "MARKET",
+                "ttl_seconds": None,
+                "setup_type": "TREND_CONTINUATION",
+                "trigger_type": "MARKET_CONFIRMED",
+                "invalidation_type": "SWING",
+                "invalidation_level": 98,
+                "target_type": "SWING",
+            },
+        }
+    )
+
+    assert not decision.has_complete_execution_hints()
+
+
+def test_assisted_directional_incomplete_hints_safely_hold() -> None:
+    decision = AnalysisAssistedDecision.model_validate(
+        {
+            "symbol": "BTCUSDT",
+            "analysis": _analysis_payload(),
+            "execution": {
+                "confidence": 0.8,
+                "order_type": "LIMIT",
+                "trigger_type": "RECLAIM",
+                "invalidation_type": "SWING",
+                "invalidation_level": 98,
+                "target_type": "SWING",
+            },
+        }
+    )
+    snapshot = MarketSnapshot(
+        symbol="BTCUSDT",
+        cadence="15m",
+        timestamp=datetime.now(UTC),
+        mark_price="100",
+        bid="99.9",
+        ask="100.1",
+        quote_volume_24h="1000000",
+    )
+
+    result = AnalysisDecisionBridge._provider_result(
+        decision=decision,
+        snapshot=snapshot,
+        portfolio=PortfolioState(equity="10000", available_balance="8000"),
+        provider="fixture",
+        model="fixture-model",
+        duration=timedelta(seconds=1),
+        raw_output="{}",
+        usage={},
+        provider_version="fixture-1",
+        reasoning_effort="medium",
+        input_payload={},
+        prompt="fixture",
+    )
+
+    assert result.intent.action.value == "HOLD"
+    assert "不猜测交易参数" in result.intent.rationale
+    assert result.usage["assisted_execution_ready"] is False
 
 
 def test_neutral_analysis_requires_range_containing_anchor() -> None:

@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any, Literal, Sequence
 from uuid import uuid4
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, ValidationError
 
 from candlepilot.analysis.datapack import AnalysisDataPackBuilder, DATA_VERSION
 from candlepilot.analysis.models import AnalysisModel, MarketAnalysis, compact_validation_error
@@ -23,13 +23,13 @@ from candlepilot.providers.cli import ProviderError, ProviderInvocationError
 from candlepilot.storage.database import MarketAnalysisRepository
 
 
-PROMPT_VERSION = "analysis-assisted-decision-v3"
+PROMPT_VERSION = "analysis-assisted-decision-v4"
 MINIMUM_CONFIDENCE = 0.55
 
 
 class ExecutionHints(AnalysisModel):
-    confidence: float = Field(ge=0, le=1)
-    order_type: Literal["MARKET", "LIMIT"] | None
+    confidence: float = Field(default=0, ge=0, le=1)
+    order_type: Literal["MARKET", "LIMIT"] | None = None
     ttl_seconds: int | None = Field(default=None, ge=5, le=900)
     setup_type: (
         Literal[
@@ -40,36 +40,34 @@ class ExecutionHints(AnalysisModel):
             "REVERSAL",
         ]
         | None
-    )
-    trigger_type: Literal["MARKET_CONFIRMED", "BREAKOUT", "RECLAIM", "REJECTION"] | None
-    invalidation_type: Literal["SWING", "RANGE", "EMA", "DAILY_LEVEL"] | None
+    ) = None
+    trigger_type: (
+        Literal["MARKET_CONFIRMED", "BREAKOUT", "RECLAIM", "REJECTION"] | None
+    ) = None
+    invalidation_type: Literal["SWING", "RANGE", "EMA", "DAILY_LEVEL"] | None = None
     invalidation_level: float | None = Field(default=None, gt=0)
-    target_type: Literal["SWING", "RANGE", "DAILY_LEVEL", "R_MULTIPLE"] | None
+    target_type: Literal["SWING", "RANGE", "DAILY_LEVEL", "R_MULTIPLE"] | None = None
 
 
 class AnalysisAssistedDecision(AnalysisModel):
     symbol: str = Field(pattern=r"^[A-Z0-9]+USDT$")
     analysis: MarketAnalysis
-    execution: ExecutionHints
+    execution: ExecutionHints = Field(default_factory=ExecutionHints)
 
-    @model_validator(mode="after")
-    def execution_matches_analysis(self) -> AnalysisAssistedDecision:
-        values = (
+    def has_complete_execution_hints(self) -> bool:
+        if self.analysis.direction == "neutral":
+            return False
+        required = (
             self.execution.order_type,
-            self.execution.ttl_seconds,
             self.execution.setup_type,
             self.execution.trigger_type,
             self.execution.invalidation_type,
             self.execution.invalidation_level,
             self.execution.target_type,
         )
-        if self.analysis.direction == "neutral":
-            if any(value is not None for value in values):
-                raise ValueError("neutral analysis cannot include execution hints")
-            return self
-        if any(value is None for value in values):
-            raise ValueError("directional analysis requires complete execution hints")
-        return self
+        if any(value is None for value in required):
+            return False
+        return self.execution.order_type != "LIMIT" or self.execution.ttl_seconds is not None
 
 
 class AnalysisAssistedBatch(AnalysisModel):
@@ -105,8 +103,8 @@ Use only DATA_PACKS below. Do not use tools, files, network access, remembered p
 For every data pack, return exactly one decision in the same order and with the same symbol.
 1. Reproduce the independent market-study method: 1h trend context, 15m structure and anchor, 5m timing; use the supplied Kansoku-style price, volume, derivatives, benchmark, account and previous-analysis data.
 2. Produce the complete MarketAnalysis contract. User-facing natural language must be Simplified Chinese. Keep JSON keys, enum values, symbols, timeframes, numbers and abbreviations unchanged. Scenario probability values are percentage points from 0 to 100 and must total about 100; use 45, 30 and 25, never 0.45, 0.30 and 0.25.
-3. Neutral analysis has no entry plan and all execution hints except confidence are null. Its numeric range_plan must contain anchor.price; use the current structure surrounding the anchor, not a detached future target range.
-4. Directional analysis has explicit entry, structure-based stop, T1 and T2. T1 must be at least 1R. The application, not you, decides whether it passes the current hard minimum reward/risk.
+3. Neutral analysis has no entry plan and all execution hints except confidence are null. Its numeric range_plan must contain anchor.price; use the current structure surrounding the anchor, not a detached future target range. If you accidentally populate neutral execution hints, CandlePilot ignores them and remains HOLD.
+4. Directional analysis has explicit entry, structure-based stop, T1 and T2. T1 must be at least 1R. It must also populate order_type, setup_type, trigger_type, invalidation_type, invalidation_level and target_type. A LIMIT requires ttl_seconds from 5 to 900; a MARKET should use null ttl_seconds. If any required execution hint is unavailable, return null for it: CandlePilot will safely HOLD that symbol rather than invent the value or fail the other symbols. The application, not you, decides whether the plan passes the current hard minimum reward/risk.
 5. T1 is the fixed formal take-profit field. T2 is retained only for shadow outcome comparison and must never replace T1.
 6. Use MARKET only when the entry trigger is already confirmed by completed supplied 5m bars. Otherwise use LIMIT and set a 5-900 second TTL. Never infer an intrabar confirmation from an unfinished candle.
 7. Set confidence to the estimated strength of the executable directional edge in the supplied snapshot, not a probability of profit. Choose structural setup, trigger, invalidation and target enum values that match the written plan.
@@ -362,9 +360,13 @@ class AnalysisDecisionBridge:
     ) -> ProviderResult:
         analysis = decision.analysis
         plan = analysis.entry_plan
+        execution_ready = decision.has_complete_execution_hints()
         usage = {
             **usage,
             "shadow_target2": plan.target2 if plan is not None else None,
+            "assisted_execution_ready": (
+                execution_ready if analysis.direction != "neutral" else None
+            ),
         }
         position = portfolio.positions.get(snapshot.symbol)
         if analysis.direction == "neutral":
@@ -388,6 +390,12 @@ class AnalysisDecisionBridge:
                     order_type=OrderType.MARKET,
                     rationale=f"AI 分析方向与现有持仓相反，仅平仓且不在同轮反手。{analysis.summary}",
                 )
+        elif not execution_ready:
+            intent = TradeIntent.hold(
+                snapshot.symbol,
+                snapshot.cadence,
+                f"方向分析缺少完整执行提示，不猜测交易参数；保持观望。{analysis.summary}",
+            )
         elif decision.execution.confidence < MINIMUM_CONFIDENCE:
             intent = TradeIntent.hold(
                 snapshot.symbol,

@@ -107,12 +107,16 @@
 - 独立分析的批量入口是多个单标的分析组成的受控串行队列，不把不同标的塞入一个超大 Prompt，也不
   复用正式交易的批量 `TradeIntent` Schema。这样每项仍有独立数据时点、上一份同标的分析、Token、
   原始输出和失败状态；同一个外部 Provider 在整批期间持续占用唯一模型任务槽。
-- **AI 分析辅助正式决策（`analysis-assisted-decision-v3`）**：仅支持外部 Provider，并只开放
+- **AI 分析辅助正式决策（`analysis-assisted-decision-v4`）**：仅支持外部 Provider，并只开放
   `shadow`。正式周期把候选与已有持仓的 Kansoku 风格数据包组成一个严格结构化批次，一次物理调用
   同时返回完整 `MarketAnalysis` 与执行提示；数量、顺序、标的不匹配视为整批失败。程序而非模型
   固定 1 倍杠杆和风险申请，将 T1 映射为 `TradeIntent.take_profit`、T2 写入审计 usage 供影子结果
   比较。Prompt 明确要求情景概率使用 45 而不是 0.45，并要求 neutral 的当前结构区间包含锚点而不是
-  填写脱离锚点的未来目标区间；受限归一化仍作为结构化输出防线。启动试跑走
+  填写脱离锚点的未来目标区间；受限归一化仍作为结构化输出防线。方向计划必须返回 order、setup、
+  trigger、invalidation 和 target 提示；`LIMIT` 必须有 5–900 秒 TTL，`MARKET` 的 TTL 应为空。
+  任一开仓提示缺失时程序保留分析但把该标的确定性降级为 `HOLD`，不推断交易关键枚举或数值，也不
+  让它拖垮同批其他标的；neutral 意外携带的提示一律忽略。已有反向持仓仍只生成风险降低的平仓意图，
+  不依赖开仓提示。启动试跑走
   完全相同的生成路径但不落分析记录；正式周期逐标的保存分析与推理审计。
 - **单一运行 Provider**：前端使用互斥选择；为兼容现有部署保留变量名
   `CANDLEPILOT_PROVIDER_CHAIN`，但它只能填写一个 Provider，例如 `local`、`codex` 或
