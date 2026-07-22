@@ -752,7 +752,13 @@ class TradingEngine:
             now=datetime.now(UTC),
         )
         decision = evaluation.decision.model_copy(
-            update={"pending_expires_at": expires_at}
+            update={
+                "pending_expires_at": expires_at,
+                # Shadow execution eligibility belongs to the persisted intent,
+                # not to a fresh risk calculation.  Re-evaluating a resting
+                # limit must never upgrade it into an executable order.
+                "shadow_only": prior.shadow_only,
+            }
         )
         evaluation = RiskEvaluation(decision=decision, order=evaluation.order)
         if decision.pending_entry:
@@ -764,6 +770,8 @@ class TradingEngine:
         await self.audit.update_risk(item["inference_id"], decision, completed=True)
         if not decision.accepted or evaluation.order is None:
             return "cancelled"
+        if decision.shadow_only:
+            return "shadowed"
         if reason := self._order_submission_block_reason():
             cancelled = decision.model_copy(
                 update={

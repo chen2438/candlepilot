@@ -23,7 +23,8 @@
   复用现有 JSON 快照，不新增迁移，也不会进入标准外部 Provider 的决策 payload。
 - 溯源：SHA-256 数据版本、显式 Prompt 版本、模型标识、CLI Provider 版本。
 - 本地实验 Provider 的推理 usage 额外固化 `strategy_variant` 与 `live_shadow_only=true`；正式风控行的
-  `shadow_only` 是未提交 Broker 的最终证据，回测模型结果则保留同一 Provider/version 供消融比较。
+  `shadow_only` 是未提交 Broker 的最终证据，本地待触发限价意图后续复核和触价完成时也必须保留
+  该字段；回测模型结果则保留同一 Provider/version 供消融比较。
 - 每次正式运行创建时把当前仓库 `HEAD` 的 7 位 Git 提交号写入 `live_runs.config_json` 的
   `software_version`，与该次唯一 Provider、周期和运行边界一起永久保留；软件更新不会用新版本
   回填历史运行。无法确认 Git 仓库时该字段省略，前端显示“版本未记录”。这是现有 JSON 配置

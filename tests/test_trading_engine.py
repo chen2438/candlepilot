@@ -590,6 +590,65 @@ def test_engine_queues_resting_limit_then_rechecks_and_executes(tmp_path: Path) 
     assert len(orders) == 1
 
 
+def test_engine_keeps_shadow_limit_non_executable_when_it_triggers(
+    tmp_path: Path,
+) -> None:
+    class ExperimentalRestingLimitProvider(RestingLimitProvider):
+        name = "local-experiment-shadow"
+
+        @property
+        def capabilities(self) -> ProviderCapabilities:
+            return ProviderCapabilities(
+                external_inference=False,
+                configurable_model=False,
+                requires_backtest_probe=False,
+                retryable=False,
+                live_shadow_only=True,
+            )
+
+    async def scenario():
+        database = Database(f"sqlite+aiosqlite:///{tmp_path / 'shadow-limit.db'}")
+        await database.initialize()
+        audit = AuditRepository(database.sessions)
+        broker = FakeTestnetBroker()
+        market = FakeMarket()
+        provider = ExperimentalRestingLimitProvider()
+        engine = TradingEngine(
+            testnet_broker=broker,  # type: ignore[arg-type]
+            providers=ProviderRegistry([provider]),
+            audit=audit,
+            market=market,  # type: ignore[arg-type]
+        )
+        engine.select_provider_chain([provider.name])
+        await engine.start()
+        rules = SymbolRules(
+            Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")
+        )
+        engine.venue_contract_rules = {"BTCUSDT": rules}
+        outcome = await engine.evaluate(
+            await market.market_snapshot("BTCUSDT", "5m"),
+            PortfolioState(equity="10000", available_balance="8000"),
+            rules,
+        )
+
+        market.mark_price = Decimal("98.8")
+        trigger_result = await engine.process_pending_entry("BTCUSDT")
+        risk_events = await audit.recent_risk_decisions()
+        remaining = await audit.pending_local_entries(live_run_id=engine.live_run_id)
+        await engine.stop()
+        await database.close()
+        return outcome, trigger_result, risk_events, remaining, broker.orders
+
+    outcome, trigger_result, risk_events, remaining, orders = asyncio.run(scenario())
+    assert outcome.risk.accepted and outcome.risk.pending_entry
+    assert outcome.risk.shadow_only
+    assert trigger_result == "shadowed"
+    assert risk_events[0]["decision"]["shadow_only"]
+    assert not risk_events[0]["decision"]["pending_entry"]
+    assert remaining == []
+    assert orders == []
+
+
 def test_engine_expires_pending_limit_without_submitting(tmp_path: Path) -> None:
     async def scenario():
         database = Database(f"sqlite+aiosqlite:///{tmp_path / 'expired-pending.db'}")
