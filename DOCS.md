@@ -71,6 +71,12 @@ USDⓈ-M USDT 永续合约。外部 LLM 或本地确定性策略生成结构化 
 看到当时已经收盘的数据。普通历史回测明确缺少盘口与订单流；完整微观结构输入只来自正式运行自动
 保存的实际批量输入、起始组合和合约规则，并按原批次精确回放，不再提供独立盘口采集器。
 
+独立 AI 行情分析与正式决策链隔离：它只在正式引擎停机且没有其他模型任务时，按需冻结
+`5m/15m/1h` 原始已收盘 K 线及 Kansoku 风格技术摘要、相对成交量、衍生品资金流、BTC/ETH
+市场对照和当前账户上下文，再由唯一所选外部 Provider 返回方向/观望、锚点、2–4 个情景、结构
+止损及显式 T1/T2。分析结果只保存和展示，绝不转成 `TradeIntent` 或订单；新闻、事件、期权墙与
+非公开 Pro 检测器等缺失输入必须作为未知项披露，不能解释为风险不存在。
+
 ## 5. 关键默认值
 
 以下只是跨领域快速索引，完整语义与例外以对应专题为准：
@@ -99,6 +105,7 @@ USDⓈ-M USDT 永续合约。外部 LLM 或本地确定性策略生成结构化 
 | 任务涉及 | 必读专题 | 主要代码区域 |
 |---|---|---|
 | Provider、本地规则、Prompt、模型路由、重试、试跑、Token | [决策 Provider](docs/providers.md) | `src/candlepilot/providers/`、`application/engine.py`、Prompt 相关模块 |
+| 独立 AI 行情分析、5m/15m/1h 冻结数据包、分析计划 | [行情、候选池、调度与运行控制](docs/market-and-runtime.md) + [决策 Provider](docs/providers.md) | `src/candlepilot/analysis/`、分析 API 与前端分析组件 |
 | 行情、K 线、特征、选币、周期调度、运行上限 | [行情、特征与运行调度](docs/market-and-runtime.md) | `market/`、`application/scheduler.py` |
 | TradeIntent、硬风控、移动止损、Broker、账户、订单、成交、正式数据集 | [决策、风控与测试网执行](docs/risk-and-execution.md) | `domain/`、`risk/`、`broker/`、`application/engine.py` |
 | 普通历史回测、正式运行回放、模拟撮合、回测 UI | [回测](docs/backtesting.md) | `backtest/`、回测 API 与前端回测组件 |
@@ -136,7 +143,8 @@ pnpm --dir frontend run build
 
 ## 8. 尚未实施 / 路线图
 
-- [ ] **决策历史作为模型输入**：当前模型调用完全无状态。实现前必须明确历史长度、筛选维度，
+- [ ] **正式决策历史作为模型输入**：正式 `TradeIntent` 调用仍完全无状态；独立 AI 行情分析只带同标的
+  上一份成功分析，不进入执行链。正式决策实现前必须明确历史长度、筛选维度，
   以及如何避免模型锚定并回灌自己此前的错误判断。
 - [ ] Docker 镜像与发布流程。
 - [ ] 外部告警通知渠道；刻意暂缓，避免本地优先系统产生未授权外发。

@@ -62,6 +62,14 @@
 `POST /api/engine/stop`、`POST /api/engine/emergency-stop`、
 `POST /api/engine/clear-emergency-lock`。
 
+**独立 AI 行情分析**：`POST /api/market-analyses` 接受唯一字段
+`{"symbol":"BTCUSDT"}` 并返回 202 与记录 ID；`GET /api/market-analyses?limit=30&symbol=BTCUSDT`
+返回最近摘要，`GET /api/market-analyses/{id}` 返回包含冻结输入、Prompt 和原始输出的本地审计详情，
+`POST /api/market-analyses/{id}/cancel` 取消当前任务。一次只允许一项分析；正式引擎、启动试跑、
+回测、登录或其他 Provider 任务活动时返回 409，分析活动也反向阻止这些操作。必须已经唯一选择一个
+外部 Provider；选中 `local-rule` 返回 422。创建接口仅排队，前端按 ID 轮询终态
+`succeeded/failed/cancelled`。分析不调用 Broker 执行接口，也不改变紧急锁、亏损熔断或运行状态。
+
 `POST /api/engine/clear-emergency-lock` 会先执行交易所账户对账；仅停止状态且无持仓、无普通或 Algo
 挂单时删除紧急锁，否则返回 409 并保留锁定。
 

@@ -24,7 +24,12 @@ from candlepilot.domain.models import (
     ProviderHealth,
     TradeIntent,
 )
-from candlepilot.providers.base import DecisionProvider, ProviderCapabilities, ProviderResult
+from candlepilot.providers.base import (
+    DecisionProvider,
+    ProviderCapabilities,
+    ProviderResult,
+    StructuredOutputResult,
+)
 from candlepilot.provenance import (
     DECISION_PROMPT_VERSION,
     MARKET_SNAPSHOT_SCHEMA_VERSION,
@@ -754,6 +759,56 @@ class CodexAuthProvider(DecisionProvider):
                 detail=str(exc),
             )
 
+    async def generate_structured_output(
+        self, *, prompt: str, output_schema: dict[str, Any]
+    ) -> StructuredOutputResult:
+        if self.executable is None:
+            raise ProviderUnavailable("Codex executable was not found")
+        started = time.monotonic()
+        model = self.model or find_codex_model(self.config_path)
+        stdout = ""
+        try:
+            async with self._semaphore:
+                active = asyncio.current_task()
+                self._active_task = active
+                try:
+                    with tempfile.TemporaryDirectory(prefix="candlepilot-analysis-") as directory:
+                        root = Path(directory)
+                        schema_path = root / "analysis.schema.json"
+                        schema_path.write_text(
+                            json.dumps(output_schema, separators=(",", ":")), encoding="utf-8"
+                        )
+                        argv = [
+                            str(self.executable), "exec", "--ephemeral", "--ignore-user-config",
+                            "--ignore-rules", "--sandbox", "read-only", "--skip-git-repo-check",
+                            "--json",
+                        ]
+                        if self.model:
+                            argv += ["-m", self.model]
+                        if self.reasoning_effort:
+                            argv += ["-c", f"model_reasoning_effort={self.reasoning_effort}"]
+                        argv += ["--output-schema", str(schema_path), "-"]
+                        stdout, _ = await _run_process(
+                            argv, cwd=root, stdin=prompt, timeout=self.timeout
+                        )
+                finally:
+                    if self._active_task is active:
+                        self._active_task = None
+        except ProviderError:
+            raise
+        result_text, usage = parse_codex_events(stdout)
+        if result_text is None:
+            raise ProviderError("Codex did not return an advisory analysis")
+        return StructuredOutputResult(
+            provider=self.name,
+            model=model,
+            duration=timedelta(seconds=time.monotonic() - started),
+            raw_output=result_text,
+            usage=usage,
+            provider_version=self._provider_version,
+            reasoning_effort=self.reasoning_effort,
+        )
+
     async def generate_trade_intent(
         self, snapshot: MarketSnapshot, portfolio: PortfolioState
     ) -> ProviderResult:
@@ -989,6 +1044,58 @@ class ClaudeCodeAuthProvider(DecisionProvider):
                 executable=str(self.executable),
                 detail=str(exc),
             )
+
+    async def generate_structured_output(
+        self, *, prompt: str, output_schema: dict[str, Any]
+    ) -> StructuredOutputResult:
+        if self.executable is None:
+            raise ProviderUnavailable("Claude Code CLI was not found")
+        started = time.monotonic()
+        full_prompt = (
+            f"{prompt}\n\nReturn only JSON matching this schema:\n"
+            f"{json.dumps(output_schema, separators=(',', ':'), ensure_ascii=False)}"
+        )
+        stdout = ""
+        try:
+            async with self._semaphore:
+                active = asyncio.current_task()
+                self._active_task = active
+                try:
+                    with tempfile.TemporaryDirectory(prefix="candlepilot-analysis-") as directory:
+                        argv = [
+                            str(self.executable), "-p", "--output-format", "json",
+                            "--permission-mode", "default", "--max-turns", "4",
+                            "--disallowedTools",
+                            "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit",
+                        ]
+                        if self.model:
+                            argv += ["--model", self.model]
+                        if self.reasoning_effort:
+                            argv += ["--effort", self.reasoning_effort]
+                        stdout, _ = await _run_process(
+                            argv, stdin=full_prompt, cwd=Path(directory), timeout=self.timeout
+                        )
+                finally:
+                    if self._active_task is active:
+                        self._active_task = None
+        except ProviderError:
+            raise
+        try:
+            envelope = json.loads(stdout)
+            if not isinstance(envelope, dict) or not isinstance(envelope.get("result"), str):
+                raise TypeError
+            model, usage = parse_claude_usage(envelope)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ProviderError("Claude Code returned an invalid analysis envelope") from exc
+        return StructuredOutputResult(
+            provider=self.name,
+            model=model or self.model,
+            duration=timedelta(seconds=time.monotonic() - started),
+            raw_output=envelope["result"],
+            usage=usage,
+            provider_version=self._provider_version,
+            reasoning_effort=self.reasoning_effort,
+        )
 
     async def generate_trade_intent(
         self, snapshot: MarketSnapshot, portfolio: PortfolioState

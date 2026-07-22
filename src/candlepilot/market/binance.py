@@ -280,6 +280,9 @@ class BinancePublicClient:
     async def book_ticker(self, symbol: str) -> dict[str, Any]:
         return await self._get("/fapi/v1/ticker/bookTicker", symbol=symbol)
 
+    async def ticker_24h(self, symbol: str) -> dict[str, Any]:
+        return await self._get("/fapi/v1/ticker/24hr", symbol=symbol)
+
     async def premium_index(self, symbol: str) -> dict[str, Any]:
         return await self._get("/fapi/v1/premiumIndex", symbol=symbol)
 

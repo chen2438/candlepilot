@@ -86,6 +86,16 @@
   1000 字符；若模型只违反该长度限制，Provider 会确定性截断到 1000 字符并在 usage 中写入
   `rationale_truncated=true`，同时完整原始输出仍留在本地审计。方向、杠杆、风险、价格与保护单
   等交易关键字段不做自动修正，任何不合规仍安全降级。
+- **独立分析结构化调用**：Codex、Claude Code 和 Custom API 还实现只供独立行情分析使用的
+  `generate_structured_output`。它与正式 `TradeIntent` 调用共享同一个 Provider 并发锁、取消和绝对
+  超时；Codex 继续使用隔离临时目录、只读 sandbox 与 `--output-schema`，Claude 继续禁用
+  Bash/Read/Edit/Write/Web/Task 等工具，Custom API 不发送工具定义。输出必须通过独立
+  `MarketAnalysis` 校验：方向只能 long/short/neutral，锚点必须带时区，情景概率总和允许 ±10%，
+  neutral 必须给包含锚价的数字区间且不得有入场，方向性计划必须显式给 entry/stop/T1/T2、满足
+  方向几何且 T1 原始盈亏比至少 1。缺字段不会按固定百分比自动补齐。
+- 独立分析 Prompt 只允许读取所附冻结数据包，要求先看价格结构，再用 EMA/MACD/VWAP/量能与资金流
+  确认；止损必须越过命名结构，T1 约减半、结构允许时余仓止损向保本移动，并以约 6 根 15m 锚定
+  K 线无进展作为重新评估条件。以上全部是研究计划，不会调用硬风控、Broker 或自动执行。
 - **单一运行 Provider**：前端使用互斥选择；为兼容现有部署保留变量名
   `CANDLEPILOT_PROVIDER_CHAIN`，但它只能填写一个 Provider，例如 `local`、`codex` 或
   `custom:main`。启动时只检查并使用该 Provider；零个、多个或失效引用会在 API、保存或启动时

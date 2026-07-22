@@ -26,6 +26,17 @@ class ProviderResult:
 
 
 @dataclass(frozen=True, slots=True)
+class StructuredOutputResult:
+    provider: str
+    model: str | None
+    duration: timedelta
+    raw_output: str
+    usage: dict[str, Any]
+    provider_version: str | None = None
+    reasoning_effort: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderCapabilities:
     subscription_auth: bool = True
     structured_output: bool = True
@@ -56,6 +67,20 @@ class DecisionProvider(ABC):
 
     async def cancel(self) -> bool:
         return False
+
+    async def generate_structured_output(
+        self,
+        *,
+        prompt: str,
+        output_schema: dict[str, Any],
+    ) -> StructuredOutputResult:
+        """Run an advisory structured prompt without granting tools.
+
+        Providers opt in explicitly.  The local rule strategy has no language
+        model and therefore keeps the safe unsupported default.
+        """
+
+        raise NotImplementedError(f"{self.name} does not support advisory analysis")
 
     @abstractmethod
     async def health_check(self) -> ProviderHealth:

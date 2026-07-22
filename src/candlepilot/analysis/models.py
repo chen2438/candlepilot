@@ -1,0 +1,117 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+Price = Annotated[float, Field(gt=0)]
+
+
+class AnalysisModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class AnalysisAnchor(AnalysisModel):
+    timeframe: Literal["5m", "15m", "1h"]
+    time: datetime
+    price: Price
+    reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def require_timezone(self) -> AnalysisAnchor:
+        if self.time.tzinfo is None or self.time.utcoffset() is None:
+            raise ValueError("anchor time must include a timezone")
+        return self
+
+
+class AnalysisScenario(AnalysisModel):
+    name: str = Field(min_length=1, max_length=80)
+    probability: float = Field(ge=0, le=100)
+    trigger: str = Field(min_length=1, max_length=500)
+    expected_path: str = Field(min_length=1, max_length=800)
+    invalidation: str = Field(min_length=1, max_length=500)
+
+
+class RangePlan(AnalysisModel):
+    low: Price
+    high: Price
+    tactic: str = Field(min_length=1, max_length=800)
+
+    @model_validator(mode="after")
+    def ordered(self) -> RangePlan:
+        if self.high <= self.low:
+            raise ValueError("range high must be above range low")
+        return self
+
+
+class EntryPlan(AnalysisModel):
+    entry: Price
+    stop: Price
+    target1: Price
+    target2: Price
+    stop_structure: str = Field(min_length=1, max_length=500)
+    entry_trigger: str = Field(min_length=1, max_length=500)
+    management: str = Field(min_length=1, max_length=800)
+
+
+class MarketAnalysis(AnalysisModel):
+    direction: Literal["long", "short", "neutral"]
+    summary: str = Field(min_length=1, max_length=1200)
+    anchor: AnalysisAnchor
+    scenarios: list[AnalysisScenario] = Field(min_length=2, max_length=4)
+    range_plan: RangePlan | None
+    entry_plan: EntryPlan | None
+    key_evidence: list[str] = Field(min_length=2, max_length=8)
+    missing_data_impact: list[str] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def semantic_contract(self) -> MarketAnalysis:
+        total = sum(item.probability for item in self.scenarios)
+        if not 90 <= total <= 110:
+            raise ValueError("scenario probabilities must total 100% within ±10%")
+        if self.direction == "neutral":
+            if self.entry_plan is not None:
+                raise ValueError("neutral analysis cannot include an entry plan")
+            if self.range_plan is None:
+                raise ValueError("neutral analysis requires a numeric range plan")
+            if not self.range_plan.low <= self.anchor.price <= self.range_plan.high:
+                raise ValueError("neutral range must contain the anchor price")
+            return self
+        if self.entry_plan is None:
+            raise ValueError("directional analysis requires an entry plan")
+        plan = self.entry_plan
+        risk = abs(plan.entry - plan.stop)
+        if risk <= 0:
+            raise ValueError("entry and stop must differ")
+        if self.direction == "long":
+            valid = plan.stop < plan.entry < plan.target1 < plan.target2
+        else:
+            valid = plan.stop > plan.entry > plan.target1 > plan.target2
+        if not valid:
+            raise ValueError("entry, stop and targets do not match the direction")
+        reward1 = abs(plan.target1 - plan.entry)
+        if reward1 / risk < 1:
+            raise ValueError("target1 reward/risk must be at least 1")
+        return self
+
+    def reward_risk(self) -> dict[str, float] | None:
+        if self.entry_plan is None:
+            return None
+        plan = self.entry_plan
+        risk = abs(plan.entry - plan.stop)
+        return {
+            "target1": abs(plan.target1 - plan.entry) / risk,
+            "target2": abs(plan.target2 - plan.entry) / risk,
+        }
+
+
+def market_analysis_output_schema() -> dict[str, object]:
+    """JSON Schema accepted by every external provider.
+
+    Pydantic emits a couple of metadata keys Codex accepts; keeping one schema
+    for CLI and HTTP providers prevents their contracts from drifting.
+    """
+
+    return MarketAnalysis.model_json_schema()

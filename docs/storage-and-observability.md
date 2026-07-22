@@ -11,13 +11,17 @@
   `user_stream_events`、`alert_events`、`trailing_stop_events`（影子候选、首次模拟成交、实盘替换与失败）、
   `partial_take_profit_events`（1R 部分止盈、剩余保本与实仓结束影子事件）、
   `runtime_state`、`schema_migrations`。
+- 独立研究使用 `market_analyses`：保存状态、标的、Provider/模型/推理强度、Prompt/数据版本、冻结
+  输入、实际 Prompt、原始输出、校验后的分析、Token/耗时和安全错误文本。它不关联 `inferences`、
+  `risk_decisions` 或订单表，避免研究结果被误当成正式决策；列表默认只返回结果摘要，按 ID 详情才
+  返回完整本地审计输入。服务重启会把遗留 pending/running 记录标为 failed。
 - 旧版 `book_captures` 表为现有数据库兼容而保留，但应用不再写入或把它用于回测；遗留行只能通过
   数据管理清理。含完整盘口的回放数据由正式引擎自动写入 `live_decision_snapshots`。
 - 溯源：SHA-256 数据版本、显式 Prompt 版本、模型标识、CLI Provider 版本。
 - 每次正式运行创建时把当前仓库 `HEAD` 的 7 位 Git 提交号写入 `live_runs.config_json` 的
   `software_version`，与该次唯一 Provider、周期和运行边界一起永久保留；软件更新不会用新版本
   回填历史运行。无法确认 Git 仓库时该字段省略，前端显示“版本未记录”。这是现有 JSON 配置
-  快照的新增字段，不改变表结构，schema 仍为 v16。
+  快照的新增字段，不改变 `live_runs` 表结构。
 - 实时风控记录可选保存止盈后重入 shadow 评估：最近止盈时间、已过秒数及会命中的 15/30/60 分钟
   候选窗口；它是审计证据，不是拒单条件。
 - 正式运行表现把交易所 `rp` 作为价格已实现毛利，按持仓 lot 归属入场与退出的 USDT 手续费，并与
@@ -26,7 +30,8 @@
   事件可靠归属到单次运行，因此 `funding_pnl=null`、`funding_complete=false`，绝不混入
   `total_pnl` 冒充策略收益。兼容字段 `realized_pnl` 继续返回价格已实现毛利，`total_pnl` 现在等于
   可核对的交易净盈亏。
-- 数据库基线：历史迁移链已在历史数据清空后压缩，当前 schema v16 在 v15 上新增部分止盈影子审计表；
+- 数据库基线：历史迁移链已在历史数据清空后压缩，当前 schema v17 在 v16 上新增独立 AI 行情分析审计表；
+  v16 在 v15 上新增部分止盈影子审计表；
   v15 在 v14 上新增正式决策快照表；
   v14 在 v13 上新增移动止损审计表；
   现有 v12 数据库先写入 v13 基线标记再创建该表。低于 v12 的数据库明确拒绝启动。新数据库直接由当前 ORM schema 创建，不再重放

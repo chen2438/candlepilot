@@ -39,6 +39,8 @@ from candlepilot.application.scheduler import (
     TradingScheduler,
 )
 from candlepilot.application.testnet_feed import TestnetUserFeed
+from candlepilot.analysis.datapack import AnalysisDataPackBuilder
+from candlepilot.analysis.service import MarketAnalysisService
 from candlepilot.backtest.engine import BacktestConfig, Candle, SimulatedExchange
 from candlepilot.backtest.probe import (
     MAX_SUGGESTED_TIMEOUT,
@@ -122,6 +124,7 @@ from candlepilot.storage.database import (
     CURRENT_SCHEMA_VERSION,
     DECISION_OUTCOMES,
     Database,
+    MarketAnalysisRepository,
 )
 
 
@@ -574,6 +577,10 @@ class ClosePositionRequest(ApiModel):
     symbol: str = Field(pattern=r"^[A-Z0-9]+USDT$")
 
 
+class MarketAnalysisRequest(ApiModel):
+    symbol: str = Field(pattern=r"^[A-Z0-9]+USDT$")
+
+
 class HistoryClearRequest(ApiModel):
     categories: list[str] = Field(min_length=1, max_length=16)
 
@@ -921,6 +928,9 @@ def create_app(
     trade_fill_reconciliation_lock = asyncio.Lock()
     trade_fill_retry_after: dict[str, float] = {}
     trade_fill_failure_count: dict[str, int] = {}
+    analysis_repository = MarketAnalysisRepository(database.sessions)
+    analysis_task: asyncio.Task[None] | None = None
+    analysis_start_lock = asyncio.Lock()
     restart_pending = False
     update_pending = False
     update_baseline_finished_at: str | None = None
@@ -1022,6 +1032,17 @@ def create_app(
         loader = getattr(broker, "income_24h", None)
         return await loader() if callable(loader) else Decimal("0")
 
+    async def analysis_account() -> Mapping[str, Any] | None:
+        if engine.testnet_broker is None:
+            return None
+        return await testnet_account()
+
+    analysis_service = MarketAnalysisService(
+        builder=AnalysisDataPackBuilder(market),
+        repository=analysis_repository,
+        account_loader=analysis_account,
+    )
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         # Acquire before touching live-run rows. A second local service using the
@@ -1029,6 +1050,7 @@ def create_app(
         instance_lock.acquire()
         try:
             await database.initialize()
+            await analysis_repository.fail_open()
             # With exclusive ownership established, a live run left open can only
             # mean the previous owner did not execute its graceful shutdown path.
             await engine.audit.interrupt_open_live_runs()
@@ -1048,6 +1070,9 @@ def create_app(
                 await scheduler.stop()
                 await engine.stop()
                 model_tasks = active_backtest_tasks()
+                if analysis_task is not None and not analysis_task.done():
+                    analysis_task.cancel()
+                    model_tasks.append(analysis_task)
                 if probe_task is not None and not probe_task.done():
                     probe_task.cancel()
                     model_tasks.append(probe_task)
@@ -3126,10 +3151,84 @@ def create_app(
     def background_model_work() -> bool:
         return bool(
             engine_start_lock.locked()
+            or analysis_start_lock.locked()
             or active_backtest_tasks()
             or (probe_task and not probe_task.done())
+            or (analysis_task and not analysis_task.done())
             or codex_auth_manager.active
         )
+
+    @app.post("/api/market-analyses", status_code=202)
+    async def start_market_analysis(request: MarketAnalysisRequest) -> dict[str, Any]:
+        nonlocal analysis_task
+        if engine.running:
+            raise HTTPException(
+                status_code=409,
+                detail="cannot run advisory analysis while the formal engine runs",
+            )
+        if background_model_work():
+            raise HTTPException(
+                status_code=409,
+                detail="another provider task is already running",
+            )
+        async with analysis_start_lock:
+            if engine.running or engine_start_lock.locked() or active_backtest_tasks() or (
+                probe_task and not probe_task.done()
+            ) or codex_auth_manager.active:
+                raise HTTPException(
+                    status_code=409,
+                    detail="another provider task is already running",
+                )
+            if analysis_task and not analysis_task.done():
+                raise HTTPException(status_code=409, detail="market analysis is already running")
+            if len(engine.provider_chain) != 1:
+                raise HTTPException(status_code=409, detail="select exactly one provider first")
+            provider = engine.providers.get(engine.provider_chain[0])
+            if not provider.capabilities.external_inference:
+                raise HTTPException(
+                    status_code=422,
+                    detail="the selected local rule provider cannot produce AI analysis",
+                )
+            symbol = request.symbol.upper()
+            analysis_id = await analysis_service.create(symbol=symbol, provider=provider)
+            analysis_task = asyncio.create_task(
+                analysis_service.run(analysis_id, symbol=symbol, provider=provider),
+                name=f"candlepilot-market-analysis-{analysis_id}",
+            )
+        return {"id": analysis_id, "status": "pending"}
+
+    @app.get("/api/market-analyses")
+    async def list_market_analyses(
+        limit: int = 30, symbol: str | None = None
+    ) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 100:
+            raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
+        normalized = symbol.upper() if symbol else None
+        if normalized is not None and not re.fullmatch(r"[A-Z0-9]+USDT", normalized):
+            raise HTTPException(status_code=422, detail="invalid symbol")
+        return await analysis_repository.recent(limit=limit, symbol=normalized)
+
+    @app.get("/api/market-analyses/{analysis_id}")
+    async def get_market_analysis(analysis_id: int) -> dict[str, Any]:
+        row = await analysis_repository.get(analysis_id, include_audit=True)
+        if row is None:
+            raise HTTPException(status_code=404, detail="market analysis not found")
+        return row
+
+    @app.post("/api/market-analyses/{analysis_id}/cancel")
+    async def cancel_market_analysis(analysis_id: int) -> dict[str, Any]:
+        nonlocal analysis_task
+        row = await analysis_repository.get(analysis_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="market analysis not found")
+        if analysis_task is None or analysis_task.done() or row["status"] not in {
+            "pending",
+            "running",
+        }:
+            raise HTTPException(status_code=409, detail="market analysis is not running")
+        analysis_task.cancel()
+        await asyncio.gather(analysis_task, return_exceptions=True)
+        return (await analysis_repository.get(analysis_id)) or row
 
     def _set_probe_task(task: asyncio.Task[None]) -> None:
         nonlocal probe_task

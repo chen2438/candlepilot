@@ -316,6 +316,32 @@ class PartialTakeProfitEventRow(Base):
     )
 
 
+class MarketAnalysisRow(Base):
+    __tablename__ = "market_analyses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(String(16), index=True)
+    provider: Mapped[str] = mapped_column(String(64), index=True)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    reasoning_effort: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    prompt_version: Mapped[str] = mapped_column(String(64))
+    data_version: Mapped[str] = mapped_column(String(64))
+    input_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    usage_json: Mapped[str] = mapped_column(Text, default="{}")
+    duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class SchemaMigrationRow(Base):
     __tablename__ = "schema_migrations"
 
@@ -328,7 +354,7 @@ class SchemaMigrationRow(Base):
 # replaying upgrade logic, while fresh databases are created directly from the
 # ORM metadata at the current shape.
 MINIMUM_SUPPORTED_SCHEMA_VERSION = 12
-CURRENT_SCHEMA_VERSION = 16
+CURRENT_SCHEMA_VERSION = 17
 MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
     (13, ()),
     (
@@ -382,6 +408,23 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             "ON partial_take_profit_events (status)",
             "CREATE INDEX IF NOT EXISTS ix_partial_take_profit_events_created_at "
             "ON partial_take_profit_events (created_at)",
+        ),
+    ),
+    (
+        17,
+        (
+            "CREATE TABLE IF NOT EXISTS market_analyses ("
+            "id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, "
+            "symbol VARCHAR(32) NOT NULL, status VARCHAR(16) NOT NULL, "
+            "provider VARCHAR(64) NOT NULL, model VARCHAR(128), "
+            "reasoning_effort VARCHAR(32), prompt_version VARCHAR(64) NOT NULL, "
+            "data_version VARCHAR(64) NOT NULL, input_json TEXT, prompt_text TEXT, "
+            "result_json TEXT, raw_output TEXT, usage_json TEXT NOT NULL DEFAULT '{}', "
+            "duration_ms FLOAT, error TEXT, created_at DATETIME NOT NULL, completed_at DATETIME)",
+            "CREATE INDEX IF NOT EXISTS ix_market_analyses_symbol ON market_analyses (symbol)",
+            "CREATE INDEX IF NOT EXISTS ix_market_analyses_status ON market_analyses (status)",
+            "CREATE INDEX IF NOT EXISTS ix_market_analyses_provider ON market_analyses (provider)",
+            "CREATE INDEX IF NOT EXISTS ix_market_analyses_created_at ON market_analyses (created_at)",
         ),
     ),
 )
@@ -458,6 +501,148 @@ DECISION_OUTCOMES = (
     "executed",
     "execution_failed",
 )
+
+
+class MarketAnalysisRepository:
+    def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
+        self.sessions = sessions
+
+    async def create(self, *, symbol: str, provider: str, prompt_version: str, data_version: str) -> int:
+        row = MarketAnalysisRow(
+            symbol=symbol,
+            status="pending",
+            provider=provider,
+            prompt_version=prompt_version,
+            data_version=data_version,
+        )
+        async with self.sessions.begin() as session:
+            session.add(row)
+            await session.flush()
+        return row.id
+
+    async def start(self, analysis_id: int, *, input_payload: Mapping[str, Any], prompt: str) -> None:
+        async with self.sessions.begin() as session:
+            await session.execute(
+                update(MarketAnalysisRow)
+                .where(MarketAnalysisRow.id == analysis_id)
+                .values(
+                    status="running",
+                    input_json=json.dumps(input_payload, separators=(",", ":"), ensure_ascii=False),
+                    prompt_text=prompt,
+                )
+            )
+
+    async def succeed(
+        self,
+        analysis_id: int,
+        *,
+        result: Mapping[str, Any],
+        raw_output: str,
+        usage: Mapping[str, Any],
+        model: str | None,
+        reasoning_effort: str | None,
+        duration_ms: float,
+    ) -> None:
+        async with self.sessions.begin() as session:
+            await session.execute(
+                update(MarketAnalysisRow)
+                .where(MarketAnalysisRow.id == analysis_id)
+                .values(
+                    status="succeeded",
+                    result_json=json.dumps(result, separators=(",", ":"), ensure_ascii=False),
+                    raw_output=raw_output,
+                    usage_json=json.dumps(dict(usage), separators=(",", ":")),
+                    model=model,
+                    reasoning_effort=reasoning_effort,
+                    duration_ms=duration_ms,
+                    error=None,
+                    completed_at=datetime.now(UTC),
+                )
+            )
+
+    async def fail(self, analysis_id: int, error: str, *, cancelled: bool = False) -> None:
+        async with self.sessions.begin() as session:
+            await session.execute(
+                update(MarketAnalysisRow)
+                .where(MarketAnalysisRow.id == analysis_id)
+                .values(
+                    status="cancelled" if cancelled else "failed",
+                    error=error[:2000],
+                    completed_at=datetime.now(UTC),
+                )
+            )
+
+    async def fail_open(self) -> None:
+        async with self.sessions.begin() as session:
+            await session.execute(
+                update(MarketAnalysisRow)
+                .where(MarketAnalysisRow.status.in_(("pending", "running")))
+                .values(
+                    status="failed",
+                    error="analysis interrupted because the service restarted",
+                    completed_at=datetime.now(UTC),
+                )
+            )
+
+    async def get(self, analysis_id: int, *, include_audit: bool = False) -> dict[str, Any] | None:
+        async with self.sessions() as session:
+            row = await session.get(MarketAnalysisRow, analysis_id)
+        return self._as_dict(row, include_audit=include_audit) if row else None
+
+    async def recent(self, *, limit: int = 30, symbol: str | None = None) -> list[dict[str, Any]]:
+        statement = select(MarketAnalysisRow)
+        if symbol is not None:
+            statement = statement.where(MarketAnalysisRow.symbol == symbol)
+        async with self.sessions() as session:
+            rows = (
+                await session.scalars(statement.order_by(MarketAnalysisRow.id.desc()).limit(limit))
+            ).all()
+        return [self._as_dict(row, include_audit=False) for row in rows]
+
+    async def latest_success(self, symbol: str) -> dict[str, Any] | None:
+        async with self.sessions() as session:
+            row = await session.scalar(
+                select(MarketAnalysisRow)
+                .where(
+                    MarketAnalysisRow.symbol == symbol,
+                    MarketAnalysisRow.status == "succeeded",
+                )
+                .order_by(MarketAnalysisRow.id.desc())
+                .limit(1)
+            )
+        return self._as_dict(row, include_audit=False) if row else None
+
+    @staticmethod
+    def _as_dict(row: MarketAnalysisRow, *, include_audit: bool) -> dict[str, Any]:
+        created_at = row.created_at.replace(tzinfo=UTC) if row.created_at.tzinfo is None else row.created_at
+        completed_at = row.completed_at
+        if completed_at is not None and completed_at.tzinfo is None:
+            completed_at = completed_at.replace(tzinfo=UTC)
+        payload: dict[str, Any] = {
+            "id": row.id,
+            "symbol": row.symbol,
+            "status": row.status,
+            "provider": row.provider,
+            "model": row.model,
+            "reasoning_effort": row.reasoning_effort,
+            "prompt_version": row.prompt_version,
+            "data_version": row.data_version,
+            "result": json.loads(row.result_json) if row.result_json else None,
+            "usage": json.loads(row.usage_json),
+            "duration_ms": row.duration_ms,
+            "error": row.error,
+            "created_at": created_at,
+            "completed_at": completed_at,
+        }
+        if include_audit:
+            payload.update(
+                {
+                    "input": json.loads(row.input_json) if row.input_json else None,
+                    "prompt": row.prompt_text,
+                    "raw_output": row.raw_output,
+                }
+            )
+        return payload
 
 
 class AuditRepository:

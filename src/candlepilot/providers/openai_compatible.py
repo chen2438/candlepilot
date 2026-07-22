@@ -12,7 +12,12 @@ import httpx
 from pydantic import SecretStr, ValidationError
 
 from candlepilot.domain.models import MarketSnapshot, PortfolioState, ProviderHealth
-from candlepilot.providers.base import DecisionProvider, ProviderCapabilities, ProviderResult
+from candlepilot.providers.base import (
+    DecisionProvider,
+    ProviderCapabilities,
+    ProviderResult,
+    StructuredOutputResult,
+)
 from candlepilot.providers.cli import (
     MAX_OUTPUT_BYTES,
     ProviderError,
@@ -232,6 +237,88 @@ class OpenAICompatibleProvider(DecisionProvider):
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         return True
+
+    async def generate_structured_output(
+        self, *, prompt: str, output_schema: dict[str, Any]
+    ) -> StructuredOutputResult:
+        health = await self.health_check()
+        if not health.available or not health.authenticated:
+            raise ProviderUnavailable(health.detail)
+        assert self.base_url is not None
+        assert self.model is not None
+        started = time.monotonic()
+        full_prompt = (
+            f"{prompt}\n\nReturn only JSON matching this schema:\n"
+            f"{json.dumps(output_schema, separators=(',', ':'), ensure_ascii=False)}"
+        )
+        if self.wire_api == "responses":
+            endpoint = f"{self.base_url}/responses"
+            request: dict[str, Any] = {"model": self.model, "input": full_prompt, "store": False}
+            if self.reasoning_effort:
+                request["reasoning"] = {"effort": self.reasoning_effort}
+        else:
+            endpoint = f"{self.base_url}/chat/completions"
+            request = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": full_prompt}],
+            }
+            if self.reasoning_effort:
+                request["reasoning_effort"] = self.reasoning_effort
+        headers = {
+            name: value.get_secret_value() for name, value in self.extra_headers.items()
+        }
+        headers["Content-Type"] = "application/json"
+        if self.require_api_key:
+            assert self.api_key is not None
+            headers["Authorization"] = f"Bearer {self.api_key.get_secret_value()}"
+        try:
+            async with self._semaphore:
+                active = asyncio.current_task()
+                self._active_task = active
+                try:
+                    async with asyncio.timeout(self.timeout):
+                        async with httpx.AsyncClient(
+                            timeout=self.timeout,
+                            follow_redirects=False,
+                            transport=self._transport,
+                        ) as client:
+                            response = await client.post(endpoint, headers=headers, json=request)
+                finally:
+                    if self._active_task is active:
+                        self._active_task = None
+        except (httpx.TimeoutException, TimeoutError) as exc:
+            raise ProviderError(
+                f"OpenAI-compatible endpoint timed out after {self.timeout:g}s"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ProviderError("OpenAI-compatible endpoint could not be reached") from exc
+        if response.is_redirect:
+            raise ProviderError("OpenAI-compatible endpoint redirects are not allowed")
+        if response.status_code >= 400:
+            raise ProviderError(
+                f"OpenAI-compatible endpoint returned HTTP {response.status_code}"
+            )
+        if len(response.content) > MAX_OUTPUT_BYTES:
+            raise ProviderError("OpenAI-compatible endpoint response exceeded the size limit")
+        try:
+            envelope = response.json()
+            if not isinstance(envelope, dict):
+                raise TypeError
+            if self.wire_api == "responses":
+                result_text, response_model, usage = parse_responses_response(envelope)
+            else:
+                result_text, response_model, usage = parse_chat_completion(envelope)
+        except (ProviderError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise ProviderError("OpenAI-compatible endpoint returned invalid analysis output") from exc
+        return StructuredOutputResult(
+            provider=self.name,
+            model=response_model or self.model,
+            duration=timedelta(seconds=time.monotonic() - started),
+            raw_output=result_text,
+            usage=usage,
+            provider_version=f"openai-compatible-{self.wire_api}",
+            reasoning_effort=self.reasoning_effort,
+        )
 
     async def generate_trade_intent(
         self, snapshot: MarketSnapshot, portfolio: PortfolioState
