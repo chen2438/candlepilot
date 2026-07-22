@@ -2,7 +2,7 @@
 
 > 本文件与下方索引的 `docs/*.md` 专题共同构成 CandlePilot 的权威功能文档集。
 > 功能、接口、配置、验证方式或安全边界变化时，必须在同一提交中更新本入口及所有受影响的专题文档。
-> 最后更新：2026-07-22（拆分 API Schema 与网页维护职责）
+> 最后更新：2026-07-22（拆分前端设置与共享请求职责）
 
 ## 1. 如何阅读
 
@@ -66,6 +66,8 @@ USDⓈ-M USDT 永续合约。外部 LLM 或本地确定性策略生成结构化 
 - FastAPI 应用工厂与路由编排保留在 `api.py`；请求 Schema 位于 `api_models.py`，网页更新、备份和
   日志维护的文件解析与 Git 检查位于 `web_maintenance.py`，避免运维辅助代码继续膨胀路由模块。
 - 前端：React、TypeScript、Vite；REST + WebSocket，白色浅色主题。
+- 前端根组件保留认证、全局运行状态和七页编排；设置页及服务器维护交互集中在独立
+  `SettingsPanel` 模块，通用 REST 请求封装由 `api.ts` 共享，避免页面组件继续堆入 `App.tsx`。
 - 存储：SQLite 保存业务、运行和审计数据；Parquet 保存大容量历史行情。
 - SQLite ORM 表与迁移定义集中在 `storage.models`，数据库生命周期和通用审计仓库保留在
   `storage.database`，独立行情分析持久化由专用仓库模块承载；原有公开导入路径保持兼容。
