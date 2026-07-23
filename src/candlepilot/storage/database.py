@@ -17,6 +17,7 @@ from sqlalchemy import (
     func,
     insert,
     not_,
+    or_,
     select,
     text,
     update,
@@ -33,6 +34,9 @@ from candlepilot.broker.user_stream import UserStreamEvent
 from candlepilot.domain.models import (
     ExecutionAttempt,
     ExecutionReport,
+    PositionEntryContext,
+    PositionExitContext,
+    PositionState,
     RiskDecision,
     TradeIntent,
 )
@@ -971,7 +975,13 @@ class AuditRepository:
             if symbol is not None
         }
 
-    async def recent_trade_fills(self, limit: int = 100) -> list[dict[str, Any]]:
+    async def recent_trade_fills(
+        self,
+        limit: int = 100,
+        *,
+        symbols: set[str] | None = None,
+        since: datetime | None = None,
+    ) -> list[dict[str, Any]]:
         """Return one row per completed exchange trade, including bracket exits.
 
         Execution rows originate in CandlePilot's REST submission path, so they
@@ -1002,6 +1012,14 @@ class AuditRepository:
             .order_by(ExecutionRow.created_at.desc(), ExecutionRow.id.desc())
             .limit(limit)
         )
+        if symbols:
+            event_query = event_query.where(UserStreamEventRow.symbol.in_(symbols))
+            execution_query = execution_query.where(ExecutionRow.symbol.in_(symbols))
+        if since is not None:
+            event_query = event_query.where(
+                UserStreamEventRow.event_time >= since
+            )
+            execution_query = execution_query.where(ExecutionRow.created_at >= since)
         async with self.sessions() as session:
             event_rows = (await session.scalars(event_query)).all()
             execution_rows = (await session.scalars(execution_query)).all()
@@ -1130,6 +1148,291 @@ class AuditRepository:
         await self._enrich_trade_fill_financials(fills)
         fills.sort(key=lambda item: item["created_at"], reverse=True)
         return fills[:limit]
+
+    async def position_entry_context(
+        self,
+        live_run_id: int,
+        current_positions: Mapping[str, PositionState],
+    ) -> tuple[PositionEntryContext, ...]:
+        """Build auditable LLM memory from filled entries and their later exits.
+
+        Every filled opening or add from the current run is returned. Filled
+        entries from older runs are returned only while they still contribute
+        to an exchange position. Exit quantities are allocated across the
+        symbol's active entry lots using the same proportional ownership rule
+        as live-run PnL attribution, which correctly handles a merged position
+        being closed by one replacement protection order.
+        """
+
+        current_symbols = set(current_positions)
+        opening_actions = ("OPEN_LONG", "OPEN_SHORT", "ADD")
+        scope = [InferenceRow.live_run_id == live_run_id]
+        if current_symbols:
+            scope.append(InferenceRow.symbol.in_(current_symbols))
+        query = (
+            select(
+                InferenceRow,
+                ExecutionAttemptRow,
+                ExecutionRow,
+                InferenceDetailRow,
+            )
+            .join(
+                ExecutionAttemptRow,
+                ExecutionAttemptRow.inference_id == InferenceRow.id,
+            )
+            .outerjoin(
+                ExecutionRow,
+                ExecutionRow.client_order_id
+                == ExecutionAttemptRow.client_order_id,
+            )
+            .outerjoin(
+                InferenceDetailRow,
+                InferenceDetailRow.inference_id == InferenceRow.id,
+            )
+            .where(
+                ExecutionAttemptRow.status == "SUCCEEDED",
+                ExecutionAttemptRow.client_order_id.is_not(None),
+                func.json_extract(InferenceRow.intent_json, "$.action").in_(
+                    opening_actions
+                ),
+                or_(*scope),
+            )
+            .order_by(InferenceRow.created_at, InferenceRow.id)
+        )
+        async with self.sessions() as session:
+            rows = (await session.execute(query)).all()
+
+        entries: list[dict[str, Any]] = []
+        for inference, attempt_row, execution_row, detail_row in rows:
+            intent = TradeIntent.model_validate_json(inference.intent_json)
+            attempt = ExecutionAttempt.model_validate_json(attempt_row.attempt_json)
+            report = (
+                ExecutionReport.model_validate_json(execution_row.report_json)
+                if execution_row is not None
+                else attempt.entry_report
+            )
+            if (
+                report is None
+                or report.filled_quantity <= 0
+                or report.average_price is None
+            ):
+                continue
+            side: str | None = (
+                "LONG"
+                if intent.action.value == "OPEN_LONG"
+                else "SHORT"
+                if intent.action.value == "OPEN_SHORT"
+                else None
+            )
+            if side is None and detail_row is not None and detail_row.input_json:
+                input_payload = json.loads(detail_row.input_json)
+                prior_position = (
+                    input_payload.get("portfolio", {})
+                    .get("positions", {})
+                    .get(inference.symbol)
+                )
+                if isinstance(prior_position, dict):
+                    raw_side = prior_position.get("side")
+                    if raw_side in {"LONG", "SHORT"}:
+                        side = str(raw_side)
+            if (
+                side is None
+                and intent.stop_loss is not None
+                and intent.take_profit is not None
+            ):
+                if intent.stop_loss < report.average_price < intent.take_profit:
+                    side = "LONG"
+                elif intent.take_profit < report.average_price < intent.stop_loss:
+                    side = "SHORT"
+            if side is None:
+                current = current_positions.get(inference.symbol)
+                side = current.side if current is not None else None
+            if side not in {"LONG", "SHORT"}:
+                continue
+            entries.append(
+                {
+                    "client_order_id": str(attempt_row.client_order_id),
+                    "live_run_id": inference.live_run_id,
+                    "symbol": inference.symbol,
+                    "side": side,
+                    "action": intent.action.value,
+                    "opened_at": self._utc(report.timestamp),
+                    "entry_price": report.average_price,
+                    "filled_quantity": report.filled_quantity,
+                    "remaining_quantity": report.filled_quantity,
+                    "rationale": intent.rationale,
+                    "exits": [],
+                    "audit_note": None,
+                }
+            )
+
+        if entries:
+            symbols = {str(entry["symbol"]) for entry in entries}
+            opened_at = min(entry["opened_at"] for entry in entries)
+            fills = reversed(
+                await self.recent_trade_fills(
+                    10_000,
+                    symbols=symbols,
+                    since=opened_at,
+                )
+            )
+            by_symbol: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+            for entry in entries:
+                by_symbol[str(entry["symbol"])].append(entry)
+            for fill in fills:
+                if not fill["reduce_only"]:
+                    continue
+                quantity = Decimal(str(fill["report"].get("filled_quantity", "0")))
+                if quantity <= 0:
+                    continue
+                candidates = [
+                    entry
+                    for entry in by_symbol[str(fill["symbol"])]
+                    if entry["remaining_quantity"] > 0
+                    and entry["opened_at"] <= fill["created_at"]
+                ]
+                total_open = sum(
+                    (entry["remaining_quantity"] for entry in candidates),
+                    Decimal("0"),
+                )
+                consumed_total = min(quantity, total_open)
+                if consumed_total <= 0:
+                    continue
+                consumed: list[tuple[dict[str, Any], Decimal]] = [
+                    (
+                        entry,
+                        entry["remaining_quantity"] * consumed_total / total_open,
+                    )
+                    for entry in candidates
+                ]
+                consumed_sum = sum(
+                    (amount for _, amount in consumed), Decimal("0")
+                )
+                last_entry, last_amount = consumed[-1]
+                consumed[-1] = (
+                    last_entry,
+                    last_amount + consumed_total - consumed_sum,
+                )
+                raw_exit_price = fill["report"].get("average_price")
+                exit_price = (
+                    Decimal(str(raw_exit_price))
+                    if raw_exit_price is not None
+                    else None
+                )
+                raw_pnl = fill.get("realized_pnl")
+                fill_pnl = Decimal(str(raw_pnl)) if raw_pnl is not None else None
+                for entry, amount in consumed:
+                    entry["remaining_quantity"] -= amount
+                    allocated_pnl = (
+                        fill_pnl * amount / quantity
+                        if fill_pnl is not None and quantity > 0
+                        else None
+                    )
+                    entry["exits"].append(
+                        PositionExitContext(
+                            kind=fill["purpose"],
+                            quantity=amount,
+                            price=exit_price,
+                            realized_pnl=allocated_pnl,
+                            exited_at=fill["created_at"],
+                        )
+                    )
+
+        by_symbol = defaultdict(list)
+        for entry in entries:
+            by_symbol[str(entry["symbol"])].append(entry)
+        for symbol, position in current_positions.items():
+            matching = [
+                entry
+                for entry in by_symbol[symbol]
+                if entry["side"] == position.side
+                and entry["remaining_quantity"] > 0
+            ]
+            known_quantity = sum(
+                (entry["remaining_quantity"] for entry in matching), Decimal("0")
+            )
+            if known_quantity > position.quantity:
+                scale = position.quantity / known_quantity
+                for entry in matching:
+                    entry["remaining_quantity"] *= scale
+                    entry["audit_note"] = (
+                        "remaining quantity reconciled to the exchange position; "
+                        "one or more exit fills lack a classified audit event"
+                    )
+                known_quantity = position.quantity
+            if known_quantity < position.quantity:
+                missing_quantity = position.quantity - known_quantity
+                entries.append(
+                    {
+                        "client_order_id": None,
+                        "live_run_id": None,
+                        "symbol": symbol,
+                        "side": position.side,
+                        "action": (
+                            "OPEN_LONG" if position.side == "LONG" else "OPEN_SHORT"
+                        ),
+                        "opened_at": None,
+                        "entry_price": position.entry_price,
+                        "filled_quantity": missing_quantity,
+                        "remaining_quantity": missing_quantity,
+                        "rationale": None,
+                        "exits": [],
+                        "audit_note": (
+                            "current exchange position has no matching filled-entry "
+                            "inference in retained audit history"
+                        ),
+                    }
+                )
+
+        result: list[PositionEntryContext] = []
+        for entry in entries:
+            opened_in_current_run = entry["live_run_id"] == live_run_id
+            current = current_positions.get(str(entry["symbol"]))
+            currently_open = (
+                current is not None
+                and current.side == entry["side"]
+                and entry["remaining_quantity"] > 0
+            )
+            if not opened_in_current_run and not currently_open:
+                continue
+            if entry["remaining_quantity"] <= 0:
+                status = "CLOSED"
+            elif currently_open:
+                status = (
+                    "PARTIALLY_CLOSED"
+                    if entry["remaining_quantity"] < entry["filled_quantity"]
+                    else "OPEN"
+                )
+            else:
+                status = "UNKNOWN"
+            result.append(
+                PositionEntryContext(
+                    client_order_id=entry["client_order_id"],
+                    live_run_id=entry["live_run_id"],
+                    symbol=entry["symbol"],
+                    side=entry["side"],
+                    action=entry["action"],
+                    opened_at=entry["opened_at"],
+                    entry_price=entry["entry_price"],
+                    filled_quantity=entry["filled_quantity"],
+                    remaining_quantity=max(
+                        Decimal("0"), entry["remaining_quantity"]
+                    ),
+                    rationale=entry["rationale"],
+                    opened_in_current_run=opened_in_current_run,
+                    currently_open=currently_open,
+                    status=status,
+                    exits=tuple(entry["exits"]),
+                    audit_note=entry["audit_note"],
+                )
+            )
+        result.sort(
+            key=lambda item: (
+                item.opened_at or datetime.min.replace(tzinfo=UTC),
+                item.client_order_id or "",
+            )
+        )
+        return tuple(result)
 
     @staticmethod
     def _terminal_fill_identity(payload: dict[str, Any]) -> tuple[str, ...] | None:

@@ -8,7 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from candlepilot.domain.models import MarketSnapshot, PortfolioState, TradeAction
+from candlepilot.domain.models import (
+    MarketSnapshot,
+    PortfolioState,
+    PositionEntryContext,
+    PositionExitContext,
+    TradeAction,
+)
 from candlepilot.providers.cli import (
     ClaudeCodeAuthProvider,
     CodexAuthProvider,
@@ -82,6 +88,48 @@ def test_standard_provider_payload_exposes_positioning_as_context() -> None:
     }
     assert "taker_buy_sell_ratio" in context["missing_fields"]
     assert context["interpretation_limits"]
+
+
+def test_decision_prompt_explains_audited_position_entry_context() -> None:
+    now = datetime.now(UTC)
+    portfolio = _portfolio().model_copy(
+        update={
+            "position_entry_context": (
+                PositionEntryContext(
+                    client_order_id="cp-entry-1",
+                    live_run_id=7,
+                    symbol="BTCUSDT",
+                    side="LONG",
+                    action="OPEN_LONG",
+                    opened_at=now,
+                    entry_price="100",
+                    filled_quantity="1",
+                    remaining_quantity="0",
+                    rationale="突破后成交量确认",
+                    opened_in_current_run=True,
+                    currently_open=False,
+                    status="CLOSED",
+                    exits=(
+                        PositionExitContext(
+                            kind="manual_close",
+                            quantity="1",
+                            price="99",
+                            realized_pnl="-1",
+                            exited_at=now,
+                        ),
+                    ),
+                ),
+            )
+        }
+    )
+
+    prompt = cli_module._decision_prompt(_market(), portfolio)
+
+    assert '"position_entry_context":[{' in prompt
+    assert '"rationale":"突破后成交量确认"' in prompt
+    assert '"kind":"manual_close"' in prompt
+    assert "不得冒充止盈止损" in prompt
+    assert "rationale=null 或 status=UNKNOWN" in prompt
 
 
 def test_sensitive_environment_is_removed() -> None:
@@ -339,13 +387,13 @@ def test_codex_provider_parses_schema_output(tmp_path: Path) -> None:
     assert result.usage["input_tokens"] == 1200
     assert result.usage["cached_input_tokens"] == 800
     assert result.usage["total_tokens"] == 1250
-    assert result.prompt_version == "trade-intent-v22"
+    assert result.prompt_version == "trade-intent-v23"
     assert result.data_version is not None
     assert result.data_version.startswith("market-snapshot-v5:sha256:")
     assert result.input_payload is not None
     assert result.input_payload["market"]["symbol"] == "BTCUSDT"
     assert result.prompt is not None and '"symbol":"BTCUSDT"' in result.prompt
-    assert result.prompt.startswith("提示词版本：trade-intent-v22。")
+    assert result.prompt.startswith("提示词版本：trade-intent-v23。")
     assert "你是一个日内期货系统中的决策组件" in result.prompt
     assert "You are the decision component" not in result.prompt
     assert "任一标的初始保证金不超过权益 10%" in result.prompt
@@ -455,7 +503,7 @@ def test_claude_validation_failure_preserves_complete_audit_context(
     assert error.duration.total_seconds() > 0
     assert error.raw_output == envelope + "\n"
     assert error.usage["input_tokens"] == 25
-    assert error.prompt_version == "trade-intent-v22"
+    assert error.prompt_version == "trade-intent-v23"
     assert error.data_version.startswith("market-snapshot-v5:sha256:")
     assert error.input_payload["market"]["symbol"] == "BTCUSDT"
     assert '"portfolio"' in error.prompt

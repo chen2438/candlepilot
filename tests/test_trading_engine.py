@@ -12,6 +12,7 @@ from candlepilot.domain.models import (
     MarketSnapshot,
     OrderType,
     PortfolioState,
+    PositionEntryContext,
     PositionState,
     ProviderHealth,
     RiskDecision,
@@ -350,6 +351,82 @@ def test_experimental_provider_capability_forces_live_shadow_only(
     assert outcome.risk.shadow_only
     assert outcome.execution is None
     assert orders == []
+
+
+@pytest.mark.parametrize("batched", [False, True], ids=["single", "batch"])
+def test_formal_decision_receives_position_entry_context(
+    tmp_path: Path, batched: bool
+) -> None:
+    history = PositionEntryContext(
+        client_order_id="cp-entry-history",
+        live_run_id=1,
+        symbol="BTCUSDT",
+        side="LONG",
+        action="OPEN_LONG",
+        opened_at=datetime.now(UTC),
+        entry_price="100",
+        filled_quantity="1",
+        remaining_quantity="0",
+        rationale="本次运行的历史开仓理由",
+        opened_in_current_run=True,
+        currently_open=False,
+        status="CLOSED",
+    )
+
+    class CapturingProvider(FakeProvider):
+        def __init__(self) -> None:
+            self.seen: list[tuple[PositionEntryContext, ...]] = []
+
+        async def generate_trade_intent(self, snapshot, portfolio) -> ProviderResult:
+            self.seen.append(portfolio.position_entry_context)
+            return await super().generate_trade_intent(snapshot, portfolio)
+
+    async def scenario():
+        database = Database(
+            f"sqlite+aiosqlite:///{tmp_path / f'position-history-{batched}.db'}"
+        )
+        await database.initialize()
+        audit = AuditRepository(database.sessions)
+
+        async def position_entry_context(live_run_id, current_positions):
+            assert live_run_id >= 1
+            assert current_positions == {}
+            return (history,)
+
+        audit.position_entry_context = position_entry_context  # type: ignore[method-assign]
+        provider = CapturingProvider()
+        engine = TradingEngine(
+            testnet_broker=FakeTestnetBroker(),  # type: ignore[arg-type]
+            providers=ProviderRegistry([provider]),
+            audit=audit,
+            market=FakeMarket(),  # type: ignore[arg-type]
+        )
+        engine.select_provider_chain([provider.name])
+        await engine.start()
+        snapshot = MarketSnapshot(
+            symbol="BTCUSDT",
+            cadence="5m",
+            timestamp=datetime.now(UTC),
+            mark_price="100",
+            bid="99.9",
+            ask="100.1",
+            quote_volume_24h="1000000",
+        )
+        portfolio = PortfolioState(equity="10000", available_balance="8000")
+        rules = SymbolRules(
+            Decimal("0.001"), Decimal("0.001"), Decimal("5"), Decimal("0.01")
+        )
+        if batched:
+            await engine.evaluate_batch(
+                [snapshot], portfolio, {snapshot.symbol: rules}
+            )
+        else:
+            await engine.evaluate(snapshot, portfolio, rules)
+        await engine.stop()
+        await database.close()
+        return provider.seen
+
+    assert asyncio.run(scenario()) == [(history,)]
 
 
 def test_universe_excludes_symbols_not_tradable_on_the_execution_venue(

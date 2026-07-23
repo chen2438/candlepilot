@@ -27,6 +27,11 @@
   复用现有 JSON 快照，不新增迁移；标准外部 Provider 将存在的字段整理为带缺失清单和解释边界的
   独立衍生品上下文。
 - 溯源：SHA-256 数据版本、显式 Prompt 版本、模型标识、CLI Provider 版本。
+- 正式决策调用前通过既有 `inferences`、`inference_details`、`execution_attempts`、
+  `executions` 和 `user_stream_events` 派生 `portfolio.position_entry_context`，不新增数据库表。
+  它保留本次运行全部已成交开仓/加仓理由及退出类别；当前持仓还可关联更早运行的开仓批次。
+  合并仓位的退出按剩余批次数量比例归属，缺失关联或数量差异显式写入 `audit_note`，不能把未知
+  退出推断为止盈或止损。推理详情与正式决策快照保存实际发送的增强组合，供审计与精确回放。
 - 标准本地基准的推理 usage 固化 `strategy_variant=standard` 与 `live_shadow_only=false`。旧实验
   Provider 的历史 usage 保持原样可读，但系统不再生成新记录。正式风控行的 `shadow_only` 仍是
   未提交 Broker 的最终证据，本地待触发限价意图后续复核和触价完成时也必须保留该字段。

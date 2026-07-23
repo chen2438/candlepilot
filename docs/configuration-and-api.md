@@ -159,6 +159,9 @@ Codex CLI 登录接口异步启动固定的 `codex login --device-auth`，sessio
 `GET /api/signals`。不提供接受调用方行情、账户或合约规则的手动决策接口；正式执行只能由调度器
 使用后端刚读取的数据发起，避免本地请求用伪造精度或快照绕过执行链。列表接口只返回轻量摘要；按 ID
 详情接口返回该次推理的结构化输入、实际 Prompt、原始输出、token usage 和等效成本。
+正式推理的输入 `portfolio.position_entry_context` 会列出模型当时可见的当前持仓开仓理由与
+本次运行已成交开仓历史；已退出批次还带止盈、止损、手动平仓、模型平/减仓、紧急回补或其他平仓
+类别。它是调用时快照，调用方不得根据后来成交回写或重分类历史输入。
 `decision-events` 以模型推理为主记录，关联硬风控和执行尝试并给出 `approved` / `executed` /
 `execution_failed` / `rejected` / `hold` / `analysis_only` 展示状态；执行对象包含状态、失败阶段、
 交易所错误、入场/回补报告与可用时的损失估算。归属正式运行时，`live_run.config.software_version`

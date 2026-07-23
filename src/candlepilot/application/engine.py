@@ -180,6 +180,19 @@ class TradingEngine:
             )
         return await provider.generate_trade_intents(snapshots, portfolio)
 
+    async def _portfolio_with_position_entry_context(
+        self, portfolio: PortfolioState
+    ) -> PortfolioState:
+        if self.live_run_id is None:
+            return portfolio
+        history = await self.audit.position_entry_context(
+            self.live_run_id,
+            portfolio.positions,
+        )
+        return portfolio.model_copy(
+            update={"position_entry_context": history}
+        )
+
     def invalidate_startup_probe(self, reason: str) -> None:
         """Keep the last result visible, but prevent it from starting a changed run."""
 
@@ -1045,6 +1058,11 @@ class TradingEngine:
                             f"decision retry input refresh failed: {type(exc).__name__}"
                         ) from exc
                     refresh_retry_inputs = False
+                analysis_portfolio = (
+                    await self._portfolio_with_position_entry_context(
+                        analysis_portfolio
+                    )
+                )
                 round_candidates = (
                     candidates if attempt_number == 1 else list(self.provider_chain)
                 )
@@ -1305,6 +1323,11 @@ class TradingEngine:
                             f"decision retry input refresh failed: {type(exc).__name__}"
                         ) from exc
                     refresh_retry_inputs = False
+                analysis_portfolio = (
+                    await self._portfolio_with_position_entry_context(
+                        analysis_portfolio
+                    )
+                )
                 round_candidates = (
                     candidates if attempt_number == 1 else list(self.provider_chain)
                 )

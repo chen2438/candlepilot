@@ -185,6 +185,40 @@ class PositionState(StrictModel):
     take_profit: Decimal | None = Field(default=None, gt=0)
 
 
+class PositionExitContext(StrictModel):
+    kind: Literal[
+        "stop_loss",
+        "take_profit",
+        "manual_close",
+        "model_close",
+        "model_reduce",
+        "rescue_close",
+        "other_close",
+    ]
+    quantity: PositiveDecimal
+    price: Decimal | None = Field(default=None, gt=0)
+    realized_pnl: Decimal | None = None
+    exited_at: datetime
+
+
+class PositionEntryContext(StrictModel):
+    client_order_id: str | None = None
+    live_run_id: int | None = Field(default=None, ge=1)
+    symbol: str = Field(pattern=r"^[A-Z0-9]+USDT$")
+    side: Literal["LONG", "SHORT"]
+    action: Literal["OPEN_LONG", "OPEN_SHORT", "ADD"]
+    opened_at: datetime | None = None
+    entry_price: Decimal | None = Field(default=None, gt=0)
+    filled_quantity: PositiveDecimal
+    remaining_quantity: NonNegativeDecimal
+    rationale: str | None = Field(default=None, max_length=RATIONALE_MAX_LENGTH)
+    opened_in_current_run: bool
+    currently_open: bool
+    status: Literal["OPEN", "PARTIALLY_CLOSED", "CLOSED", "UNKNOWN"]
+    exits: tuple[PositionExitContext, ...] = ()
+    audit_note: str | None = None
+
+
 class PortfolioState(StrictModel):
     equity: PositiveDecimal
     available_balance: NonNegativeDecimal
@@ -192,6 +226,7 @@ class PortfolioState(StrictModel):
     open_positions: int = Field(default=0, ge=0)
     margin_used: NonNegativeDecimal = Decimal("0")
     positions: dict[str, PositionState] = Field(default_factory=dict)
+    position_entry_context: tuple[PositionEntryContext, ...] = ()
     pending_entry_symbols: tuple[str, ...] = ()
     stop_loss_cooldown_until: dict[str, datetime] = Field(default_factory=dict)
 

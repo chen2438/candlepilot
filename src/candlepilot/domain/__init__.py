@@ -3,6 +3,8 @@ from candlepilot.domain.models import (
     MarketSnapshot,
     OrderPlan,
     PortfolioState,
+    PositionEntryContext,
+    PositionExitContext,
     PositionState,
     ProviderHealth,
     RiskDecision,
@@ -15,10 +17,11 @@ __all__ = [
     "MarketSnapshot",
     "OrderPlan",
     "PortfolioState",
+    "PositionEntryContext",
+    "PositionExitContext",
     "PositionState",
     "ProviderHealth",
     "RiskDecision",
     "TradeAction",
     "TradeIntent",
 ]
-

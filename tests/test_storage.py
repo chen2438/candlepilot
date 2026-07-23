@@ -18,6 +18,7 @@ from candlepilot.domain.models import (
     TradeIntent,
     MarketSnapshot,
     PortfolioState,
+    PositionState,
 )
 from candlepilot.providers.base import ProviderResult
 from candlepilot.providers.pricing import parse_models_dev
@@ -689,6 +690,184 @@ def test_trade_fills_include_protective_and_manual_exits_without_duplicate_entri
     assert performance[0]["funding_complete"] is False
     assert Decimal(performance[0]["net_trading_pnl"]) == Decimal("-1.23820")
     assert Decimal(performance[0]["total_pnl"]) == Decimal("-1.23820")
+
+
+def test_position_entry_context_includes_current_and_current_run_exit_reasons(
+    tmp_path: Path,
+) -> None:
+    async def scenario():
+        database = Database(
+            f"sqlite+aiosqlite:///{tmp_path / 'position-entry-context.db'}"
+        )
+        await database.initialize()
+        repository = AuditRepository(database.sessions)
+        prior_run = await repository.create_live_run({"provider_chain": ["fixture"]})
+        current_run = await repository.create_live_run(
+            {"provider_chain": ["fixture"]}
+        )
+        started = datetime.now(UTC)
+
+        async def record_entry(
+            *,
+            run_id: int,
+            symbol: str,
+            client_order_id: str,
+            rationale: str,
+            opened_at: datetime,
+            price: str,
+            quantity: str,
+            action: TradeAction = TradeAction.OPEN_LONG,
+        ) -> None:
+            intent = TradeIntent(
+                symbol=symbol,
+                cadence="5m",
+                action=action,
+                confidence=0.8,
+                leverage=3,
+                risk_fraction="0.01",
+                stop_loss=str(Decimal(price) * Decimal("0.98")),
+                take_profit=str(Decimal(price) * Decimal("1.04")),
+                rationale=rationale,
+            )
+            inference_id = await repository.record_inference(
+                ProviderResult(
+                    intent,
+                    "fixture",
+                    "fixture-model",
+                    timedelta(),
+                    "{}",
+                    {},
+                    input_payload={
+                        "market": {"symbol": symbol},
+                        "portfolio": {"positions": {}},
+                    },
+                    prompt="fixture",
+                ),
+                live_run_id=run_id,
+            )
+            report = ExecutionReport(
+                client_order_id=client_order_id,
+                status="FILLED",
+                filled_quantity=quantity,
+                average_price=price,
+                timestamp=opened_at,
+            )
+            await repository.record_execution(symbol, report)
+            await repository.record_execution_attempt(
+                symbol,
+                ExecutionAttempt(
+                    inference_id=inference_id,
+                    client_order_id=client_order_id,
+                    status="SUCCEEDED",
+                    stage="COMPLETE",
+                    message="filled",
+                    entry_report=report,
+                    timestamp=opened_at,
+                ),
+            )
+            await repository.record_user_event(
+                UserStreamEvent(
+                    "ORDER_TRADE_UPDATE",
+                    opened_at,
+                    opened_at,
+                    symbol,
+                    {
+                        "o": {
+                            "c": client_order_id,
+                            "s": symbol,
+                            "S": "BUY",
+                            "x": "TRADE",
+                            "X": "FILLED",
+                            "z": quantity,
+                            "ap": price,
+                            "R": False,
+                            "rp": "0",
+                        }
+                    },
+                )
+            )
+
+        await record_entry(
+            run_id=prior_run,
+            symbol="BTCUSDT",
+            client_order_id="cp-btc-entry",
+            rationale="旧运行中的 BTC 开仓理由",
+            opened_at=started,
+            price="100",
+            quantity="1",
+        )
+        await record_entry(
+            run_id=current_run,
+            symbol="BANKUSDT",
+            client_order_id="cp-bank-entry",
+            rationale="BANK 突破后开仓",
+            opened_at=started + timedelta(minutes=1),
+            price="0.20",
+            quantity="100",
+        )
+        await record_entry(
+            run_id=current_run,
+            symbol="ETHUSDT",
+            client_order_id="cp-eth-entry",
+            rationale="ETH 延续后开仓",
+            opened_at=started + timedelta(minutes=2),
+            price="2000",
+            quantity="0.1",
+        )
+        for minutes, symbol, client_id, quantity, price, pnl in (
+            (3, "BANKUSDT", "cp-bank-entry-sl", "100", "0.19", "-1"),
+            (4, "ETHUSDT", "cp-eth-entry-tp", "0.1", "2080", "8"),
+        ):
+            event_time = started + timedelta(minutes=minutes)
+            await repository.record_user_event(
+                UserStreamEvent(
+                    "ORDER_TRADE_UPDATE",
+                    event_time,
+                    event_time,
+                    symbol,
+                    {
+                        "o": {
+                            "c": client_id,
+                            "s": symbol,
+                            "S": "SELL",
+                            "x": "TRADE",
+                            "X": "FILLED",
+                            "z": quantity,
+                            "ap": price,
+                            "R": True,
+                            "rp": pnl,
+                        }
+                    },
+                )
+            )
+        context = await repository.position_entry_context(
+            current_run,
+            {
+                "BTCUSDT": PositionState(
+                    side="LONG",
+                    quantity="1",
+                    entry_price="100",
+                    leverage=3,
+                )
+            },
+        )
+        await database.close()
+        return context
+
+    context = asyncio.run(scenario())
+    by_symbol = {item.symbol: item for item in context}
+    assert set(by_symbol) == {"BTCUSDT", "BANKUSDT", "ETHUSDT"}
+    assert by_symbol["BTCUSDT"].rationale == "旧运行中的 BTC 开仓理由"
+    assert by_symbol["BTCUSDT"].currently_open
+    assert not by_symbol["BTCUSDT"].opened_in_current_run
+    assert by_symbol["BTCUSDT"].status == "OPEN"
+    assert by_symbol["BANKUSDT"].rationale == "BANK 突破后开仓"
+    assert by_symbol["BANKUSDT"].status == "CLOSED"
+    assert by_symbol["BANKUSDT"].exits[0].kind == "stop_loss"
+    assert by_symbol["BANKUSDT"].exits[0].realized_pnl == Decimal("-1")
+    assert by_symbol["ETHUSDT"].status == "CLOSED"
+    assert by_symbol["ETHUSDT"].exits[0].kind == "take_profit"
+    assert by_symbol["ETHUSDT"].exits[0].realized_pnl == Decimal("8")
 
 
 def test_trade_fills_deduplicate_live_and_rest_reconciliation(tmp_path: Path) -> None:
