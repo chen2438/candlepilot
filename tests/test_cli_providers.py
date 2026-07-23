@@ -339,19 +339,18 @@ def test_codex_provider_parses_schema_output(tmp_path: Path) -> None:
     assert result.usage["input_tokens"] == 1200
     assert result.usage["cached_input_tokens"] == 800
     assert result.usage["total_tokens"] == 1250
-    assert result.prompt_version == "trade-intent-v21"
+    assert result.prompt_version == "trade-intent-v22"
     assert result.data_version is not None
     assert result.data_version.startswith("market-snapshot-v5:sha256:")
     assert result.input_payload is not None
     assert result.input_payload["market"]["symbol"] == "BTCUSDT"
     assert result.prompt is not None and '"symbol":"BTCUSDT"' in result.prompt
-    assert result.prompt.startswith("提示词版本：trade-intent-v21。")
-    assert "你是一个仅运行于测试网的日内期货系统中的决策组件" in result.prompt
+    assert result.prompt.startswith("提示词版本：trade-intent-v22。")
+    assert "你是一个日内期货系统中的决策组件" in result.prompt
     assert "You are the decision component" not in result.prompt
     assert "任一标的初始保证金不超过权益 10%" in result.prompt
     assert "risk_fraction 不得超过 0.01" in result.prompt
     assert "全部未平仓止损风险合计不超过权益 4%" in result.prompt
-    assert "不得套用跨标的统一比率阈值" in result.prompt
     assert "必须严格沿用现有仓位杠杆" in result.prompt
     assert "(1) TREND_BREAKOUT" in result.prompt
     assert "(2) TREND_CONTINUATION" in result.prompt
@@ -360,6 +359,8 @@ def test_codex_provider_parses_schema_output(tmp_path: Path) -> None:
     assert "(5) REVERSAL" in result.prompt
     assert "breakout_hold_above_20" in result.prompt
     assert "stop_loss_cooldown_until" in result.prompt
+    assert "不得套用跨标的统一比率阈值" not in result.prompt
+    assert "仅有超买或超卖绝不构成反转确认" not in result.prompt
     assert "reward/risk" not in result.prompt
     assert "1.3:1" not in result.prompt
 
@@ -454,7 +455,7 @@ def test_claude_validation_failure_preserves_complete_audit_context(
     assert error.duration.total_seconds() > 0
     assert error.raw_output == envelope + "\n"
     assert error.usage["input_tokens"] == 25
-    assert error.prompt_version == "trade-intent-v21"
+    assert error.prompt_version == "trade-intent-v22"
     assert error.data_version.startswith("market-snapshot-v5:sha256:")
     assert error.input_payload["market"]["symbol"] == "BTCUSDT"
     assert '"portfolio"' in error.prompt
@@ -543,7 +544,8 @@ def test_claude_provider_sends_prompt_on_stdin_with_schema(tmp_path: Path) -> No
     assert '"additionalProperties":false' in stdin  # schema is embedded for Claude
     assert "confidence 表示所提议非 HOLD 动作具备可执行交易优势的估计强度" in stdin
     assert "HOLD 必须使用 leverage=1、risk_fraction=0" in stdin
-    assert "仅有超买或超卖绝不构成反转确认" in stdin
+    assert "(5) REVERSAL" in stdin
+    assert "rationale 使用简体中文" in stdin
 
 
 def test_registry_builds_one_provider_per_custom_endpoint() -> None:

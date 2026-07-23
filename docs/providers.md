@@ -67,14 +67,15 @@
 - 统一交易 Prompt 明确说明 `PortfolioState.stop_loss_cooldown_until` 是最近 90 分钟发生手续费后
   净亏保护退出的兼容字段，而不再误写成仅包含固定止损；模型对映射内标的必须保持 `HOLD`，硬风控
   仍会独立复核。Prompt 还要求 `ADD` 沿用现有仓位杠杆，确定性风控会在定量前拒绝任何变杠杆加仓；
-  Prompt 同时要求模型把价格、OI 变化、账户/持仓多空比和 taker 买卖比放回多周期价格结构中
-  综合解释，不得使用跨标的统一比率阈值、推断交易者身份、把无符号 OI 当作方向仓位或让单一字段
-  直接决定交易。Prompt 还要求每个开仓/加仓必须在五个互斥交易情形中返回非空 `setup_type`：
+  衍生品 JSON 上下文仍随数据携带来源、缺失清单以及 OI 无方向、比率不代表交易者身份等解释边界，
+  但固定策略文字不再规定指标权重、统一的 `ema20_distance_atr` 追价阈值、日线位优先级或通用
+  成交量/订单流否决条件，由模型结合当次完整输入自行权衡。Prompt 仍要求每个开仓/加仓必须在五个
+  互斥交易情形中返回非空 `setup_type`：
   `TREND_BREAKOUT`（趋势突破）、`TREND_CONTINUATION`（趋势延续）、`BREAKOUT_RETEST`（突破回踩）、
   `TREND_PULLBACK`（趋势回撤）或 `REVERSAL`（反转）；其他动作返回空值。每类在 Prompt 中都有独立
   触发定义，枚举随推理审计持久化，后续按五类分别统计。正式标准决策 Prompt 的策略说明、
   输出约束和历史订单流缺失说明统一使用简体中文，JSON 字段名、Schema、动作与结构枚举继续保留
-  英文机器值；`rationale` 明确要求使用简体中文。当前 Prompt 版本为 `trade-intent-v21`。
+  英文机器值；`rationale` 使用简体中文。当前 Prompt 版本为 `trade-intent-v22`。
 - **隔离与安全**：LLM 子进程运行在独立空临时目录，环境变量白名单
   （含 `USER`/`LOGNAME` 以支持 macOS 钥匙串读取 Claude 登录态），移除所有币安/API Key
   变量；禁用工具、MCP、网络；单 Provider 并发 1、统一取消。外部 Provider 的代码默认超时为

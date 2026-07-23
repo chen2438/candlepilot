@@ -38,10 +38,7 @@ from candlepilot.provenance import (
     content_fingerprint,
 )
 
-
-CODEX_APP_BINARIES = (
-    Path("/Applications/ChatGPT.app/Contents/Resources/codex"),
-)
+CODEX_APP_BINARIES = (Path("/Applications/ChatGPT.app/Contents/Resources/codex"),)
 CODEX_AUTH_PATH = Path.home() / ".codex" / "auth.json"
 CODEX_AUTH_SOURCE_APP = "chatgpt-app"
 CODEX_AUTH_SOURCE_CLI = "codex-cli"
@@ -189,7 +186,11 @@ def find_claude_executable() -> Path | None:
     if candidate:
         return Path(candidate).resolve()
     user_binary = USER_CLI_DIRECTORY / "claude"
-    return user_binary.resolve() if user_binary.is_file() and os.access(user_binary, os.X_OK) else None
+    return (
+        user_binary.resolve()
+        if user_binary.is_file() and os.access(user_binary, os.X_OK)
+        else None
+    )
 
 
 async def _run_process(
@@ -203,14 +204,17 @@ async def _run_process(
         *argv,
         cwd=cwd,
         env=sanitized_subprocess_env(),
-        stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
+        stdin=(
+            asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL
+        ),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
     )
     try:
         stdout, stderr = await asyncio.wait_for(
-            process.communicate(stdin.encode() if stdin is not None else None), timeout=timeout
+            process.communicate(stdin.encode() if stdin is not None else None),
+            timeout=timeout,
         )
     except (TimeoutError, asyncio.CancelledError) as exc:
         try:
@@ -230,7 +234,9 @@ async def _run_process(
     out_text = stdout.decode("utf-8", errors="replace")
     err_text = stderr.decode("utf-8", errors="replace")
     if process.returncode != 0:
-        message = err_text.strip() or out_text.strip() or f"exit code {process.returncode}"
+        message = (
+            err_text.strip() or out_text.strip() or f"exit code {process.returncode}"
+        )
         raise ProviderError(message[-2000:])
     return out_text, err_text
 
@@ -319,7 +325,10 @@ def _flow_clause(snapshot: MarketSnapshot) -> str:
 
 
 def _batch_flow_clause(snapshots: Sequence[MarketSnapshot]) -> str:
-    if all(any(name in snapshot.features for name in FLOW_FEATURES) for snapshot in snapshots):
+    if all(
+        any(name in snapshot.features for name in FLOW_FEATURES)
+        for snapshot in snapshots
+    ):
         return ""
     return (
         " 部分输入快照来自历史数据，不包含订单流字段。仅对这些市场，不得把订单流缺失视为"
@@ -346,14 +355,13 @@ def _decision_prompt(
         )
     return (
         f"提示词版本：{DECISION_PROMPT_VERSION}。"
-        "你是一个仅运行于测试网的日内期货系统中的决策组件。"
+        "你是一个日内期货系统中的决策组件。"
         "不得使用工具、文件、Shell 命令、网络搜索或任何外部上下文，只能分析下方提供的 JSON。"
-        "严格返回一个符合 TradeIntent Schema 的对象。confidence 表示所提议非 HOLD 动作具备可执行"
-        "交易优势的估计强度；它不是盈利概率，也不能绕过硬风控。对于 HOLD，它只表示残余机会强度，"
-        "通常应低于 0.55。不得仅因 confidence 较高就虚增置信度、强行交易或请求更高风险。"
-        "决策特征按周期提供，前缀为 5m/15m/30m/1h/4h。5m 用于确定入场时机，15m/30m 用于确认"
-        "可执行走势，1h/4h 用于定义更大级别的趋势和结构环境；decision cadence 只决定何时复核"
-        "这套完整周期阶梯，不代表可以忽略其中某些证据。趋势由 ema_spread 和 ema_20/ema_50 组合"
+        "严格返回一个符合 TradeIntent Schema 的对象。confidence 表示所提议非 HOLD 动作具备可执行交易优势的估计强度。"
+        "对于 HOLD，它只表示残余机会强度，应低于 0.55。"
+        "决策特征按周期提供，前缀为 5m/15m/30m/1h/4h。"
+        "decision cadence 只决定何时复核这套完整周期阶梯。"
+        "趋势由 ema_spread 和 ema_20/ema_50 组合"
         "表示。range_high_20/range_low_20 包含最新已收盘 K 线，prior_range_high_20/"
         "prior_range_low_20 不包含。breakout_above_20 和 breakdown_below_20 只描述最新一根"
         "收盘；可交易突破必须具备 breakout_hold_above_20 或 breakdown_hold_below_20，即最近"
@@ -365,25 +373,12 @@ def _decision_prompt(
         "recent_trade_imbalance 表示；recent_trade_imbalance 只覆盖 recent_trade_seconds 秒的"
         "近期成交，窗口很短时应视为噪声而非可靠订单流。"
         "derivatives_context 包含可选的 Binance 已收盘 5m 持仓统计，并明确给出可用状态和缺失字段。"
-        "必须结合多周期价格结构综合解释价格、OI 变化、账户/持仓多空比及 taker 买卖比。不得套用"
-        "跨标的统一比率阈值、推断交易者身份、把无符号 OI 视为方向仓位，或让任一字段单独成为信号。"
         "缺失字段代表未知，不代表中性或零。"
-        "ema20_distance_atr 表示价格偏离自身 20 周期均值的有符号 ATR 倍数。只有这个字段用于判断"
-        "价格是否延伸过度：在拟交易方向达到约 2.5 或更高，表示追逐已经运行较远的走势。不得把 "
-        "range_position_50 当作延伸程度；有效趋势本来就会运行到自身区间边缘，因此顺势方向的 "
-        "range_position_50 接近 1（做空时接近 0）表示趋势正在发挥作用，不是观望理由。"
-        "另外，1d_previous_high/low/close 是紧邻当前时间之前一个已经收盘的 UTC 日线。"
+        "ema20_distance_atr 表示价格偏离自身 20 周期均值的有符号 ATR 倍数。"
+        "1d_previous_high/low/close 是紧邻当前时间之前一个已经收盘的 UTC 日线。"
         "1d_range_high_20 和 1d_range_low_20 是 20 日高低点，1d_range_position_20 表示当前"
-        "标记价在其间的位置（最低点为 0、最高点为 1，突破日线区间时可超出 0..1）。这些是输入中"
-        "最强的参考位，挂单会在这些位置聚集，而非普通日内极值。它们是价格位，不是趋势，也不是"
-        "一票否决：价格在同向趋势支持下穿越日线极值属于突破，应支持该方向；位于价格前方且逆趋势"
-        "接近的日线位则可能使走势停顿。"
-        "当对应两根 K 线保持标志为 0 时，绝不能提交 TREND_BREAKOUT 或 BREAKOUT 触发。未来突破"
-        "必须保持 HOLD，直到两根 K 线都收盘；不得用 LIMIT 提前押注。不得把未经确认的备用区间边缘"
-        "称为 swing。依赖未来重新站上某价位的 MARKET 入场必须 HOLD；仅当明确价格代表另一个仍待"
-        "发生的触发条件时才使用 LIMIT。只能根据输入证据判断；如果考虑中的形态需要输入未提供的证据，"
-        "则该形态尚未成立。"
-        "只有 confidence 不低于 0.55、存在可辩护的失效价格，并且严格符合以下五种形态之一时，"
+        "标记价在其间的位置（最低点为 0、最高点为 1，突破日线区间时可超出 0..1）。"
+        "只有 confidence 不低于 0.55、存在可辩护的失效价格，并且符合以下五种形态之一时，"
         "才能提交 OPEN_LONG、OPEN_SHORT 或 ADD："
         "(1) TREND_BREAKOUT：5m 与 15m/30m 至少一个方向一致，1h/4h 不能同时明显反向，且对应"
         "已确认的两根 K 线区间保持是入场触发；"
@@ -395,9 +390,6 @@ def _decision_prompt(
         "但不是已确认突破位的回踩，随后企稳或重新站上，并伴随参与度恢复；"
         "(5) REVERSAL：价格拒绝或重新站上某一价格位，同时得到动量或订单流确认；只有日线位的拒绝"
         "才值得完整仓位。"
-        "五种形态都要求成交量/订单流不能明显矛盾，且按 ema20_distance_atr 判断不得追价。1h/4h "
-        "方向一致会增强趋势形态，但不能替代短周期触发；价格前方紧邻日线位意味着目标应更近，而非"
-        "直接放弃交易。回调时守住日线位比守住日内位更有力。仅有超买或超卖绝不构成反转确认。"
         "每个 OPEN_LONG、OPEN_SHORT 或 ADD 的 setup_type 必须严格填写上述五个枚举之一并与实际"
         "形态匹配，其他动作的 setup_type 必须为 null。"
         "portfolio.positions 包含每个现有仓位的 entry_price、unrealized_pnl 和当前真实挂在交易所"
@@ -416,7 +408,7 @@ def _decision_prompt(
         "leverage 不得超过 10，risk_fraction 不得超过 0.01。确定性定量还会限制：全部未平仓止损"
         "风险合计不超过权益 4%，组合初始保证金不超过权益 80%，任一标的初始保证金不超过权益 10%；"
         "portfolio.positions 提供每个现有仓位的 initial_margin，开仓或 ADD 必须尊重该标的剩余容量。"
-        f"rationale 必须使用简体中文，保持简洁且不超过 {RATIONALE_TARGET_LENGTH} 个字符。"
+        f"rationale 使用简体中文，不超过 {RATIONALE_TARGET_LENGTH} 个字符。"
         + _flow_clause(snapshot)
         + schema_clause
         + "\n"
@@ -504,7 +496,9 @@ def parse_codex_events(stdout: str) -> tuple[str | None, dict[str, Any]]:
         event_type = event.get("type")
         if event_type == "item.completed":
             item = event.get("item") or {}
-            if item.get("type") == "agent_message" and isinstance(item.get("text"), str):
+            if item.get("type") == "agent_message" and isinstance(
+                item.get("text"), str
+            ):
                 result_text = item["text"]
         elif event_type == "turn.completed":
             raw = event.get("usage") or {}
@@ -563,7 +557,12 @@ def _parse_intent(value: str | dict[str, Any]) -> tuple[TradeIntent, bool]:
     if isinstance(value, str):
         text = value.strip()
         if text.startswith("```"):
-            text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            text = (
+                text.removeprefix("```json")
+                .removeprefix("```")
+                .removesuffix("```")
+                .strip()
+            )
         data = json.loads(text)
     rationale_truncated = False
     if isinstance(data, dict):
@@ -589,7 +588,12 @@ def _parse_intents(
     if isinstance(value, str):
         text = value.strip()
         if text.startswith("```"):
-            text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            text = (
+                text.removeprefix("```json")
+                .removeprefix("```")
+                .removesuffix("```")
+                .strip()
+            )
         data = json.loads(text)
     if not isinstance(data, dict) or not isinstance(data.get("intents"), list):
         raise ValueError("batch response must contain an intents array")
@@ -602,7 +606,9 @@ def _parse_intents(
     expected = [(item.symbol, item.cadence) for item in snapshots]
     actual = [(item.symbol, item.cadence) for item in intents]
     if actual != expected:
-        raise ValueError("batch intents must match market symbols and cadence in input order")
+        raise ValueError(
+            "batch intents must match market symbols and cadence in input order"
+        )
     return intents, truncated
 
 
@@ -662,8 +668,12 @@ def _split_batch_results(
     size = len(intents)
     physical_call_id = str(uuid4())
     split_keys = {
-        "input_tokens", "cached_input_tokens", "cache_read_input_tokens",
-        "cache_creation_input_tokens", "output_tokens", "total_tokens",
+        "input_tokens",
+        "cached_input_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+        "output_tokens",
+        "total_tokens",
     }
     results: list[ProviderResult] = []
     for index, intent in enumerate(intents):
@@ -735,7 +745,9 @@ class CodexAuthProvider(DecisionProvider):
     @property
     def auth_source_options(self) -> tuple[str, ...]:
         return tuple(
-            source for source in CODEX_AUTH_SOURCES if find_codex_executable(source) is not None
+            source
+            for source in CODEX_AUTH_SOURCES
+            if find_codex_executable(source) is not None
         )
 
     def set_auth_source(self, source: str) -> None:
@@ -775,7 +787,9 @@ class CodexAuthProvider(DecisionProvider):
                     [str(self.executable), "--version"], cwd=Path(directory), timeout=5
                 )
                 auth, _ = await _run_process(
-                    [str(self.executable), "login", "status"], cwd=Path(directory), timeout=8
+                    [str(self.executable), "login", "status"],
+                    cwd=Path(directory),
+                    timeout=8,
                 )
             self._provider_version = version.strip()
             return ProviderHealth(
@@ -811,21 +825,33 @@ class CodexAuthProvider(DecisionProvider):
                 active = asyncio.current_task()
                 self._active_task = active
                 try:
-                    with tempfile.TemporaryDirectory(prefix="candlepilot-analysis-") as directory:
+                    with tempfile.TemporaryDirectory(
+                        prefix="candlepilot-analysis-"
+                    ) as directory:
                         root = Path(directory)
                         schema_path = root / "analysis.schema.json"
                         schema_path.write_text(
-                            json.dumps(output_schema, separators=(",", ":")), encoding="utf-8"
+                            json.dumps(output_schema, separators=(",", ":")),
+                            encoding="utf-8",
                         )
                         argv = [
-                            str(self.executable), "exec", "--ephemeral", "--ignore-user-config",
-                            "--ignore-rules", "--sandbox", "read-only", "--skip-git-repo-check",
+                            str(self.executable),
+                            "exec",
+                            "--ephemeral",
+                            "--ignore-user-config",
+                            "--ignore-rules",
+                            "--sandbox",
+                            "read-only",
+                            "--skip-git-repo-check",
                             "--json",
                         ]
                         if self.model:
                             argv += ["-m", self.model]
                         if self.reasoning_effort:
-                            argv += ["-c", f"model_reasoning_effort={self.reasoning_effort}"]
+                            argv += [
+                                "-c",
+                                f"model_reasoning_effort={self.reasoning_effort}",
+                            ]
                         argv += ["--output-schema", str(schema_path), "-"]
                         stdout, _ = await _run_process(
                             argv, cwd=root, stdin=prompt, timeout=self.timeout
@@ -866,11 +892,15 @@ class CodexAuthProvider(DecisionProvider):
                 active = asyncio.current_task()
                 self._active_task = active
                 try:
-                    with tempfile.TemporaryDirectory(prefix="candlepilot-codex-") as directory:
+                    with tempfile.TemporaryDirectory(
+                        prefix="candlepilot-codex-"
+                    ) as directory:
                         root = Path(directory)
                         schema_path = root / "trade-intent.schema.json"
                         schema_path.write_text(
-                            json.dumps(trade_intent_output_schema(), separators=(",", ":")),
+                            json.dumps(
+                                trade_intent_output_schema(), separators=(",", ":")
+                            ),
                             encoding="utf-8",
                         )
                         argv = [
@@ -887,7 +917,10 @@ class CodexAuthProvider(DecisionProvider):
                         if self.model:
                             argv += ["-m", self.model]
                         if self.reasoning_effort:
-                            argv += ["-c", f"model_reasoning_effort={self.reasoning_effort}"]
+                            argv += [
+                                "-c",
+                                f"model_reasoning_effort={self.reasoning_effort}",
+                            ]
                         argv += ["--output-schema", str(schema_path), "-"]
                         stdout, _ = await _run_process(
                             argv,
@@ -968,7 +1001,9 @@ class CodexAuthProvider(DecisionProvider):
         input_payload = _batch_decision_payload(snapshots, portfolio)
         prompt = _batch_decision_prompt(snapshots, portfolio)
         model = self.model or find_codex_model(self.config_path)
-        data_version = content_fingerprint(input_payload, schema_version=MARKET_SNAPSHOT_SCHEMA_VERSION)
+        data_version = content_fingerprint(
+            input_payload, schema_version=MARKET_SNAPSHOT_SCHEMA_VERSION
+        )
         stdout = ""
         usage: dict[str, Any] = {}
         try:
@@ -976,21 +1011,40 @@ class CodexAuthProvider(DecisionProvider):
                 active = asyncio.current_task()
                 self._active_task = active
                 try:
-                    with tempfile.TemporaryDirectory(prefix="candlepilot-codex-") as directory:
+                    with tempfile.TemporaryDirectory(
+                        prefix="candlepilot-codex-"
+                    ) as directory:
                         root = Path(directory)
                         schema_path = root / "trade-intents.schema.json"
                         schema_path.write_text(
-                            json.dumps(trade_intent_batch_output_schema(), separators=(",", ":")),
+                            json.dumps(
+                                trade_intent_batch_output_schema(),
+                                separators=(",", ":"),
+                            ),
                             encoding="utf-8",
                         )
-                        argv = [str(self.executable), "exec", "--ephemeral", "--ignore-user-config",
-                                "--ignore-rules", "--sandbox", "read-only", "--skip-git-repo-check", "--json"]
+                        argv = [
+                            str(self.executable),
+                            "exec",
+                            "--ephemeral",
+                            "--ignore-user-config",
+                            "--ignore-rules",
+                            "--sandbox",
+                            "read-only",
+                            "--skip-git-repo-check",
+                            "--json",
+                        ]
                         if self.model:
                             argv += ["-m", self.model]
                         if self.reasoning_effort:
-                            argv += ["-c", f"model_reasoning_effort={self.reasoning_effort}"]
+                            argv += [
+                                "-c",
+                                f"model_reasoning_effort={self.reasoning_effort}",
+                            ]
                         argv += ["--output-schema", str(schema_path), "-"]
-                        stdout, _ = await _run_process(argv, cwd=root, stdin=prompt, timeout=self.timeout)
+                        stdout, _ = await _run_process(
+                            argv, cwd=root, stdin=prompt, timeout=self.timeout
+                        )
                 finally:
                     if self._active_task is active:
                         self._active_task = None
@@ -998,23 +1052,42 @@ class CodexAuthProvider(DecisionProvider):
             if result_text is None:
                 raise ValueError("Codex did not return an agent message")
             intents, truncated = _parse_intents(result_text, snapshots)
-        except (ProviderError, ValueError, json.JSONDecodeError, ValidationError) as exc:
+        except (
+            ProviderError,
+            ValueError,
+            json.JSONDecodeError,
+            ValidationError,
+        ) as exc:
             if isinstance(exc, ProviderInvocationError):
                 raise
             raise ProviderInvocationError(
-                f"Codex returned an invalid batch: {exc}", model=model,
-                duration=timedelta(seconds=time.monotonic() - started), raw_output=stdout,
-                usage=usage, prompt_version=DECISION_PROMPT_VERSION, data_version=data_version,
-                provider_version=self._provider_version, input_payload=input_payload, prompt=prompt,
+                f"Codex returned an invalid batch: {exc}",
+                model=model,
+                duration=timedelta(seconds=time.monotonic() - started),
+                raw_output=stdout,
+                usage=usage,
+                prompt_version=DECISION_PROMPT_VERSION,
+                data_version=data_version,
+                provider_version=self._provider_version,
+                input_payload=input_payload,
+                prompt=prompt,
             ) from exc
         if truncated:
             usage["rationale_truncated"] = True
         duration = timedelta(seconds=time.monotonic() - started)
         return _split_batch_results(
-            intents=intents, provider=self.name, model=model, duration=duration,
-            raw_output=result_text, usage=usage, prompt_version=DECISION_PROMPT_VERSION,
-            data_version=data_version, provider_version=self._provider_version,
-            input_payload=input_payload, prompt=prompt, reasoning_effort=self.reasoning_effort,
+            intents=intents,
+            provider=self.name,
+            model=model,
+            duration=duration,
+            raw_output=result_text,
+            usage=usage,
+            prompt_version=DECISION_PROMPT_VERSION,
+            data_version=data_version,
+            provider_version=self._provider_version,
+            input_payload=input_payload,
+            prompt=prompt,
+            reasoning_effort=self.reasoning_effort,
         )
 
 
@@ -1064,7 +1137,9 @@ class ClaudeCodeAuthProvider(DecisionProvider):
                     [str(self.executable), "--version"], cwd=Path(directory), timeout=5
                 )
                 auth, _ = await _run_process(
-                    [str(self.executable), "auth", "status"], cwd=Path(directory), timeout=8
+                    [str(self.executable), "auth", "status"],
+                    cwd=Path(directory),
+                    timeout=8,
                 )
             self._provider_version = version.strip()
             return ProviderHealth(
@@ -1100,10 +1175,18 @@ class ClaudeCodeAuthProvider(DecisionProvider):
                 active = asyncio.current_task()
                 self._active_task = active
                 try:
-                    with tempfile.TemporaryDirectory(prefix="candlepilot-analysis-") as directory:
+                    with tempfile.TemporaryDirectory(
+                        prefix="candlepilot-analysis-"
+                    ) as directory:
                         argv = [
-                            str(self.executable), "-p", "--output-format", "json",
-                            "--permission-mode", "default", "--max-turns", "4",
+                            str(self.executable),
+                            "-p",
+                            "--output-format",
+                            "json",
+                            "--permission-mode",
+                            "default",
+                            "--max-turns",
+                            "4",
                             "--disallowedTools",
                             "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit",
                         ]
@@ -1112,7 +1195,10 @@ class ClaudeCodeAuthProvider(DecisionProvider):
                         if self.reasoning_effort:
                             argv += ["--effort", self.reasoning_effort]
                         stdout, _ = await _run_process(
-                            argv, stdin=full_prompt, cwd=Path(directory), timeout=self.timeout
+                            argv,
+                            stdin=full_prompt,
+                            cwd=Path(directory),
+                            timeout=self.timeout,
                         )
                 finally:
                     if self._active_task is active:
@@ -1121,11 +1207,15 @@ class ClaudeCodeAuthProvider(DecisionProvider):
             raise
         try:
             envelope = json.loads(stdout)
-            if not isinstance(envelope, dict) or not isinstance(envelope.get("result"), str):
+            if not isinstance(envelope, dict) or not isinstance(
+                envelope.get("result"), str
+            ):
                 raise TypeError
             model, usage = parse_claude_usage(envelope)
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise ProviderError("Claude Code returned an invalid analysis envelope") from exc
+            raise ProviderError(
+                "Claude Code returned an invalid analysis envelope"
+            ) from exc
         return StructuredOutputResult(
             provider=self.name,
             model=model or self.model,
@@ -1153,7 +1243,9 @@ class ClaudeCodeAuthProvider(DecisionProvider):
                 active = asyncio.current_task()
                 self._active_task = active
                 try:
-                    with tempfile.TemporaryDirectory(prefix="candlepilot-claude-") as directory:
+                    with tempfile.TemporaryDirectory(
+                        prefix="candlepilot-claude-"
+                    ) as directory:
                         # Not plan mode: plan mode makes Claude call ExitPlanMode (or
                         # explain the plan workflow) instead of answering, which burns
                         # the single turn and yields error_max_turns. A small turn
@@ -1209,7 +1301,13 @@ class ClaudeCodeAuthProvider(DecisionProvider):
                 raise TypeError("Claude Code response envelope must be an object")
             model, usage = parse_claude_usage(envelope)
             intent, rationale_truncated = _parse_intent(envelope["result"])
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError, ValidationError) as exc:
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+            ValidationError,
+        ) as exc:
             raise ProviderInvocationError(
                 f"Claude Code returned an invalid TradeIntent: {exc}",
                 model=model,
@@ -1249,7 +1347,9 @@ class ClaudeCodeAuthProvider(DecisionProvider):
         started = time.monotonic()
         input_payload = _batch_decision_payload(snapshots, portfolio)
         prompt = _batch_decision_prompt(snapshots, portfolio, include_schema=True)
-        data_version = content_fingerprint(input_payload, schema_version=MARKET_SNAPSHOT_SCHEMA_VERSION)
+        data_version = content_fingerprint(
+            input_payload, schema_version=MARKET_SNAPSHOT_SCHEMA_VERSION
+        )
         stdout = ""
         usage: dict[str, Any] = {}
         model = self.model
@@ -1258,17 +1358,30 @@ class ClaudeCodeAuthProvider(DecisionProvider):
                 active = asyncio.current_task()
                 self._active_task = active
                 try:
-                    with tempfile.TemporaryDirectory(prefix="candlepilot-claude-") as directory:
-                        argv = [str(self.executable), "-p", "--output-format", "json",
-                                "--permission-mode", "default", "--max-turns", "4",
-                                "--disallowedTools",
-                                "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit"]
+                    with tempfile.TemporaryDirectory(
+                        prefix="candlepilot-claude-"
+                    ) as directory:
+                        argv = [
+                            str(self.executable),
+                            "-p",
+                            "--output-format",
+                            "json",
+                            "--permission-mode",
+                            "default",
+                            "--max-turns",
+                            "4",
+                            "--disallowedTools",
+                            "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit",
+                        ]
                         if self.model:
                             argv += ["--model", self.model]
                         if self.reasoning_effort:
                             argv += ["--effort", self.reasoning_effort]
                         stdout, _ = await _run_process(
-                            argv, stdin=prompt, cwd=Path(directory), timeout=self.timeout
+                            argv,
+                            stdin=prompt,
+                            cwd=Path(directory),
+                            timeout=self.timeout,
                         )
                 finally:
                     if self._active_task is active:
@@ -1278,19 +1391,39 @@ class ClaudeCodeAuthProvider(DecisionProvider):
                 raise TypeError("Claude Code response envelope must be an object")
             model, usage = parse_claude_usage(envelope)
             intents, truncated = _parse_intents(envelope["result"], snapshots)
-        except (ProviderError, KeyError, TypeError, ValueError, json.JSONDecodeError, ValidationError) as exc:
+        except (
+            ProviderError,
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+            ValidationError,
+        ) as exc:
             raise ProviderInvocationError(
-                f"Claude Code returned an invalid batch: {exc}", model=model,
-                duration=timedelta(seconds=time.monotonic() - started), raw_output=stdout,
-                usage=usage, prompt_version=DECISION_PROMPT_VERSION, data_version=data_version,
-                provider_version=self._provider_version, input_payload=input_payload, prompt=prompt,
+                f"Claude Code returned an invalid batch: {exc}",
+                model=model,
+                duration=timedelta(seconds=time.monotonic() - started),
+                raw_output=stdout,
+                usage=usage,
+                prompt_version=DECISION_PROMPT_VERSION,
+                data_version=data_version,
+                provider_version=self._provider_version,
+                input_payload=input_payload,
+                prompt=prompt,
             ) from exc
         if truncated:
             usage["rationale_truncated"] = True
         return _split_batch_results(
-            intents=intents, provider=self.name, model=model,
-            duration=timedelta(seconds=time.monotonic() - started), raw_output=stdout, usage=usage,
-            prompt_version=DECISION_PROMPT_VERSION, data_version=data_version,
-            provider_version=self._provider_version, input_payload=input_payload, prompt=prompt,
+            intents=intents,
+            provider=self.name,
+            model=model,
+            duration=timedelta(seconds=time.monotonic() - started),
+            raw_output=stdout,
+            usage=usage,
+            prompt_version=DECISION_PROMPT_VERSION,
+            data_version=data_version,
+            provider_version=self._provider_version,
+            input_payload=input_payload,
+            prompt=prompt,
             reasoning_effort=self.reasoning_effort,
         )
