@@ -339,17 +339,20 @@ def test_codex_provider_parses_schema_output(tmp_path: Path) -> None:
     assert result.usage["input_tokens"] == 1200
     assert result.usage["cached_input_tokens"] == 800
     assert result.usage["total_tokens"] == 1250
-    assert result.prompt_version == "trade-intent-v20"
+    assert result.prompt_version == "trade-intent-v21"
     assert result.data_version is not None
     assert result.data_version.startswith("market-snapshot-v5:sha256:")
     assert result.input_payload is not None
     assert result.input_payload["market"]["symbol"] == "BTCUSDT"
     assert result.prompt is not None and '"symbol":"BTCUSDT"' in result.prompt
-    assert "total initial margin for any single symbol to 10% of equity" in result.prompt
-    assert "risk 0.01" in result.prompt
-    assert "aggregate open stop risk to 4% of equity" in result.prompt
-    assert "Do not apply universal ratio thresholds" in result.prompt
-    assert "use exactly the existing position's leverage" in result.prompt
+    assert result.prompt.startswith("提示词版本：trade-intent-v21。")
+    assert "你是一个仅运行于测试网的日内期货系统中的决策组件" in result.prompt
+    assert "You are the decision component" not in result.prompt
+    assert "任一标的初始保证金不超过权益 10%" in result.prompt
+    assert "risk_fraction 不得超过 0.01" in result.prompt
+    assert "全部未平仓止损风险合计不超过权益 4%" in result.prompt
+    assert "不得套用跨标的统一比率阈值" in result.prompt
+    assert "必须严格沿用现有仓位杠杆" in result.prompt
     assert "(1) TREND_BREAKOUT" in result.prompt
     assert "(2) TREND_CONTINUATION" in result.prompt
     assert "(3) BREAKOUT_RETEST" in result.prompt
@@ -421,7 +424,7 @@ def test_claude_provider_truncates_only_oversized_rationale_and_marks_usage(
     assert len(result.intent.rationale) == 1_000
     assert result.usage["rationale_truncated"] is True
     assert "r" * 1_200 in result.raw_output
-    assert result.prompt is not None and "at most 800 characters" in result.prompt
+    assert result.prompt is not None and "不超过 800 个字符" in result.prompt
 
 
 def test_claude_validation_failure_preserves_complete_audit_context(
@@ -451,7 +454,7 @@ def test_claude_validation_failure_preserves_complete_audit_context(
     assert error.duration.total_seconds() > 0
     assert error.raw_output == envelope + "\n"
     assert error.usage["input_tokens"] == 25
-    assert error.prompt_version == "trade-intent-v20"
+    assert error.prompt_version == "trade-intent-v21"
     assert error.data_version.startswith("market-snapshot-v5:sha256:")
     assert error.input_payload["market"]["symbol"] == "BTCUSDT"
     assert '"portfolio"' in error.prompt
@@ -538,9 +541,9 @@ def test_claude_provider_sends_prompt_on_stdin_with_schema(tmp_path: Path) -> No
     assert '"portfolio"' not in args  # prompt is not passed as an argument
     assert '"portfolio"' in stdin  # ...it is on stdin
     assert '"additionalProperties":false' in stdin  # schema is embedded for Claude
-    assert "confidence is the estimated strength of an executable edge" in stdin
-    assert "HOLD must use leverage=1, risk_fraction=0" in stdin
-    assert "Overbought or oversold readings alone" in stdin
+    assert "confidence 表示所提议非 HOLD 动作具备可执行交易优势的估计强度" in stdin
+    assert "HOLD 必须使用 leverage=1、risk_fraction=0" in stdin
+    assert "仅有超买或超卖绝不构成反转确认" in stdin
 
 
 def test_registry_builds_one_provider_per_custom_endpoint() -> None:

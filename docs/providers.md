@@ -72,8 +72,9 @@
   直接决定交易。Prompt 还要求每个开仓/加仓必须在五个互斥交易情形中返回非空 `setup_type`：
   `TREND_BREAKOUT`（趋势突破）、`TREND_CONTINUATION`（趋势延续）、`BREAKOUT_RETEST`（突破回踩）、
   `TREND_PULLBACK`（趋势回撤）或 `REVERSAL`（反转）；其他动作返回空值。每类在 Prompt 中都有独立
-  触发定义，枚举随推理审计持久化，后续按五类分别统计。当前 Prompt 版本为
-  `trade-intent-v20`。
+  触发定义，枚举随推理审计持久化，后续按五类分别统计。正式标准决策 Prompt 的策略说明、
+  输出约束和历史订单流缺失说明统一使用简体中文，JSON 字段名、Schema、动作与结构枚举继续保留
+  英文机器值；`rationale` 明确要求使用简体中文。当前 Prompt 版本为 `trade-intent-v21`。
 - **隔离与安全**：LLM 子进程运行在独立空临时目录，环境变量白名单
   （含 `USER`/`LOGNAME` 以支持 macOS 钥匙串读取 Claude 登录态），移除所有币安/API Key
   变量；禁用工具、MCP、网络；单 Provider 并发 1、统一取消。外部 Provider 的代码默认超时为

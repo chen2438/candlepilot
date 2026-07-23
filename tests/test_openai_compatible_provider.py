@@ -120,6 +120,9 @@ def test_custom_provider_analyzes_multiple_markets_in_one_request() -> None:
         prompt = json.loads(request.content)["messages"][0]["content"]
         assert '"markets":[{' in prompt
         assert prompt.count('"portfolio":') == 1
+        assert "严格返回一个带有 intents 数组的对象" in prompt
+        assert "每个市场必须对应一个 TradeIntent" in prompt
+        assert "严格返回一个符合 TradeIntent Schema 的对象" not in prompt
         eth = {**_intent(), "symbol": "ETHUSDT", "rationale": "eth no edge"}
         return httpx.Response(
             200,
