@@ -717,6 +717,162 @@ def test_raw_reward_risk_above_threshold_ignores_fees_and_slippage() -> None:
     assert result.decision.pre_trade_reward_risk_ratio == Decimal("1.16")
 
 
+@pytest.mark.parametrize(
+    ("action", "setup_type", "invalidation_type", "expected_stop"),
+    [
+        (TradeAction.OPEN_LONG, "TREND_CONTINUATION", "EMA", Decimal("97.70")),
+        (TradeAction.OPEN_SHORT, "TREND_CONTINUATION", "DAILY_LEVEL", Decimal("102.30")),
+    ],
+)
+def test_selective_structure_stop_buffer_widens_initial_risk_distance(
+    action: TradeAction,
+    setup_type: str,
+    invalidation_type: str,
+    expected_stop: Decimal,
+) -> None:
+    intent = _intent(action).model_copy(
+        update={
+            "decision_framework": "structure-v1",
+            "setup_type": setup_type,
+            "invalidation_type": invalidation_type,
+        }
+    )
+
+    result = AggressiveRiskPolicy().evaluate(
+        intent, _snapshot(), _portfolio(), RULES
+    )
+
+    assert result.decision.accepted and result.order is not None
+    assert result.order.stop_price == expected_stop
+    assert result.decision.pre_trade_stop_price == expected_stop
+    assert "widened initial risk distance to 1.15x" in result.decision.reason
+
+
+def test_selective_structure_stop_buffer_applies_to_confirmed_breakout() -> None:
+    snapshot = _structured_snapshot().model_copy(
+        update={
+            "features": {
+                **_structured_snapshot().features,
+                "5m_breakout_hold_above_20": 1.0,
+                "5m_breakout_hold_high_20": 99.5,
+            }
+        }
+    )
+    intent = _breakout_intent().model_copy(
+        update={"invalidation_type": "EMA"}
+    )
+
+    result = AggressiveRiskPolicy().evaluate(
+        intent, snapshot, _portfolio(), RULES
+    )
+
+    assert result.decision.accepted and result.order is not None
+    assert result.order.stop_price == Decimal("97.70")
+
+
+@pytest.mark.parametrize(
+    ("setup_type", "invalidation_type"),
+    [
+        ("TREND_CONTINUATION", "SWING"),
+        ("TREND_CONTINUATION", "RANGE"),
+        ("TREND_PULLBACK", "EMA"),
+        ("REVERSAL", "DAILY_LEVEL"),
+        ("BREAKOUT_RETEST", "EMA"),
+    ],
+)
+def test_selective_structure_stop_buffer_does_not_apply_to_other_plans(
+    setup_type: str,
+    invalidation_type: str,
+) -> None:
+    intent = _intent().model_copy(
+        update={
+            "decision_framework": "structure-v1",
+            "setup_type": setup_type,
+            "invalidation_type": invalidation_type,
+        }
+    )
+
+    result = AggressiveRiskPolicy().evaluate(
+        intent, _snapshot(), _portfolio(), RULES
+    )
+
+    assert result.decision.accepted and result.order is not None
+    assert result.order.stop_price == Decimal("98")
+    assert "selective structure stop buffer" not in result.decision.reason
+
+
+def test_selective_structure_stop_buffer_does_not_loosen_an_add() -> None:
+    intent = _intent(TradeAction.ADD).model_copy(
+        update={
+            "decision_framework": "structure-v1",
+            "setup_type": "TREND_CONTINUATION",
+            "invalidation_type": "EMA",
+        }
+    )
+
+    result = AggressiveRiskPolicy().evaluate(
+        intent,
+        _snapshot(),
+        _portfolio(
+            open_positions=1,
+            positions=_position(
+                "LONG",
+                "1",
+                stop_loss="97",
+                take_profit="104",
+                initial_margin="20",
+            ),
+        ),
+        RULES,
+    )
+
+    assert result.decision.accepted and result.order is not None
+    assert result.order.stop_price == Decimal("98")
+    assert "selective structure stop buffer" not in result.decision.reason
+
+
+def test_selective_structure_stop_buffer_revalidates_reward_risk() -> None:
+    intent = _intent().model_copy(
+        update={
+            "decision_framework": "structure-v1",
+            "setup_type": "TREND_CONTINUATION",
+            "invalidation_type": "EMA",
+            "take_profit": Decimal("102.64"),
+        }
+    )
+
+    result = AggressiveRiskPolicy().evaluate(
+        intent, _snapshot(), _portfolio(), RULES
+    )
+
+    assert not result.decision.accepted
+    assert result.order is None
+    assert result.decision.pre_trade_stop_price == Decimal("97.70")
+    assert result.decision.pre_trade_reward_risk_ratio is not None
+    assert result.decision.pre_trade_reward_risk_ratio < Decimal("1.15")
+    assert "must be greater than 1.15:1" in result.decision.reason
+
+
+def test_selective_structure_stop_buffer_reduces_risk_sized_quantity() -> None:
+    plain = AggressiveRiskPolicy(max_symbol_margin_fraction=Decimal("1")).evaluate(
+        _intent(), _snapshot(), _portfolio(), RULES
+    )
+    buffered_intent = _intent().model_copy(
+        update={
+            "decision_framework": "structure-v1",
+            "setup_type": "TREND_CONTINUATION",
+            "invalidation_type": "EMA",
+        }
+    )
+
+    buffered = AggressiveRiskPolicy(
+        max_symbol_margin_fraction=Decimal("1")
+    ).evaluate(buffered_intent, _snapshot(), _portfolio(), RULES)
+
+    assert plain.order is not None and buffered.order is not None
+    assert buffered.order.quantity < plain.order.quantity
+
+
 def test_rejects_raw_reward_risk_below_the_threshold() -> None:
     intent = _intent().model_copy(update={"take_profit": Decimal("102")})
 

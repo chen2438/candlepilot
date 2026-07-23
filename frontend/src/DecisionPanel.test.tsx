@@ -389,6 +389,8 @@ describe("DecisionPanel", () => {
 
     expect(screen.getByText("AI 原始盈亏比")).toBeTruthy();
     expect(screen.getByText("1872.2400")).toBeTruthy();
+    expect(screen.getByText("模型止损")).toBeTruthy();
+    expect(screen.getByText("风控止损")).toBeTruthy();
     expect(screen.getByText("1.7056 : 1")).toBeTruthy();
     expect(screen.getByText("下单前盈亏比")).toBeTruthy();
     expect(screen.getByText("1.1400 : 1")).toBeTruthy();

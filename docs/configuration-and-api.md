@@ -163,6 +163,9 @@ Codex CLI 登录接口异步启动固定的 `codex login --device-auth`，sessio
 `execution_failed` / `rejected` / `hold` / `analysis_only` 展示状态；执行对象包含状态、失败阶段、
 交易所错误、入场/回补报告与可用时的损失估算。归属正式运行时，`live_run.config.software_version`
 返回运行创建时持久化的 7 位 Git 提交号；旧运行或非 Git 安装可省略，调用方不得以当前版本代填。
+结构化趋势突破/延续且以 EMA/日线位失效的新开仓，会把模型止损距离扩大到 1.15x 后重新执行定量、
+组合风险和盈亏比校验；`risk.decision.pre_trade_stop_price` 返回实际风控止损，原模型止损仍保留在
+`intent.stop_loss`，调用方应分别展示，不能把缓冲后的保护价冒充为模型原始输出。
 反事实 POST 仅接受已被硬风控否决且具有完整保护价的开仓/加仓推理，读取公开历史标记价格并保存
 最新观察结果；不接收调用方自带行情或价位，不调用 Broker。列表的 `counterfactual_outcome` 返回
 已保存结果及更新时间，尚未评估时为空。

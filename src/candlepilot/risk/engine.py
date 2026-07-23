@@ -19,6 +19,9 @@ from candlepilot.domain.models import (
 
 
 STOP_LOSS_REENTRY_COOLDOWN = timedelta(minutes=90)
+SELECTIVE_STRUCTURE_STOP_BUFFER = Decimal("1.15")
+BUFFERED_STOP_SETUP_TYPES = frozenset({"TREND_BREAKOUT", "TREND_CONTINUATION"})
+BUFFERED_STOP_INVALIDATION_TYPES = frozenset({"EMA", "DAILY_LEVEL"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,13 +249,26 @@ class AggressiveRiskPolicy:
         stop = intent.stop_loss
         if stop is None:
             return self._reject("opening intent has no stop loss")
-        stop = _to_tick(stop, rules.tick_size, rounding=entry_rounding)
-        if stop <= 0:
-            return self._reject("stop loss rounds to zero at the exchange tick size")
         if requested_side == "LONG" and stop >= entry:
             return self._reject("long stop loss must be below entry")
         if requested_side == "SHORT" and stop <= entry:
             return self._reject("short stop loss must be above entry")
+        buffered_structure_stop = self._should_buffer_structure_stop(intent)
+        if buffered_structure_stop:
+            stop_distance = abs(entry - stop) * SELECTIVE_STRUCTURE_STOP_BUFFER
+            stop = (
+                entry - stop_distance
+                if requested_side == "LONG"
+                else entry + stop_distance
+            )
+        stop = _to_tick(stop, rules.tick_size, rounding=entry_rounding)
+        if stop <= 0:
+            reason = (
+                "buffered structure stop rounds to zero at the exchange tick size"
+                if buffered_structure_stop
+                else "stop loss rounds to zero at the exchange tick size"
+            )
+            return self._reject(reason)
         preserved_tighter_stop = False
         if intent.action == TradeAction.ADD:
             assert existing is not None
@@ -450,6 +466,10 @@ class AggressiveRiskPolicy:
             accepted_reasons.append("resting limit intent queued locally until trigger")
         if preserved_tighter_stop:
             accepted_reasons.append("existing tighter stop preserved for the merged position")
+        if buffered_structure_stop:
+            accepted_reasons.append(
+                "selective structure stop buffer widened initial risk distance to 1.15x"
+            )
         return RiskEvaluation(
             decision=RiskDecision(
                 accepted=True,
@@ -465,6 +485,15 @@ class AggressiveRiskPolicy:
                 structure_assessment=structure_assessment,
             ),
             order=order,
+        )
+
+    @staticmethod
+    def _should_buffer_structure_stop(intent: TradeIntent) -> bool:
+        return (
+            intent.action in {TradeAction.OPEN_LONG, TradeAction.OPEN_SHORT}
+            and intent.decision_framework == "structure-v1"
+            and intent.setup_type in BUFFERED_STOP_SETUP_TYPES
+            and intent.invalidation_type in BUFFERED_STOP_INVALIDATION_TYPES
         )
 
     @staticmethod
